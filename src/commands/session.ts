@@ -41,7 +41,8 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
 
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
   ctx.sessions.clear(ctx.scope);
-  await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+  const ack = wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。';
+  await reply(ctx, `${ack}\n\n${renderContext(ctx)}`);
 }
 
 async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {
@@ -244,7 +245,7 @@ async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
   await reply(ctx, `✅ 当前 session 探活已设为 ${n} 分钟。`);
 }
 
-async function handleContext(_args: string, ctx: CommandContext): Promise<void> {
+export function renderContext(ctx: CommandContext): string {
   const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
   const sess = ctx.sessions.getRaw(ctx.scope);
   const scopeMinutes = ctx.sessions.getIdleTimeoutMinutes(ctx.scope);
@@ -264,7 +265,11 @@ async function handleContext(_args: string, ctx: CommandContext): Promise<void> 
     `⏱ **探活**: ${scopeMinutes !== undefined ? (scopeMinutes > 0 ? `${scopeMinutes} 分钟（本会话）` : '关闭（本会话）') : globalMinutes > 0 ? `${globalMinutes} 分钟（全局）` : '未启用'}`,
     `📂 **命名工作空间**: ${named.length > 0 ? named.map((n) => `\`${n}\``).join(' ') : '(无)'}`,
   ];
-  await reply(ctx, lines.join('\n'));
+  return lines.join('\n');
+}
+
+async function handleContext(_args: string, ctx: CommandContext): Promise<void> {
+  await reply(ctx, renderContext(ctx));
 }
 
 interface SessionMeta {

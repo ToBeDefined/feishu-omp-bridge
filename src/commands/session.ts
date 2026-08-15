@@ -275,7 +275,7 @@ export function renderContext(ctx: CommandContext): string {
   const named = Object.keys(ctx.workspaces.listNamed());
   const scopeLine =
     ctx.chatMode === 'topic' ? `\`${ctx.scope}\`（话题独立会话）` : `\`${ctx.scope}\``;
-  const sessionLine = sess?.sessionId ? `\`${sess.sessionId.slice(0, 8)}…\`` : '（无，新会话）';
+  const sessionLine = sess?.sessionId ? `\`${sess.sessionId.slice(0, 8)}…\`` : '（无，下条消息新建）';
   const runningLine = running ? '有任务正在执行' : '空闲，等待指令';
   const modelLine = model ? `\`${model}\`` : '跟随 OMP 默认';
   const thinkingLine = thinking ? `\`${thinking}\`` : '跟随 OMP 默认';
@@ -290,9 +290,9 @@ export function renderContext(ctx: CommandContext): string {
   const wsLine =
     named.length > 0 ? named.map((n) => `\`${n}\``).join(' ') : '（无）';
   const lines = [
-    `💬 **对话标识**: ${scopeLine}`,
+    `💬 **聊天窗口**: ${scopeLine}`,
     `📁 **工作目录**: \`${cwd}\``,
-    `🧠 **对话记忆**: ${sessionLine}`,
+    `🧠 **会话 ID**: ${sessionLine}`,
     `🕒 **开始对话**: ${formatClock(sess?.createdAt)}`,
     `🕘 **最后对话**: ${formatLastSeen(sess?.updatedAt)}`,
     `⚙️ **任务状态**: ${runningLine}`,

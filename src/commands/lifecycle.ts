@@ -22,12 +22,33 @@ async function handleStop(_args: string, ctx: CommandContext): Promise<void> {
 
 async function handleRestart(_args: string, ctx: CommandContext): Promise<void> {
   log.info('command', 'restart', { scope: ctx.scope });
-  await reply(ctx, `🔄 即将重启当前 bot \`${ctx.controls.processId}\`…\n\n_launchd 会自动拉起新实例,约几秒后恢复。期间消息会暂时无法响应。_`);
-  // Detach so the reply send completes before we tear down.
-  void (async () => {
-    await new Promise((r) => setTimeout(r, 800));
-    await ctx.controls.exit().catch(() => {});
-  })();
+  // Tell the user first — the old channel may be torn down once restart()
+  // swaps the bridge, so this pre-notice is the reliable one.
+  await reply(
+    ctx,
+    `🔄 正在重启当前 bot \`${ctx.controls.processId}\`…\n\n_采用进程内重连（先建新连接再断旧的），即使重连失败也会保留当前连接，不会掉线。约几秒完成。_`,
+  );
+  let restarted = false;
+  try {
+    await ctx.controls.restart();
+    restarted = true;
+    log.info('command', 'restart-ok');
+  } catch (err) {
+    log.fail('command', err, { step: 'restart' });
+  }
+  // After restart() the old bridge (and this ctx.channel) is disconnected,
+  // so a post-restart reply may fail — that's expected, not a failure of the
+  // restart itself. Report via log and rely on the startup notice if the
+  // send doesn't land.
+  try {
+    if (restarted) {
+      await reply(ctx, '✅ 重启完成，已重新连接。');
+    } else {
+      await reply(ctx, '❌ 重启失败，但原连接已保留，bot 仍在线。');
+    }
+  } catch (err) {
+    log.fail('command', err, { step: 'restart-reply' });
+  }
 }
 
 async function handleReconnect(_args: string, ctx: CommandContext): Promise<void> {

@@ -90,6 +90,26 @@ function isAdminCommand(cmd: string): boolean {
   return ADMIN_COMMANDS[cmd.startsWith('/') ? cmd : `/${cmd}`] === true;
 }
 
+/**
+ * Run a handler with a uniform error net: a thrown handler error is logged
+ * (tagged with the command) and swallowed — a crash in one slash command
+ * must not take down the whole bridge. Returns whether the command existed
+ * and was invoked.
+ */
+async function runHandler(
+  cmd: string,
+  args: string,
+  h: Handler,
+  ctx: CommandContext,
+): Promise<boolean> {
+  try {
+    await h(args, ctx);
+  } catch (err) {
+    log.fail('command', err, { cmd });
+  }
+  return true;
+}
+
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const trimmed = ctx.msg.content.trim();
   if (!trimmed.startsWith('/')) return false;
@@ -105,12 +125,7 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
     });
     return true;
   }
-  try {
-    await h(args, ctx);
-  } catch (err) {
-    log.fail('command', err, { cmd });
-  }
-  return true;
+  return runHandler(cmd, args, h, ctx);
 }
 
 /** Invoke a named command handler (e.g. from a card button click). */
@@ -132,10 +147,5 @@ export async function runCommandHandler(
     // the original admin card in the first place, so this is an edge case.
     return true;
   }
-  try {
-    await h(args, ctx);
-  } catch (err) {
-    log.fail('command', err, { cmd: name });
-  }
-  return true;
+  return runHandler(`/${name}`, args, h, ctx);
 }

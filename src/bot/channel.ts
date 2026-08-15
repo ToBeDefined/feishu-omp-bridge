@@ -47,6 +47,7 @@ import { configureNetwork } from './network-config';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, renderQuotedBlock, type QuotedContext } from './quote';
+import { recordModelUse } from './model-history';
 import { addReaction } from './reaction';
 
 const DEBOUNCE_MS = 600;
@@ -568,11 +569,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     cwd,
   });
 
+  const runModel = getOmpModel(controls.cfg);
+  if (runModel) {
+    await recordModelUse(runModel).catch(() => {});
+  }
   const run = agent.run({
     prompt,
     sessionId: resumeFrom,
     cwd,
-    model: getOmpModel(controls.cfg),
+    model: runModel,
     imagePaths,
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     hostTools: feishuHost.tools,

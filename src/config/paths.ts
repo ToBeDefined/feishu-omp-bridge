@@ -16,6 +16,7 @@ export const paths = {
   mediaDir: join(appDir, 'media'),
   ompSessionsDir: join(appDir, 'omp-sessions'),
   modelsCacheFile: join(appDir, 'models-cache.json'),
+  modelHistoryFile: join(appDir, 'model-history.json'),
 };
 
 export const legacyPaths = {

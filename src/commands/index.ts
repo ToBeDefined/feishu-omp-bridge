@@ -1,12 +1,13 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { paths } from '../config/paths';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
+import { recentModels } from '../bot/model-history';
 import {
   accountCurrentCard,
   accountFailureCard,
@@ -32,7 +33,6 @@ import {
   getMessageReplyMode,
   getOmpBinary,
   getOmpModel,
-  getOmpSessionDir,
   getOmpThinking,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
@@ -480,7 +480,7 @@ async function refreshModels(ctx: CommandContext, current: string | undefined): 
     byProvider.set(m.provider, (byProvider.get(m.provider) ?? 0) + 1);
   }
   const providers = [...byProvider.entries()].map(([provider, count]) => ({ provider, count }));
-  const recents = await recentOmpModels(ctx.controls.cfg);
+  const recents = await recentModels();
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(
     ctx.channel,
@@ -492,7 +492,7 @@ async function refreshModels(ctx: CommandContext, current: string | undefined): 
 async function showModelProviders(ctx: CommandContext, current: string | undefined): Promise<void> {
   const [data, recents] = await Promise.all([
     loadModelData(ctx.controls.cfg, false),
-    recentOmpModels(ctx.controls.cfg),
+    recentModels(),
   ]);
   const byProvider = new Map<string, number>();
   for (const m of data.list) {
@@ -689,46 +689,6 @@ interface OmpModelEntry {
 }
 
 const execFileAsync = promisify(execFile);
-
-interface ModelChangeFrame {
-  model?: string;
-  timestamp?: string;
-  role?: string;
-}
-
-/** Scan the bridge's OMP session JSONL files for `model_change` frames and
- * return the most recently used model selectors (newest first, fallback
- * resolutions excluded, deduped). */
-async function recentOmpModels(cfg: AppConfig): Promise<string[]> {
-  const dir = getOmpSessionDir(cfg);
-  const seen = new Set<string>();
-  const found: ModelChangeFrame[] = [];
-  try {
-    const entries = await readdir(dir);
-    for (const name of entries) {
-      if (!name.endsWith('.jsonl')) continue;
-      const file = join(dir, name);
-      const text = await readFile(file, 'utf8');
-      for (const line of text.split('\n')) {
-        if (!line.includes('model_change')) continue;
-        let frame: ModelChangeFrame;
-        try {
-          frame = JSON.parse(line) as ModelChangeFrame;
-        } catch {
-          continue;
-        }
-        if (frame.role === 'fallback' || !frame.model) continue;
-        if (seen.has(frame.model)) continue;
-        seen.add(frame.model);
-        found.push(frame);
-      }
-    }
-  } catch {
-    return [];
-  }
-  found.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''));
-  return found.slice(0, 5).map((f) => f.model ?? '');
-}
 
 /** Read the configured modelRoles (per-role models in ~/.omp config) and
  * return the distinct model selectors, newest-first as authored. The

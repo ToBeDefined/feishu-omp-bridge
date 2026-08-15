@@ -128,6 +128,9 @@ async function handleWs(args: string, ctx: CommandContext): Promise<void> {
     case 'remove':
     case 'rm':
       return handleWsRemove(name, ctx);
+    case 'cancel':
+      if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+      return;
     default:
       await reply(ctx, '用法：`/ws [list|save <name>|use <name>|remove <name>]`');
   }

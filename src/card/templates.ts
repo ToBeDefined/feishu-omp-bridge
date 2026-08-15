@@ -58,6 +58,9 @@ export function workspacesCard(current: string | undefined, named: Record<string
     });
   }
 
+  elements.push(HR);
+  elements.push(actions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
+
   return shell('📂 工作空间', elements);
 }
 

@@ -2,26 +2,29 @@ import type { LarkChannel } from '@larksuiteoapi/node-sdk';
 import { log } from '../core/logger';
 
 /**
- * Add a "Typing" reaction (敲键盘) to a message as an instant "I got your
- * message" ack the moment it's queued. Left in place afterwards as a
- * persistent receipt — never removed. Failures are logged but never thrown
- * — losing a decoration must not break the actual reply flow.
+ * Add a reaction to a message as an instant ack. Defaults to "Typing"
+ * (敲键盘) for inbound messages; pass an explicit `emoji` for other cases
+ * (e.g. `OK` as a completion checkmark on a restart notice). Left in place
+ * permanently — never removed. Failures are logged but never thrown —
+ * losing a decoration must not break the actual reply flow.
  */
-export async function addWorkingReaction(
+export async function addReaction(
   channel: LarkChannel,
   messageId: string,
+  emoji: string = 'Typing',
 ): Promise<string | undefined> {
   try {
     const r = (await channel.rawClient.im.v1.messageReaction.create({
       path: { message_id: messageId },
-      data: { reaction_type: { emoji_type: 'Typing' } },
+      data: { reaction_type: { emoji_type: emoji } },
     })) as { data?: { reaction_id?: string } };
     const id = r?.data?.reaction_id;
-    if (id) log.info('reaction', 'added', { messageId, reactionId: id });
+    if (id) log.info('reaction', 'added', { messageId, reactionId: id, emoji });
     return id;
   } catch (err) {
     log.warn('reaction', 'add-failed', {
       messageId,
+      emoji,
       err: err instanceof Error ? err.message : String(err),
     });
     return undefined;

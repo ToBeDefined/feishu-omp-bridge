@@ -47,7 +47,7 @@ import { configureNetwork } from './network-config';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, renderQuotedBlock, type QuotedContext } from './quote';
-import { addWorkingReaction } from './reaction';
+import { addReaction } from './reaction';
 
 const DEBOUNCE_MS = 600;
 
@@ -418,7 +418,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // messages (while we debounce / wait for a run slot), slash commands
   // (before the reply card lands), and mid-run follow-ups alike. Left in
   // place permanently as a receipt.
-  await addWorkingReaction(channel, msg.messageId);
+  await addReaction(channel, msg.messageId);
 
   const handled = await tryHandleCommand({
     channel,

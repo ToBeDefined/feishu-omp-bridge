@@ -3,6 +3,7 @@ import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { OmpAdapter } from '../../agent';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
+import { addReaction } from '../../bot/reaction';
 import { runRegistrationWizard } from '../../bot/wizard';
 import type { Controls } from '../../commands';
 import { setSecret } from '../../config/keystore';
@@ -219,11 +220,13 @@ export async function runStart(opts: StartOptions): Promise<void> {
   // Best-effort; failures (chat gone, no permission) are logged, never fatal.
   for (const chatId of sessions.chats()) {
     try {
-      await bridge.channel.send(
+      const sent = await bridge.channel.send(
         chatId,
         { markdown: '🔄 **bot 已重启**\n\n已重新上线,可以继续聊天。' },
         {},
       );
+      // Stamp a completion checkmark on the notice itself.
+      await addReaction(bridge.channel, sent.messageId, 'OK');
       log.info('notify', 'restarted', { chatId });
     } catch (err) {
       log.warn('notify', 'restart-failed', {

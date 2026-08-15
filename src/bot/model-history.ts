@@ -12,9 +12,9 @@ import { log } from '../core/logger';
 
 const MAX_ENTRIES = 20;
 
-async function readHistory(): Promise<string[]> {
+async function readHistory(file: string): Promise<string[]> {
   try {
-    const text = await readFile(paths.modelHistoryFile, 'utf8');
+    const text = await readFile(file, 'utf8');
     const parsed = JSON.parse(text) as unknown;
     if (Array.isArray(parsed)) {
       return parsed.filter((m): m is string => typeof m === 'string');
@@ -25,27 +25,33 @@ async function readHistory(): Promise<string[]> {
   }
 }
 
-async function writeHistory(history: string[]): Promise<void> {
+async function writeHistory(file: string, history: string[]): Promise<void> {
   try {
-    await mkdir(dirname(paths.modelHistoryFile), { recursive: true });
-    const tmp = `${paths.modelHistoryFile}.tmp-${process.pid}`;
+    await mkdir(dirname(file), { recursive: true });
+    const tmp = `${file}.tmp-${process.pid}`;
     await writeFile(tmp, `${JSON.stringify(history)}\n`, 'utf8');
-    await rename(tmp, paths.modelHistoryFile);
+    await rename(tmp, file);
   } catch (err) {
     log.warn('model-history', 'write-failed', { err: String(err) });
   }
 }
 
 /** Record a model use: move it to the front, drop duplicates, cap size. */
-export async function recordModelUse(model: string): Promise<void> {
-  if (!model) return;
-  const history = await readHistory();
+export async function recordModelUse(
+  model: string,
+  file: string = paths.modelHistoryFile,
+): Promise<void> {
+  if (!model || !model.trim()) return;
+  const history = await readHistory(file);
   const next = [model, ...history.filter((m) => m !== model)].slice(0, MAX_ENTRIES);
-  await writeHistory(next);
+  await writeHistory(file, next);
 }
 
 /** Return the most recently used models, newest first, deduped. */
-export async function recentModels(limit = 5): Promise<string[]> {
-  const history = await readHistory();
+export async function recentModels(
+  limit = 5,
+  file: string = paths.modelHistoryFile,
+): Promise<string[]> {
+  const history = await readHistory(file);
   return history.slice(0, limit);
 }

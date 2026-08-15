@@ -21,7 +21,8 @@ import { startKeepalive } from './keepalive';
 import { configureNetwork } from './network-config';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
-import { runAgentBatch } from './batch';
+import { runAgentBatch, runScheduledPrompt } from './batch';
+import type { Scheduler } from '../scheduler';
 
 const DEBOUNCE_MS = 600;
 
@@ -93,10 +94,11 @@ export interface StartChannelDeps {
   sessions: SessionStore;
   workspaces: WorkspaceStore;
   controls: Controls;
+  scheduler?: Scheduler;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
-  const { cfg, agent, sessions, workspaces, controls } = deps;
+  const { cfg, agent, sessions, workspaces, controls, scheduler } = deps;
   const activeRuns = new ActiveRuns();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
@@ -295,10 +297,31 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     forceReconnect: () => controls.restart(),
   });
 
+  // Scheduled tasks: wire the scheduler to actually run an agent prompt and
+  // stream the result to the task's chat. The scheduler lives on controls so
+  // /every can add/list/remove tasks from inside a command handler.
+  if (scheduler) {
+    scheduler.setHandler((task) => {
+      void runScheduledPrompt({
+        channel,
+        agent,
+        sessions,
+        workspaces,
+        activeRuns,
+        controls,
+        chatId: task.chatId,
+        prompt: task.prompt,
+        senderId: controls.cfg.preferences?.access?.admins?.[0] ?? '',
+      }).catch((err) => log.fail('scheduler', err, { id: task.id }));
+    });
+    scheduler.start();
+  }
+
   return {
     channel,
     disconnect: async () => {
       keepalive.stop();
+      scheduler?.stop();
       pending.cancelAll();
       await channel.disconnect();
       await activeRuns.stopAll();

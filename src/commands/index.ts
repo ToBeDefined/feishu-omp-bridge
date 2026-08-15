@@ -10,6 +10,7 @@ import { accountHandlers } from './account';
 import { lifecycleHandlers } from './lifecycle';
 import { modelHandlers } from './model';
 import { sessionHandlers } from './session';
+import type { Scheduler } from '../scheduler';
 
 export interface Controls {
   /** Restart the bridge in-process: disconnect WS, kill OMP runs, reload
@@ -25,6 +26,8 @@ export interface Controls {
   /** This process's short id in the registry. Used by /ps to highlight the
    * receiving process and by /exit to detect self-target. */
   processId: string;
+  /** Task scheduler for /every scheduled runs. */
+  scheduler?: Scheduler;
 }
 
 export interface CommandContext {
@@ -80,6 +83,7 @@ const ADMIN_COMMANDS: Record<string, true> = {
   '/context': true,
   '/resume': true,
   '/session': true,
+  '/every': true,
   '/exit': true,
   '/reconnect': true,
   '/doctor': true,

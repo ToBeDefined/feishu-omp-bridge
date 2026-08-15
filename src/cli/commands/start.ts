@@ -4,6 +4,7 @@ import pkg from '../../../package.json';
 import { OmpAdapter } from '../../agent';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
 import { runRegistrationWizard } from '../../bot/wizard';
+import { Scheduler } from '../../scheduler';
 import type { Controls } from '../../commands';
 import { setSecret } from '../../config/keystore';
 import { paths } from '../../config/paths';
@@ -147,10 +148,14 @@ export async function runStart(opts: StartOptions): Promise<void> {
     process.exit(0);
   };
 
+  const scheduler = new Scheduler();
+  await scheduler.load();
+
   const controls: Controls = {
     configPath,
     cfg,
     processId: entry.id,
+    scheduler,
     async exit() {
       await stop('exit-command');
     },
@@ -176,6 +181,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
           sessions,
           workspaces,
           controls,
+          scheduler,
         });
         console.log('[restart] disconnecting old bridge...');
         try {
@@ -202,7 +208,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
     },
   };
 
-  bridge = await startChannel({ cfg, agent, sessions, workspaces, controls });
+  bridge = await startChannel({ cfg, agent, sessions, workspaces, controls, scheduler });
 
   // Backfill the bot's display name into the registry once WS handshake is
   // done — future starts conflicting on this app can show it in the prompt

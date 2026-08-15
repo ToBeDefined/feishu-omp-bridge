@@ -17,6 +17,7 @@ export const paths = {
   ompSessionsDir: join(appDir, 'omp-sessions'),
   modelsCacheFile: join(appDir, 'models-cache.json'),
   modelHistoryFile: join(appDir, 'model-history.json'),
+  schedulerFile: join(appDir, 'scheduler.json'),
 };
 
 export const legacyPaths = {

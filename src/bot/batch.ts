@@ -415,3 +415,92 @@ async function processAgentStream(
  * a stall (the card has already rendered terminal state by this point).
  */
 const POST_DONE_EXIT_GRACE_MS = 2000;
+
+/**
+ * Run a one-shot agent prompt for a scheduled task and stream the result to
+ * a target chat (no triggering message — no replyTo, no quote fetching).
+ * Reuses the same agent.run + processAgentStream machinery as a normal
+ * batch, minus the media/quote/batch plumbing. Best-effort: failures are
+ * logged and a short error notice is sent so the user knows the task ran
+ * into trouble.
+ */
+export interface ScheduledRunDeps {
+  channel: LarkChannel;
+  agent: AgentAdapter;
+  sessions: SessionStore;
+  workspaces: WorkspaceStore;
+  activeRuns: ActiveRuns;
+  controls: Controls;
+  chatId: string;
+  prompt: string;
+  senderId: string;
+}
+
+export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> {
+  const { channel, agent, sessions, workspaces, activeRuns, controls, chatId, prompt, senderId } = deps;
+  const scope = chatId;
+  const cwd = workspaces.cwdFor(scope) ?? homedir();
+  const replyMode = getMessageReplyMode(controls.cfg);
+  const runModel = getOmpModel(controls.cfg);
+  if (runModel) await recordModelUse(runModel).catch(() => {});
+
+  const feishuHost = createFeishuHostIntegration(channel, {
+    scope,
+    chatId,
+    replyToMessageId: undefined,
+    cwd,
+  });
+
+  const run = agent.run({
+    prompt,
+    sessionId: sessions.resumeFor(scope, cwd),
+    cwd,
+    model: runModel,
+    stopGraceMs: getAgentStopGraceMs(controls.cfg),
+    hostTools: feishuHost.tools,
+    hostUriSchemes: feishuHost.uriSchemes,
+  });
+  const handle = activeRuns.register(scope, run);
+
+  try {
+    if (replyMode === 'card') {
+      await channel.stream(
+        chatId,
+        {
+          card: {
+            initial: renderCard(initialState),
+            producer: async (ctrl) => {
+              await processAgentStream(handle, sessions, scope, cwd, getRunIdleTimeoutMs(controls.cfg), async (state) => {
+                await ctrl.update(renderCard(filterToolBlocks(state, controls)));
+              });
+            },
+          },
+        },
+        {},
+      );
+    } else {
+      let finalState: RunState = initialState;
+      await processAgentStream(handle, sessions, scope, cwd, getRunIdleTimeoutMs(controls.cfg), async (state) => {
+        finalState = state;
+      });
+      const body = renderText(filterToolBlocks(finalState, controls));
+      if (body.trim()) {
+        await channel.send(chatId, { markdown: body }, {});
+      }
+    }
+  } catch (err) {
+    log.fail('scheduler', err, { chatId });
+    try {
+      await channel.send(chatId, { markdown: `⚠️ 定时任务执行失败：${err instanceof Error ? err.message : String(err)}` }, {});
+    } catch {
+      /* delivery failure is non-fatal */
+    }
+  } finally {
+    activeRuns.unregister(scope, run);
+  }
+}
+
+function filterToolBlocks(state: RunState, controls: Controls): RunState {
+  if (getShowToolCalls(controls.cfg)) return state;
+  return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
+}

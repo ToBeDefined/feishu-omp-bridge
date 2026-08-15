@@ -550,7 +550,19 @@ async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<vo
     }
     return;
   }
-  const cwd = match.cwd || homedir();
+  let cwd = match.cwd || homedir();
+  // The historical session's cwd may point at a directory that no longer
+  // exists (renamed / deleted since). Spawning omp in a missing cwd fails
+  // with ENOENT, so fall back to the chat's current cwd (or $HOME) and
+  // surface the change instead of failing silently.
+  let cwdWarn = '';
+  try {
+    const st = await stat(cwd);
+    if (!st.isDirectory()) throw new Error('not a directory');
+  } catch {
+    cwdWarn = `会话原目录 \`${cwd}\` 已不存在,回退到当前工作目录。`;
+    cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+  }
   // Interrupt any active run, then re-point this chat's session + cwd at
   // the historical session. resumeFor(scope, cwd) will match next run.
   ctx.activeRuns.interrupt(ctx.scope);
@@ -560,8 +572,10 @@ async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<vo
     scope: ctx.scope,
     sessionId: match.sessionId,
     cwd,
+    cwdWarn: cwdWarn || undefined,
   });
   const summary = await loadSessionSummary(match.sessionId);
+  const warnBlock = cwdWarn ? `\n⚠️ ${cwdWarn}\n` : '';
   if (ctx.fromCardAction) {
     const msgId = ctx.msg.messageId;
     void (async () => {
@@ -569,14 +583,14 @@ async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<vo
       await updateManagedCard(
         ctx.channel,
         msgId,
-        resumeSavedCard(match.sessionId, cwd, renderContext(ctx, summary)),
+        resumeSavedCard(match.sessionId, cwd, `${warnBlock}${renderContext(ctx, summary)}`),
       ).catch(() => {});
       forgetManagedCard(msgId);
     })();
   } else {
     void reply(
       ctx,
-      `✅ 已恢复会话 \`${match.sessionId.slice(0, 8)}…\`\n📁 cwd: \`${cwd}\`\n\n下一条消息从该会话继续。\n\n---\n\n${renderContext(ctx, summary)}`,
+      `✅ 已恢复会话 \`${match.sessionId.slice(0, 8)}…\`\n📁 cwd: \`${cwd}\`${warnBlock}\n下一条消息从该会话继续。\n\n---\n\n${renderContext(ctx, summary)}`,
     );
   }
 }

@@ -776,17 +776,36 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
 
   // Mark the search card as done: keep the results, remove all buttons.
   if (sub === 'done') {
-    const queryId = rest[0] ?? '';
-    const contexts = searchCache.get(queryId);
+    const queryRef = rest.join(' ').trim();
+    const [queryId, idxStr] = queryRef.split(/\s+/);
+    const contexts = searchCache.get(queryId ?? '');
     if (ctx.fromCardAction) {
       const msgId = ctx.msg.messageId;
       void (async () => {
         await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-        await updateManagedCard(
-          ctx.channel,
-          msgId,
-          searchResultsCard('', contexts ?? [], queryId, false),
-        ).catch(() => {});
+        try {
+          // Detail card: queryRef is "queryId idx". Show content-only detail.
+          if (idxStr) {
+            const idx = Number.parseInt(idxStr, 10);
+            const context = contexts?.[idx - 1];
+            const sessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
+            const full = context ? renderSearchContext(context) : '';
+            await updateManagedCard(
+              ctx.channel,
+              msgId,
+              searchDetailCard(sessionId, full, undefined, true),
+            );
+          } else {
+            // Results list card: strip buttons, keep the list.
+            await updateManagedCard(
+              ctx.channel,
+              msgId,
+              searchResultsCard('', contexts ?? [], queryId ?? '', false),
+            );
+          }
+        } catch {
+          /* ignore */
+        }
         forgetManagedCard(msgId);
       })();
     }
@@ -826,12 +845,14 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     const full = renderSearchContext(context);
     const sessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
     if (ctx.fromCardAction) {
-      const msgId = ctx.msg.messageId;
-      void (async () => {
-        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-        await updateManagedCard(ctx.channel, msgId, searchDetailCard(sessionId, full)).catch(() => {});
-        forgetManagedCard(msgId);
-      })();
+      // Post the detail as a NEW message; the results list card stays in
+      // place. The detail card carries its own 完成 button (which clears
+      // this detail card only).
+      await sendManagedCard(
+        ctx.channel,
+        ctx.msg.chatId,
+        searchDetailCard(sessionId, full, `${queryId} ${idx}`),
+      ).catch(() => {});
     } else {
       await reply(ctx, `${sessionId ? `🆔 session: \`${sessionId}\`\n\n` : ''}${full}`);
     }
@@ -959,24 +980,57 @@ function searchResultsCard(
 }
 
 /** Card showing a single expanded search window. */
-function searchDetailCard(sessionId: string | undefined, content: string): object {
-  const head = sessionId ? `🆔 session: \`${sessionId}\`` : '搜索详情';
+function searchDetailCard(
+  sessionId: string | undefined,
+  content: string,
+  queryRef?: string,
+  done = false,
+): object {
+  const head = done ? '✅ 搜索详情' : sessionId ? `🆔 session: \`${sessionId}\`` : '搜索详情';
+  const elements: object[] = [
+    { tag: 'markdown', content: head },
+    { tag: 'hr' },
+    { tag: 'markdown', content },
+  ];
+  if (!done) {
+    elements.push(
+      { tag: 'hr' },
+      {
+        tag: 'column_set',
+        flex_mode: 'flow',
+        horizontal_spacing: 'small',
+        columns: [
+          {
+            tag: 'column',
+            width: 'auto',
+            elements: [
+              {
+                tag: 'button',
+                text: { tag: 'plain_text', content: '继续对话' },
+                type: 'primary',
+                value: { cmd: 'search.resume' },
+              },
+            ],
+          },
+          {
+            tag: 'column',
+            width: 'auto',
+            elements: [
+              {
+                tag: 'button',
+                text: { tag: 'plain_text', content: '完成' },
+                type: 'default',
+                value: { cmd: 'search.done', arg: queryRef ?? '' },
+              },
+            ],
+          },
+        ],
+      },
+    );
+  }
   return {
     schema: '2.0',
     config: { summary: { content: '搜索详情' } },
-    body: {
-      elements: [
-        { tag: 'markdown', content: head },
-        { tag: 'hr' },
-        { tag: 'markdown', content },
-        { tag: 'hr' },
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: '继续对话' },
-          type: 'primary',
-          value: { cmd: 'search.resume' },
-        },
-      ],
-    },
+    body: { elements },
   };
 }

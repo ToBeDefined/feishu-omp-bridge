@@ -53,7 +53,7 @@ describe('Scheduler', () => {
     await s.load();
     const fired: string[] = [];
     s.setHandler((t) => fired.push(t.id));
-    await s.add({ chatId: 'oc_1', prompt: 'x', intervalMs: 1000, delayMs: 1 });
+    await s.add({ chatId: 'oc_1', prompt: 'x', intervalMs: 1000, delayMs: 0 });
     const task = s.list()[0]!;
     const first = task.nextRunAt;
     await s['tick'](); // fire due task
@@ -67,7 +67,7 @@ describe('Scheduler', () => {
     await s.load();
     const fired: string[] = [];
     s.setHandler((t) => fired.push(t.id));
-    const t = await s.add({ chatId: 'oc_1', prompt: 'x', intervalMs: 1000, delayMs: 1 });
+    const t = await s.add({ chatId: 'oc_1', prompt: 'x', intervalMs: 1000, delayMs: 0 });
     t.enabled = false;
     await s['tick']();
     expect(fired).toEqual([]);

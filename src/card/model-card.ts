@@ -330,7 +330,17 @@ export function resumeCard(
     );
   }
   const remaining = Math.max(0, total - (offset + sessions.length));
+  const pageSize = sessions.length;
   const footer: object[] = [];
+  const rangeInfo = `第 ${offset + 1}-${offset + pageSize} 条 / 共 ${total} 条`;
+  if (offset > 0) {
+    footer.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: '较新的会话' },
+      type: 'default',
+      value: { cmd: 'resume.back', arg: String(Math.max(0, offset - pageSize)) },
+    });
+  }
   if (remaining > 0) {
     footer.push({
       tag: 'button',
@@ -353,7 +363,9 @@ export function resumeCard(
         { tag: 'markdown', content: lines.join('\n') },
         { tag: 'hr' },
         ...blocks,
-        ...(footer.length > 0 ? [...footer] : []),
+        ...(footer.length > 0
+          ? [{ tag: 'markdown', content: `_${rangeInfo}_` }, ...footer]
+          : []),
       ],
     },
   };

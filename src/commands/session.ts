@@ -421,7 +421,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  if (sub === 'more') {
+  if (sub === 'more' || sub === 'back') {
     const offset = Number.parseInt(rest.join(''), 10);
     if (!Number.isFinite(offset) || offset < 0) {
       await reply(ctx, '❌ 无效的分页偏移。');

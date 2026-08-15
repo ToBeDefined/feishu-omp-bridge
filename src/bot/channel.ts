@@ -47,7 +47,7 @@ import { configureNetwork } from './network-config';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, renderQuotedBlock, type QuotedContext } from './quote';
-import { addWorkingReaction, removeReaction } from './reaction';
+import { addWorkingReaction, clearAckReaction } from './reaction';
 
 const DEBOUNCE_MS = 600;
 
@@ -435,6 +435,13 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     return;
   }
 
+  // Instant "got it" ack: add a Typing reaction the moment a message is
+  // queued, so the user knows it was received even while we debounce /
+  // wait for a run slot. Removed when the batch actually starts replying.
+  // Slash commands already answer with a card immediately, so they skip
+  // this (their own reply is the ack).
+  await addWorkingReaction(channel, msg.messageId);
+
   const size = pending.push(scope, msg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
 }
@@ -631,13 +638,12 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     },
   };
 
-  // For non-card modes OMP's output doesn't surface visually until either
-  // a first streamed token (markdown mode) or the whole run ends (text mode).
-  // Add a "Typing" reaction to the triggering message as an instant ack;
-  // remove it in finally. Card mode has a visible "正在思考…" footer the
-  // moment the initial card lands, so the extra reaction would be redundant.
-  const reactionId =
-    replyMode === 'card' ? undefined : await addWorkingReaction(channel, lastMsg.messageId);
+  // The intake ack reaction (added the moment each message was queued) has
+  // served its purpose — the actual reply is about to start. Clear it now;
+  // card mode's "正在思考…" footer takes over as the ongoing signal.
+  for (const m of batch) {
+    await clearAckReaction(channel, m.messageId).catch(() => {});
+  }
 
   try {
     if (replyMode === 'card') {
@@ -684,9 +690,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     log.fail('stream', err);
   } finally {
     activeRuns.unregister(scope, run);
-    if (reactionId) {
-      await removeReaction(channel, lastMsg.messageId, reactionId);
-    }
   }
 }
 

@@ -1,6 +1,10 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
 import { log } from '../core/logger';
 
+/** Ack reactions registered per message id, so the batch runner can remove
+ * the intake ack once it actually starts replying. */
+const ackByMessageId = new Map<string, string>();
+
 /**
  * Add a "Typing" reaction (敲键盘) to a message to give text-mode users an
  * instant "I got your message and I'm responding" cue while OMP is still
@@ -22,7 +26,10 @@ export async function addWorkingReaction(
       data: { reaction_type: { emoji_type: 'Typing' } },
     })) as { data?: { reaction_id?: string } };
     const id = r?.data?.reaction_id;
-    if (id) log.info('reaction', 'added', { messageId, reactionId: id });
+    if (id) {
+      ackByMessageId.set(messageId, id);
+      log.info('reaction', 'added', { messageId, reactionId: id });
+    }
     return id;
   } catch (err) {
     log.warn('reaction', 'add-failed', {
@@ -31,6 +38,17 @@ export async function addWorkingReaction(
     });
     return undefined;
   }
+}
+
+/** Remove and forget the intake ack reaction for a message, if any. */
+export async function clearAckReaction(
+  channel: LarkChannel,
+  messageId: string,
+): Promise<void> {
+  const reactionId = ackByMessageId.get(messageId);
+  if (!reactionId) return;
+  ackByMessageId.delete(messageId);
+  await removeReaction(channel, messageId, reactionId);
 }
 
 /** Remove a previously-added reaction. Tolerates errors silently — best

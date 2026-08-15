@@ -872,18 +872,38 @@ function searchResultsCard(keyword: string, contexts: SearchContext[], queryId: 
     blocks.push(
       { tag: 'markdown', content: preview },
       {
-        tag: 'button',
-        text: { tag: 'plain_text', content: '查看详情' },
-        type: 'default',
-        value: { cmd: 'search.show', arg: `${queryId} ${i + 1}` },
-      },
-      {
-        tag: 'button',
-        text: { tag: 'plain_text', content: '继续对话' },
-        type: 'primary',
-        value: { cmd: 'search.resume' },
+        tag: 'column_set',
+        flex_mode: 'flow',
+        horizontal_spacing: 'small',
+        columns: [
+          {
+            tag: 'column',
+            width: 'auto',
+            elements: [
+              {
+                tag: 'button',
+                text: { tag: 'plain_text', content: '查看详情' },
+                type: 'default',
+                value: { cmd: 'search.show', arg: `${queryId} ${i + 1}` },
+              },
+            ],
+          },
+          {
+            tag: 'column',
+            width: 'auto',
+            elements: [
+              {
+                tag: 'button',
+                text: { tag: 'plain_text', content: '继续对话' },
+                type: 'primary',
+                value: { cmd: 'search.resume' },
+              },
+            ],
+          },
+        ],
       },
     );
+    if (i < contexts.length - 1) blocks.push({ tag: 'hr' });
   });
   return {
     schema: '2.0',

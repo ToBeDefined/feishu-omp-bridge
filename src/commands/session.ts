@@ -812,7 +812,7 @@ function searchResultsCard(keyword: string, hits: SearchHit[], queryId: string):
       },
       {
         tag: 'button',
-        text: { tag: 'plain_text', content: `展开 ${i + 1}` },
+        text: { tag: 'plain_text', content: `查看详情 ${i + 1}` },
         type: 'default',
         value: { cmd: 'search.show', arg: `${queryId} ${i + 1}` },
       },

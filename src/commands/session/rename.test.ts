@@ -87,12 +87,15 @@ describe('/rename command', () => {
 
   it('generates a title with LLM and caps it at 20 chars', async () => {
     const longTitle = '这是一条特别长的自动生成标题测试内容用来验证截断逻辑';
-    const ctx = makeCtx({ agent: agentYielding(longTitle) as never });
+    const agent = agentYielding(longTitle);
+    const ctx = makeCtx({ agent: agent as never });
     await handleRename('auto', ctx);
 
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已自动生成标题'));
     const title = (ctx.sessions.getRaw('oc_1') as { title?: string }).title;
     expect(Array.from(title ?? '')).toHaveLength(20);
+    // Generated in the current session (resumed), not a fresh one.
+    expect(agent.run).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1' }));
   });
 
   it('fails gracefully when the model produces no text', async () => {

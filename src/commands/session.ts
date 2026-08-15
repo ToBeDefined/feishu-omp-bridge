@@ -844,6 +844,8 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     }
     const full = renderSearchContext(context, 'detail');
     const sessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
+    const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+    const wsLabel = workspaceLabel(ctx, cwd);
     if (ctx.fromCardAction) {
       // Post the detail as a NEW message; the results list card stays in
       // place. The detail card carries its own 完成 button (which clears
@@ -851,7 +853,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       await sendManagedCard(
         ctx.channel,
         ctx.msg.chatId,
-        searchDetailCard(sessionId, full, `${queryId} ${idx}`, idx),
+        searchDetailCard(sessionId, full, `${queryId} ${idx}`, idx, false, wsLabel),
       ).catch(() => {});
     } else {
       await reply(ctx, `${sessionId ? `🆔 session: \`${sessionId}\`\n\n` : ''}${full}`);
@@ -882,11 +884,25 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     if (oldest) searchCache.delete(oldest);
   }
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+  // Session + workspace context shown on both list and detail cards.
+  const sessInfo = ctx.sessions.getRaw(ctx.scope);
+  const sessionId = sessInfo?.sessionId;
+  const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+  const wsLabel = workspaceLabel(ctx, cwd);
   await sendManagedCard(
     ctx.channel,
     ctx.msg.chatId,
-    searchResultsCard(keyword, contexts, queryId),
+    searchResultsCard(keyword, contexts, queryId, true, { sessionId, workspace: wsLabel }),
   );
+}
+
+/** Human label for the current workspace: the named shortcut whose path
+ * matches cwd, or the cwd path itself. */
+function workspaceLabel(ctx: CommandContext, cwd: string): string {
+  for (const [name, path] of Object.entries(ctx.workspaces.listNamed())) {
+    if (path === cwd) return name;
+  }
+  return cwd;
 }
 
 /** Render one context window as a compact conversation snippet. The hit line
@@ -910,6 +926,7 @@ function searchResultsCard(
   contexts: SearchContext[],
   queryId: string,
   showButtons = true,
+  meta: { sessionId?: string; workspace?: string } = {},
 ): object {
   const done = !showButtons;
   const header = done
@@ -918,7 +935,13 @@ function searchResultsCard(
   const more = !done && contexts.length >= 6 ? '\n\n_（仅显示最近 6 个片段）_' : '';
   const blocks: object[] = [];
   contexts.forEach((ctx, i) => {
-    const preview = `**#${i + 1}**\n${renderSearchContext(ctx)}`;
+    const metaLine = [
+      meta.workspace ? `📁 ${meta.workspace}` : '',
+      meta.sessionId ? `🆔 ${meta.sessionId.slice(0, 8)}…` : '',
+    ]
+      .filter(Boolean)
+      .join(' · ');
+    const preview = `**#${i + 1}**${metaLine ? ` _(${metaLine})_` : ''}\n${renderSearchContext(ctx)}`;
     blocks.push({ tag: 'markdown', content: preview });
     if (showButtons) {
       blocks.push(
@@ -988,9 +1011,15 @@ function searchDetailCard(
   queryRef?: string,
   idx?: number,
   done = false,
+  workspace?: string,
 ): object {
   const label = idx !== undefined ? `搜索结果 #${idx}` : '搜索详情';
-  const head = done ? '✅ 搜索详情' : sessionId ? `🆔 ${label} · session: \`${sessionId}\`` : label;
+  const parts = [
+    label,
+    workspace ? `📁 ${workspace}` : '',
+    sessionId ? `🆔 ${sessionId.slice(0, 8)}…` : '',
+  ].filter(Boolean);
+  const head = done ? '✅ 搜索详情' : parts.join(' · ');
   const elements: object[] = [
     { tag: 'markdown', content: head },
     { tag: 'hr' },

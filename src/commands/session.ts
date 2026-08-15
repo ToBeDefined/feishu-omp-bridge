@@ -29,6 +29,7 @@ export const sessionHandlers: Record<string, Handler> = {
   '/timeout': handleTimeout,
   '/context': handleContext,
   '/resume': handleResume,
+  '/session': handleResume,
 };
 
 async function handleNew(args: string, ctx: CommandContext): Promise<void> {

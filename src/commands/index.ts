@@ -79,6 +79,7 @@ const ADMIN_COMMANDS: Record<string, true> = {
   '/restart': true,
   '/context': true,
   '/resume': true,
+  '/session': true,
   '/exit': true,
   '/reconnect': true,
   '/doctor': true,

@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { paths } from '../config/paths';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
@@ -454,6 +455,8 @@ async function handleModel(args: string, ctx: CommandContext): Promise<void> {
       return cancelModel(ctx);
     case 'reset':
       return resetModel(ctx, current);
+    case 'refresh':
+      return refreshModels(ctx, current);
     default:
       if (trimmed === '') return showModelProviders(ctx, current);
       if (trimmed.startsWith('-') || /\s/.test(trimmed)) {
@@ -464,14 +467,31 @@ async function handleModel(args: string, ctx: CommandContext): Promise<void> {
   }
 }
 
+/** Force-refresh the model cache, then show the updated provider card. */
+async function refreshModels(ctx: CommandContext, current: string | undefined): Promise<void> {
+  await reply(ctx, '🔄 正在刷新模型缓存…');
+  const data = await loadModelData(ctx.controls.cfg, true);
+  const byProvider = new Map<string, number>();
+  for (const m of data.list) {
+    byProvider.set(m.provider, (byProvider.get(m.provider) ?? 0) + 1);
+  }
+  const providers = [...byProvider.entries()].map(([provider, count]) => ({ provider, count }));
+  const recents = await recentOmpModels(ctx.controls.cfg);
+  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+  await sendManagedCard(
+    ctx.channel,
+    ctx.msg.chatId,
+    modelProviderCard(current, providers, recents, data.commons),
+  );
+}
+
 async function showModelProviders(ctx: CommandContext, current: string | undefined): Promise<void> {
-  const [models, recents, commons] = await Promise.all([
-    listOmpModels(ctx.controls.cfg),
+  const [data, recents] = await Promise.all([
+    loadModelData(ctx.controls.cfg, false),
     recentOmpModels(ctx.controls.cfg),
-    commonOmpModels(ctx.controls.cfg),
   ]);
   const byProvider = new Map<string, number>();
-  for (const m of models) {
+  for (const m of data.list) {
     byProvider.set(m.provider, (byProvider.get(m.provider) ?? 0) + 1);
   }
   const providers = [...byProvider.entries()].map(([provider, count]) => ({ provider, count }));
@@ -479,7 +499,7 @@ async function showModelProviders(ctx: CommandContext, current: string | undefin
   await sendManagedCard(
     ctx.channel,
     ctx.msg.chatId,
-    modelProviderCard(current, providers, recents, commons),
+    modelProviderCard(current, providers, recents, data.commons),
   );
 }
 
@@ -488,8 +508,8 @@ async function showModelPicker(
   ctx: CommandContext,
   current: string | undefined,
 ): Promise<void> {
-  const models = await listOmpModels(ctx.controls.cfg);
-  const pick = models.filter((m) => m.provider === provider);
+  const data = await loadModelData(ctx.controls.cfg, false);
+  const pick = data.list.filter((m) => m.provider === provider);
   if (pick.length === 0) {
     await reply(ctx, `未找到提供方 \`${provider}\`。请用 \`/model\` 重选。`);
     return;
@@ -748,6 +768,51 @@ async function listOmpModels(cfg: AppConfig): Promise<OmpModelEntry[]> {
     log.warn('command', 'model-list-failed', { err: String(err) });
     return [];
   }
+}
+
+/** Cache entry on disk: both the full model list and the configured common
+ * models, refreshed together. */
+interface ModelsCache {
+  fetchedAt: number;
+  list: OmpModelEntry[];
+  commons: string[];
+}
+
+const MODEL_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+async function loadModelsCache(): Promise<ModelsCache | undefined> {
+  try {
+    const text = await readFile(paths.modelsCacheFile, 'utf8');
+    const parsed = JSON.parse(text) as ModelsCache;
+    if (typeof parsed.fetchedAt !== 'number' || !Array.isArray(parsed.list)) return undefined;
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveModelsCache(cache: ModelsCache): Promise<void> {
+  try {
+    await mkdir(dirname(paths.modelsCacheFile), { recursive: true });
+    const tmp = `${paths.modelsCacheFile}.tmp-${process.pid}`;
+    await writeFile(tmp, `${JSON.stringify(cache)}\n`, 'utf8');
+    await rename(tmp, paths.modelsCacheFile);
+  } catch (err) {
+    log.warn('command', 'models-cache-write-failed', { err: String(err) });
+  }
+}
+
+/** Load the model list and common models, using the 7-day disk cache unless
+ * `force` requests a refresh (which rewrites the cache). */
+async function loadModelData(cfg: AppConfig, force: boolean): Promise<ModelsCache> {
+  if (!force) {
+    const cached = await loadModelsCache();
+    if (cached && Date.now() - cached.fetchedAt < MODEL_CACHE_TTL_MS) return cached;
+  }
+  const [list, commons] = await Promise.all([listOmpModels(cfg), commonOmpModels(cfg)]);
+  const fresh: ModelsCache = { fetchedAt: Date.now(), list, commons };
+  if (!force) await saveModelsCache(fresh);
+  return fresh;
 }
 
 async function handlePs(_args: string, ctx: CommandContext): Promise<void> {

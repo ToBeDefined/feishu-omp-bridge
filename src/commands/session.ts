@@ -748,8 +748,8 @@ async function searchSession(
       // around it (2 before, 2 after).
       for (let i = 0; i < stream.length; i++) {
         if (!stream[i]!.content.toLowerCase().includes(needle)) continue;
-        const start = Math.max(0, i - 2);
-        const end = Math.min(stream.length, i + 3);
+        const start = Math.max(0, i - 5);
+        const end = Math.min(stream.length, i + 6);
         contexts.push({
           messages: stream.slice(start, end).map((m) => ({ ...m, timestamp: m.timestamp })),
           hitIndex: i - start,
@@ -896,14 +896,8 @@ function renderSearchContext(context: SearchContext, mode: 'compact' | 'detail' 
     .map((m, i) => {
       const icon = m.role === 'user' ? '🧑' : '🤖';
       const marker = i === context.hitIndex ? ' 📍' : '';
-      const max =
-        mode === 'detail'
-          ? i === context.hitIndex
-            ? 500
-            : 200
-          : i === context.hitIndex
-            ? 60
-            : 40;
+      // Detail mode shows full messages; compact mode shortens.
+      const max = mode === 'detail' ? 2000 : i === context.hitIndex ? 60 : 40;
       const snippet = summarize(m.content, max);
       return `${icon}${marker} ${snippet}`;
     })

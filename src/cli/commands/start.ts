@@ -222,7 +222,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
     try {
       const sent = await bridge.channel.send(
         chatId,
-        { markdown: '🔄 **bot 已重启**\n\n已重新上线,可以继续聊天。' },
+        { markdown: '🚀 **重启完成**\n\n已重新上线,可以继续聊天。' },
         {},
       );
       // Stamp a completion checkmark on the notice itself.

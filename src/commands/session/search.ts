@@ -174,10 +174,17 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
               searchDetailCard(sessionId, full, undefined, idx, true, wsLabel),
             );
           } else {
+            // Results list card: strip buttons, keep the list with the
+            // workspace / session context intact.
+            const sessInfo = ctx.sessions.getRaw(ctx.scope);
+            const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
             await updateManagedCard(
               ctx.channel,
               msgId,
-              searchResultsCard('', contexts ?? [], queryId ?? '', false),
+              searchResultsCard('', contexts ?? [], queryId ?? '', false, {
+                sessionId: sessInfo?.sessionId,
+                workspace: workspaceLabel(ctx, cwd),
+              }),
             );
           }
         } catch {
@@ -260,7 +267,7 @@ function searchResultsCard(
 ): object {
   const done = !showButtons;
   const header = done
-    ? '✅ 搜索完成'
+    ? `✅ 搜索完成 · ${contexts.length} 个片段`
     : `🔍 搜索 \`${keyword}\`：找到 ${contexts.length} 个片段`;
   const more = !done && contexts.length >= 6 ? '\n\n_（仅显示最近 6 个片段）_' : '';
   const blocks: object[] = [];

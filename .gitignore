@@ -12,6 +12,7 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+.codegraph/
 
 # Internal-only: dev smoke scripts and full changelog stay local, do not ship
 scripts/

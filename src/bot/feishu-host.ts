@@ -28,6 +28,7 @@ export function createFeishuHostIntegration(
       replyMessageTool(channel, ctx),
       getMessageTool(channel),
       sendFileTool(channel, ctx),
+      recallMessageTool(channel),
     ],
     uriSchemes: [feishuUriScheme(channel, ctx)],
   };
@@ -173,6 +174,27 @@ function sendFileTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTo
         data: { receive_id: chatId, msg_type: 'file', content: JSON.stringify({ file_key: fileKey }) },
       });
       return { result: textResult(`sent file ${fileName} to ${chatId}`) };
+    },
+  };
+}
+
+function recallMessageTool(channel: LarkChannel): AgentHostTool {
+  return {
+    definition: {
+      name: 'feishu_recall_message',
+      label: 'Recall a Feishu message',
+      description:
+        'Recall (withdraw) a Feishu message by message_id. Use this to clean up a message you just sent that was wrong, e.g. after feishu_send_message / feishu_reply_message. Only messages sent by the bot can be recalled.',
+      parameters: objectSchema({
+        messageId: { type: 'string', description: 'message_id of the message to recall.' },
+      }, ['messageId']),
+    },
+    async execute(args) {
+      const messageId = requiredString(args, 'messageId');
+      await channel.rawClient.im.v1.message.delete({
+        path: { message_id: messageId },
+      });
+      return { result: textResult(`recalled ${messageId}`) };
     },
   };
 }

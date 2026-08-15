@@ -27,6 +27,7 @@ describe('createFeishuHostIntegration', () => {
       'feishu_reply_message',
       'feishu_get_message',
       'feishu_send_file',
+      'feishu_recall_message',
     ]);
     expect(host.uriSchemes[0]?.definition.scheme).toBe('feishu');
 
@@ -101,5 +102,28 @@ describe('feishu_send_file', () => {
     await import('node:fs/promises').then((fs) => fs.writeFile(tmp, Buffer.alloc(0)));
     await expect(tool.execute({ path: tmp })).rejects.toThrow('empty file');
     await import('node:fs/promises').then((fs) => fs.rm(tmp, { force: true }));
+  });
+});
+
+describe('feishu_recall_message', () => {
+  it('deletes the message via im.v1.message.delete', async () => {
+    const deleted: unknown[] = [];
+    const channel = {
+      rawClient: {
+        im: { v1: { message: { delete: async (p: unknown) => { deleted.push(p); return {}; } } } },
+      },
+    } as unknown as LarkChannel;
+    const host = createFeishuHostIntegration(channel, { scope: 's', chatId: 'chat-1', cwd: '/x' });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_recall_message')!;
+    const res = await tool.execute({ messageId: 'om_123' });
+    expect(JSON.stringify(res.result)).toContain('recalled om_123');
+    expect(deleted[0]).toEqual({ path: { message_id: 'om_123' } });
+  });
+
+  it('requires a messageId', async () => {
+    const channel = { rawClient: { im: { v1: {} } } } as unknown as LarkChannel;
+    const host = createFeishuHostIntegration(channel, { scope: 's', chatId: 'chat-1', cwd: '/x' });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_recall_message')!;
+    await expect(tool.execute({})).rejects.toThrow('messageId is required');
   });
 });

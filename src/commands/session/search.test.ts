@@ -158,4 +158,98 @@ describe('searchSession', () => {
     expect(detail).toContain('q'.repeat(600) + '…');
     expect(detail).toContain('a'.repeat(1000) + '…');
   });
+
+  it('truncates results to the requested limit, newest first', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    for (const [id, ts] of [
+      ['a', '2026-08-15T10:00:00.000Z'],
+      ['b', '2026-08-15T11:00:00.000Z'],
+      ['c', '2026-08-15T12:00:00.000Z'],
+    ] as Array<[string, string]>) {
+      await writeSession(tmp, `${id}.jsonl`, { id, cwd: `/repo-${id}`, ts }, [
+        { role: 'user', ts: `${ts.slice(0, 19)}Z`, content: [{ type: 'text', text: `codegraph in ${id}` }] },
+      ]);
+    }
+
+    const capped = await searchSession('codegraph', ctxFor(), 2);
+    expect(capped.map((h) => h.sessionId)).toEqual(['c', 'b']);
+
+    const all = await searchSession('codegraph', ctxFor());
+    expect(all.map((h) => h.sessionId)).toEqual(['c', 'b', 'a']);
+  });
+
+  it('matches case-insensitively', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    await writeSession(tmp, 'a.jsonl', { id: 'a', cwd: '/r', ts: '2026-08-15T10:00:00.000Z' }, [
+      { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: 'CodeGraph 用法' }] },
+    ]);
+
+    const hits = await searchSession('codegraph', ctxFor());
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.sessionId).toBe('a');
+  });
+
+  it('returns an empty array when nothing matches', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    await writeSession(tmp, 'a.jsonl', { id: 'a', cwd: '/r', ts: '2026-08-15T10:00:00.000Z' }, [
+      { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: '完全无关' }] },
+    ]);
+
+    await expect(searchSession('zzzz-not-found', ctxFor())).resolves.toEqual([]);
+  });
+
+  it('emits a single-message context for an assistant-only turn', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    // Assistant message with no preceding user message → single-message pair.
+    await writeSession(tmp, 'a.jsonl', { id: 'a', cwd: '/r', ts: '2026-08-15T10:00:00.000Z' }, [
+      { role: 'assistant', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: 'codegraph 自述' }] },
+    ]);
+
+    const hits = await searchSession('codegraph', ctxFor());
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.messages).toHaveLength(1);
+    expect(hits[0]!.messages[0]!.role).toBe('assistant');
+    expect(hits[0]!.hitIndex).toBe(0);
+  });
+
+  it('excludes a user message whose only text is the system-prompt wrapper', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    // The wrapper text contains the keyword but extractUserInput strips it.
+    await writeSession(tmp, 'a.jsonl', { id: 'a', cwd: '/r', ts: '2026-08-15T10:00:00.000Z' }, [
+      {
+        role: 'user',
+        ts: '2026-08-15T10:00:01.000Z',
+        content: [
+          {
+            type: 'text',
+            text: '<bridge_context>\nchat_id: x\n</bridge_context>\n你正在 feishu-omp-bridge 里运行，把 codegraph 转给本地。',
+          },
+        ],
+      },
+    ]);
+
+    // The keyword appears in the raw file (so the prefilter passes) but the
+    // extracted user input is empty → no searchable hit.
+    const hits = await searchSession('codegraph', ctxFor());
+    expect(hits).toEqual([]);
+  });
+
+  it('escapes a leading # in rendered message content', () => {
+    const context = {
+      messages: [
+        { role: 'user' as const, content: '# 大标题\n> 引用行' },
+        { role: 'assistant' as const, content: '正常回复' },
+      ],
+      hitIndex: 0,
+    };
+    const out = renderSearchContext(context, 'compact');
+    // A leading # is backslash-escaped so it doesn't become a heading.
+    expect(out).toContain('\\# 大标题');
+    expect(out).not.toContain('\n# 大标题');
+  });
 });

@@ -82,7 +82,7 @@ async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void
 
   await reply(
     ctx,
-    `✓ 已创建群 **${created.name}**，去新群里继续。`,
+    `✅ 已创建群 **${created.name}**，去新群里继续。`,
   );
 }
 
@@ -110,7 +110,7 @@ async function handleCd(args: string, ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, absolute);
   ctx.sessions.clear(ctx.scope);
-  await reply(ctx, `✓ 已切换 cwd 到 \`${absolute}\`\n（session 已重置）`);
+  await reply(ctx, `✅ 已切换 cwd 到 \`${absolute}\`\n（session 已重置）`);
 }
 
 async function handleWs(args: string, ctx: CommandContext): Promise<void> {
@@ -156,7 +156,7 @@ async function handleWsSave(name: string, ctx: CommandContext): Promise<void> {
     return;
   }
   ctx.workspaces.saveNamed(name, cwd);
-  await reply(ctx, `✓ 工作空间已保存：\`${name}\` → ${cwd}`);
+  await reply(ctx, `✅ 工作空间已保存：\`${name}\` → ${cwd}`);
 }
 
 async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
@@ -176,6 +176,11 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, cwd);
   ctx.sessions.clear(ctx.scope);
+  // If this came from the workspace panel's button, dismiss the panel — it
+  // now shows stale info (the switched-to entry would be marked current).
+  if (ctx.fromCardAction) {
+    await recallMessage(ctx, ctx.msg.messageId);
+  }
   const undoHint =
     prevCwd && prevCwd !== cwd
       ? `\n\n想撤回？发 \`/ws undo\` 回到 \`${prevCwd}\``
@@ -192,7 +197,7 @@ async function handleWsRemove(name: string, ctx: CommandContext): Promise<void> 
     await reply(ctx, `未找到工作空间：\`${name}\``);
     return;
   }
-  await reply(ctx, `✓ 已删除工作空间：\`${name}\``);
+  await reply(ctx, `✅ 已删除工作空间：\`${name}\``);
 }
 
 async function handleWsUndo(ctx: CommandContext): Promise<void> {

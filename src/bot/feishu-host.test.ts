@@ -28,6 +28,7 @@ describe('createFeishuHostIntegration', () => {
       'feishu_get_message',
       'feishu_send_file',
       'feishu_recall_message',
+      'feishu_view_image',
     ]);
     expect(host.uriSchemes[0]?.definition.scheme).toBe('feishu');
 
@@ -125,5 +126,44 @@ describe('feishu_recall_message', () => {
     const host = createFeishuHostIntegration(channel, { scope: 's', chatId: 'chat-1', cwd: '/x' });
     const tool = host.tools.find((t) => t.definition.name === 'feishu_recall_message')!;
     await expect(tool.execute({})).rejects.toThrow('messageId is required');
+  });
+});
+
+describe('feishu_view_image', () => {
+  it('injects a local image into the active run', async () => {
+    const injected: unknown[] = [];
+    const activeRuns = {
+      has: () => true,
+      submitPrompt: async (...args: unknown[]) => { injected.push(args); return true; },
+    };
+    const host = createFeishuHostIntegration({} as unknown as LarkChannel, {
+      scope: 'chat-1', chatId: 'chat-1', cwd: '/x', activeRuns: activeRuns as never,
+    });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_view_image')!;
+    const tmp = '/tmp/view-image-test.png';
+    await import('node:fs/promises').then((fs) => fs.writeFile(tmp, Buffer.from([0x89, 0x50, 0x4e, 0x47])));
+    const res = await tool.execute({ path: tmp });
+    expect(JSON.stringify(res.result)).toContain('已注入图片');
+    expect(injected[0]).toEqual(['chat-1', 'follow_up', expect.stringContaining(tmp), [tmp]]);
+    await import('node:fs/promises').then((fs) => fs.rm(tmp, { force: true }));
+  });
+
+  it('rejects non-image files', async () => {
+    const host = createFeishuHostIntegration({} as unknown as LarkChannel, {
+      scope: 'chat-1', chatId: 'chat-1', cwd: '/x',
+    });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_view_image')!;
+    await expect(tool.execute({ path: '/tmp/x.txt' })).rejects.toThrow('not an image file');
+  });
+
+  it('fails when no active run exists', async () => {
+    const host = createFeishuHostIntegration({} as unknown as LarkChannel, {
+      scope: 'chat-1', chatId: 'chat-1', cwd: '/x', activeRuns: { has: () => false } as never,
+    });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_view_image')!;
+    const tmp = '/tmp/view-image-test.png';
+    await import('node:fs/promises').then((fs) => fs.writeFile(tmp, Buffer.from([0x89, 0x50, 0x4e, 0x47])));
+    await expect(tool.execute({ path: tmp })).rejects.toThrow('no active run');
+    await import('node:fs/promises').then((fs) => fs.rm(tmp, { force: true }));
   });
 });

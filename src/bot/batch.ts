@@ -142,6 +142,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     threadId,
     replyToMessageId: lastMsg.messageId,
     cwd,
+    activeRuns,
   });
 
   const runModel = getOmpModel(controls.cfg);
@@ -449,6 +450,7 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
     chatId,
     replyToMessageId: undefined,
     cwd,
+    activeRuns,
   });
 
   const run = agent.run({

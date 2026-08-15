@@ -2,6 +2,7 @@ import type { LarkChannel } from '@larksuiteoapi/node-sdk';
 import { readFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import type { AgentHostTool, AgentHostUriScheme } from '../agent/types';
+import type { ActiveRuns } from './active-runs';
 import { fetchQuotedContext } from './quote';
 
 export interface FeishuHostContext {
@@ -10,6 +11,8 @@ export interface FeishuHostContext {
   threadId?: string;
   replyToMessageId?: string;
   cwd: string;
+  /** Needed by feishu_view_image to inject a local image into the active run. */
+  activeRuns?: ActiveRuns;
 }
 
 export interface FeishuHostIntegration {
@@ -29,6 +32,7 @@ export function createFeishuHostIntegration(
       getMessageTool(channel),
       sendFileTool(channel, ctx),
       recallMessageTool(channel),
+      viewImageTool(channel, ctx),
     ],
     uriSchemes: [feishuUriScheme(channel, ctx)],
   };
@@ -195,6 +199,54 @@ function recallMessageTool(channel: LarkChannel): AgentHostTool {
         path: { message_id: messageId },
       });
       return { result: textResult(`recalled ${messageId}`) };
+    },
+  };
+}
+
+const IMAGE_MIME: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.tiff': 'image/tiff',
+  '.ico': 'image/x-icon',
+};
+
+/**
+ * Let the agent "look at" a local image by injecting it into the current
+ * run as a follow-up with the image attached (OMP turns the path into a
+ * base64 image payload). Only works while a run is active for this chat.
+ */
+function viewImageTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTool {
+  return {
+    definition: {
+      name: 'feishu_view_image',
+      label: 'View a local image',
+      description:
+        'Inject a local image file into the current conversation so the model can actually see it. Use this when you need to analyze a screenshot, diagram, or any image on disk (e.g. one you just generated or one the user sent that was cached). Only works during an active run.',
+      parameters: objectSchema({
+        path: { type: 'string', description: 'Local filesystem path to an image file.' },
+        note: { type: 'string', description: 'Optional instruction describing what to look for in the image.' },
+      }, ['path']),
+    },
+    async execute(args) {
+      const path = requiredString(args, 'path');
+      const note = optionalString(args, 'note');
+      const ext = extname(path).toLowerCase();
+      if (!IMAGE_MIME[ext]) {
+        throw new Error(`not an image file (supported: png/jpg/gif/webp/bmp/tiff/ico): ${path}`);
+      }
+      await readFile(path); // verify readable
+      const activeRuns = ctx.activeRuns;
+      if (!activeRuns || !activeRuns.has(ctx.scope)) {
+        throw new Error('no active run for this chat; cannot inject an image');
+      }
+      const message = note ? `查看图片 ${path}（注意：${note}）` : `查看图片 ${path}`;
+      const ok = await activeRuns.submitPrompt(ctx.scope, 'follow_up' as const, message, [path]);
+      if (!ok) throw new Error('failed to inject image into the active run');
+      return { result: textResult(`已注入图片 ${path} 供查看`) };
     },
   };
 }

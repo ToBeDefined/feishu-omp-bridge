@@ -298,15 +298,16 @@ export function resumeCard(
     '',
     '选择要恢复的历史会话。',
   ];
-  // Each session renders as a description block (id, cwd, summary) followed
-  // by a single "switch to this conversation" button.
+  // Each session renders as a structured description block (summary, id,
+  // cwd) followed by a single "switch to this conversation" button.
   const blocks: object[] = [];
   for (const s of sessions) {
-    const descParts = [`\`${s.sessionId}\``, `📁 ${shortCwd(s.cwd)}`];
     const desc = s.summary ? summarize(s.summary) : '';
-    const md = desc
-      ? `${desc}\n\n_${descParts.join(' · ')}_`
-      : descParts.join(' · ');
+    const md = [
+      desc ? `📝 ${desc}` : '📝 _（无描述）_',
+      `🆔 \`${s.sessionId}\``,
+      `📁 ${shortCwd(s.cwd)}`,
+    ].join('\n');
     blocks.push(
       { tag: 'markdown', content: md },
       {

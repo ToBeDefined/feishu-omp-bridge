@@ -76,9 +76,15 @@ describe('renderContext', () => {
     expect(out).toContain('跟随 OMP 默认');
   });
 
-  it('lists named workspaces', () => {
-    const out = renderContext(makeCtx());
-    expect(out).toContain('futu');
+  it('shows a quick-dir only when it matches the current cwd', () => {
+    const noMatch = renderContext(makeCtx()); // cwd /home/proj, futu → /home/futu
+    expect(noMatch).toContain('当前目录无快捷方式');
+    // Match cwd → futu → /home/proj
+    const matched = renderContext(
+      makeCtx({ workspaces: { cwdFor: () => '/home/proj', listNamed: () => ({ futu: '/home/proj' }) } as never }),
+    );
+    expect(matched).toContain('futu');
+    expect(matched).not.toContain('当前目录无快捷方式');
   });
 
   it('shows last conversation time', () => {

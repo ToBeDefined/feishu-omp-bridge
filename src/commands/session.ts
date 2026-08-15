@@ -283,7 +283,6 @@ export function renderContext(
   const model = getOmpModel(ctx.controls.cfg);
   const thinking = getOmpThinking(ctx.controls.cfg);
   const running = ctx.activeRuns.has(ctx.scope);
-  const named = Object.keys(ctx.workspaces.listNamed());
   const scopeLine =
     ctx.chatMode === 'topic' ? `\`${ctx.scope}\`（话题独立会话）` : `\`${ctx.scope}\``;
   const sessionLine = sess?.sessionId ? `\`${sess.sessionId}\`` : '（无，下条消息新建）';
@@ -298,8 +297,16 @@ export function renderContext(
       : globalMinutes > 0
         ? `全局 ${globalMinutes} 分钟`
         : '未启用（不自动中断任务）';
+  // Only surface a quick-dir when one of the named workspaces points at the
+  // current cwd; otherwise say none exists. Listing every named shortcut
+  // here is noise — /ws list is the place to manage them.
+  const matchingNames = Object.entries(ctx.workspaces.listNamed())
+    .filter(([, path]) => path === cwd)
+    .map(([name]) => `\`${name}\``);
   const wsLine =
-    named.length > 0 ? named.map((n) => `\`${n}\``).join(' ') : '（无）';
+    matchingNames.length > 0
+      ? matchingNames.join(' ')
+      : '（当前目录无快捷方式）';
   const lastMsgLine = summary.lastMessage
     ? `💬 **最后消息**: ${summarize(summary.lastMessage)}`
     : '';

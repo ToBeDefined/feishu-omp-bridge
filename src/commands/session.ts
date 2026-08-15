@@ -678,22 +678,55 @@ interface SearchHit {
   timestamp?: string;
 }
 
-/** Search the current session's history for messages matching `keyword`.
- * Returns matches newest-first, capped at `limit`. */
+interface SearchContext {
+  /** Messages in the window, oldest first. */
+  messages: SearchHit[];
+  /** Index into `messages` of the hit. */
+  hitIndex: number;
+}
+
+/** Extract the real conversational text for a message frame. Returns null
+ * for system-prompt / empty frames. */
+function messageText(msg: {
+  role?: string;
+  content?: Array<{ type?: string; text?: string }>;
+}): SearchHit | null {
+  if (!msg?.role) return null;
+  const textPart = (msg.content ?? [])
+    .filter((c) => c.type === 'text' && c.text)
+    .map((c) => c.text ?? '')
+    .join('');
+  if (!textPart) return null;
+  if (msg.role === 'assistant') {
+    return { role: 'assistant', content: textPart.trim() };
+  }
+  if (msg.role === 'user') {
+    const real = extractUserInput(textPart);
+    return real ? { role: 'user', content: real } : null;
+  }
+  return null;
+}
+
+/** Search the current session's history for messages matching `keyword`,
+ * returning conversation windows (context before/after each hit) rather than
+ * isolated lines. Windows are newest-first, capped at `limit`. */
 async function searchSession(
   sessionId: string,
   keyword: string,
-  limit = 8,
-): Promise<SearchHit[]> {
+  limit = 6,
+): Promise<SearchContext[]> {
   const needle = keyword.toLowerCase();
-  const hits: SearchHit[] = [];
+  const contexts: SearchContext[] = [];
   try {
     const entries = await readdir(paths.ompSessionsDir);
     for (const name of entries) {
       if (!name.endsWith('.jsonl')) continue;
       const text = await readFile(join(paths.ompSessionsDir, name), 'utf8');
-      // Only scan the file that belongs to this session.
       if (!text.includes(`"id":"${sessionId}"`)) continue;
+
+      // Rebuild the conversational message stream (real user inputs +
+      // assistant replies), oldest first.
+      const stream: SearchHit[] = [];
       for (const line of text.split('\n')) {
         if (!line.includes('"type":"message"')) continue;
         try {
@@ -701,70 +734,87 @@ async function searchSession(
             timestamp?: string;
             message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
           };
-          const msg = frame.message;
-          if (!msg?.role) continue;
-          const textPart = (msg.content ?? [])
-            .filter((c) => c.type === 'text' && c.text)
-            .map((c) => c.text ?? '')
-            .join('');
-          if (!textPart) continue;
-          if (msg.role === 'assistant') {
-            if (textPart.toLowerCase().includes(needle)) {
-              hits.push({ role: 'assistant', content: textPart.trim(), timestamp: frame.timestamp });
-            }
-          } else if (msg.role === 'user') {
-            const real = extractUserInput(textPart);
-            if (real && real.toLowerCase().includes(needle)) {
-              hits.push({ role: 'user', content: real, timestamp: frame.timestamp });
-            }
+          const hit = messageText(frame.message as { role?: string; content?: Array<{ type?: string; text?: string }> });
+          if (hit) {
+            hit.timestamp = frame.timestamp;
+            stream.push(hit);
           }
         } catch {
           /* skip malformed */
         }
       }
-      break; // found the session file
+
+      // Find every stream index matching the keyword, and keep a window
+      // around it (2 before, 2 after).
+      for (let i = 0; i < stream.length; i++) {
+        if (!stream[i]!.content.toLowerCase().includes(needle)) continue;
+        const start = Math.max(0, i - 2);
+        const end = Math.min(stream.length, i + 3);
+        contexts.push({
+          messages: stream.slice(start, end).map((m) => ({ ...m, timestamp: m.timestamp })),
+          hitIndex: i - start,
+        });
+      }
+      break;
     }
   } catch {
-    /* fall through to empty */
+    /* fall through */
   }
-  hits.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''));
-  return hits.slice(0, limit);
+  contexts.sort((a, b) =>
+    (b.messages[b.hitIndex]?.timestamp ?? '').localeCompare(a.messages[a.hitIndex]?.timestamp ?? ''),
+  );
+  return contexts.slice(0, limit);
 }
 
 /** In-memory cache of recent search results, keyed by a short query id so
  * card buttons can expand a specific hit without re-scanning the session. */
-const searchCache = new Map<string, SearchHit[]>();
+const searchCache = new Map<string, SearchContext[]>();
 const SEARCH_CACHE_MAX = 20;
 
 async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   const [sub, ...rest] = args.trim().split(/\s+/);
 
+  // Resume the conversation this search belongs to — continue chatting in
+  // that session.
+  if (sub === 'resume') {
+    const sess = ctx.sessions.getRaw(ctx.scope);
+    if (!sess?.sessionId) {
+      await reply(ctx, '当前没有可继续的会话。');
+      return;
+    }
+    await applyResume(ctx, {
+      sessionId: sess.sessionId,
+      cwd: sess.cwd ?? homedir(),
+      timestamp: '',
+    });
+    return;
+  }
+
   // Expand a specific hit from a previous /search card.
   if (sub === 'show') {
     const queryId = rest[0] ?? '';
     const idx = Number.parseInt(rest[1] ?? '', 10);
-    const hits = searchCache.get(queryId);
-    if (!hits) {
+    const contexts = searchCache.get(queryId);
+    if (!contexts) {
       await reply(ctx, '搜索结果已过期，请重新 `/search`。');
       return;
     }
-    const hit = hits[idx - 1];
-    if (!hit) {
+    const context = contexts[idx - 1];
+    if (!context) {
       await reply(ctx, `无效的序号 \`${idx}\`。`);
       return;
     }
-    const full = hit.content.trim();
-    const icon = hit.role === 'user' ? '🧑 **用户**' : '🤖 **助手**';
+    const full = renderSearchContext(context);
     const sessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
     if (ctx.fromCardAction) {
       const msgId = ctx.msg.messageId;
       void (async () => {
         await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-        await updateManagedCard(ctx.channel, msgId, searchDetailCard(icon, full, sessionId)).catch(() => {});
+        await updateManagedCard(ctx.channel, msgId, searchDetailCard(sessionId, full)).catch(() => {});
         forgetManagedCard(msgId);
       })();
     } else {
-      await reply(ctx, `${icon}\n\n${sessionId ? `🆔 session: \`${sessionId}\`\n\n` : ''}${full}`);
+      await reply(ctx, `${sessionId ? `🆔 session: \`${sessionId}\`\n\n` : ''}${full}`);
     }
     return;
   }
@@ -779,14 +829,14 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     await reply(ctx, '当前还没有会话历史可搜索。');
     return;
   }
-  const hits = await searchSession(sess.sessionId, keyword);
-  if (hits.length === 0) {
+  const contexts = await searchSession(sess.sessionId, keyword);
+  if (contexts.length === 0) {
     await reply(ctx, `未找到包含 \`${keyword}\` 的消息。`);
     return;
   }
-  // Cache hits for expand, keyed by a short id.
+  // Cache contexts for expand, keyed by a short id.
   const queryId = `s${Date.now().toString(36)}`;
-  searchCache.set(queryId, hits);
+  searchCache.set(queryId, contexts);
   if (searchCache.size > SEARCH_CACHE_MAX) {
     const oldest = searchCache.keys().next().value;
     if (oldest) searchCache.delete(oldest);
@@ -795,27 +845,43 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   await sendManagedCard(
     ctx.channel,
     ctx.msg.chatId,
-    searchResultsCard(keyword, hits, queryId),
+    searchResultsCard(keyword, contexts, queryId),
   );
 }
 
-/** Card listing search results, each with an expand button. */
-function searchResultsCard(keyword: string, hits: SearchHit[], queryId: string): object {
-  const header = `🔍 搜索 \`${keyword}\`：找到 ${hits.length} 条`;
-  const more = hits.length >= 8 ? '\n\n_（仅显示最近 8 条，可重复搜索更多）_' : '';
+/** Render one context window as a compact conversation snippet. The hit line
+ * is prefixed with a marker. */
+function renderSearchContext(context: SearchContext): string {
+  return context.messages
+    .map((m, i) => {
+      const icon = m.role === 'user' ? '🧑' : '🤖';
+      const marker = i === context.hitIndex ? ' 📍' : '';
+      const snippet = i === context.hitIndex ? summarize(m.content, 120) : summarize(m.content, 80);
+      return `${icon}${marker} ${snippet}`;
+    })
+    .join('\n');
+}
+
+/** Card listing search result windows, each expandable. */
+function searchResultsCard(keyword: string, contexts: SearchContext[], queryId: string): object {
+  const header = `🔍 搜索 \`${keyword}\`：找到 ${contexts.length} 个片段`;
+  const more = contexts.length >= 6 ? '\n\n_（仅显示最近 6 个片段）_' : '';
   const blocks: object[] = [];
-  hits.forEach((h, i) => {
-    const icon = h.role === 'user' ? '🧑' : '🤖';
+  contexts.forEach((ctx, i) => {
+    const preview = renderSearchContext(ctx);
     blocks.push(
-      {
-        tag: 'markdown',
-        content: `${icon} **${i + 1}** ${summarize(h.content, 80)}`,
-      },
+      { tag: 'markdown', content: preview },
       {
         tag: 'button',
         text: { tag: 'plain_text', content: '查看详情' },
         type: 'default',
         value: { cmd: 'search.show', arg: `${queryId} ${i + 1}` },
+      },
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '继续对话' },
+        type: 'primary',
+        value: { cmd: 'search.resume' },
       },
     );
   });
@@ -832,9 +898,9 @@ function searchResultsCard(keyword: string, hits: SearchHit[], queryId: string):
   };
 }
 
-/** Card showing a single expanded search hit. */
-function searchDetailCard(roleLabel: string, content: string, sessionId?: string): object {
-  const head = sessionId ? `${roleLabel}\n🆔 session: \`${sessionId}\`` : roleLabel;
+/** Card showing a single expanded search window. */
+function searchDetailCard(sessionId: string | undefined, content: string): object {
+  const head = sessionId ? `🆔 session: \`${sessionId}\`` : '搜索详情';
   return {
     schema: '2.0',
     config: { summary: { content: '搜索详情' } },
@@ -843,6 +909,13 @@ function searchDetailCard(roleLabel: string, content: string, sessionId?: string
         { tag: 'markdown', content: head },
         { tag: 'hr' },
         { tag: 'markdown', content },
+        { tag: 'hr' },
+        {
+          tag: 'button',
+          text: { tag: 'plain_text', content: '继续对话' },
+          type: 'primary',
+          value: { cmd: 'search.resume' },
+        },
       ],
     },
   };

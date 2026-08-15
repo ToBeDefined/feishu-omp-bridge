@@ -67,6 +67,12 @@ export function modelProviderCard(
     type: current ? 'default' : 'primary',
     value: { cmd: 'model.reset', arg: '' },
   });
+  buttons.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: '取消' },
+    type: 'default',
+    value: { cmd: 'model.cancel', arg: '' },
+  });
   return {
     schema: '2.0',
     config: { summary: { content: '切换模型' } },

@@ -731,7 +731,43 @@ async function searchSession(
   return hits.slice(0, limit);
 }
 
+/** In-memory cache of recent search results, keyed by a short query id so
+ * card buttons can expand a specific hit without re-scanning the session. */
+const searchCache = new Map<string, SearchHit[]>();
+const SEARCH_CACHE_MAX = 20;
+
 async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
+  const [sub, ...rest] = args.trim().split(/\s+/);
+
+  // Expand a specific hit from a previous /search card.
+  if (sub === 'show') {
+    const queryId = rest[0] ?? '';
+    const idx = Number.parseInt(rest[1] ?? '', 10);
+    const hits = searchCache.get(queryId);
+    if (!hits) {
+      await reply(ctx, '搜索结果已过期，请重新 `/search`。');
+      return;
+    }
+    const hit = hits[idx - 1];
+    if (!hit) {
+      await reply(ctx, `无效的序号 \`${idx}\`。`);
+      return;
+    }
+    const full = hit.content.trim();
+    const icon = hit.role === 'user' ? '🧑 **用户**' : '🤖 **助手**';
+    if (ctx.fromCardAction) {
+      const msgId = ctx.msg.messageId;
+      void (async () => {
+        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+        await updateManagedCard(ctx.channel, msgId, searchDetailCard(icon, full)).catch(() => {});
+        forgetManagedCard(msgId);
+      })();
+    } else {
+      await reply(ctx, `${icon}\n\n${full}`);
+    }
+    return;
+  }
+
   const keyword = args.trim();
   if (!keyword) {
     await reply(ctx, '用法：`/search <关键词>` — 在当前会话历史中检索。');
@@ -747,11 +783,65 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     await reply(ctx, `未找到包含 \`${keyword}\` 的消息。`);
     return;
   }
-  const lines = hits.map((h, i) => {
+  // Cache hits for expand, keyed by a short id.
+  const queryId = `s${Date.now().toString(36)}`;
+  searchCache.set(queryId, hits);
+  if (searchCache.size > SEARCH_CACHE_MAX) {
+    const oldest = searchCache.keys().next().value;
+    if (oldest) searchCache.delete(oldest);
+  }
+  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+  await sendManagedCard(
+    ctx.channel,
+    ctx.msg.chatId,
+    searchResultsCard(keyword, hits, queryId),
+  );
+}
+
+/** Card listing search results, each with an expand button. */
+function searchResultsCard(keyword: string, hits: SearchHit[], queryId: string): object {
+  const header = `🔍 搜索 \`${keyword}\`：找到 ${hits.length} 条`;
+  const more = hits.length >= 8 ? '\n\n_（仅显示最近 8 条，可重复搜索更多）_' : '';
+  const blocks: object[] = [];
+  hits.forEach((h, i) => {
     const icon = h.role === 'user' ? '🧑' : '🤖';
-    const snippet = summarize(h.content, 80);
-    return `${icon} ${i + 1}. ${snippet}`;
+    blocks.push(
+      {
+        tag: 'markdown',
+        content: `${icon} **${i + 1}** ${summarize(h.content, 80)}`,
+      },
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: `展开 ${i + 1}` },
+        type: 'default',
+        value: { cmd: 'search.show', arg: `${queryId} ${i + 1}` },
+      },
+    );
   });
-  const more = hits.length >= 8 ? '\n\n（结果较多，仅显示最近 8 条）' : '';
-  await reply(ctx, `🔍 搜索 \`${keyword}\`：找到 ${hits.length} 条\n\n${lines.join('\n')}${more}`);
+  return {
+    schema: '2.0',
+    config: { summary: { content: '搜索结果' } },
+    body: {
+      elements: [
+        { tag: 'markdown', content: header + more },
+        { tag: 'hr' },
+        ...blocks,
+      ],
+    },
+  };
+}
+
+/** Card showing a single expanded search hit. */
+function searchDetailCard(roleLabel: string, content: string): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '搜索详情' } },
+    body: {
+      elements: [
+        { tag: 'markdown', content: roleLabel },
+        { tag: 'hr' },
+        { tag: 'markdown', content },
+      ],
+    },
+  };
 }

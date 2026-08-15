@@ -789,11 +789,11 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
             const idx = Number.parseInt(idxStr, 10);
             const context = contexts?.[idx - 1];
             const sessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
-            const full = context ? renderSearchContext(context) : '';
+            const full = context ? renderSearchContext(context, true) : '';
             await updateManagedCard(
               ctx.channel,
               msgId,
-              searchDetailCard(sessionId, full, undefined, true),
+              searchDetailCard(sessionId, full, undefined, idx, true),
             );
           } else {
             // Results list card: strip buttons, keep the list.
@@ -842,7 +842,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       await reply(ctx, `无效的序号 \`${idx}\`。`);
       return;
     }
-    const full = renderSearchContext(context);
+    const full = renderSearchContext(context, true);
     const sessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
     if (ctx.fromCardAction) {
       // Post the detail as a NEW message; the results list card stays in
@@ -851,7 +851,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       await sendManagedCard(
         ctx.channel,
         ctx.msg.chatId,
-        searchDetailCard(sessionId, full, `${queryId} ${idx}`),
+        searchDetailCard(sessionId, full, `${queryId} ${idx}`, idx),
       ).catch(() => {});
     } else {
       await reply(ctx, `${sessionId ? `🆔 session: \`${sessionId}\`\n\n` : ''}${full}`);
@@ -891,12 +891,14 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
 
 /** Render one context window as a compact conversation snippet. The hit line
  * is prefixed with a marker. */
-function renderSearchContext(context: SearchContext): string {
+function renderSearchContext(context: SearchContext, full = false): string {
   return context.messages
     .map((m, i) => {
       const icon = m.role === 'user' ? '🧑' : '🤖';
       const marker = i === context.hitIndex ? ' 📍' : '';
-      const snippet = i === context.hitIndex ? summarize(m.content, 120) : summarize(m.content, 80);
+      // Full mode shows much more of each message; hit line gets the most.
+      const max = full ? (i === context.hitIndex ? 500 : 200) : i === context.hitIndex ? 120 : 80;
+      const snippet = summarize(m.content, max);
       return `${icon}${marker} ${snippet}`;
     })
     .join('\n');
@@ -984,9 +986,11 @@ function searchDetailCard(
   sessionId: string | undefined,
   content: string,
   queryRef?: string,
+  idx?: number,
   done = false,
 ): object {
-  const head = done ? '✅ 搜索详情' : sessionId ? `🆔 session: \`${sessionId}\`` : '搜索详情';
+  const label = idx !== undefined ? `搜索结果 #${idx}` : '搜索详情';
+  const head = done ? '✅ 搜索详情' : sessionId ? `🆔 ${label} · session: \`${sessionId}\`` : label;
   const elements: object[] = [
     { tag: 'markdown', content: head },
     { tag: 'hr' },

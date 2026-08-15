@@ -465,9 +465,10 @@ async function handleModel(args: string, ctx: CommandContext): Promise<void> {
 }
 
 async function showModelProviders(ctx: CommandContext, current: string | undefined): Promise<void> {
-  const [models, recents] = await Promise.all([
+  const [models, recents, commons] = await Promise.all([
     listOmpModels(ctx.controls.cfg),
     recentOmpModels(ctx.controls.cfg),
+    commonOmpModels(ctx.controls.cfg),
   ]);
   const byProvider = new Map<string, number>();
   for (const m of models) {
@@ -478,7 +479,7 @@ async function showModelProviders(ctx: CommandContext, current: string | undefin
   await sendManagedCard(
     ctx.channel,
     ctx.msg.chatId,
-    modelProviderCard(current, providers, recents),
+    modelProviderCard(current, providers, recents, commons),
   );
 }
 
@@ -703,6 +704,34 @@ async function recentOmpModels(cfg: AppConfig): Promise<string[]> {
   }
   found.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''));
   return found.slice(0, 5).map((f) => f.model ?? '');
+}
+
+/** Read the configured modelRoles (per-role models in ~/.omp config) and
+ * return the distinct model selectors, newest-first as authored. The
+ * `default` role often carries a `:thinking` suffix, which is stripped. */
+async function commonOmpModels(cfg: AppConfig): Promise<string[]> {
+  const omp = getOmpBinary(cfg);
+  try {
+    const { stdout } = await execFileAsync(omp, ['config', 'get', 'modelRoles', '--json'], {
+      encoding: 'utf8',
+      env: { ...process.env },
+    });
+    const parsed = JSON.parse(stdout) as { value?: Record<string, string> };
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const role of Object.keys(parsed.value ?? {})) {
+      const raw = parsed.value?.[role] ?? '';
+      const sel = raw.split(':')[0] ?? '';
+      if (!sel || !sel.includes('/')) continue;
+      if (seen.has(sel)) continue;
+      seen.add(sel);
+      out.push(sel);
+    }
+    return out;
+  } catch (err) {
+    log.warn('command', 'common-models-failed', { err: String(err) });
+    return [];
+  }
 }
 
 async function listOmpModels(cfg: AppConfig): Promise<OmpModelEntry[]> {

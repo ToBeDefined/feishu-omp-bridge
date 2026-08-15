@@ -22,17 +22,34 @@ function modelRecentButtons(current: string | undefined, recents: string[]): obj
   }));
 }
 
+/** Common (modelRoles) model buttons, shown as quick-set. */
+function modelCommonButtons(current: string | undefined, commons: string[]): object[] {
+  const items = commons.filter((m) => m !== current);
+  return items.map((m) => ({
+    tag: 'button',
+    text: { tag: 'plain_text', content: m },
+    type: 'default',
+    value: { cmd: 'model.use', arg: m },
+  }));
+}
+
 /** Provider chooser card for `/model`. */
 export function modelProviderCard(
   current: string | undefined,
   providers: ModelProviderInfo[],
   recents: string[] = [],
+  commons: string[] = [],
 ): object {
   const lines = [
     '🎛️ **切换模型**',
     '',
     `当前:` + (current ? `\`${current}\`` : '_跟随 OMP 默认_'),
   ];
+  const commonButtons = modelCommonButtons(current, commons);
+  const commonBlock: object[] =
+    commonButtons.length > 0
+      ? [{ tag: 'markdown', content: '\n**常用**' }, ...commonButtons, { tag: 'hr' }]
+      : [];
   const recentButtons = modelRecentButtons(current, recents);
   const recentBlock: object[] =
     recentButtons.length > 0
@@ -56,6 +73,7 @@ export function modelProviderCard(
     body: {
       elements: [
         { tag: 'markdown', content: lines.join('\n') },
+        ...commonBlock,
         ...recentBlock,
         { tag: 'markdown', content: '\n**选择提供方**' },
         ...buttons,

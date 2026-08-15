@@ -6,18 +6,11 @@ import { paths } from '../../config/paths';
 import type { CommandContext } from '../index';
 import { handleRename } from './rename';
 
-const { reply, loadSessionSummary } = vi.hoisted(() => ({
-  reply: vi.fn(async () => {}),
-  loadSessionSummary: vi.fn(async () => ({ lastMessage: '', lastReply: '' })),
-}));
+const { reply } = vi.hoisted(() => ({ reply: vi.fn(async () => {}) }));
 
 vi.mock('../shared', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../shared')>();
   return { ...actual, reply };
-});
-vi.mock('./context', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./context')>();
-  return { ...actual, loadSessionSummary };
 });
 
 const origSessionsDir = paths.ompSessionsDir;
@@ -58,9 +51,22 @@ function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
   } as unknown as CommandContext;
 }
 
+/** Write a session file for s1 with a real user message (and optional extra
+ * marked lines). `loadRecentUserMessages` reads this. */
+async function writeSessionFile(extraLines: string[] = []): Promise<string> {
+  const file = join(tmp, 'sess.jsonl');
+  const lines = [
+    JSON.stringify({ type: 'session', id: 's1', cwd: '/repo', timestamp: 't' }),
+    JSON.stringify({ type: 'message', timestamp: 't1', message: { role: 'user', content: [{ type: 'text', text: '帮我改搜索逻辑' }] } }),
+    JSON.stringify({ type: 'message', timestamp: 't2', message: { role: 'assistant', content: [{ type: 'text', text: '已改好' }] } }),
+    ...extraLines,
+  ];
+  await writeFile(file, lines.join('\n') + '\n', 'utf8');
+  return file;
+}
+
 beforeEach(async () => {
   reply.mockClear();
-  loadSessionSummary.mockResolvedValue({ lastMessage: '帮我改一下搜索逻辑', lastReply: '已改好跨会话搜索' });
   tmp = await mkdtemp(join(tmpdir(), 'rename-test-'));
   paths.ompSessionsDir = tmp;
 });
@@ -99,7 +105,8 @@ describe('/rename command', () => {
     expect((ctx.sessions.getRaw('oc_1') as { title?: string }).title).toBeUndefined();
   });
 
-  it('generates a title in the current session and caps it at 20 chars', async () => {
+  it('generates a title from user messages only, in the current session', async () => {
+    await writeSessionFile();
     const longTitle = '这是一条特别长的自动生成标题测试内容用来验证截断逻辑';
     const agent = agentYielding(longTitle);
     const ctx = makeCtx({ agent: agent as never });
@@ -108,30 +115,29 @@ describe('/rename command', () => {
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已自动生成标题'));
     const title = (ctx.sessions.getRaw('oc_1') as { title?: string }).title;
     expect(Array.from(title ?? '')).toHaveLength(20);
-    // Generates by resuming the current session (no new session spawned).
-    const runArgs = agent.run.mock.calls[0]?.[0] as { sessionId?: string; sessionDir?: string };
+    // Prompt feeds the user's messages only (no assistant reply), and the
+    // run resumes the current session.
+    const runArgs = agent.run.mock.calls[0]?.[0] as { prompt: string; sessionId?: string };
     expect(runArgs?.sessionId).toBe('s1');
-    expect('sessionDir' in (runArgs ?? {})).toBe(false);
+    expect(runArgs?.prompt).toContain('帮我改搜索逻辑');
+    expect(runArgs?.prompt).not.toContain('已改好');
   });
 
   it('strips the marked generation prompt from the session history', async () => {
-    // Session file for s1 containing a real message and a marked prompt line.
-    const file = join(tmp, 'sess.jsonl');
-    await writeFile(file, [
-      JSON.stringify({ type: 'session', id: 's1', cwd: '/repo', timestamp: 't' }),
-      JSON.stringify({ type: 'message', timestamp: 't1', message: { role: 'user', content: [{ type: 'text', text: '真实问题' }] } }),
-      JSON.stringify({ type: 'message', timestamp: 't2', message: { role: 'user', content: [{ type: 'text', text: '根据以下最近的对话 <rename-auto-title> 生成标题' }] } }),
-    ].join('\n') + '\n', 'utf8');
+    const file = await writeSessionFile([
+      JSON.stringify({ type: 'message', timestamp: 't3', message: { role: 'user', content: [{ type: 'text', text: '根据最近的对话 <rename-auto-title> 生成标题' }] } }),
+    ]);
 
     const ctx = makeCtx({ agent: agentYielding('好标题') as never });
     await handleRename('auto', ctx);
 
     const after = await readFile(file, 'utf8');
     expect(after).not.toContain('<rename-auto-title>');
-    expect(after).toContain('真实问题');
+    expect(after).toContain('帮我改搜索逻辑');
   });
 
   it('fails gracefully when the model produces no text', async () => {
+    await writeSessionFile();
     const ctx = makeCtx({ agent: agentYielding('   ') as never });
     await handleRename('auto', ctx);
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('无法生成标题'));

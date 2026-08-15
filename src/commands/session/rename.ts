@@ -5,7 +5,7 @@ import { paths } from '../../config/paths';
 import { getAgentStopGraceMs, getOmpModel } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
-import { loadSessionSummary } from './context';
+import { extractUserInput } from './context';
 import { summarize } from './shared';
 
 export const renameHandlers: Record<string, Handler> = {
@@ -59,9 +59,10 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
   await reply(ctx, `✅ 已设置当前会话标题：\`${title}\``);
 }
 
-/** Ask the agent to title the session from its latest exchange. Returns a
- * trimmed title, or null if there's nothing to title or the model produced
- * no usable text.
+/** Ask the agent to title the session from the user's recent messages. A
+ * title reflects what the user was working on, so only their messages are
+ * sent — assistant replies add noise and tokens. Returns a trimmed title, or
+ * null if there's nothing to title or the model produced no usable text.
  *
  * Generates in the current session (resume) so no extra session is spawned,
  * then strips the marked generation-prompt user message from the history so
@@ -70,19 +71,18 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
   const sess = ctx.sessions.getRaw(ctx.scope);
   if (!sess?.sessionId) return null;
 
-  const { lastMessage, lastReply } = await loadSessionSummary(sess.sessionId);
-  const userText = summarize(lastMessage, 400);
-  const replyText = lastReply ? summarize(lastReply, 400) : '';
-  if (!userText && !replyText) return null;
+  const messages = await loadRecentUserMessages(sess.sessionId);
+  if (messages.length === 0) return null;
+  const list = messages.map((m, i) => `${i + 1}. ${summarize(m, 200)}`).join('\n');
 
   const prompt = [
-    '根据以下最近的对话，给这个会话起一个简洁的中文标题。',
+    '根据这个会话中用户提出的问题和需求，给会话起一个简洁的中文标题。',
     `标题要求：不超过 ${AUTO_TITLE_MAX} 个字符，一句话概括对话主题。`,
     '只输出标题本身，不要引号、标点、编号或任何解释。',
     `（内部标记 ${RENAME_AUTO_MARKER}，请勿输出）`,
     '',
-    `用户：${userText}`,
-    replyText ? `助手：${replyText}` : '',
+    '用户消息：',
+    list,
   ]
     .filter(Boolean)
     .join('\n');
@@ -108,9 +108,48 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
       /* stop errors are non-fatal */
     });
     // Remove the marked generation prompt from the session history so it
-    // never becomes the "latest user message" and skews later titles.
+    // never becomes one of the "recent user messages" and skews later titles.
     await removeGeneratedPrompt(sess.sessionId);
   }
+}
+
+/** Collect the most recent real user messages for a session (newest last),
+ * skipping bridge-wrapper / system-prompt frames. Capped at `maxCount`. */
+async function loadRecentUserMessages(
+  sessionId: string,
+  maxCount = 10,
+): Promise<string[]> {
+  const all: string[] = [];
+  try {
+    const entries = await readdir(paths.ompSessionsDir);
+    for (const name of entries) {
+      if (!name.endsWith('.jsonl')) continue;
+      const text = await readFile(join(paths.ompSessionsDir, name), 'utf8');
+      if (!text.includes(`"id":"${sessionId}"`)) continue;
+      for (const line of text.split('\n')) {
+        if (!line.includes('"type":"message"')) continue;
+        try {
+          const frame = JSON.parse(line) as {
+            message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
+          };
+          const m = frame.message;
+          if (m?.role !== 'user') continue;
+          const textPart = (m.content ?? [])
+            .filter((c) => c.type === 'text' && c.text)
+            .map((c) => c.text ?? '')
+            .join('');
+          const real = extractUserInput(textPart);
+          if (real) all.push(real);
+        } catch {
+          /* skip malformed */
+        }
+      }
+      break;
+    }
+  } catch {
+    /* fall through to empty */
+  }
+  return all.slice(-maxCount);
 }
 
 /** Drop any message line carrying the rename marker from the session file

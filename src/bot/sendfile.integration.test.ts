@@ -1,7 +1,11 @@
 // Real-network integration test for the file-send path (the same code path
 // feishu_send_file uses). Uploads a temp file to the configured Feishu app
-// and sends it to the test chat. Requires live credentials — skipped unless
-// RUN_INTEGRATION=1.
+// and sends it to the test chat.
+//
+// Env required (test is skipped unless all are present):
+//   RUN_INTEGRATION=1     run the real-network test
+//   SEND_TO_CHAT=<chatId> chat to send the file to (must be a chat the bot
+//                         can address — e.g. a group it belongs to)
 import { readFile, writeFile, rm } from 'node:fs/promises';
 import { createLarkChannel, Domain, LoggerLevel } from '@larksuiteoapi/node-sdk';
 import { describe, expect, it } from 'vitest';
@@ -33,10 +37,12 @@ describe('feishu_send_file real integration', () => {
         data: { file_type: 'stream', file_name: 'sendfile-integration.txt', file: buffer },
       });
       expect(up?.file_key).toBeTruthy();
-      // Use a known chat: the first admin's p2p is not addressable here, so
-      // this sends to the bridge's default chat via config-less approach.
-      // For a real test, set SEND_TO_CHAT env.
-      const target = process.env.SEND_TO_CHAT ?? 'oc_95f09e52e2a7b9215fbc709eba3aa8bf';
+      const target = process.env.SEND_TO_CHAT;
+      if (!target) {
+        throw new Error(
+          'SEND_TO_CHAT env is required to run the file-send integration test',
+        );
+      }
       await channel.rawClient.im.v1.message.create({
         params: { receive_id_type: 'chat_id' },
         data: { receive_id: target, msg_type: 'file', content: JSON.stringify({ file_key: up!.file_key }) },

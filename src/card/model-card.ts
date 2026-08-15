@@ -298,15 +298,26 @@ export function resumeCard(
     '',
     '选择要恢复的历史会话。',
   ];
-  const buttons = sessions.map((s) => {
-    const label = s.summary ? summarize(s.summary) : shortCwd(s.cwd);
-    return {
-      tag: 'button',
-      text: { tag: 'plain_text', content: `${s.sessionId.slice(0, 8)}… ${label}` },
-      type: 'default',
-      value: { cmd: 'resume.use', arg: s.sessionId },
-    };
-  });
+  // Each session renders as a description block (id, cwd, summary) followed
+  // by a single "switch to this conversation" button.
+  const blocks: object[] = [];
+  for (const s of sessions) {
+    const descParts = [`\`${s.sessionId}\``, `📁 ${shortCwd(s.cwd)}`];
+    const desc = s.summary ? summarize(s.summary) : '';
+    const md = desc
+      ? `${desc}\n\n_${descParts.join(' · ')}_`
+      : descParts.join(' · ');
+    blocks.push(
+      { tag: 'markdown', content: md },
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '切换到该会话' },
+        type: 'default',
+        value: { cmd: 'resume.use', arg: s.sessionId },
+      },
+      { tag: 'hr' },
+    );
+  }
   const remaining = Math.max(0, total - (offset + sessions.length));
   const footer: object[] = [];
   if (remaining > 0) {
@@ -330,8 +341,8 @@ export function resumeCard(
       elements: [
         { tag: 'markdown', content: lines.join('\n') },
         { tag: 'hr' },
-        ...buttons,
-        ...(footer.length > 0 ? [{ tag: 'hr' }, ...footer] : []),
+        ...blocks,
+        ...(footer.length > 0 ? [...footer] : []),
       ],
     },
   };

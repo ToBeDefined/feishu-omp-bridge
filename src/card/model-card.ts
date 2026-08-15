@@ -23,13 +23,13 @@ export function modelProviderCard(
     '',
     '选择提供方,再选具体模型。',
   ];
-  const actions = providers.map((p) => ({
+  const buttons = providers.map((p) => ({
     tag: 'button',
     text: { tag: 'plain_text', content: `${p.provider} (${p.count})` },
     type: p.provider.toLowerCase() === (current?.split('/')[0] ?? '') ? 'primary' : 'default',
     value: { cmd: 'model.provider', arg: p.provider },
   }));
-  actions.push({
+  buttons.push({
     tag: 'button',
     text: { tag: 'plain_text', content: '回退默认' },
     type: current ? 'default' : 'primary',
@@ -38,13 +38,7 @@ export function modelProviderCard(
   return {
     schema: '2.0',
     config: { summary: { content: '切换模型' } },
-    body: {
-      elements: [
-        { tag: 'markdown', content: lines.join('\n') },
-        { tag: 'hr' },
-        { tag: 'action', actions },
-      ],
-    },
+    body: { elements: [{ tag: 'markdown', content: lines.join('\n') }, { tag: 'hr' }, ...buttons] },
   };
 }
 

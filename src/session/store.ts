@@ -10,6 +10,9 @@ export interface SessionEntry {
   /** Pinned cwd for the resumable session. Absent for the same reason. */
   cwd?: string;
   updatedAt: number;
+  /** When this session was first created (ms epoch). Persisted across runs
+   * so /context can show "started at". Absent on pre-migration entries. */
+  createdAt?: number;
   /** Per-scope idle-timeout override (minutes). 0 = explicitly off for this
    * scope, undefined = follow global default. /new clears the whole entry,
    * so this resets to "follow global" when the user starts a new session. */
@@ -43,12 +46,15 @@ export class SessionStore {
         const cwd = typeof entry.cwd === 'string' ? entry.cwd : undefined;
         const idleTimeoutMinutes =
           typeof entry.idleTimeoutMinutes === 'number' ? entry.idleTimeoutMinutes : undefined;
+        const createdAt =
+          typeof entry.createdAt === 'number' ? entry.createdAt : undefined;
         const hasSession = sessionId !== undefined && cwd !== undefined;
         if (!hasSession && idleTimeoutMinutes === undefined) continue;
         this.data[chatId] = {
           ...(sessionId !== undefined ? { sessionId } : {}),
           ...(cwd !== undefined ? { cwd } : {}),
           updatedAt: entry.updatedAt,
+          ...(createdAt !== undefined ? { createdAt } : {}),
           ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}),
         };
       }
@@ -87,6 +93,9 @@ export class SessionStore {
       sessionId,
       cwd,
       updatedAt: Date.now(),
+      // First creation time survives re-runs of the same session so
+      // /context can report when the conversation started.
+      ...(prev?.createdAt !== undefined ? { createdAt: prev.createdAt } : { createdAt: Date.now() }),
       ...(prev?.idleTimeoutMinutes !== undefined
         ? { idleTimeoutMinutes: prev.idleTimeoutMinutes }
         : {}),

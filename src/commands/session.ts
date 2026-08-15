@@ -245,6 +245,24 @@ async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
   await reply(ctx, `✅ 当前 session 探活已设为 ${n} 分钟。`);
 }
 
+function formatLastSeen(ts: number | undefined): string {
+  if (!ts) return '（无，新会话）';
+  const ms = Date.now() - ts;
+  if (ms < 60_000) return '刚刚';
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)} 分钟前`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)} 小时前`;
+  return `${Math.floor(ms / 86_400_000)} 天前`;
+}
+
+function formatClock(ts: number | undefined): string {
+  if (!ts) return '（无，新会话）';
+  const d = new Date(ts);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return sameDay ? `今天 ${hhmm}` : `${d.getMonth() + 1}月${d.getDate()}日 ${hhmm}`;
+}
+
 export function renderContext(ctx: CommandContext): string {
   const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
   const sess = ctx.sessions.getRaw(ctx.scope);
@@ -275,6 +293,8 @@ export function renderContext(ctx: CommandContext): string {
     `💬 **对话标识**: ${scopeLine}`,
     `📁 **工作目录**: \`${cwd}\``,
     `🧠 **对话记忆**: ${sessionLine}`,
+    `🕒 **开始对话**: ${formatClock(sess?.createdAt)}`,
+    `🕘 **最后对话**: ${formatLastSeen(sess?.updatedAt)}`,
     `⚙️ **任务状态**: ${runningLine}`,
     `🤖 **当前模型**: ${modelLine}`,
     `💭 **思考强度**: ${thinkingLine}`,

@@ -80,4 +80,36 @@ describe('renderContext', () => {
     const out = renderContext(makeCtx());
     expect(out).toContain('futu');
   });
+
+  it('shows last conversation time', () => {
+    const recent = renderContext(makeCtx());
+    expect(recent).toContain('最后对话');
+    const fresh = renderContext(
+      makeCtx({
+        sessions: {
+          getRaw: () => ({ sessionId: '019f0000-0000-7000-0000-000000000000', cwd: '/x', updatedAt: Date.now() }),
+          getIdleTimeoutMinutes: () => undefined,
+        } as never,
+      }),
+    );
+    expect(fresh).toContain('刚刚');
+    // No session → new conversation
+    const none = renderContext(
+      makeCtx({ sessions: { getRaw: () => undefined, getIdleTimeoutMinutes: () => undefined } as never }),
+    );
+    expect(none).toContain('（无，新会话）');
+  });
+
+  it('shows conversation start time', () => {
+    const started = renderContext(
+      makeCtx({
+        sessions: {
+          getRaw: () => ({ sessionId: '019f0000-0000-7000-0000-000000000000', cwd: '/x', updatedAt: Date.now(), createdAt: Date.now() }),
+          getIdleTimeoutMinutes: () => undefined,
+        } as never,
+      }),
+    );
+    expect(started).toContain('开始对话');
+    expect(started).toContain('今天'); // same-day clock
+  });
 });

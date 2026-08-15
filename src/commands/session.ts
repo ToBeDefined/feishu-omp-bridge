@@ -570,9 +570,10 @@ async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<vo
   const { cwd, warn } = await resolveSafeCwd(ctx, match.cwd || homedir());
   if (isCurrent) {
     log.info('command', 'resume-already-current', { scope: ctx.scope, sessionId: match.sessionId, cwd });
-    if (cwd !== match.cwd) {
-      ctx.workspaces.setCwd(ctx.scope, cwd);
-    }
+    // Keep the workspace cwd in sync with the resolved cwd so /context and
+    // the card agree — even when it happens to equal the session's recorded
+    // cwd, writing it is a cheap no-op that guarantees consistency.
+    ctx.workspaces.setCwd(ctx.scope, cwd);
     const summary = await loadSessionSummary(match.sessionId);
     const warnBlock = warn ? `\n⚠️ ${warn}\n` : '';
     if (ctx.fromCardAction) {

@@ -315,7 +315,7 @@ interface SessionMeta {
   timestamp?: string;
 }
 
-const RESUME_PAGE_SIZE = 10;
+const RESUME_PAGE_SIZE = 5;
 
 /**
  * Scan the bridge's OMP session dir for `.jsonl` session files. For each:

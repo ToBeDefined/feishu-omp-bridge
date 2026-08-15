@@ -116,6 +116,8 @@ const handlers: Record<string, Handler> = {
   '/model': handleModel,
   '/thinking': handleThinking,
   '/think': handleThinking,
+  '/context': handleContext,
+  '/restart': handleRestart,
   '/ps': handlePs,
   '/exit': handleExit,
   '/doctor': handleDoctor,
@@ -134,6 +136,8 @@ const ADMIN_COMMANDS: Record<string, true> = {
   '/model': true,
   '/thinking': true,
   '/think': true,
+  '/restart': true,
+  '/context': true,
   '/exit': true,
   '/reconnect': true,
   '/doctor': true,
@@ -813,6 +817,39 @@ async function loadModelData(cfg: AppConfig, force: boolean): Promise<ModelsCach
   const fresh: ModelsCache = { fetchedAt: Date.now(), list, commons };
   if (!force) await saveModelsCache(fresh);
   return fresh;
+}
+
+async function handleContext(_args: string, ctx: CommandContext): Promise<void> {
+  const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+  const sess = ctx.sessions.getRaw(ctx.scope);
+  const scopeMinutes = ctx.sessions.getIdleTimeoutMinutes(ctx.scope);
+  const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
+  const globalMinutes = globalMs ? Math.round(globalMs / 60_000) : 0;
+  const model = getOmpModel(ctx.controls.cfg);
+  const thinking = getOmpThinking(ctx.controls.cfg);
+  const running = ctx.activeRuns.has(ctx.scope);
+  const named = Object.keys(ctx.workspaces.listNamed());
+  const lines = [
+    `🧭 **scope**: \`${ctx.scope}\`${ctx.chatMode === 'topic' ? ' _（话题独立）_' : ''}`,
+    `📁 **cwd**: \`${cwd}\``,
+    `🔗 **session**: ${sess?.sessionId ? `\`${sess.sessionId.slice(0, 8)}…\`` : '(无)'}`,
+    `▶️ **运行中**: ${running ? '是' : '否'}`,
+    `🤖 **模型**: ${model ? `\`${model}\`` : '_跟随 OMP 默认_'}`,
+    `🧠 **思考强度**: ${thinking ? `\`${thinking}\`` : '_跟随 OMP 默认_'}`,
+    `⏱ **探活**: ${scopeMinutes !== undefined ? (scopeMinutes > 0 ? `${scopeMinutes} 分钟（本会话）` : '关闭（本会话）') : globalMinutes > 0 ? `${globalMinutes} 分钟（全局）` : '未启用'}`,
+    `📂 **命名工作空间**: ${named.length > 0 ? named.map((n) => `\`${n}\``).join(' ') : '(无)'}`,
+  ];
+  await reply(ctx, lines.join('\n'));
+}
+
+async function handleRestart(_args: string, ctx: CommandContext): Promise<void> {
+  log.info('command', 'restart', { scope: ctx.scope });
+  await reply(ctx, `🔄 即将重启当前 bot \`${ctx.controls.processId}\`…\n\n_launchd 会自动拉起新实例,约几秒后恢复。期间消息会暂时无法响应。_`);
+  // Detach so the reply send completes before we tear down.
+  void (async () => {
+    await new Promise((r) => setTimeout(r, 800));
+    await ctx.controls.exit().catch(() => {});
+  })();
 }
 
 async function handlePs(_args: string, ctx: CommandContext): Promise<void> {

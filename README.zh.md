@@ -10,7 +10,7 @@
 - 在飞书输出里展示 OMP extension 的 `notify`、`setStatus`、`setWidget`、`setTitle`、`set_editor_text` 和 `open_url` 事件。
 - 注册飞书原生 OMP host tools（`feishu_current_context`、`feishu_send_message`、`feishu_reply_message`、`feishu_get_message`），让 OMP 不经 `lark-cli` 也能直接使用飞书能力。
 - 注册只读 `feishu://` host URI scheme，例如 `feishu://current/context` 和 `feishu://message/<message_id>`。
-- OMP 运行中同一 chat/topic 再发消息会直接进入当前 run 的 `follow_up`；消息以 `!` 开头则作为 `steer`。
+- OMP 运行中同一 chat/topic 再发消息会安全排队，当前 run 结束后合并进下一轮（不丢失）；消息以 `!` 开头则直接作为 `steer` 进入当前 run。
 - 每个 chat / topic 保存自己的 OMP session id，下一轮自动用 `omp --mode rpc --resume <session_id>` 继续。
 - 保留 bridge 命令：`/new`、`/cd`、`/ws`、`/status`、`/config`、`/stop`、`/timeout`、`/ps`、`/exit`、`/reconnect`、`/doctor`。
 - 图片 / 文件会下载到本地路径；图片会转成 OMP RPC image payload。
@@ -164,7 +164,7 @@ bridge 还会注册只读 `feishu://` host URI：
 - `feishu://current/context`
 - `feishu://message/<message_id>`
 
-同一 chat/topic 在 OMP 运行中继续发消息时，会作为 `follow_up` 进入当前 run，而不是等当前 run 结束后另起一轮。消息以 `!` 开头时会作为 `steer` 发送。
+同一 chat/topic 在 OMP 运行中继续发消息时，会安全排队并在当前 run 结束后合并进下一轮，不会静默丢失；消息以 `!` 开头时会直接作为 `steer` 发送到当前 run。
 
 旧配置里的 `codexBinary` 和 `codexModel` 仍会作为 fallback 读取，便于旧配置启动后手动迁移。
 

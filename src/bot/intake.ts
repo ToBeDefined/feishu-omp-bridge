@@ -19,6 +19,19 @@ import { addReaction } from './reaction';
 
 const DEBOUNCE_MS = 600;
 
+/**
+ * Commands that reset the per-scope conversation context (new session /
+ * different cwd). Only these discard queued messages — messages queued
+ * behind a run belong to the old context. Every other command must not
+ * silently drop messages the user sent while a run was processing.
+ */
+const RESET_CONTEXT_COMMANDS: Record<string, true> = {
+  '/new': true,
+  '/reset': true,
+  '/cd': true,
+  '/ws': true,
+};
+
 export interface IntakeDeps {
   channel: LarkChannel;
   agent: AgentAdapter;
@@ -118,13 +131,24 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
     controls,
   });
   if (handled) {
-    const dropped = pending.cancel(scope);
-    log.info('intake', 'command', { scope, droppedPending: dropped.length });
+    const cmd = msg.content.trim().split(/\s+/)[0] ?? '';
+    if (RESET_CONTEXT_COMMANDS[cmd] === true) {
+      const dropped = pending.cancel(scope);
+      log.info('intake', 'command-reset', { scope, cmd, droppedPending: dropped.length });
+    } else {
+      log.info('intake', 'command', { scope, cmd });
+    }
     return;
   }
 
-  if (await submitToActiveRun({ channel, activeRuns, media, msg, scope })) {
-    log.info('intake', 'submitted-active-run', { scope });
+  // Only an explicit `!` steer interrupts the active run. Ordinary messages
+  // are always queued and merged into the next batch: the follow_up path is
+  // fire-and-forget — OMP only drains follow_ups when idle, and the bridge
+  // tears the run down on the current turn's terminal event, so a follow_up
+  // sent mid-run can be silently dropped before it's ever read.
+  const isSteer = msg.content.trimStart().startsWith('!');
+  if (isSteer && (await submitToActiveRun({ channel, activeRuns, media, msg, scope }))) {
+    log.info('intake', 'steered-active-run', { scope });
     return;
   }
 
@@ -150,7 +174,7 @@ export async function submitToActiveRun(deps: {
     if (quote) quotes.push(quote);
   }
   const prompt = buildPrompt([msg], attachments, quotes);
-  const trimmed = msg.content.trimStart();
-  const kind = trimmed.startsWith('!') ? 'steer' : 'follow_up';
-  return activeRuns.submitPrompt(scope, kind, prompt, imagePaths);
+  // Only `!`-prefixed messages reach here (intakeMessage gates on it), so
+  // this always steers the active run.
+  return activeRuns.submitPrompt(scope, 'steer', prompt, imagePaths);
 }

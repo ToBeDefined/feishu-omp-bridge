@@ -86,10 +86,10 @@ OMP RPC 的 extension UI request 会被映射为飞书卡片，并把用户响�
 
 ### Mid-run follow-up / steer
 
-当某个 chat/topic 已经有 OMP run 正在执行时，同一 scope 的新普通消息不会排队等下一轮，而是直接写入当前 RPC run：
+当某个 chat/topic 已经有 OMP run 正在执行时，同一 scope 的普通新消息**不会丢失**：它们进入 pending 队列，等当前 run 结束后合并进下一轮（600ms 静默后刷新）。只有以 `!` 开头的消息会直接写入当前 RPC run 进行 steer：
 
-- 普通消息 → OMP `follow_up`
-- 以 `!` 开头的消息 → OMP `steer`
+- 普通消息 → 排队，当前 run 结束后合并进下一轮
+- 以 `!` 开头的消息 → 直接作为 `steer` 写入当前 run
 
 例如：
 
@@ -97,13 +97,15 @@ OMP RPC 的 extension UI request 会被映射为飞书卡片，并把用户响�
 再看一下 tests 目录
 ```
 
-会进入当前 run 的 follow-up；
+会在当前 run 结束后作为下一轮处理（绝不静默丢弃）；
 
 ```text
 !先不要改代码，只分析原因
 ```
 
-会进入当前 run 的 steer。
+会直接进入当前 run 的 steer。
+
+> 说明：早前版本把普通消息也作为 `follow_up` 直接写入当前 run，但 OMP 只在空闲时消化 follow_up，而桥接层在当前 turn 的 terminal 事件就拆除 run，导致处理中发送的普通消息可能被静默丢弃。现已改为普通消息可靠排队、仅 `!` 显式 steer。
 
 ## 前置条件
 

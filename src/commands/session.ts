@@ -180,7 +180,7 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
     prevCwd && prevCwd !== cwd
       ? `\n\n想撤回？发 \`/ws undo\` 回到 \`${prevCwd}\``
       : '';
-  await reply(ctx, `✓ 已切换到 \`${name}\` (${cwd})\n（session 已重置）${undoHint}`);
+  await reply(ctx, `✅ 已切换到 \`${name}\` (${cwd})\n（session 已重置）${undoHint}`);
 }
 
 async function handleWsRemove(name: string, ctx: CommandContext): Promise<void> {

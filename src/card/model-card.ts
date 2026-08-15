@@ -296,20 +296,20 @@ export function resumeCard(
   const lines = [
     '🕘 **恢复会话**',
     '',
-    `当前 session:` + (current ? `\`${current.slice(0, 8)}…\`` : '(无)'),
+    `当前会话:` + (current ? `\`${current}\`` : '（无）'),
     '',
     '选择要恢复的历史会话。',
   ];
-  // Each session renders as a structured description block (summary, id,
-  // cwd) followed by a single "switch to this conversation" button.
+  // Each session renders as a structured description block (folder, last
+  // message, last reply, id) followed by a single switch button.
   const blocks: object[] = [];
   for (const s of sessions) {
     const desc = s.summary ? summarize(s.summary) : '';
     const md = [
-      desc ? `📝 ${desc}` : '📝 _（无描述）_',
-      s.lastMessage ? `💬 最后消息: ${summarize(s.lastMessage)}` : '',
-      `🆔 \`${s.sessionId}\``,
       `📁 ${shortCwd(s.cwd)}`,
+      s.lastMessage ? `💬 最后消息: ${summarize(s.lastMessage)}` : '',
+      desc ? `📝 最后回复: ${desc}` : '',
+      `🆔 \`${s.sessionId}\``,
     ]
       .filter(Boolean)
       .join('\n');

@@ -22,9 +22,11 @@ function agentYielding(...texts: string[]) {
     for (const t of texts) yield { type: 'text', delta: t };
     yield { type: 'done' };
   }
-  return {
-    run: vi.fn(() => ({ events: events(), stop: vi.fn(async () => {}) })),
-  };
+  const run = vi.fn((_opts: { sessionId?: string; sessionDir?: string; prompt: string }) => ({
+    events: events(),
+    stop: vi.fn(async () => {}),
+  }));
+  return { run };
 }
 
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
@@ -94,8 +96,13 @@ describe('/rename command', () => {
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已自动生成标题'));
     const title = (ctx.sessions.getRaw('oc_1') as { title?: string }).title;
     expect(Array.from(title ?? '')).toHaveLength(20);
-    // Generated in the current session (resumed), not a fresh one.
-    expect(agent.run).toHaveBeenCalledWith(expect.objectContaining({ sessionId: 's1' }));
+    // Runs in an isolated throwaway session dir — NOT resuming the main
+    // session, so the generation prompt can't pollute the real history.
+    expect(agent.run).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionDir: expect.stringMatching(/rename-auto-/) }),
+    );
+    const runArgs = agent.run.mock.calls[0]?.[0];
+    expect(runArgs?.sessionId).toBeUndefined();
   });
 
   it('fails gracefully when the model produces no text', async () => {

@@ -1,4 +1,6 @@
-import { homedir } from 'node:os';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { getAgentStopGraceMs, getOmpModel } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
@@ -34,8 +36,6 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
 
   if (title === 'auto') {
     await reply(ctx, '🤖 正在用 LLM 生成标题…');
-    // 复用当前会话生成：会在当前会话历史里追加一条辅助对话（见
-    // generateTitleWithLlm 副作用注释）。可能因此触发一次 run。
     const generated = await generateTitleWithLlm(ctx);
     if (!generated) {
       await reply(ctx, '❌ 无法生成标题（会话内容太少或生成失败），请手动 `/rename <标题>`。');
@@ -55,13 +55,14 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
   await reply(ctx, `✅ 已设置当前会话标题：\`${title}\``);
 }
 
-/** Ask the agent to summarize the session's last exchange into a short title.
- * Returns a trimmed title, or null if the session has nothing to title or
- * the model produced no usable text.
+/** Ask the agent to title the session from its latest exchange. Returns a
+ * trimmed title, or null if there's nothing to title or the model produced
+ * no usable text.
  *
- * 副作用：复用当前会话（resume sessionId）生成，因此会话历史里会追加一条
- * "根据对话生成标题…" 的辅助 user 消息 + 标题回复，占用一点上下文/token。
- * 有意为之——避免单独开新 omp 会话产生噪音 session 文件。 */
+ * Runs in an isolated, throwaway session dir (per-run sessionDir override)
+ * and never resumes the main session — the generation prompt must not leak
+ * into the real session history and get echoed back as a user message. The
+ * temp dir is deleted after the run. */
 async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null> {
   const sess = ctx.sessions.getRaw(ctx.scope);
   if (!sess?.sessionId) return null;
@@ -72,8 +73,8 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
   if (!userText && !replyText) return null;
 
   const prompt = [
-    '根据下面的对话片段，给这个会话起一个简洁的中文标题。',
-    `标题要求：不超过 ${AUTO_TITLE_MAX} 个字符，一句话概括主题。`,
+    '根据以下最近的对话，给这个会话起一个简洁的中文标题。',
+    `标题要求：不超过 ${AUTO_TITLE_MAX} 个字符，一句话概括对话主题。`,
     '只输出标题本身，不要引号、标点、编号或任何解释。',
     '',
     `用户：${userText}`,
@@ -82,9 +83,10 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
     .filter(Boolean)
     .join('\n');
 
+  const sessionDir = await mkdtemp(join(tmpdir(), 'rename-auto-'));
   const run = ctx.agent.run({
     prompt,
-    sessionId: sess.sessionId,
+    sessionDir,
     cwd: ctx.workspaces.cwdFor(ctx.scope) ?? homedir(),
     model: getOmpModel(ctx.controls.cfg),
     stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),
@@ -101,6 +103,9 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
   } finally {
     await run.stop().catch(() => {
       /* stop errors are non-fatal */
+    });
+    await rm(sessionDir, { recursive: true, force: true }).catch(() => {
+      /* best-effort cleanup */
     });
   }
 }

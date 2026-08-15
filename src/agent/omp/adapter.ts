@@ -48,7 +48,7 @@ export class OmpAdapter implements AgentAdapter {
   run(opts: AgentRunOptions): AgentRun {
     const args = buildOmpArgs({
       ...opts,
-      sessionDir: this.sessionDir,
+      sessionDir: opts.sessionDir ?? this.sessionDir,
       thinking: this.thinking,
       tools: this.tools,
     });

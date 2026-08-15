@@ -84,6 +84,13 @@ export interface AgentRunOptions {
   prompt: string;
   cwd?: string;
   sessionId?: string;
+  /**
+   * Override the session directory for this run. Lets one-shot runs (e.g.
+   * /rename auto title generation) use an isolated, throwaway session dir
+   * instead of polluting the shared session store or the main session.
+   * Falls back to the adapter-level sessionDir when unset.
+   */
+  sessionDir?: string;
   model?: string;
   permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
   /** Local image paths to pass to agents that support native image flags. */

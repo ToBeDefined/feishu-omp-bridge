@@ -6,18 +6,24 @@ import { SessionStore } from './store';
 
 let dir: string;
 let file: string;
+let stores: SessionStore[];
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'store-test-'));
   file = join(dir, 'sessions.json');
+  stores = [];
 });
 afterEach(async () => {
+  // Let every store's chained persist write settle before removing the dir,
+  // otherwise a pending write races the rmdir and surfaces as ENOTEMPTY.
+  await Promise.all(stores.map((s) => s.flush()));
   await rm(dir, { recursive: true, force: true });
 });
 
 describe('SessionStore title', () => {
   it('sets and clears a title', async () => {
     const store = new SessionStore(file);
+    stores.push(store);
     store.set('oc_1', 'sess-1', '/repo');
 
     store.setTitle('oc_1', '修 search bug');
@@ -33,6 +39,7 @@ describe('SessionStore title', () => {
 
   it('persists title across load', async () => {
     const store = new SessionStore(file);
+    stores.push(store);
     store.set('oc_1', 'sess-1', '/repo');
     store.setTitle('oc_1', '已命名会话');
     await store.flush();
@@ -44,6 +51,7 @@ describe('SessionStore title', () => {
 
   it('keeps title across session rollover in set', async () => {
     const store = new SessionStore(file);
+    stores.push(store);
     store.set('oc_1', 'sess-old', '/repo');
     store.setTitle('oc_1', '持续标题');
 
@@ -55,6 +63,7 @@ describe('SessionStore title', () => {
 
   it('wipes title on clear', async () => {
     const store = new SessionStore(file);
+    stores.push(store);
     store.set('oc_1', 'sess-1', '/repo');
     store.setTitle('oc_1', '将清空');
     store.clear('oc_1');
@@ -63,6 +72,7 @@ describe('SessionStore title', () => {
 
   it('maps session ids to titles', async () => {
     const store = new SessionStore(file);
+    stores.push(store);
     store.set('oc_1', 'sess-a', '/a');
     store.setTitle('oc_1', 'A 会话');
     store.set('oc_2', 'sess-b', '/b');
@@ -78,6 +88,7 @@ describe('SessionStore title', () => {
       oc_1: { title: '孤儿标题', updatedAt: 123 },
     }));
     const store = new SessionStore(file);
+    stores.push(store);
     await store.load();
     expect(store.getRaw('oc_1')).toBeUndefined();
   });

@@ -475,6 +475,23 @@ async function showResumePage(ctx: CommandContext, offset: number): Promise<void
 }
 
 function applyResume(ctx: CommandContext, match: ResumeOption): void {
+  const currentId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
+  if (currentId && match.sessionId === currentId) {
+    log.info('command', 'resume-already-current', { scope: ctx.scope, sessionId: match.sessionId });
+    if (ctx.fromCardAction) {
+      const msgId = ctx.msg.messageId;
+      void (async () => {
+        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+        await updateManagedCard(ctx.channel, msgId, resumeSavedCard(match.sessionId, match.cwd)).catch(
+          () => {},
+        );
+        forgetManagedCard(msgId);
+      })();
+    } else {
+      void reply(ctx, '这个会话已经是当前会话。');
+    }
+    return;
+  }
   const cwd = match.cwd || homedir();
   // Interrupt any active run, then re-point this chat's session + cwd at
   // the historical session. resumeFor(scope, cwd) will match next run.

@@ -301,11 +301,14 @@ export function resumeCard(
     '选择要恢复的历史会话。',
   ];
   // Each session renders as a structured description block (folder, last
-  // message, last reply, id) followed by a single switch button.
+  // message, last reply, id) followed by a single switch button. The current
+  // session gets a marker and a disabled-looking state (it's already active).
   const blocks: object[] = [];
   for (const s of sessions) {
+    const isCurrent = current !== undefined && s.sessionId === current;
     const desc = s.summary ? summarize(s.summary) : '';
     const md = [
+      isCurrent ? '⭐ **当前会话**' : '',
       `📁 ${shortCwd(s.cwd)}`,
       s.lastMessage ? `💬 最后消息: ${summarize(s.lastMessage)}` : '',
       desc ? `📝 最后回复: ${desc}` : '',
@@ -317,8 +320,10 @@ export function resumeCard(
       { tag: 'markdown', content: md },
       {
         tag: 'button',
-        text: { tag: 'plain_text', content: '切换到该会话' },
-        type: 'default',
+        text: { tag: 'plain_text', content: isCurrent ? '已在当前' : '切换到该会话' },
+        type: isCurrent ? 'primary' : 'default',
+        // Keep the value so the click still resolves to this session, but a
+        // current-session switch is a no-op in applyResume.
         value: { cmd: 'resume.use', arg: s.sessionId },
       },
       { tag: 'hr' },

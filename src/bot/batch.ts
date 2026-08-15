@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { stat } from 'node:fs/promises';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter, AgentUiRequest } from '../agent/types';
 import type { ActiveRuns, RunHandle } from './active-runs';
@@ -109,7 +110,19 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prompt = buildPrompt(batch, attachments, quotes);
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
-  const cwd = workspaces.cwdFor(scope) ?? homedir();
+  let cwd = workspaces.cwdFor(scope) ?? homedir();
+  // The chat's recorded cwd may point at a deleted/renamed directory;
+  // spawning omp there fails with ENOENT. Verify it exists, falling back to
+  // $HOME and repairing the stored workspace so the next run doesn't trip
+  // the same way.
+  try {
+    const st = await stat(cwd);
+    if (!st.isDirectory()) throw new Error('not a directory');
+  } catch {
+    log.warn('session', 'cwd-missing', { staleCwd: cwd });
+    cwd = homedir();
+    workspaces.setCwd(scope, cwd);
+  }
   const resumeFrom = sessions.resumeFor(scope, cwd);
   if (resumeFrom) {
     log.info('session', 'resume', { sessionId: resumeFrom, cwd });

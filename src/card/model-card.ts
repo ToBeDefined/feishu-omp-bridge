@@ -278,6 +278,9 @@ export interface ResumeOption {
   sessionId: string;
   cwd: string;
   timestamp: string;
+  /** Short description of what the conversation was about (last assistant
+   * text reply). Absent for empty/short-lived sessions. */
+  summary?: string;
 }
 
 /** Session picker card for `/resume`. */
@@ -295,12 +298,15 @@ export function resumeCard(
     '',
     '选择要恢复的历史会话。',
   ];
-  const buttons = sessions.map((s) => ({
-    tag: 'button',
-    text: { tag: 'plain_text', content: `${s.sessionId.slice(0, 8)}… · ${shortCwd(s.cwd)}` },
-    type: 'default',
-    value: { cmd: 'resume.use', arg: s.sessionId },
-  }));
+  const buttons = sessions.map((s) => {
+    const label = s.summary ? summarize(s.summary) : shortCwd(s.cwd);
+    return {
+      tag: 'button',
+      text: { tag: 'plain_text', content: `${s.sessionId.slice(0, 8)}… ${label}` },
+      type: 'default',
+      value: { cmd: 'resume.use', arg: s.sessionId },
+    };
+  });
   const remaining = Math.max(0, total - (offset + sessions.length));
   const footer: object[] = [];
   if (remaining > 0) {
@@ -360,6 +366,13 @@ function shortCwd(cwd: string): string {
   const home = homedir();
   const rel = cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
   return rel.length > 24 ? `…${rel.slice(-24)}` : rel;
+}
+
+/** Compact a session description for a card button: collapse newlines, cap
+ * length, append ellipsis if truncated. */
+function summarize(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > 32 ? `${flat.slice(0, 32)}…` : flat;
 }
 
 export function modelCancelledCard(): object {

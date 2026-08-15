@@ -315,9 +315,19 @@ interface SessionMeta {
   timestamp?: string;
 }
 
-/** Scan the bridge's OMP session dir for `.jsonl` session files, reading the
- * leading `type:"session"` frame from each for id / cwd / timestamp. Newest
- * first. */
+const RESUME_PAGE_SIZE = 10;
+
+/**
+ * Scan the bridge's OMP session dir for `.jsonl` session files. For each:
+ *  - read the leading `type:"session"` frame for id / cwd / timestamp, and
+ *  - take the LAST non-empty assistant text reply as a short "what this
+ *    conversation was about" description (assistant's final reply usually
+ *    summarizes the topic). Newest sessions first.
+ *
+ * Reading whole files is acceptable here: /resume is a low-frequency,
+ * operator-only command, and correctness of the description matters more
+ * than shaving a few ms off a 6MB log.
+ */
 async function listResumableSessions(): Promise<ResumeOption[]> {
   const dir = paths.ompSessionsDir;
   const out: ResumeOption[] = [];
@@ -327,17 +337,39 @@ async function listResumableSessions(): Promise<ResumeOption[]> {
       if (!name.endsWith('.jsonl')) continue;
       try {
         const text = await readFile(join(dir, name), 'utf8');
-        // The session frame sits near the top (after the title frame); scan
-        // the first lines instead of parsing the whole (possibly huge) file.
-        const head = text.slice(0, 16_384);
-        const line = head.split('\n').find((l) => l.includes('"type":"session"'));
-        if (!line) continue;
-        const frame = JSON.parse(line) as SessionMeta;
-        if (!frame.id || !frame.cwd) continue;
+        let meta: SessionMeta | undefined;
+        let lastAssistant = '';
+        for (const line of text.split('\n')) {
+          if (!meta && line.includes('"type":"session"')) {
+            try {
+              meta = JSON.parse(line) as SessionMeta;
+            } catch {
+              /* skip malformed */
+            }
+            continue;
+          }
+          if (!line.includes('"type":"message"')) continue;
+          try {
+            const frame = JSON.parse(line) as {
+              message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
+            };
+            const msg = frame.message;
+            if (msg?.role !== 'assistant') continue;
+            const textPart = (msg.content ?? [])
+              .filter((c) => c.type === 'text' && c.text)
+              .map((c) => c.text ?? '')
+              .join('');
+            if (textPart.trim()) lastAssistant = textPart.trim();
+          } catch {
+            /* skip malformed */
+          }
+        }
+        if (!meta?.id || !meta.cwd) continue;
         out.push({
-          sessionId: frame.id,
-          cwd: frame.cwd,
-          timestamp: frame.timestamp ?? name,
+          sessionId: meta.id,
+          cwd: meta.cwd,
+          timestamp: meta.timestamp ?? name,
+          summary: lastAssistant,
         });
       } catch {
         continue;
@@ -401,8 +433,6 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
   }
   applyResume(ctx, match);
 }
-
-const RESUME_PAGE_SIZE = 10;
 
 async function showResumePage(ctx: CommandContext, offset: number): Promise<void> {
   const sessions = await listResumableSessions();

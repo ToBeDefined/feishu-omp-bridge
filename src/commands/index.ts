@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
@@ -11,12 +13,19 @@ import {
 } from '../card/account-cards';
 import { configCancelledCard, configFormCard, configSavedCard } from '../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
+import {
+  modelCancelledCard,
+  modelProviderCard,
+  modelSavedCard,
+  modelSelectCard,
+} from '../card/model-card';
 import { helpCard, statusCard, workspacesCard } from '../card/templates';
 import type { AppConfig, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
   getAgentStopGraceMs,
   getMaxConcurrentRuns,
   getMessageReplyMode,
+  getOmpBinary,
   getOmpModel,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
@@ -420,38 +429,129 @@ async function handleModel(args: string, ctx: CommandContext): Promise<void> {
   const trimmed = args.trim();
   const cfg = ctx.controls.cfg;
   const current = getOmpModel(cfg);
-  const formatCurrent = (): string => current ?? '跟随 OMP 默认';
 
-  // /model — show current model
-  if (!trimmed) {
-    await reply(
-      ctx,
-      `🤖 当前模型:${formatCurrent()}\n\n用法:\n- \`/model <id>\` 设置模型(如 \`futu/deepseek-v4-flash-0731\`)\n- \`/model reset\` 清除设置,回退 OMP 默认\n\n_注:对下一条消息立即生效,无需重启_`,
-    );
+  const [sub, ...rest] = trimmed.split(/\s+/);
+  switch (sub) {
+    case '':
+      return showModelProviders(ctx, current);
+    case 'provider':
+      return showModelPicker(rest.join(' '), ctx, current);
+    case 'submit':
+      return submitModel(ctx, current);
+    case 'cancel':
+      return cancelModel(ctx);
+    case 'reset':
+      return resetModel(ctx, current);
+    default:
+      if (trimmed === '') return showModelProviders(ctx, current);
+      if (trimmed.startsWith('-') || /\s/.test(trimmed)) {
+        await reply(ctx, '❌ 用法:`/model` 打开选择卡片,或 `/model <id>` 直接设置(如 `futu/deepseek-v4-flash-0731`)。');
+        return;
+      }
+      return setModel(trimmed, ctx, current);
+  }
+}
+
+async function showModelProviders(ctx: CommandContext, current: string | undefined): Promise<void> {
+  const models = await listOmpModels(ctx.controls.cfg);
+  const byProvider = new Map<string, number>();
+  for (const m of models) {
+    byProvider.set(m.provider, (byProvider.get(m.provider) ?? 0) + 1);
+  }
+  const providers = [...byProvider.entries()].map(([provider, count]) => ({ provider, count }));
+  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+  await sendManagedCard(ctx.channel, ctx.msg.chatId, modelProviderCard(current, providers));
+}
+
+async function showModelPicker(
+  provider: string,
+  ctx: CommandContext,
+  current: string | undefined,
+): Promise<void> {
+  const models = await listOmpModels(ctx.controls.cfg);
+  const pick = models.filter((m) => m.provider === provider);
+  if (pick.length === 0) {
+    await reply(ctx, `未找到提供方 \`${provider}\`。请用 \`/model\` 重选。`);
     return;
   }
+  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+  await sendManagedCard(ctx.channel, ctx.msg.chatId, modelSelectCard(provider, current, pick));
+}
 
-  if (trimmed === 'reset') {
-    if (!current) {
-      await reply(ctx, '本来就没设置过模型,一直跟随 OMP 默认。');
-      return;
-    }
-    cfg.preferences = { ...(cfg.preferences ?? {}), ompModel: undefined };
-    await saveConfig(cfg, ctx.controls.configPath);
-    log.info('command', 'model-reset', { scope: ctx.scope });
-    await reply(ctx, '✅ 已清除模型设置,回退 OMP 默认。下一条消息生效。');
+async function submitModel(ctx: CommandContext, current: string | undefined): Promise<void> {
+  const selector = String(ctx.formValue?.model_selector ?? '').trim();
+  if (!selector) {
+    await reply(ctx, '未选择模型,已取消。');
     return;
   }
-
-  if (trimmed.startsWith('-') || /\s/.test(trimmed)) {
-    await reply(ctx, '❌ 用法:`/model <id>`(如 `futu/deepseek-v4-flash-0731`) / `/model reset`');
-    return;
-  }
-
-  cfg.preferences = { ...(cfg.preferences ?? {}), ompModel: trimmed };
+  const cfg = ctx.controls.cfg;
+  cfg.preferences = { ...(cfg.preferences ?? {}), ompModel: selector };
   await saveConfig(cfg, ctx.controls.configPath);
-  log.info('command', 'model-set', { scope: ctx.scope, model: trimmed });
-  await reply(ctx, `✅ 模型已设为 \`${trimmed}\`。下一条消息生效。`);
+  log.info('command', 'model-set', { scope: ctx.scope, model: selector, via: 'card' });
+  if (ctx.fromCardAction) {
+    const formMsgId = ctx.msg.messageId;
+    void (async () => {
+      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+      await updateManagedCard(ctx.channel, formMsgId, modelSavedCard(selector)).catch(() => {});
+      forgetManagedCard(formMsgId);
+    })();
+  } else {
+    await reply(ctx, `✅ 模型已设为 \`${selector}\`。下一条消息生效。`);
+  }
+}
+
+async function cancelModel(ctx: CommandContext): Promise<void> {
+  if (!ctx.fromCardAction) return;
+  const formMsgId = ctx.msg.messageId;
+  void (async () => {
+    await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+    await updateManagedCard(ctx.channel, formMsgId, modelCancelledCard()).catch(() => {});
+    forgetManagedCard(formMsgId);
+  })();
+}
+
+async function resetModel(ctx: CommandContext, current: string | undefined): Promise<void> {
+  const cfg = ctx.controls.cfg;
+  if (!current) {
+    await reply(ctx, '本来就没设置过模型,一直跟随 OMP 默认。');
+    return;
+  }
+  cfg.preferences = { ...(cfg.preferences ?? {}), ompModel: undefined };
+  await saveConfig(cfg, ctx.controls.configPath);
+  log.info('command', 'model-reset', { scope: ctx.scope });
+  await reply(ctx, '✅ 已清除模型设置,回退 OMP 默认。下一条消息生效。');
+}
+
+async function setModel(model: string, ctx: CommandContext, current: string | undefined): Promise<void> {
+  const cfg = ctx.controls.cfg;
+  cfg.preferences = { ...(cfg.preferences ?? {}), ompModel: model };
+  await saveConfig(cfg, ctx.controls.configPath);
+  log.info('command', 'model-set', { scope: ctx.scope, model, via: 'text' });
+  await reply(ctx, `✅ 模型已设为 \`${model}\`。下一条消息生效。`);
+}
+
+interface OmpModelEntry {
+  provider: string;
+  selector: string;
+  name?: string;
+}
+
+const execFileAsync = promisify(execFile);
+
+async function listOmpModels(cfg: AppConfig): Promise<OmpModelEntry[]> {
+  const omp = getOmpBinary(cfg);
+  try {
+    const { stdout } = await execFileAsync(omp, ['models', '--json'], {
+      encoding: 'utf8',
+      env: { ...process.env },
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    const parsed = JSON.parse(stdout) as { models?: OmpModelEntry[] };
+    return parsed.models ?? [];
+  } catch (err) {
+    log.warn('command', 'model-list-failed', { err: String(err) });
+    return [];
+  }
 }
 
 async function handlePs(_args: string, ctx: CommandContext): Promise<void> {

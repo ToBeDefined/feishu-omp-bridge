@@ -278,8 +278,13 @@ function searchResultsCard(
     ]
       .filter(Boolean)
       .join(' · ');
-    const preview = `**#${i + 1}**${metaLine ? ` _(${metaLine})_` : ''}\n${renderSearchContext(ctx)}`;
-    blocks.push({ tag: 'markdown', content: preview });
+    const title = `#${i + 1}${metaLine ? ` · ${metaLine}` : ''}`;
+    blocks.push(
+      // Heading-size title so the item number / workspace / session stands
+      // out; the conversation snippet below it stays at normal size.
+      { tag: 'markdown', content: title, text_size: 'heading' },
+      { tag: 'markdown', content: renderSearchContext(ctx) },
+    );
     if (showButtons) {
       blocks.push(
         {

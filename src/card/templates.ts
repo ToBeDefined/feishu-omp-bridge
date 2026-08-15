@@ -67,6 +67,8 @@ export function workspacesCard(current: string | undefined, named: Record<string
 export interface StatusInfo {
   cwd: string;
   sessionId?: string;
+  /** User-assigned session title (/rename), if any. */
+  sessionTitle?: string;
   sessionStale: boolean;
   agentName: string;
   /** Session scope (= chatId or chatId:threadId in topic groups). */
@@ -89,8 +91,9 @@ export function statusCard(info: StatusInfo): object {
     `🧭 **scope**: ${scopeLine}`,
     `📁 **cwd**: \`${escapeCode(info.cwd)}\``,
     `🔗 **session**: ${sessionLine}`,
+    info.sessionTitle ? `🏷 **标题**: \`${escapeMd(info.sessionTitle)}\`` : '',
     `🤖 **agent**: ${escapeMd(info.agentName)}`,
-  ];
+  ].filter(Boolean);
   return shell('📊 当前状态', [
     divMd(lines.join('\n')),
     HR,
@@ -120,6 +123,7 @@ export function helpCard(): object {
         '- `/model [id|reset]` — 查看 / 切换 OMP 模型,`/model reset` 回退默认',
         '- `/thinking [level|reset]` — 切换思考强度(off~max/auto),仅作用于当前模型',
         '- `/context` — 查看当前会话上下文(scope/cwd/模型/探活等)',
+        '- `/rename <标题>` — 给当前会话起名;`/rename auto` 用 LLM 生成,`/rename clear` 清除',
         '- `/restart` — 重启当前 bot(launchd 自动拉起新实例)',
         '- `/ps` — 列出本机所有 bot,标识当前正在回复的那个',
         '- `/exit <id|#>` — 关掉指定 bot(用 `/ps` 看 id/序号)',

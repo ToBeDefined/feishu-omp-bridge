@@ -21,8 +21,9 @@ export const resumeHandlers: Record<string, Handler> = {
 
 const RESUME_PAGE_SIZE = 5;
 
-async function listResumableSessions(): Promise<ResumeOption[]> {
+async function listResumableSessions(ctx: CommandContext): Promise<ResumeOption[]> {
   const dir = paths.ompSessionsDir;
+  const titles = ctx.sessions.titlesBySessionId();
   const out: ResumeOption[] = [];
   try {
     const entries = await readdir(dir);
@@ -32,10 +33,12 @@ async function listResumableSessions(): Promise<ResumeOption[]> {
         const text = await readFile(join(dir, name), 'utf8');
         const { meta, lastAssistant, lastUserMessage } = scanSessionFile(text);
         if (!meta?.id || !meta.cwd) continue;
+        const title = titles[meta.id];
         out.push({
           sessionId: meta.id,
           cwd: meta.cwd,
           timestamp: meta.timestamp ?? name,
+          ...(title !== undefined ? { title } : {}),
           summary: lastAssistant,
           lastMessage: lastUserMessage,
         });
@@ -55,7 +58,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
 
   if (sub === 'use') {
     const sessionId = rest.join('');
-    const sessions = await listResumableSessions();
+    const sessions = await listResumableSessions(ctx);
     const match = sessions.find((s) => s.sessionId === sessionId);
     if (!match) {
       await reply(ctx, `❌ 未找到会话 \`${sessionId}\`。`);
@@ -93,7 +96,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
   }
 
   // Direct resume by id prefix: find the session anywhere in history.
-  const sessions = await listResumableSessions();
+  const sessions = await listResumableSessions(ctx);
   const match = sessions.find((s) => s.sessionId.startsWith(sub));
   if (!match) {
     await reply(ctx, `❌ 未找到会话 \`${sub}\`。发 \`/resume\` 查看可恢复的会话列表。`);
@@ -103,7 +106,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
 }
 
 async function showResumePage(ctx: CommandContext, offset: number): Promise<void> {
-  const sessions = await listResumableSessions();
+  const sessions = await listResumableSessions(ctx);
   if (sessions.length === 0) {
     await reply(ctx, '没有找到可恢复的历史会话。');
     return;

@@ -12,6 +12,7 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
   const card = statusCard({
     cwd,
     sessionId: sess?.sessionId,
+    sessionTitle: sess?.title,
     sessionStale: Boolean(sess && sess.cwd !== cwd),
     agentName: ctx.agent.displayName,
     scope: ctx.scope,

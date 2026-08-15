@@ -17,6 +17,9 @@ export interface SessionEntry {
    * scope, undefined = follow global default. /new clears the whole entry,
    * so this resets to "follow global" when the user starts a new session. */
   idleTimeoutMinutes?: number;
+  /** User-assigned display title for the session (via /rename). Survives
+   * session rollover (set keeps it) but is wiped by /new /cd /ws (clear). */
+  title?: string;
 }
 
 type SessionMap = Record<string, SessionEntry>;
@@ -48,6 +51,7 @@ export class SessionStore {
           typeof entry.idleTimeoutMinutes === 'number' ? entry.idleTimeoutMinutes : undefined;
         const createdAt =
           typeof entry.createdAt === 'number' ? entry.createdAt : undefined;
+        const title = typeof entry.title === 'string' ? entry.title : undefined;
         const hasSession = sessionId !== undefined && cwd !== undefined;
         if (!hasSession && idleTimeoutMinutes === undefined) continue;
         this.data[chatId] = {
@@ -56,6 +60,8 @@ export class SessionStore {
           updatedAt: entry.updatedAt,
           ...(createdAt !== undefined ? { createdAt } : {}),
           ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}),
+          // A title only makes sense on an entry that still has a session.
+          ...(title !== undefined && sessionId !== undefined ? { title } : {}),
         };
       }
     } catch (err) {
@@ -99,6 +105,9 @@ export class SessionStore {
       ...(prev?.idleTimeoutMinutes !== undefined
         ? { idleTimeoutMinutes: prev.idleTimeoutMinutes }
         : {}),
+      // A user-assigned title survives rollover to a fresh OMP session in
+      // the same chat (e.g. cwd kept, session recycled).
+      ...(prev?.title !== undefined ? { title: prev.title } : {}),
     };
     this.schedulePersist();
   }
@@ -134,6 +143,37 @@ export class SessionStore {
     this.data[chatId] = { ...rest, updatedAt: Date.now() };
     this.schedulePersist();
     return true;
+  }
+
+  /** Assign a display title to the session for this scope. */
+  setTitle(chatId: string, title: string): void {
+    const prev = this.data[chatId];
+    this.data[chatId] = {
+      ...(prev ?? { updatedAt: Date.now() }),
+      title,
+      updatedAt: Date.now(),
+    };
+    this.schedulePersist();
+  }
+
+  /** Clear the title. Returns true if one was actually removed. */
+  clearTitle(chatId: string): boolean {
+    const prev = this.data[chatId];
+    if (!prev || prev.title === undefined) return false;
+    const { title: _, ...rest } = prev;
+    this.data[chatId] = { ...rest, updatedAt: Date.now() };
+    this.schedulePersist();
+    return true;
+  }
+
+  /** Map sessionId → title for every entry that has one. Used to annotate
+   * /search hits and /resume rows that reference a session id. */
+  titlesBySessionId(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const entry of Object.values(this.data)) {
+      if (entry.sessionId && entry.title) out[entry.sessionId] = entry.title;
+    }
+    return out;
   }
 
   async flush(): Promise<void> {

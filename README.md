@@ -305,6 +305,8 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 | `/ws use <name>` | 切换到命名工作空间并重置 session。 |
 | `/config` | 打开偏好设置卡片。 |
 | `/account` | 更换 bot app 凭据并重连。 |
+| `/context` | 查看当前会话上下文(scope/cwd/模型/探活等)。 |
+| `/rename <标题>` | 给当前会话起名;`/rename auto` 用 LLM 生成(≤20 字),`/rename clear` 清除。标题显示在 `/context`、`/status`、`/resume`、`/search`。 |
 | `/status` | 查看当前 scope、cwd、session、agent。 |
 | `/stop` | 终止当前正在执行的 OMP run。 |
 | `/timeout [N|off|default]` | 设置当前 session 的 idle timeout，或关闭 / 恢复全局默认。 |

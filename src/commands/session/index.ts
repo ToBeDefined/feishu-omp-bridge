@@ -2,6 +2,7 @@ import type { Handler } from '../index';
 import { cdHandlers } from './cd';
 import { contextHandlers } from './context';
 import { newHandlers } from './new';
+import { renameHandlers } from './rename';
 import { resumeHandlers } from './resume';
 import { searchHandlers } from './search';
 import { statusHandlers } from './status';
@@ -16,6 +17,7 @@ export const sessionHandlers: Record<string, Handler> = {
   ...statusHandlers,
   ...timeoutHandlers,
   ...contextHandlers,
+  ...renameHandlers,
   ...resumeHandlers,
   ...searchHandlers,
 };

@@ -76,6 +76,7 @@ export function renderContext(
     `💬 **聊天窗口**: ${scopeLine}`,
     `📁 **工作目录**: \`${cwd}\``,
     `🧠 **会话 ID**: ${sessionLine}`,
+    sess?.title ? `🏷 **标题**: \`${sess.title}\`` : '',
     `🕒 **开始对话**: ${formatClock(sess?.createdAt)}`,
     `🕘 **最后对话**: ${formatLastSeen(sess?.updatedAt)}`,
     lastMsgLine,

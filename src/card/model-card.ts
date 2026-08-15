@@ -278,6 +278,9 @@ export interface ResumeOption {
   sessionId: string;
   cwd: string;
   timestamp: string;
+  /** User-assigned display title (/rename), if any. Shown ahead of the
+   * auto summary so the user can tell sessions apart by name. */
+  title?: string;
   /** Short description of what the conversation was about (last assistant
    * text reply). Absent for empty/short-lived sessions. */
   summary?: string;
@@ -309,6 +312,7 @@ export function resumeCard(
     const desc = s.summary ? summarize(s.summary) : '';
     const md = [
       isCurrent ? '⭐ **当前会话**' : '',
+      s.title ? `🏷 **${s.title}**` : '',
       `📁 ${shortCwd(s.cwd)}`,
       s.lastMessage ? `💬 最后消息: ${summarize(s.lastMessage)}` : '',
       desc ? `📝 最后回复: ${desc}` : '',

@@ -12,7 +12,7 @@
 - 注册只读 `feishu://` host URI scheme，例如 `feishu://current/context` 和 `feishu://message/<message_id>`。
 - OMP 运行中同一 chat/topic 再发消息会安全排队，当前 run 结束后合并进下一轮（不丢失）；消息以 `!` 开头则直接作为 `steer` 进入当前 run。
 - 每个 chat / topic 保存自己的 OMP session id，下一轮自动用 `omp --mode rpc --resume <session_id>` 继续。
-- 保留 bridge 命令：`/new`、`/cd`、`/ws`、`/status`、`/config`、`/stop`、`/timeout`、`/ps`、`/exit`、`/reconnect`、`/doctor`。
+- 保留 bridge 命令：`/new`、`/cd`、`/ws`、`/status`、`/config`、`/stop`、`/timeout`、`/ps`、`/exit`、`/reconnect`、`/doctor`、`/rename`（给会话起名，`/rename auto` 用 LLM 生成）。
 - 图片 / 文件会下载到本地路径；图片会转成 OMP RPC image payload。
 - OMP 可以继续使用本机可用工具，例如 `lark-cli`、`git`、项目测试命令等。
 

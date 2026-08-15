@@ -755,15 +755,16 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     }
     const full = hit.content.trim();
     const icon = hit.role === 'user' ? '🧑 **用户**' : '🤖 **助手**';
+    const sessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
     if (ctx.fromCardAction) {
       const msgId = ctx.msg.messageId;
       void (async () => {
         await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-        await updateManagedCard(ctx.channel, msgId, searchDetailCard(icon, full)).catch(() => {});
+        await updateManagedCard(ctx.channel, msgId, searchDetailCard(icon, full, sessionId)).catch(() => {});
         forgetManagedCard(msgId);
       })();
     } else {
-      await reply(ctx, `${icon}\n\n${full}`);
+      await reply(ctx, `${icon}\n\n${sessionId ? `🆔 session: \`${sessionId}\`\n\n` : ''}${full}`);
     }
     return;
   }
@@ -812,7 +813,7 @@ function searchResultsCard(keyword: string, hits: SearchHit[], queryId: string):
       },
       {
         tag: 'button',
-        text: { tag: 'plain_text', content: `查看详情 ${i + 1}` },
+        text: { tag: 'plain_text', content: '查看详情' },
         type: 'default',
         value: { cmd: 'search.show', arg: `${queryId} ${i + 1}` },
       },
@@ -832,13 +833,14 @@ function searchResultsCard(keyword: string, hits: SearchHit[], queryId: string):
 }
 
 /** Card showing a single expanded search hit. */
-function searchDetailCard(roleLabel: string, content: string): object {
+function searchDetailCard(roleLabel: string, content: string, sessionId?: string): object {
+  const head = sessionId ? `${roleLabel}\n🆔 session: \`${sessionId}\`` : roleLabel;
   return {
     schema: '2.0',
     config: { summary: { content: '搜索详情' } },
     body: {
       elements: [
-        { tag: 'markdown', content: roleLabel },
+        { tag: 'markdown', content: head },
         { tag: 'hr' },
         { tag: 'markdown', content },
       ],

@@ -328,6 +328,23 @@ const RESUME_PAGE_SIZE = 5;
  * operator-only command, and correctness of the description matters more
  * than shaving a few ms off a 6MB log.
  */
+/**
+ * Extract the real user input from a user-message frame. Each user frame
+ * carries the full system prompt ("运行约定") plus a `<bridge_context>` block
+ * injected by the bridge; the actual user text sits AFTER the LAST
+ * `</bridge_context>`. Returns empty for system-prompt-only frames.
+ */
+function extractUserInput(text: string): string {
+  if (!text) return '';
+  const idx = text.lastIndexOf('</bridge_context>');
+  const body = idx >= 0 ? text.slice(idx + '</bridge_context>'.length).trim() : text.trim();
+  if (!body) return '';
+  // A frame that is ONLY the system prompt has nothing after the bridge
+  // context. If what's left still looks like prompt boilerplate, drop it.
+  if (body.startsWith('运行约定') || body.includes('你正在 feishu-omp-bridge 里运行')) return '';
+  return body;
+}
+
 async function listResumableSessions(): Promise<ResumeOption[]> {
   const dir = paths.ompSessionsDir;
   const out: ResumeOption[] = [];
@@ -339,6 +356,7 @@ async function listResumableSessions(): Promise<ResumeOption[]> {
         const text = await readFile(join(dir, name), 'utf8');
         let meta: SessionMeta | undefined;
         let lastAssistant = '';
+        let lastUserMessage = '';
         for (const line of text.split('\n')) {
           if (!meta && line.includes('"type":"session"')) {
             try {
@@ -354,12 +372,17 @@ async function listResumableSessions(): Promise<ResumeOption[]> {
               message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
             };
             const msg = frame.message;
-            if (msg?.role !== 'assistant') continue;
+            if (!msg?.role) continue;
             const textPart = (msg.content ?? [])
               .filter((c) => c.type === 'text' && c.text)
               .map((c) => c.text ?? '')
               .join('');
-            if (textPart.trim()) lastAssistant = textPart.trim();
+            if (msg.role === 'assistant') {
+              if (textPart.trim()) lastAssistant = textPart.trim();
+            } else if (msg.role === 'user') {
+              const real = extractUserInput(textPart);
+              if (real) lastUserMessage = real;
+            }
           } catch {
             /* skip malformed */
           }
@@ -370,6 +393,7 @@ async function listResumableSessions(): Promise<ResumeOption[]> {
           cwd: meta.cwd,
           timestamp: meta.timestamp ?? name,
           summary: lastAssistant,
+          lastMessage: lastUserMessage,
         });
       } catch {
         continue;

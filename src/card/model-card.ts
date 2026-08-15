@@ -281,6 +281,8 @@ export interface ResumeOption {
   /** Short description of what the conversation was about (last assistant
    * text reply). Absent for empty/short-lived sessions. */
   summary?: string;
+  /** The last real message the user sent in this session. */
+  lastMessage?: string;
 }
 
 /** Session picker card for `/resume`. */
@@ -305,9 +307,12 @@ export function resumeCard(
     const desc = s.summary ? summarize(s.summary) : '';
     const md = [
       desc ? `📝 ${desc}` : '📝 _（无描述）_',
+      s.lastMessage ? `💬 最后消息: ${summarize(s.lastMessage)}` : '',
       `🆔 \`${s.sessionId}\``,
       `📁 ${shortCwd(s.cwd)}`,
-    ].join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
     blocks.push(
       { tag: 'markdown', content: md },
       {

@@ -550,18 +550,31 @@ async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<vo
     }
     return;
   }
-  let cwd = match.cwd || homedir();
   // The historical session's cwd may point at a directory that no longer
   // exists (renamed / deleted since). Spawning omp in a missing cwd fails
-  // with ENOENT, so fall back to the chat's current cwd (or $HOME) and
-  // surface the change instead of failing silently.
+  // with ENOENT, so fall back through candidates — session cwd, the chat's
+  // current workspace cwd, then $HOME — taking the first one that exists.
+  let cwd = '';
   let cwdWarn = '';
-  try {
-    const st = await stat(cwd);
-    if (!st.isDirectory()) throw new Error('not a directory');
-  } catch {
-    cwdWarn = `会话原目录 \`${cwd}\` 已不存在,回退到当前工作目录。`;
-    cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+  const candidates: Array<{ path?: string; label: string }> = [
+    { path: match.cwd, label: `会话原目录 \`${match.cwd}\`` },
+    { path: ctx.workspaces.cwdFor(ctx.scope), label: '当前工作目录' },
+    { path: homedir(), label: `home 目录 \`${homedir()}\`` },
+  ];
+  for (const cand of candidates) {
+    if (!cand.path) continue;
+    let ok = false;
+    try {
+      ok = (await stat(cand.path)).isDirectory();
+    } catch {
+      ok = false;
+    }
+    if (!ok) continue;
+    cwd = cand.path;
+    if (cand.label !== `会话原目录 \`${match.cwd}\``) {
+      cwdWarn = `会话原目录 \`${match.cwd}\` 已不存在,回退到${cand.label}。`;
+    }
+    break;
   }
   // Interrupt any active run, then re-point this chat's session + cwd at
   // the historical session. resumeFor(scope, cwd) will match next run.

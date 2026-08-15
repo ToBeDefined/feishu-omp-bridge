@@ -379,19 +379,25 @@ export function resumeCancelledCard(): object {
   };
 }
 
-export function resumeSavedCard(sessionId: string, cwd: string): object {
+export function resumeSavedCard(
+  sessionId: string,
+  cwd: string,
+  context?: string,
+): object {
+  const content = [
+    `✅ **已恢复会话** \`${sessionId.slice(0, 8)}…\``,
+    `📁 cwd: \`${cwd}\``,
+    '',
+    '下一条消息从该会话继续。',
+  ];
+  if (context) {
+    content.push('', '---', '', context);
+  }
   return {
     schema: '2.0',
     config: { summary: { content: '会话已恢复' } },
     body: {
-      elements: [
-        {
-          tag: 'markdown',
-          content:
-            `✅ **已恢复会话** \`${sessionId.slice(0, 8)}…\`\n` +
-            `📁 cwd: \`${cwd}\`\n\n下一条消息从该会话继续。`,
-        },
-      ],
+      elements: [{ tag: 'markdown', content: content.join('\n') }],
     },
   };
 }

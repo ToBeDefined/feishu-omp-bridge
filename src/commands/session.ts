@@ -482,13 +482,15 @@ function applyResume(ctx: CommandContext, match: ResumeOption): void {
       const msgId = ctx.msg.messageId;
       void (async () => {
         await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-        await updateManagedCard(ctx.channel, msgId, resumeSavedCard(match.sessionId, match.cwd)).catch(
-          () => {},
-        );
+        await updateManagedCard(
+          ctx.channel,
+          msgId,
+          resumeSavedCard(match.sessionId, match.cwd, renderContext(ctx)),
+        ).catch(() => {});
         forgetManagedCard(msgId);
       })();
     } else {
-      void reply(ctx, '这个会话已经是当前会话。');
+      void reply(ctx, `这个会话已经是当前会话。\n\n---\n\n${renderContext(ctx)}`);
     }
     return;
   }
@@ -507,12 +509,17 @@ function applyResume(ctx: CommandContext, match: ResumeOption): void {
     const msgId = ctx.msg.messageId;
     void (async () => {
       await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, msgId, resumeSavedCard(match.sessionId, cwd)).catch(
-        () => {},
-      );
+      await updateManagedCard(
+        ctx.channel,
+        msgId,
+        resumeSavedCard(match.sessionId, cwd, renderContext(ctx)),
+      ).catch(() => {});
       forgetManagedCard(msgId);
     })();
   } else {
-    void reply(ctx, `✅ 已恢复会话 \`${match.sessionId.slice(0, 8)}…\`\n📁 cwd: \`${cwd}\`\n\n下一条消息从该会话继续。`);
+    void reply(
+      ctx,
+      `✅ 已恢复会话 \`${match.sessionId.slice(0, 8)}…\`\n📁 cwd: \`${cwd}\`\n\n下一条消息从该会话继续。\n\n---\n\n${renderContext(ctx)}`,
+    );
   }
 }

@@ -17,6 +17,7 @@ import {
   getAgentStopGraceMs,
   getMaxConcurrentRuns,
   getMessageReplyMode,
+  getOmpModel,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,
@@ -96,6 +97,7 @@ const handlers: Record<string, Handler> = {
   '/config': handleConfig,
   '/stop': handleStop,
   '/timeout': handleTimeout,
+  '/model': handleModel,
   '/ps': handlePs,
   '/exit': handleExit,
   '/doctor': handleDoctor,
@@ -108,18 +110,19 @@ const handlers: Record<string, Handler> = {
  * empty list = no restriction (every allowed user can run them — see
  * `isAdmin` in config/schema).
  */
-const ADMIN_COMMANDS = new Set([
-  '/account',
-  '/config',
-  '/exit',
-  '/reconnect',
-  '/doctor',
-  '/cd',
-  '/ws',
-]);
+const ADMIN_COMMANDS: Record<string, true> = {
+  '/account': true,
+  '/config': true,
+  '/model': true,
+  '/exit': true,
+  '/reconnect': true,
+  '/doctor': true,
+  '/cd': true,
+  '/ws': true,
+};
 
 function isAdminCommand(cmd: string): boolean {
-  return ADMIN_COMMANDS.has(cmd.startsWith('/') ? cmd : `/${cmd}`);
+  return ADMIN_COMMANDS[cmd.startsWith('/') ? cmd : `/${cmd}`] === true;
 }
 
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
@@ -411,6 +414,44 @@ async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
   ctx.sessions.setIdleTimeoutMinutes(ctx.scope, n);
   log.info('command', 'timeout-set', { scope: ctx.scope, minutes: n });
   await reply(ctx, `✅ 当前 session 探活已设为 ${n} 分钟。`);
+}
+
+async function handleModel(args: string, ctx: CommandContext): Promise<void> {
+  const trimmed = args.trim();
+  const cfg = ctx.controls.cfg;
+  const current = getOmpModel(cfg);
+  const formatCurrent = (): string => current ?? '跟随 OMP 默认';
+
+  // /model — show current model
+  if (!trimmed) {
+    await reply(
+      ctx,
+      `🤖 当前模型:${formatCurrent()}\n\n用法:\n- \`/model <id>\` 设置模型(如 \`futu/deepseek-v4-flash-0731\`)\n- \`/model reset\` 清除设置,回退 OMP 默认\n\n_注:对下一条消息立即生效,无需重启_`,
+    );
+    return;
+  }
+
+  if (trimmed === 'reset') {
+    if (!current) {
+      await reply(ctx, '本来就没设置过模型,一直跟随 OMP 默认。');
+      return;
+    }
+    cfg.preferences = { ...(cfg.preferences ?? {}), ompModel: undefined };
+    await saveConfig(cfg, ctx.controls.configPath);
+    log.info('command', 'model-reset', { scope: ctx.scope });
+    await reply(ctx, '✅ 已清除模型设置,回退 OMP 默认。下一条消息生效。');
+    return;
+  }
+
+  if (trimmed.startsWith('-') || /\s/.test(trimmed)) {
+    await reply(ctx, '❌ 用法:`/model <id>`(如 `futu/deepseek-v4-flash-0731`) / `/model reset`');
+    return;
+  }
+
+  cfg.preferences = { ...(cfg.preferences ?? {}), ompModel: trimmed };
+  await saveConfig(cfg, ctx.controls.configPath);
+  log.info('command', 'model-set', { scope: ctx.scope, model: trimmed });
+  await reply(ctx, `✅ 模型已设为 \`${trimmed}\`。下一条消息生效。`);
 }
 
 async function handlePs(_args: string, ctx: CommandContext): Promise<void> {

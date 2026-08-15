@@ -176,16 +176,25 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, cwd);
   ctx.sessions.clear(ctx.scope);
-  // If this came from the workspace panel's button, dismiss the panel — it
-  // now shows stale info (the switched-to entry would be marked current).
-  if (ctx.fromCardAction) {
-    await recallMessage(ctx, ctx.msg.messageId);
-  }
   const undoHint =
     prevCwd && prevCwd !== cwd
       ? `\n\n想撤回？发 \`/ws undo\` 回到 \`${prevCwd}\``
       : '';
-  await reply(ctx, `✅ 已切换到 \`${name}\` (${cwd})\n（session 已重置）${undoHint}`);
+  const confirm = `✅ 已切换到 \`${name}\` (${cwd})\n（session 已重置）${undoHint}`;
+  // When triggered from the panel button, send the confirmation as a
+  // standalone message (not threaded under the panel), then dismiss the
+  // panel. Threading under the panel and deleting the panel would take the
+  // confirmation down with it.
+  if (ctx.fromCardAction) {
+    try {
+      await ctx.channel.send(ctx.msg.chatId, { markdown: confirm });
+    } catch (err) {
+      log.fail('command', err, { step: 'ws-use-reply' });
+    }
+    await recallMessage(ctx, ctx.msg.messageId);
+  } else {
+    await reply(ctx, confirm);
+  }
 }
 
 async function handleWsRemove(name: string, ctx: CommandContext): Promise<void> {

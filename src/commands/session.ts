@@ -789,7 +789,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
             const idx = Number.parseInt(idxStr, 10);
             const context = contexts?.[idx - 1];
             const sessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
-            const full = context ? renderSearchContext(context, true) : '';
+            const full = context ? renderSearchContext(context, 'detail') : '';
             await updateManagedCard(
               ctx.channel,
               msgId,
@@ -842,7 +842,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       await reply(ctx, `无效的序号 \`${idx}\`。`);
       return;
     }
-    const full = renderSearchContext(context, true);
+    const full = renderSearchContext(context, 'detail');
     const sessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
     if (ctx.fromCardAction) {
       // Post the detail as a NEW message; the results list card stays in
@@ -891,13 +891,19 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
 
 /** Render one context window as a compact conversation snippet. The hit line
  * is prefixed with a marker. */
-function renderSearchContext(context: SearchContext, full = false): string {
+function renderSearchContext(context: SearchContext, mode: 'compact' | 'detail' = 'compact'): string {
   return context.messages
     .map((m, i) => {
       const icon = m.role === 'user' ? '🧑' : '🤖';
       const marker = i === context.hitIndex ? ' 📍' : '';
-      // Full mode shows much more of each message; hit line gets the most.
-      const max = full ? (i === context.hitIndex ? 500 : 200) : i === context.hitIndex ? 120 : 80;
+      const max =
+        mode === 'detail'
+          ? i === context.hitIndex
+            ? 500
+            : 200
+          : i === context.hitIndex
+            ? 60
+            : 40;
       const snippet = summarize(m.content, max);
       return `${icon}${marker} ${snippet}`;
     })
@@ -918,7 +924,7 @@ function searchResultsCard(
   const more = !done && contexts.length >= 6 ? '\n\n_（仅显示最近 6 个片段）_' : '';
   const blocks: object[] = [];
   contexts.forEach((ctx, i) => {
-    const preview = renderSearchContext(ctx);
+    const preview = `**#${i + 1}**\n${renderSearchContext(ctx)}`;
     blocks.push({ tag: 'markdown', content: preview });
     if (showButtons) {
       blocks.push(

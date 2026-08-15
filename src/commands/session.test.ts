@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CommandContext } from './index';
-import { renderContext } from './session';
+import { extractUserInput, renderContext } from './session';
 
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
   return {
@@ -131,5 +131,21 @@ describe('renderContext', () => {
     const out = renderContext(makeCtx());
     expect(out).not.toContain('最后消息');
     expect(out).not.toContain('最后回复');
+  });
+});
+
+
+describe('extractUserInput', () => {
+  it('extracts real user text after the last bridge context', () => {
+    expect(extractUserInput('<bridge_context>\nchat_id: oc_1\n</bridge_context>\n你是谁')).toBe('你是谁');
+  });
+
+  it('returns empty for system-prompt-only frames', () => {
+    const sys = '# feishu-omp-bridge 运行约定\n你正在 feishu-omp-bridge 里运行：把飞书消息桥到本地 omp。\n<bridge_context>\nchat_id: oc_1\n</bridge_context>';
+    expect(extractUserInput(sys)).toBe('');
+  });
+
+  it('returns empty for empty input', () => {
+    expect(extractUserInput('')).toBe('');
   });
 });

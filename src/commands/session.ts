@@ -30,6 +30,7 @@ export const sessionHandlers: Record<string, Handler> = {
   '/context': handleContext,
   '/resume': handleResume,
   '/session': handleResume,
+  '/search': handleSearch,
 };
 
 async function handleNew(args: string, ctx: CommandContext): Promise<void> {
@@ -297,9 +298,9 @@ function formatLastSeen(ts: number | undefined): string {
 }
 
 /** Compact text for a one-line display: collapse whitespace, cap length. */
-function summarize(text: string): string {
+function summarize(text: string, max = 48): string {
   const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > 48 ? `${flat.slice(0, 48)}…` : flat;
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
 function formatClock(ts: number | undefined): string {
@@ -404,7 +405,7 @@ const RESUME_PAGE_SIZE = 5;
  * injected by the bridge; the actual user text sits AFTER the LAST
  * `</bridge_context>`. Returns empty for system-prompt-only frames.
  */
-function extractUserInput(text: string): string {
+export function extractUserInput(text: string): string {
   if (!text) return '';
   const idx = text.lastIndexOf('</bridge_context>');
   const body = idx >= 0 ? text.slice(idx + '</bridge_context>'.length).trim() : text.trim();
@@ -669,4 +670,88 @@ async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<vo
       `✅ 已恢复会话 \`${match.sessionId}\`\n📁 cwd: \`${cwd}\`${warnBlock}\n下一条消息从该会话继续。\n\n---\n\n${renderContext(ctx, summary)}`,
     );
   }
+}
+
+interface SearchHit {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp?: string;
+}
+
+/** Search the current session's history for messages matching `keyword`.
+ * Returns matches newest-first, capped at `limit`. */
+async function searchSession(
+  sessionId: string,
+  keyword: string,
+  limit = 8,
+): Promise<SearchHit[]> {
+  const needle = keyword.toLowerCase();
+  const hits: SearchHit[] = [];
+  try {
+    const entries = await readdir(paths.ompSessionsDir);
+    for (const name of entries) {
+      if (!name.endsWith('.jsonl')) continue;
+      const text = await readFile(join(paths.ompSessionsDir, name), 'utf8');
+      // Only scan the file that belongs to this session.
+      if (!text.includes(`"id":"${sessionId}"`)) continue;
+      for (const line of text.split('\n')) {
+        if (!line.includes('"type":"message"')) continue;
+        try {
+          const frame = JSON.parse(line) as {
+            timestamp?: string;
+            message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
+          };
+          const msg = frame.message;
+          if (!msg?.role) continue;
+          const textPart = (msg.content ?? [])
+            .filter((c) => c.type === 'text' && c.text)
+            .map((c) => c.text ?? '')
+            .join('');
+          if (!textPart) continue;
+          if (msg.role === 'assistant') {
+            if (textPart.toLowerCase().includes(needle)) {
+              hits.push({ role: 'assistant', content: textPart.trim(), timestamp: frame.timestamp });
+            }
+          } else if (msg.role === 'user') {
+            const real = extractUserInput(textPart);
+            if (real && real.toLowerCase().includes(needle)) {
+              hits.push({ role: 'user', content: real, timestamp: frame.timestamp });
+            }
+          }
+        } catch {
+          /* skip malformed */
+        }
+      }
+      break; // found the session file
+    }
+  } catch {
+    /* fall through to empty */
+  }
+  hits.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''));
+  return hits.slice(0, limit);
+}
+
+async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
+  const keyword = args.trim();
+  if (!keyword) {
+    await reply(ctx, '用法：`/search <关键词>` — 在当前会话历史中检索。');
+    return;
+  }
+  const sess = ctx.sessions.getRaw(ctx.scope);
+  if (!sess?.sessionId) {
+    await reply(ctx, '当前还没有会话历史可搜索。');
+    return;
+  }
+  const hits = await searchSession(sess.sessionId, keyword);
+  if (hits.length === 0) {
+    await reply(ctx, `未找到包含 \`${keyword}\` 的消息。`);
+    return;
+  }
+  const lines = hits.map((h, i) => {
+    const icon = h.role === 'user' ? '🧑' : '🤖';
+    const snippet = summarize(h.content, 80);
+    return `${icon} ${i + 1}. ${snippet}`;
+  });
+  const more = hits.length >= 8 ? '\n\n（结果较多，仅显示最近 8 条）' : '';
+  await reply(ctx, `🔍 搜索 \`${keyword}\`：找到 ${hits.length} 条\n\n${lines.join('\n')}${more}`);
 }

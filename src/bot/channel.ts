@@ -413,6 +413,13 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     return;
   }
 
+  // Instant "got it" ack: add a Typing reaction the moment a message
+  // passes access control, so the user knows it was received — for plain
+  // messages (while we debounce / wait for a run slot), slash commands
+  // (before the reply card lands), and mid-run follow-ups alike. Left in
+  // place permanently as a receipt.
+  await addWorkingReaction(channel, msg.messageId);
+
   const handled = await tryHandleCommand({
     channel,
     msg,
@@ -434,13 +441,6 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     log.info('intake', 'submitted-active-run', { scope });
     return;
   }
-
-  // Instant "got it" ack: add a Typing reaction the moment a message is
-  // queued, so the user knows it was received even while we debounce /
-  // wait for a run slot. Removed when the batch actually starts replying.
-  // Slash commands already answer with a card immediately, so they skip
-  // this (their own reply is the ack).
-  await addWorkingReaction(channel, msg.messageId);
 
   const size = pending.push(scope, msg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });

@@ -300,23 +300,35 @@ export function resumeCard(
     '',
     '选择要恢复的历史会话。',
   ];
-  // Each session is one table row (folder, last message, last reply) with a
-  // row number; a matching row of "切换 N" buttons sits right below. Feishu
-  // card markdown renders tables, but buttons can't live in table cells, so
-  // the numbered button row maps 1:1 to table rows.
-  const header = '| # | 文件夹 | 最后消息 | 最后回复 |\n|---|---|---|---|';
-  const rows = sessions.map((s, i) => {
-    const folder = shortCwd(s.cwd);
-    const lastMsg = s.lastMessage ? summarize(s.lastMessage) : '—';
-    const lastReply = s.summary ? summarize(s.summary) : '—';
-    return `| ${i + 1} | ${folder} | ${lastMsg} | ${lastReply} |`;
-  });
-  const switchButtons = sessions.map((s, i) => ({
-    tag: 'button',
-    text: { tag: 'plain_text', content: `切换 ${i + 1}` },
-    type: 'default',
-    value: { cmd: 'resume.use', arg: s.sessionId },
-  }));
+  // Each session renders as a structured description block (folder, last
+  // message, last reply, id) followed by a single switch button. The current
+  // session gets a marker and a disabled-looking state (it's already active).
+  const blocks: object[] = [];
+  for (const s of sessions) {
+    const isCurrent = current !== undefined && s.sessionId === current;
+    const desc = s.summary ? summarize(s.summary) : '';
+    const md = [
+      isCurrent ? '⭐ **当前会话**' : '',
+      `📁 ${shortCwd(s.cwd)}`,
+      s.lastMessage ? `💬 最后消息: ${summarize(s.lastMessage)}` : '',
+      desc ? `📝 最后回复: ${desc}` : '',
+      `🆔 \`${s.sessionId}\``,
+    ]
+      .filter(Boolean)
+      .join('\n');
+    blocks.push(
+      { tag: 'markdown', content: md },
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: isCurrent ? '已在当前' : '切换到该会话' },
+        type: isCurrent ? 'primary' : 'default',
+        // Keep the value so the click still resolves to this session, but a
+        // current-session switch is a no-op in applyResume.
+        value: { cmd: 'resume.use', arg: s.sessionId },
+      },
+      { tag: 'hr' },
+    );
+  }
   const remaining = Math.max(0, total - (offset + sessions.length));
   const pageSize = sessions.length;
   const footer: object[] = [];
@@ -350,10 +362,9 @@ export function resumeCard(
       elements: [
         { tag: 'markdown', content: lines.join('\n') },
         { tag: 'hr' },
-        { tag: 'markdown', content: [header, ...rows].join('\n') },
-        ...switchButtons,
+        ...blocks,
         ...(footer.length > 0
-          ? [{ tag: 'hr' }, { tag: 'markdown', content: `_${rangeInfo}_` }, ...footer]
+          ? [{ tag: 'markdown', content: `_${rangeInfo}_` }, ...footer]
           : []),
       ],
     },

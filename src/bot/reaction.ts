@@ -1,20 +1,11 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
 import { log } from '../core/logger';
 
-/** Ack reactions registered per message id, so the batch runner can remove
- * the intake ack once it actually starts replying. */
-const ackByMessageId = new Map<string, string>();
-
 /**
- * Add a "Typing" reaction (敲键盘) to a message to give text-mode users an
- * instant "I got your message and I'm responding" cue while OMP is still
- * thinking. Matches the conventional Feishu UX for "the other side is
- * replying". Card mode doesn't need this — the streaming card already
- * shows a "正在思考…" footer the moment it's posted.
- *
- * Returns the reaction id on success, undefined on any failure. Failures
- * are logged but never thrown — losing a decoration must not break the
- * actual reply flow.
+ * Add a "Typing" reaction (敲键盘) to a message as an instant "I got your
+ * message" ack the moment it's queued. Left in place afterwards as a
+ * persistent receipt — never removed. Failures are logged but never thrown
+ * — losing a decoration must not break the actual reply flow.
  */
 export async function addWorkingReaction(
   channel: LarkChannel,
@@ -26,10 +17,7 @@ export async function addWorkingReaction(
       data: { reaction_type: { emoji_type: 'Typing' } },
     })) as { data?: { reaction_id?: string } };
     const id = r?.data?.reaction_id;
-    if (id) {
-      ackByMessageId.set(messageId, id);
-      log.info('reaction', 'added', { messageId, reactionId: id });
-    }
+    if (id) log.info('reaction', 'added', { messageId, reactionId: id });
     return id;
   } catch (err) {
     log.warn('reaction', 'add-failed', {
@@ -37,38 +25,6 @@ export async function addWorkingReaction(
       err: err instanceof Error ? err.message : String(err),
     });
     return undefined;
-  }
-}
-
-/** Remove and forget the intake ack reaction for a message, if any. */
-export async function clearAckReaction(
-  channel: LarkChannel,
-  messageId: string,
-): Promise<void> {
-  const reactionId = ackByMessageId.get(messageId);
-  if (!reactionId) return;
-  ackByMessageId.delete(messageId);
-  await removeReaction(channel, messageId, reactionId);
-}
-
-/** Remove a previously-added reaction. Tolerates errors silently — best
- * effort cleanup; a leftover reaction is harmless. */
-export async function removeReaction(
-  channel: LarkChannel,
-  messageId: string,
-  reactionId: string,
-): Promise<void> {
-  try {
-    await channel.rawClient.im.v1.messageReaction.delete({
-      path: { message_id: messageId, reaction_id: reactionId },
-    });
-    log.info('reaction', 'removed', { messageId, reactionId });
-  } catch (err) {
-    log.warn('reaction', 'remove-failed', {
-      messageId,
-      reactionId,
-      err: err instanceof Error ? err.message : String(err),
-    });
   }
 }
 

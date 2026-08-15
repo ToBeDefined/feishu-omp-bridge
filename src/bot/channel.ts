@@ -47,7 +47,7 @@ import { configureNetwork } from './network-config';
 import { PendingQueue } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, renderQuotedBlock, type QuotedContext } from './quote';
-import { addWorkingReaction, clearAckReaction } from './reaction';
+import { addWorkingReaction } from './reaction';
 
 const DEBOUNCE_MS = 600;
 
@@ -637,13 +637,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       }
     },
   };
-
-  // The intake ack reaction (added the moment each message was queued) has
-  // served its purpose — the actual reply is about to start. Clear it now;
-  // card mode's "正在思考…" footer takes over as the ongoing signal.
-  for (const m of batch) {
-    await clearAckReaction(channel, m.messageId).catch(() => {});
-  }
 
   try {
     if (replyMode === 'card') {

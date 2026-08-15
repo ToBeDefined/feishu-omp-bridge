@@ -1,4 +1,6 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
+import { readFile } from 'node:fs/promises';
+import { basename, extname } from 'node:path';
 import type { AgentHostTool, AgentHostUriScheme } from '../agent/types';
 import { fetchQuotedContext } from './quote';
 
@@ -25,6 +27,7 @@ export function createFeishuHostIntegration(
       sendMessageTool(channel, ctx),
       replyMessageTool(channel, ctx),
       getMessageTool(channel),
+      sendFileTool(channel, ctx),
     ],
     uriSchemes: [feishuUriScheme(channel, ctx)],
   };
@@ -103,6 +106,73 @@ function getMessageTool(channel: LarkChannel): AgentHostTool {
       const message = await fetchQuotedContext(channel, messageId);
       if (!message) return { result: textResult(`message not found or inaccessible: ${messageId}`), isError: true };
       return { result: jsonResult(message) };
+    },
+  };
+}
+
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
+// File types accepted by im.v1.file.create; anything else falls back to
+// 'stream' (which covers most binary payloads).
+const FILE_TYPES: Record<string, string> = {
+  '.opus': 'opus',
+  '.mp4': 'mp4',
+  '.pdf': 'pdf',
+  '.doc': 'doc',
+  '.docx': 'doc',
+  '.xls': 'xls',
+  '.xlsx': 'xls',
+  '.ppt': 'ppt',
+  '.pptx': 'ppt',
+};
+
+function sendFileTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTool {
+  return {
+    definition: {
+      name: 'feishu_send_file',
+      label: 'Send Feishu file or image',
+      description:
+        'Upload a local file or image and send it to the current Feishu chat (or a specified chat_id). Use this to deliver generated artifacts — reports, screenshots, logs, source files — back to the user. Images are sent as images; other files are sent as attachments.',
+      parameters: objectSchema({
+        path: { type: 'string', description: 'Local filesystem path to the file to send.' },
+        fileName: { type: 'string', description: 'Optional display file name. Defaults to the basename of path.' },
+        chatId: { type: 'string', description: 'Optional target chat_id. Defaults to the current chat.' },
+      }, ['path']),
+    },
+    async execute(args) {
+      const path = requiredString(args, 'path');
+      const fileName = optionalString(args, 'fileName') ?? basename(path);
+      const chatId = optionalString(args, 'chatId') ?? ctx.chatId;
+      const buffer = await readFile(path);
+      if (buffer.length === 0) throw new Error(`cannot send empty file: ${path}`);
+      const ext = extname(path).toLowerCase();
+
+      if (IMAGE_EXTS.has(ext)) {
+        // Images upload via im.v1.image.create and are sent as an image
+        // message (the client can preview them inline).
+        const up = await channel.rawClient.im.v1.image.create({
+          data: { image_type: 'message', image: buffer },
+        });
+        const imageKey = up?.image_key;
+        if (!imageKey) throw new Error('image upload returned no image_key');
+        await channel.rawClient.im.v1.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: { receive_id: chatId, msg_type: 'image', content: JSON.stringify({ image_key: imageKey }) },
+        });
+        return { result: textResult(`sent image ${fileName} to ${chatId}`) };
+      }
+
+      // Non-image files upload via im.v1.file.create and are sent as a
+      // 'file' message attachment.
+      const up = await channel.rawClient.im.v1.file.create({
+        data: { file_type: (FILE_TYPES[ext] ?? 'stream') as 'stream', file_name: fileName, file: buffer },
+      });
+      const fileKey = up?.file_key;
+      if (!fileKey) throw new Error('file upload returned no file_key');
+      await channel.rawClient.im.v1.message.create({
+        params: { receive_id_type: 'chat_id' },
+        data: { receive_id: chatId, msg_type: 'file', content: JSON.stringify({ file_key: fileKey }) },
+      });
+      return { result: textResult(`sent file ${fileName} to ${chatId}`) };
     },
   };
 }

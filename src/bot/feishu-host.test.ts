@@ -26,6 +26,7 @@ describe('createFeishuHostIntegration', () => {
       'feishu_send_message',
       'feishu_reply_message',
       'feishu_get_message',
+      'feishu_send_file',
     ]);
     expect(host.uriSchemes[0]?.definition.scheme).toBe('feishu');
 
@@ -44,8 +45,7 @@ describe('createFeishuHostIntegration', () => {
     ]);
   });
 
-  it('serves current context through feishu URI scheme', async () => {
-    const host = createFeishuHostIntegration(fakeChannel([]), {
+  it('serves current context through feishu URI scheme', async () => {    const host = createFeishuHostIntegration(fakeChannel([]), {
       scope: 'chat-1',
       chatId: 'chat-1',
       cwd: '/repo',
@@ -57,5 +57,49 @@ describe('createFeishuHostIntegration', () => {
     await expect(host.uriSchemes[0]!.handle({ operation: 'write', url: 'feishu://current/context' })).resolves.toMatchObject({
       isError: true,
     });
+  });
+});
+
+describe('feishu_send_file', () => {
+  it('uploads images via image.create and sends an image message', async () => {
+    const sent: unknown[] = [];
+    const uploaded: unknown[] = [];
+    const channel = {
+      send: async (...args: unknown[]) => sent.push(args),
+      rawClient: {
+        im: {
+          v1: {
+            image: { create: async (p: unknown) => { uploaded.push(p); return { image_key: 'img_1' }; } },
+            file: { create: async () => { throw new Error('should not call file for images'); } },
+            message: { create: async (p: unknown) => { sent.push(p); return {}; } },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+    const host = createFeishuHostIntegration(channel, { scope: 's', chatId: 'chat-1', cwd: '/x' });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_send_file')!;
+    const tmp = '/tmp/test-image.png';
+    await import('node:fs/promises').then((fs) => fs.writeFile(tmp, Buffer.from([0x89, 0x50, 0x4e, 0x47])));
+    const res = await tool.execute({ path: tmp });
+    expect(JSON.stringify(res.result)).toContain('sent image');
+    const up = uploaded[0] as { data: { image_type: string; image: Buffer } };
+    expect(up.data.image_type).toBe('message');
+    const msg = sent[0] as { data: { msg_type: string; content: string } };
+    expect(msg.data.msg_type).toBe('image');
+    expect(JSON.parse(msg.data.content).image_key).toBe('img_1');
+    await import('node:fs/promises').then((fs) => fs.rm(tmp, { force: true }));
+  });
+
+  it('rejects empty files', async () => {
+    const channel = {
+      send: async () => {},
+      rawClient: { im: { v1: {} } },
+    } as unknown as LarkChannel;
+    const host = createFeishuHostIntegration(channel, { scope: 's', chatId: 'chat-1', cwd: '/x' });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_send_file')!;
+    const tmp = '/tmp/test-empty.png';
+    await import('node:fs/promises').then((fs) => fs.writeFile(tmp, Buffer.alloc(0)));
+    await expect(tool.execute({ path: tmp })).rejects.toThrow('empty file');
+    await import('node:fs/promises').then((fs) => fs.rm(tmp, { force: true }));
   });
 });

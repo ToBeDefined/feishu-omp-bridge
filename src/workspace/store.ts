@@ -12,6 +12,10 @@ export class WorkspaceStore {
   private data: WorkspaceData = { chats: {}, named: {} };
   private saving: Promise<void> = Promise.resolve();
   private readonly path: string;
+  /** In-memory record of the cwd that was in effect before the last switch,
+   * keyed by chat. Lets /ws undo roll a switch back. Not persisted — undo is
+   * only meaningful within the bridge process lifetime. */
+  private undoStack = new Map<string, string>();
 
   constructor(path: string = paths.workspacesFile) {
     this.path = path;
@@ -38,6 +42,21 @@ export class WorkspaceStore {
   setCwd(chatId: string, cwd: string): void {
     this.data.chats[chatId] = { cwd };
     this.schedulePersist();
+  }
+
+  /** Remember the cwd that was current before a switch, for /ws undo. */
+  rememberPreviousCwd(chatId: string, cwd: string): void {
+    this.undoStack.set(chatId, cwd);
+  }
+
+  /** The cwd to roll back to after the last switch, if any. */
+  undoTarget(chatId: string): string | undefined {
+    return this.undoStack.get(chatId);
+  }
+
+  /** Clear the undo target for a chat (after an undo, or on /new etc.). */
+  clearUndo(chatId: string): void {
+    this.undoStack.delete(chatId);
   }
 
   listNamed(): Record<string, string> {

@@ -128,6 +128,8 @@ async function handleWs(args: string, ctx: CommandContext): Promise<void> {
     case 'remove':
     case 'rm':
       return handleWsRemove(name, ctx);
+    case 'undo':
+      return handleWsUndo(ctx);
     case 'cancel':
       if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
       return;
@@ -167,10 +169,18 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
     await reply(ctx, `未找到工作空间：\`${name}\``);
     return;
   }
+  const prevCwd = ctx.workspaces.cwdFor(ctx.scope);
+  if (prevCwd && prevCwd !== cwd) {
+    ctx.workspaces.rememberPreviousCwd(ctx.scope, prevCwd);
+  }
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, cwd);
   ctx.sessions.clear(ctx.scope);
-  await reply(ctx, `✓ 已切换到 \`${name}\` (${cwd})\n（session 已重置）`);
+  const undoHint =
+    prevCwd && prevCwd !== cwd
+      ? `\n\n想撤回？发 \`/ws undo\` 回到 \`${prevCwd}\``
+      : '';
+  await reply(ctx, `✓ 已切换到 \`${name}\` (${cwd})\n（session 已重置）${undoHint}`);
 }
 
 async function handleWsRemove(name: string, ctx: CommandContext): Promise<void> {
@@ -183,6 +193,19 @@ async function handleWsRemove(name: string, ctx: CommandContext): Promise<void> 
     return;
   }
   await reply(ctx, `✓ 已删除工作空间：\`${name}\``);
+}
+
+async function handleWsUndo(ctx: CommandContext): Promise<void> {
+  const target = ctx.workspaces.undoTarget(ctx.scope);
+  if (!target) {
+    await reply(ctx, '没有可撤回的工作区切换（之前没用 `/ws use` 切换过）。');
+    return;
+  }
+  ctx.activeRuns.interrupt(ctx.scope);
+  ctx.workspaces.setCwd(ctx.scope, target);
+  ctx.workspaces.clearUndo(ctx.scope);
+  ctx.sessions.clear(ctx.scope);
+  await reply(ctx, `↩️ 已撤回工作区切换，回到 \`${target}\`\n（session 已重置）`);
 }
 
 async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {

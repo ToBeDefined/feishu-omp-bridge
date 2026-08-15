@@ -275,7 +275,7 @@ export function renderContext(ctx: CommandContext): string {
   const named = Object.keys(ctx.workspaces.listNamed());
   const scopeLine =
     ctx.chatMode === 'topic' ? `\`${ctx.scope}\`（话题独立会话）` : `\`${ctx.scope}\``;
-  const sessionLine = sess?.sessionId ? `\`${sess.sessionId.slice(0, 8)}…\`` : '（无，下条消息新建）';
+  const sessionLine = sess?.sessionId ? `\`${sess.sessionId}\`` : '（无，下条消息新建）';
   const runningLine = running ? '有任务正在执行' : '空闲，等待指令';
   const modelLine = model ? `\`${model}\`` : '跟随 OMP 默认';
   const thinkingLine = thinking ? `\`${thinking}\`` : '跟随 OMP 默认';

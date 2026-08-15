@@ -48,7 +48,7 @@ describe('renderContext', () => {
     const out = renderContext(makeCtx());
     expect(out).toContain('聊天窗口');
     expect(out).toContain('/home/proj');
-    expect(out).toContain('019f0000'); // truncated session id
+    expect(out).toContain('019f0000-0000-7000-0000-000000000000'); // full session id
     expect(out).toContain('futu/deepseek-v4-flash-0731');
     expect(out).toContain('high');
   });

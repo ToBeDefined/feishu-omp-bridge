@@ -214,6 +214,25 @@ export async function runStart(opts: StartOptions): Promise<void> {
     );
   }
 
+  // Startup notification: after a (re)start the bot is back online — tell
+  // every chat with a persisted session so the user isn't left guessing.
+  // Best-effort; failures (chat gone, no permission) are logged, never fatal.
+  for (const chatId of sessions.chats()) {
+    try {
+      await bridge.channel.send(
+        chatId,
+        { markdown: '🔄 **bot 已重启**\n\n已重新上线,可以继续聊天。' },
+        {},
+      );
+      log.info('notify', 'restarted', { chatId });
+    } catch (err) {
+      log.warn('notify', 'restart-failed', {
+        chatId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   process.on('SIGINT', () => void stop('SIGINT'));
   process.on('SIGTERM', () => void stop('SIGTERM'));
   // Last-ditch sync unregister in case something exits without going through

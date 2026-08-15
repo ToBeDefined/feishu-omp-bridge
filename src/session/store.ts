@@ -63,6 +63,11 @@ export class SessionStore {
    * Sessions recorded in a different cwd are stale — OMP can't resume
    * them from a different working directory.
    */
+  /** All chat ids with a persisted session entry (for startup notifications). */
+  chats(): string[] {
+    return Object.keys(this.data);
+  }
+
   resumeFor(chatId: string, cwd: string): string | undefined {
     const entry = this.data[chatId];
     if (!entry) return undefined;

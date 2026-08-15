@@ -109,12 +109,23 @@ function renderSearchContext(context: SearchContext, mode: 'compact' | 'detail' 
       const role = m.role === 'user' ? '🧑 **你**' : '🤖 **助手**';
       const marker = i === context.hitIndex ? '📍' : '';
       const max = mode === 'detail' ? 2000 : i === context.hitIndex ? 60 : 40;
-      const snippet = summarize(m.content, max);
+      // Escape markdown header markers (# at line start) so message content
+      // that happens to start with "# Foo" isn't rendered as a huge heading.
+      const escaped = escapeSearchContent(summarize(m.content, max));
       // Markdown: role label on its own line, message content as a block
       // quote so longer snippets wrap nicely and stay visually grouped.
-      return `${marker}${role}\n> ${snippet}`;
+      return `${marker}${role}\n> ${escaped}`;
     })
     .join('\n\n');
+}
+
+/** Escape line-leading `#` (and stray `>` that could nest quotes) in
+ * untrusted message content before embedding into card markdown. */
+function escapeSearchContent(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => (line.startsWith('#') || line.startsWith('>') ? `\\${line}` : line))
+    .join('\n');
 }
 
 function workspaceLabel(ctx: CommandContext, cwd: string): string {

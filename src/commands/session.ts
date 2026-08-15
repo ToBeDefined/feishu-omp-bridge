@@ -529,35 +529,18 @@ async function showResumePage(ctx: CommandContext, offset: number): Promise<void
   );
 }
 
-async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<void> {
-  const currentId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
-  if (currentId && match.sessionId === currentId) {
-    log.info('command', 'resume-already-current', { scope: ctx.scope, sessionId: match.sessionId });
-    const summary = await loadSessionSummary(match.sessionId);
-    if (ctx.fromCardAction) {
-      const msgId = ctx.msg.messageId;
-      void (async () => {
-        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-        await updateManagedCard(
-          ctx.channel,
-          msgId,
-          resumeSavedCard(match.sessionId, match.cwd, renderContext(ctx, summary)),
-        ).catch(() => {});
-        forgetManagedCard(msgId);
-      })();
-    } else {
-      void reply(ctx, `这个会话已经是当前会话。\n\n---\n\n${renderContext(ctx, summary)}`);
-    }
-    return;
-  }
-  // The historical session's cwd may point at a directory that no longer
-  // exists (renamed / deleted since). Spawning omp in a missing cwd fails
-  // with ENOENT, so fall back through candidates — session cwd, the chat's
-  // current workspace cwd, then $HOME — taking the first one that exists.
-  let cwd = '';
-  let cwdWarn = '';
+/**
+ * Resolve the working directory to use for a resumed session. The session's
+ * recorded cwd may point at a deleted/renamed directory; spawning omp there
+ * fails with ENOENT. Walk candidates — session cwd, the chat's current
+ * workspace cwd, then $HOME — and take the first that exists.
+ */
+async function resolveSafeCwd(
+  ctx: CommandContext,
+  sessionCwd: string,
+): Promise<{ cwd: string; warn: string }> {
   const candidates: Array<{ path?: string; label: string }> = [
-    { path: match.cwd, label: `会话原目录 \`${match.cwd}\`` },
+    { path: sessionCwd, label: `会话原目录 \`${sessionCwd}\`` },
     { path: ctx.workspaces.cwdFor(ctx.scope), label: '当前工作目录' },
     { path: homedir(), label: `home 目录 \`${homedir()}\`` },
   ];
@@ -570,11 +553,43 @@ async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<vo
       ok = false;
     }
     if (!ok) continue;
-    cwd = cand.path;
-    if (cand.label !== `会话原目录 \`${match.cwd}\``) {
-      cwdWarn = `会话原目录 \`${match.cwd}\` 已不存在,回退到${cand.label}。`;
+    const warn =
+      cand.label !== `会话原目录 \`${sessionCwd}\``
+        ? `会话原目录 \`${sessionCwd}\` 已不存在,回退到${cand.label}。`
+        : '';
+    return { cwd: cand.path, warn };
+  }
+  return { cwd: homedir(), warn: '' }; // unreachable — homedir exists
+}
+
+async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<void> {
+  const currentId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
+  const isCurrent = currentId !== undefined && match.sessionId === currentId;
+  // Always resolve a safe cwd — even for the current session, its recorded
+  // cwd may have been deleted since, which would still break the next spawn.
+  const { cwd, warn } = await resolveSafeCwd(ctx, match.cwd || homedir());
+  if (isCurrent) {
+    log.info('command', 'resume-already-current', { scope: ctx.scope, sessionId: match.sessionId, cwd });
+    if (cwd !== match.cwd) {
+      ctx.workspaces.setCwd(ctx.scope, cwd);
     }
-    break;
+    const summary = await loadSessionSummary(match.sessionId);
+    const warnBlock = warn ? `\n⚠️ ${warn}\n` : '';
+    if (ctx.fromCardAction) {
+      const msgId = ctx.msg.messageId;
+      void (async () => {
+        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+        await updateManagedCard(
+          ctx.channel,
+          msgId,
+          resumeSavedCard(match.sessionId, cwd, `${warnBlock}${renderContext(ctx, summary)}`),
+        ).catch(() => {});
+        forgetManagedCard(msgId);
+      })();
+    } else {
+      void reply(ctx, `这个会话已经是当前会话。${warnBlock}\n\n---\n\n${renderContext(ctx, summary)}`);
+    }
+    return;
   }
   // Interrupt any active run, then re-point this chat's session + cwd at
   // the historical session. resumeFor(scope, cwd) will match next run.
@@ -585,10 +600,10 @@ async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<vo
     scope: ctx.scope,
     sessionId: match.sessionId,
     cwd,
-    cwdWarn: cwdWarn || undefined,
+    cwdWarn: warn || undefined,
   });
   const summary = await loadSessionSummary(match.sessionId);
-  const warnBlock = cwdWarn ? `\n⚠️ ${cwdWarn}\n` : '';
+  const warnBlock = warn ? `\n⚠️ ${warn}\n` : '';
   if (ctx.fromCardAction) {
     const msgId = ctx.msg.messageId;
     void (async () => {
@@ -603,7 +618,7 @@ async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<vo
   } else {
     void reply(
       ctx,
-      `✅ 已恢复会话 \`${match.sessionId.slice(0, 8)}…\`\n📁 cwd: \`${cwd}\`${warnBlock}\n下一条消息从该会话继续。\n\n---\n\n${renderContext(ctx, summary)}`,
+      `✅ 已恢复会话 \`${match.sessionId}\`\n📁 cwd: \`${cwd}\`${warnBlock}\n下一条消息从该会话继续。\n\n---\n\n${renderContext(ctx, summary)}`,
     );
   }
 }

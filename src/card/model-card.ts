@@ -385,7 +385,7 @@ export function resumeSavedCard(
   context?: string,
 ): object {
   const content = [
-    `✅ **已恢复会话** \`${sessionId.slice(0, 8)}…\``,
+    `✅ **已恢复会话** \`${sessionId}\``,
     `📁 cwd: \`${cwd}\``,
     '',
     '下一条消息从该会话继续。',

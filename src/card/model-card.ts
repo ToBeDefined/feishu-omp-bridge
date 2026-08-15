@@ -138,16 +138,113 @@ export function modelSelectCard(
   };
 }
 
-/** Post-set confirmation card. */
-export function modelSavedCard(model: string): object {
+/** Post-set confirmation card. Shows the new model and current thinking. */
+export function modelSavedCard(model: string, thinking?: string): object {
+  const lines = [`✅ **模型已设为** \`${model}\``];
+  lines.push(`🧠 **思考强度**:${thinking ? `\`${thinking}\`` : '_跟随 OMP 默认_'}`);
+  lines.push('', '下一条消息生效。');
   return {
     schema: '2.0',
     config: { summary: { content: '模型已切换' } },
+    body: { elements: [{ tag: 'markdown', content: lines.join('\n') }] },
+  };
+}
+
+/** Thinking level picker form card. */
+export function thinkingCard(current?: string): object {
+  const levels = [
+    'auto',
+    'off',
+    'minimal',
+    'low',
+    'medium',
+    'high',
+    'xhigh',
+    'max',
+  ];
+  return {
+    schema: '2.0',
+    config: { summary: { content: '切换思考强度' } },
     body: {
       elements: [
-        { tag: 'markdown', content: `✅ **模型已设为** \`${model}\`\n\n下一条消息生效。` },
+        {
+          tag: 'markdown',
+          content:
+            `🧠 **思考强度**\n` +
+            `当前:` + (current ? `\`${current}\`` : '_跟随 OMP 默认_') +
+            `\n\n_只作用于当前模型,不影响模型切换_`,
+        },
+        { tag: 'hr' },
+        {
+          tag: 'form',
+          name: 'thinking_form',
+          elements: [
+            {
+              tag: 'select_static',
+              name: 'thinking_level',
+              initial_option: current ?? 'auto',
+              options: levels.map((lv) => ({
+                text: { tag: 'plain_text', content: lv },
+                value: lv,
+              })),
+            },
+            {
+              tag: 'column_set',
+              flex_mode: 'flow',
+              horizontal_spacing: 'small',
+              columns: [
+                {
+                  tag: 'column',
+                  width: 'auto',
+                  elements: [
+                    {
+                      tag: 'button',
+                      name: 'submit_btn',
+                      text: { tag: 'plain_text', content: '切换' },
+                      type: 'primary',
+                      form_action_type: 'submit',
+                      behaviors: [{ type: 'callback', value: { cmd: 'thinking.submit' } }],
+                    },
+                  ],
+                },
+                {
+                  tag: 'column',
+                  width: 'auto',
+                  elements: [
+                    {
+                      tag: 'button',
+                      name: 'cancel_btn',
+                      text: { tag: 'plain_text', content: '取消' },
+                      behaviors: [{ type: 'callback', value: { cmd: 'thinking.cancel' } }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
       ],
     },
+  };
+}
+
+export function thinkingSavedCard(level: string): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '思考强度已切换' } },
+    body: {
+      elements: [
+        { tag: 'markdown', content: `✅ **思考强度已设为** \`${level}\`\n\n下一条消息生效。` },
+      ],
+    },
+  };
+}
+
+export function thinkingCancelledCard(): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '已取消' } },
+    body: { elements: [{ tag: 'markdown', content: '已取消,未做修改。' }] },
   };
 }
 

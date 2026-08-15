@@ -19,6 +19,9 @@ import {
   modelProviderCard,
   modelSavedCard,
   modelSelectCard,
+  thinkingCancelledCard,
+  thinkingCard,
+  thinkingSavedCard,
 } from '../card/model-card';
 import { helpCard, statusCard, workspacesCard } from '../card/templates';
 import type { AppConfig, MessageReplyMode, TenantBrand } from '../config/schema';
@@ -29,6 +32,7 @@ import {
   getOmpBinary,
   getOmpModel,
   getOmpSessionDir,
+  getOmpThinking,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,
@@ -109,6 +113,7 @@ const handlers: Record<string, Handler> = {
   '/stop': handleStop,
   '/timeout': handleTimeout,
   '/model': handleModel,
+  '/thinking': handleThinking,
   '/ps': handlePs,
   '/exit': handleExit,
   '/doctor': handleDoctor,
@@ -125,6 +130,7 @@ const ADMIN_COMMANDS: Record<string, true> = {
   '/account': true,
   '/config': true,
   '/model': true,
+  '/thinking': true,
   '/exit': true,
   '/reconnect': true,
   '/doctor': true,
@@ -503,7 +509,7 @@ async function submitModel(ctx: CommandContext, current: string | undefined): Pr
     const formMsgId = ctx.msg.messageId;
     void (async () => {
       await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, formMsgId, modelSavedCard(selector)).catch(() => {});
+      await updateManagedCard(ctx.channel, formMsgId, modelSavedCard(selector, getOmpThinking(ctx.controls.cfg))).catch(() => {});
       forgetManagedCard(formMsgId);
     })();
   } else {
@@ -546,12 +552,107 @@ async function setModel(model: string, ctx: CommandContext, current: string | un
     const formMsgId = ctx.msg.messageId;
     void (async () => {
       await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, formMsgId, modelSavedCard(model)).catch(() => {});
+      await updateManagedCard(ctx.channel, formMsgId, modelSavedCard(model, getOmpThinking(ctx.controls.cfg))).catch(() => {});
       forgetManagedCard(formMsgId);
     })();
   } else {
-    await reply(ctx, `✅ 模型已设为 \`${model}\`。下一条消息生效。`);
+    await reply(
+      ctx,
+      `✅ 模型已设为 \`${model}\`。\n🧠 思考强度:` +
+        (getOmpThinking(ctx.controls.cfg) ? `\`${getOmpThinking(ctx.controls.cfg)}\`` : '_跟随 OMP 默认_') +
+        `\n\n下一条消息生效。`,
+    );
   }
+}
+
+async function handleThinking(args: string, ctx: CommandContext): Promise<void> {
+  const trimmed = args.trim();
+  const cfg = ctx.controls.cfg;
+  const current = getOmpThinking(cfg);
+
+  const [sub, ...rest] = trimmed.split(/\s+/);
+  switch (sub) {
+    case '':
+      return showThinkingPicker(ctx, current);
+    case 'set':
+      return setThinking(rest.join(' '), ctx, current);
+    case 'submit':
+      return submitThinking(ctx, current);
+    case 'cancel':
+      return cancelThinking(ctx);
+    case 'reset':
+      return resetThinking(ctx, current);
+    default:
+      if (trimmed === '') return showThinkingPicker(ctx, current);
+      if (/^(auto|off|minimal|low|medium|high|xhigh|max)$/.test(trimmed)) {
+        return setThinking(trimmed, ctx, current);
+      }
+      await reply(
+        ctx,
+        '❌ 用法:`/thinking` 打开选择卡片,或 `/thinking <level>`(`off|minimal|low|medium|high|xhigh|max|auto`)。',
+      );
+  }
+}
+
+async function showThinkingPicker(ctx: CommandContext, current: string | undefined): Promise<void> {
+  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+  await sendManagedCard(ctx.channel, ctx.msg.chatId, thinkingCard(current));
+}
+
+async function setThinking(level: string, ctx: CommandContext, current: string | undefined): Promise<void> {
+  if (!level || !/^(auto|off|minimal|low|medium|high|xhigh|max)$/.test(level)) {
+    await reply(ctx, '❌ 合法值:`off|minimal|low|medium|high|xhigh|max|auto`');
+    return;
+  }
+  const cfg = ctx.controls.cfg;
+  cfg.preferences = { ...(cfg.preferences ?? {}), ompThinking: level };
+  await saveConfig(cfg, ctx.controls.configPath);
+  log.info('command', 'thinking-set', {
+    scope: ctx.scope,
+    level,
+    via: ctx.fromCardAction ? 'card' : 'text',
+  });
+  if (ctx.fromCardAction) {
+    const formMsgId = ctx.msg.messageId;
+    void (async () => {
+      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+      await updateManagedCard(ctx.channel, formMsgId, thinkingSavedCard(level)).catch(() => {});
+      forgetManagedCard(formMsgId);
+    })();
+  } else {
+    await reply(ctx, `✅ 思考强度已设为 \`${level}\`。下一条消息生效。`);
+  }
+}
+
+async function submitThinking(ctx: CommandContext, current: string | undefined): Promise<void> {
+  const level = String(ctx.formValue?.thinking_level ?? '').trim();
+  if (!level) {
+    await reply(ctx, '未选择思考强度,已取消。');
+    return;
+  }
+  await setThinking(level, ctx, current);
+}
+
+async function cancelThinking(ctx: CommandContext): Promise<void> {
+  if (!ctx.fromCardAction) return;
+  const formMsgId = ctx.msg.messageId;
+  void (async () => {
+    await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+    await updateManagedCard(ctx.channel, formMsgId, thinkingCancelledCard()).catch(() => {});
+    forgetManagedCard(formMsgId);
+  })();
+}
+
+async function resetThinking(ctx: CommandContext, current: string | undefined): Promise<void> {
+  const cfg = ctx.controls.cfg;
+  if (!current) {
+    await reply(ctx, '本来就没设置过思考强度,一直跟随 OMP 默认。');
+    return;
+  }
+  cfg.preferences = { ...(cfg.preferences ?? {}), ompThinking: undefined };
+  await saveConfig(cfg, ctx.controls.configPath);
+  log.info('command', 'thinking-reset', { scope: ctx.scope });
+  await reply(ctx, '✅ 已清除思考强度设置,回退 OMP 默认。下一条消息生效。');
 }
 
 interface OmpModelEntry {

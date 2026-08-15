@@ -115,6 +115,7 @@ export function helpCard(): object {
         '- `/stop` — 结束当前正在跑的任务（也可点卡片底部 ⏹ 终止 按钮）',
         '- `/timeout [N|off|default]` — 当前 session 的探活分钟数,`/config` 改全局默认',
         '- `/model [id|reset]` — 查看 / 切换 OMP 模型,`/model reset` 回退默认',
+        '- `/thinking [level|reset]` — 切换思考强度(off~max/auto),仅作用于当前模型',
         '- `/ps` — 列出本机所有 bot,标识当前正在回复的那个',
         '- `/exit <id|#>` — 关掉指定 bot(用 `/ps` 看 id/序号)',
         '- `/reconnect` — 强制重连 WebSocket(网络抖动后 bot 没反应时用)',

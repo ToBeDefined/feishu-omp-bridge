@@ -5,7 +5,7 @@ import { paths } from '../../config/paths';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
 import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
-import { extractUserInput } from './context';
+import { extractUserInput, scanSessionFile } from './context';
 import { applyResume } from './resume';
 import { summarize } from './shared';
 
@@ -22,6 +22,8 @@ interface SearchHit {
 interface SearchContext {
   messages: SearchHit[];
   hitIndex: number;
+  sessionId?: string;
+  workspace?: string;
 }
 
 /** In-memory cache of recent search results, keyed by a short query id. */
@@ -49,11 +51,12 @@ function messageText(msg: {
   return null;
 }
 
-/** Search the session's history, returning conversation windows around each
- * hit (5 before, 5 after). Newest windows first, capped at `limit`. */
-async function searchSession(
-  sessionId: string,
+/** Search every session file (across workspaces), returning one context per
+ * unique matched Q&A pair (the hit plus its user/assistant counterpart).
+ * Newest first, capped at `limit`. */
+export async function searchSession(
   keyword: string,
+  ctx: CommandContext,
   limit = 6,
 ): Promise<SearchContext[]> {
   const needle = keyword.toLowerCase();
@@ -62,8 +65,18 @@ async function searchSession(
     const entries = await readdir(paths.ompSessionsDir);
     for (const name of entries) {
       if (!name.endsWith('.jsonl')) continue;
-      const text = await readFile(join(paths.ompSessionsDir, name), 'utf8');
-      if (!text.includes(`"id":"${sessionId}"`)) continue;
+      let text: string;
+      try {
+        text = await readFile(join(paths.ompSessionsDir, name), 'utf8');
+      } catch {
+        continue;
+      }
+      // Cheap prefilter: skip files that can't contain the keyword at all.
+      if (!text.toLowerCase().includes(needle)) continue;
+
+      const { meta } = scanSessionFile(text);
+      const sessionId = meta?.id;
+      const workspace = workspaceLabel(ctx, meta?.cwd || homedir());
 
       const stream: SearchHit[] = [];
       for (const line of text.split('\n')) {
@@ -83,16 +96,42 @@ async function searchSession(
         }
       }
 
+      // One context per unique matched Q&A pair. Both halves of a pair can
+      // match the keyword (question and answer), so dedupe by pair identity
+      // to avoid emitting the same exchange twice.
+      const seenPairs = new Set<string>();
       for (let i = 0; i < stream.length; i++) {
         if (!stream[i]!.content.toLowerCase().includes(needle)) continue;
-        const start = Math.max(0, i - 5);
-        const end = Math.min(stream.length, i + 6);
+        let pair: SearchHit[];
+        let hitIndex: number;
+        if (
+          stream[i]!.role === 'user' &&
+          i + 1 < stream.length &&
+          stream[i + 1]!.role === 'assistant'
+        ) {
+          pair = [stream[i]!, stream[i + 1]!];
+          hitIndex = 0;
+        } else if (
+          stream[i]!.role === 'assistant' &&
+          i - 1 >= 0 &&
+          stream[i - 1]!.role === 'user'
+        ) {
+          pair = [stream[i - 1]!, stream[i]!];
+          hitIndex = 1;
+        } else {
+          pair = [stream[i]!];
+          hitIndex = 0;
+        }
+        const key = pair.map((m) => m.timestamp ?? m.content).join('|');
+        if (seenPairs.has(key)) continue;
+        seenPairs.add(key);
         contexts.push({
-          messages: stream.slice(start, end).map((m) => ({ ...m, timestamp: m.timestamp })),
-          hitIndex: i - start,
+          messages: pair.map((m) => ({ ...m, timestamp: m.timestamp })),
+          hitIndex,
+          sessionId,
+          workspace,
         });
       }
-      break;
     }
   } catch {
     /* fall through */
@@ -103,12 +142,18 @@ async function searchSession(
   return contexts.slice(0, limit);
 }
 
-function renderSearchContext(context: SearchContext, mode: 'compact' | 'detail' = 'compact'): string {
+export function renderSearchContext(
+  context: SearchContext,
+  mode: 'compact' | 'detail' = 'compact',
+): string {
   return context.messages
     .map((m, i) => {
       const role = m.role === 'user' ? '🧑 **你**' : '🤖 **助手**';
       const marker = i === context.hitIndex ? '📍' : '';
-      const max = mode === 'detail' ? 2000 : i === context.hitIndex ? 60 : 40;
+      // Cap each message; compact keeps the list tight, detail shows more.
+      // Assistant answers get more room than the (usually shorter) question.
+      const max =
+        mode === 'detail' ? (m.role === 'user' ? 600 : 1000) : m.role === 'user' ? 80 : 120;
       // Escape markdown header markers (# at line start) so message content
       // that happens to start with "# Foo" isn't rendered as a huge heading.
       const escaped = escapeSearchContent(summarize(m.content, max));
@@ -164,9 +209,8 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
           if (idxStr) {
             const idx = Number.parseInt(idxStr, 10);
             const context = contexts?.[idx - 1];
-            const sessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
-            const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
-            const wsLabel = workspaceLabel(ctx, cwd);
+            const sessionId = context?.sessionId;
+            const wsLabel = context?.workspace ?? '';
             const full = context ? renderSearchContext(context, 'detail') : '';
             await updateManagedCard(
               ctx.channel,
@@ -176,15 +220,10 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
           } else {
             // Results list card: strip buttons, keep the list with the
             // workspace / session context intact.
-            const sessInfo = ctx.sessions.getRaw(ctx.scope);
-            const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
             await updateManagedCard(
               ctx.channel,
               msgId,
-              searchResultsCard('', contexts ?? [], queryId ?? '', false, {
-                sessionId: sessInfo?.sessionId,
-                workspace: workspaceLabel(ctx, cwd),
-              }),
+              searchResultsCard('', contexts ?? [], queryId ?? '', false),
             );
           }
         } catch {
@@ -210,9 +249,8 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       return;
     }
     const full = renderSearchContext(context, 'detail');
-    const sessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
-    const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
-    const wsLabel = workspaceLabel(ctx, cwd);
+    const sessionId = context.sessionId;
+    const wsLabel = context.workspace ?? '';
     if (ctx.fromCardAction) {
       await sendManagedCard(
         ctx.channel,
@@ -227,15 +265,10 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
 
   const keyword = args.trim();
   if (!keyword) {
-    await reply(ctx, '用法：`/search <关键词>` — 在当前会话历史中检索。');
+    await reply(ctx, '用法：`/search <关键词>` — 在所有会话历史中检索（跨工作区）。');
     return;
   }
-  const sess = ctx.sessions.getRaw(ctx.scope);
-  if (!sess?.sessionId) {
-    await reply(ctx, '当前还没有会话历史可搜索。');
-    return;
-  }
-  const contexts = await searchSession(sess.sessionId, keyword);
+  const contexts = await searchSession(keyword, ctx);
   if (contexts.length === 0) {
     await reply(ctx, `未找到包含 \`${keyword}\` 的消息。`);
     return;
@@ -247,14 +280,10 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     if (oldest) searchCache.delete(oldest);
   }
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  const sessInfo = ctx.sessions.getRaw(ctx.scope);
-  const sessionId = sessInfo?.sessionId;
-  const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
-  const wsLabel = workspaceLabel(ctx, cwd);
   await sendManagedCard(
     ctx.channel,
     ctx.msg.chatId,
-    searchResultsCard(keyword, contexts, queryId, true, { sessionId, workspace: wsLabel }),
+    searchResultsCard(keyword, contexts, queryId, true),
   );
 }
 
@@ -263,7 +292,6 @@ function searchResultsCard(
   contexts: SearchContext[],
   queryId: string,
   showButtons = true,
-  meta: { sessionId?: string; workspace?: string } = {},
 ): object {
   const done = !showButtons;
   const header = done
@@ -271,10 +299,10 @@ function searchResultsCard(
     : `🔍 搜索 \`${keyword}\`：找到 ${contexts.length} 个片段`;
   const more = !done && contexts.length >= 6 ? '\n\n_（仅显示最近 6 个片段）_' : '';
   const blocks: object[] = [];
-  contexts.forEach((ctx, i) => {
+  contexts.forEach((c, i) => {
     const metaLine = [
-      meta.workspace ? `📁 ${meta.workspace}` : '',
-      meta.sessionId ? `🆔 ${meta.sessionId}` : '',
+      c.workspace ? `📁 ${c.workspace}` : '',
+      c.sessionId ? `🆔 ${c.sessionId}` : '',
     ]
       .filter(Boolean)
       .join(' · ');
@@ -283,7 +311,7 @@ function searchResultsCard(
       // Heading-size title so the item number / workspace / session stands
       // out; the conversation snippet below it stays at normal size.
       { tag: 'markdown', content: title, text_size: 'heading' },
-      { tag: 'markdown', content: renderSearchContext(ctx) },
+      { tag: 'markdown', content: renderSearchContext(c) },
     );
     if (showButtons) {
       blocks.push(

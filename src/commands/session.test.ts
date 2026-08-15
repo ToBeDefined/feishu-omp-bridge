@@ -87,6 +87,21 @@ describe('renderContext', () => {
     expect(matched).not.toContain('当前目录无快捷方式');
   });
 
+  it('shows the session title when set', () => {
+    const titled = renderContext(
+      makeCtx({
+        sessions: {
+          getRaw: () => ({ sessionId: 's1', cwd: '/x', updatedAt: 0, title: '修搜索' }),
+          getIdleTimeoutMinutes: () => undefined,
+        } as never,
+      }),
+    );
+    expect(titled).toContain('修搜索');
+
+    const untitled = renderContext(makeCtx());
+    expect(untitled).not.toContain('标题');
+  });
+
   it('shows last conversation time', () => {
     const recent = renderContext(makeCtx());
     expect(recent).toContain('最后对话');

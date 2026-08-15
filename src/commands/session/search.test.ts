@@ -9,9 +9,10 @@ import { searchSession, renderSearchContext } from './search';
 const origSessionsDir = paths.ompSessionsDir;
 let tmp: string | undefined;
 
-function ctxFor(workspaces: Record<string, string> = {}): CommandContext {
+function ctxFor(workspaces: Record<string, string> = {}, titles: Record<string, string> = {}): CommandContext {
   return {
     workspaces: { listNamed: () => workspaces },
+    sessions: { titlesBySessionId: () => titles },
   } as CommandContext;
 }
 
@@ -251,5 +252,22 @@ describe('searchSession', () => {
     // A leading # is backslash-escaped so it doesn't become a heading.
     expect(out).toContain('\\# 大标题');
     expect(out).not.toContain('\n# 大标题');
+  });
+
+  it('annotates hits with the session title from the store', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    await writeSession(tmp, 'a.jsonl', { id: 'sessA', cwd: '/repoA', ts: '2026-08-15T10:00:00.000Z' }, [
+      { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: 'codegraph 检索' }] },
+    ]);
+    // sessB has no title, must stay unlabeled.
+    await writeSession(tmp, 'b.jsonl', { id: 'sessB', cwd: '/repoB', ts: '2026-08-15T11:00:00.000Z' }, [
+      { role: 'user', ts: '2026-08-15T11:00:01.000Z', content: [{ type: 'text', text: 'codegraph 用法' }] },
+    ]);
+
+    const hits = await searchSession('codegraph', ctxFor({}, { sessA: '修搜索' }));
+    const bySession = Object.fromEntries(hits.map((h) => [h.sessionId, h.title]));
+    expect(bySession.sessA).toBe('修搜索');
+    expect(bySession.sessB).toBeUndefined();
   });
 });

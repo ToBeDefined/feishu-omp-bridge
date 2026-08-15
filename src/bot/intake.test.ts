@@ -1,11 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
 
-const { tryHandleCommand, addReaction, buildPrompt, fetchQuotedContext } = vi.hoisted(() => ({
+const {
+  tryHandleCommand,
+  addReaction,
+  buildPrompt,
+  fetchQuotedContext,
+  isUserAllowed,
+  isChatAllowed,
+  getRequireMentionInGroup,
+} = vi.hoisted(() => ({
   tryHandleCommand: vi.fn(),
   addReaction: vi.fn(),
   buildPrompt: vi.fn((msg: unknown[]) => `prompt:${(msg[0] as { content?: string })?.content ?? ''}`),
   fetchQuotedContext: vi.fn(async () => undefined),
+  isUserAllowed: vi.fn(() => true),
+  isChatAllowed: vi.fn(() => true),
+  getRequireMentionInGroup: vi.fn(() => false),
 }));
 
 vi.mock('../commands', async (importOriginal) => {
@@ -16,9 +27,9 @@ vi.mock('../config/schema', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../config/schema')>();
   return {
     ...actual,
-    isUserAllowed: () => true,
-    isChatAllowed: () => true,
-    getRequireMentionInGroup: () => false,
+    isUserAllowed,
+    isChatAllowed,
+    getRequireMentionInGroup,
   };
 });
 vi.mock('./reaction', () => ({ addReaction }));
@@ -68,6 +79,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   tryHandleCommand.mockResolvedValue(false);
   addReaction.mockResolvedValue(undefined);
+  isUserAllowed.mockReturnValue(true);
+  isChatAllowed.mockReturnValue(true);
+  getRequireMentionInGroup.mockReturnValue(false);
 });
 
 describe('intakeMessage mid-run routing', () => {
@@ -126,5 +140,59 @@ describe('intakeMessage mid-run routing', () => {
       await intakeMessage(deps);
       expect(deps.pending.cancel).toHaveBeenCalledWith('oc_1');
     }
+  });
+
+  it('silently drops a message from an unauthorized user', async () => {
+    isUserAllowed.mockReturnValue(false);
+    const deps = makeDeps();
+    deps.msg = makeMsg('hello');
+
+    await intakeMessage(deps);
+
+    expect(deps.pending.push).not.toHaveBeenCalled();
+    expect(deps.pending.cancel).not.toHaveBeenCalled();
+    expect(deps.activeRuns.submitPrompt).not.toHaveBeenCalled();
+    expect(addReaction).not.toHaveBeenCalled();
+  });
+
+  it('silently drops a non-mention in a strict group', async () => {
+    getRequireMentionInGroup.mockReturnValue(true);
+    const deps = makeDeps();
+    deps.msg = makeMsg('hello', { chatType: 'group', mentionedBot: false });
+
+    await intakeMessage(deps);
+
+    expect(deps.pending.push).not.toHaveBeenCalled();
+    expect(addReaction).not.toHaveBeenCalled();
+  });
+
+  it('passes image paths when steering an active run', async () => {
+    const submitPrompt = vi.fn(async () => true);
+    const deps = makeDeps();
+    deps.activeRuns = { has: vi.fn(() => true), submitPrompt } as never;
+    deps.media = { resolve: vi.fn(async () => [{ kind: 'image', path: '/tmp/a.png' }]) } as never;
+    deps.msg = makeMsg('!看图', { resources: [{ type: 'image' }] as never });
+
+    await intakeMessage(deps);
+
+    expect(submitPrompt).toHaveBeenCalledWith(
+      'oc_1',
+      'steer',
+      expect.any(String),
+      ['/tmp/a.png'],
+    );
+    expect(deps.pending.push).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the queue when active-run steering fails', async () => {
+    const submitPrompt = vi.fn(async () => false);
+    const deps = makeDeps();
+    deps.activeRuns = { has: vi.fn(() => true), submitPrompt } as never;
+    deps.msg = makeMsg('!先不要改代码');
+
+    await intakeMessage(deps);
+
+    expect(deps.pending.push).toHaveBeenCalledWith('oc_1', deps.msg);
+    expect(submitPrompt).toHaveBeenCalled();
   });
 });

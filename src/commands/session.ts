@@ -10,6 +10,7 @@ import {
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import {
   resumeCard,
+  resumeCancelledCard,
   resumeSavedCard,
   type ResumeOption,
 } from '../card/model-card';
@@ -364,15 +365,30 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  if (!sub) {
-    const sessions = await listResumableSessions();
-    const currentId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
-    if (sessions.length === 0) {
-      await reply(ctx, '没有找到可恢复的历史会话。');
+  if (sub === 'more') {
+    const offset = Number.parseInt(rest.join(''), 10);
+    if (!Number.isFinite(offset) || offset < 0) {
+      await reply(ctx, '❌ 无效的分页偏移。');
       return;
     }
-    if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-    await sendManagedCard(ctx.channel, ctx.msg.chatId, resumeCard(currentId, sessions));
+    await showResumePage(ctx, offset);
+    return;
+  }
+
+  if (sub === 'cancel') {
+    if (ctx.fromCardAction) {
+      const msgId = ctx.msg.messageId;
+      void (async () => {
+        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+        await updateManagedCard(ctx.channel, msgId, resumeCancelledCard()).catch(() => {});
+        forgetManagedCard(msgId);
+      })();
+    }
+    return;
+  }
+
+  if (!sub) {
+    await showResumePage(ctx, 0);
     return;
   }
 
@@ -384,6 +400,24 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   applyResume(ctx, match);
+}
+
+const RESUME_PAGE_SIZE = 10;
+
+async function showResumePage(ctx: CommandContext, offset: number): Promise<void> {
+  const sessions = await listResumableSessions();
+  if (sessions.length === 0) {
+    await reply(ctx, '没有找到可恢复的历史会话。');
+    return;
+  }
+  const page = sessions.slice(offset, offset + RESUME_PAGE_SIZE);
+  const currentId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
+  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+  await sendManagedCard(
+    ctx.channel,
+    ctx.msg.chatId,
+    resumeCard(currentId, page, { offset, total: sessions.length }),
+  );
 }
 
 function applyResume(ctx: CommandContext, match: ResumeOption): void {

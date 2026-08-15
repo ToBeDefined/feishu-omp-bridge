@@ -281,7 +281,13 @@ export interface ResumeOption {
 }
 
 /** Session picker card for `/resume`. */
-export function resumeCard(current: string | undefined, sessions: ResumeOption[]): object {
+export function resumeCard(
+  current: string | undefined,
+  sessions: ResumeOption[],
+  opts: { offset?: number; total?: number } = {},
+): object {
+  const offset = opts.offset ?? 0;
+  const total = opts.total ?? sessions.length;
   const lines = [
     '🕘 **恢复会话**',
     '',
@@ -295,6 +301,22 @@ export function resumeCard(current: string | undefined, sessions: ResumeOption[]
     type: 'default',
     value: { cmd: 'resume.use', arg: s.sessionId },
   }));
+  const remaining = Math.max(0, total - (offset + sessions.length));
+  const footer: object[] = [];
+  if (remaining > 0) {
+    footer.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: `加载更早 (剩余 ${remaining})` },
+      type: 'default',
+      value: { cmd: 'resume.more', arg: String(offset + sessions.length) },
+    });
+  }
+  footer.push({
+    tag: 'button',
+    text: { tag: 'plain_text', content: '取消' },
+    type: 'default',
+    value: { cmd: 'resume.cancel', arg: '' },
+  });
   return {
     schema: '2.0',
     config: { summary: { content: '恢复会话' } },
@@ -303,8 +325,17 @@ export function resumeCard(current: string | undefined, sessions: ResumeOption[]
         { tag: 'markdown', content: lines.join('\n') },
         { tag: 'hr' },
         ...buttons,
+        ...(footer.length > 0 ? [{ tag: 'hr' }, ...footer] : []),
       ],
     },
+  };
+}
+
+export function resumeCancelledCard(): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '已取消' } },
+    body: { elements: [{ tag: 'markdown', content: '已取消,未做修改。' }] },
   };
 }
 

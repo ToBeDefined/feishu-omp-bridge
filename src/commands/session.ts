@@ -255,15 +255,31 @@ export function renderContext(ctx: CommandContext): string {
   const thinking = getOmpThinking(ctx.controls.cfg);
   const running = ctx.activeRuns.has(ctx.scope);
   const named = Object.keys(ctx.workspaces.listNamed());
+  const scopeLine =
+    ctx.chatMode === 'topic' ? `\`${ctx.scope}\`（话题独立会话）` : `\`${ctx.scope}\``;
+  const sessionLine = sess?.sessionId ? `\`${sess.sessionId.slice(0, 8)}…\`` : '（无，新会话）';
+  const runningLine = running ? '有任务正在执行' : '空闲，等待指令';
+  const modelLine = model ? `\`${model}\`` : '跟随 OMP 默认';
+  const thinkingLine = thinking ? `\`${thinking}\`` : '跟随 OMP 默认';
+  const idleLine =
+    scopeMinutes !== undefined
+      ? scopeMinutes > 0
+        ? `本会话 ${scopeMinutes} 分钟`
+        : '本会话已关闭'
+      : globalMinutes > 0
+        ? `全局 ${globalMinutes} 分钟`
+        : '未启用（不自动中断任务）';
+  const wsLine =
+    named.length > 0 ? named.map((n) => `\`${n}\``).join(' ') : '（无）';
   const lines = [
-    `🧭 **scope**: \`${ctx.scope}\`${ctx.chatMode === 'topic' ? ' _（话题独立）_' : ''}`,
-    `📁 **cwd**: \`${cwd}\``,
-    `🔗 **session**: ${sess?.sessionId ? `\`${sess.sessionId.slice(0, 8)}…\`` : '(无)'}`,
-    `▶️ **运行中**: ${running ? '是' : '否'}`,
-    `🤖 **模型**: ${model ? `\`${model}\`` : '_跟随 OMP 默认_'}`,
-    `🧠 **思考强度**: ${thinking ? `\`${thinking}\`` : '_跟随 OMP 默认_'}`,
-    `⏱ **探活**: ${scopeMinutes !== undefined ? (scopeMinutes > 0 ? `${scopeMinutes} 分钟（本会话）` : '关闭（本会话）') : globalMinutes > 0 ? `${globalMinutes} 分钟（全局）` : '未启用'}`,
-    `📂 **命名工作空间**: ${named.length > 0 ? named.map((n) => `\`${n}\``).join(' ') : '(无)'}`,
+    `💬 **对话标识**: ${scopeLine}`,
+    `📁 **工作目录**: \`${cwd}\``,
+    `🧠 **对话记忆**: ${sessionLine}`,
+    `⚙️ **任务状态**: ${runningLine}`,
+    `🤖 **当前模型**: ${modelLine}`,
+    `💭 **思考强度**: ${thinkingLine}`,
+    `⏱ **空闲超时**: ${idleLine}`,
+    `📂 **快捷目录**: ${wsLine}`,
   ];
   return lines.join('\n');
 }

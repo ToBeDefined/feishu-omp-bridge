@@ -46,7 +46,7 @@ function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
 describe('renderContext', () => {
   it('includes scope, cwd, session, model and thinking', () => {
     const out = renderContext(makeCtx());
-    expect(out).toContain('scope');
+    expect(out).toContain('对话标识');
     expect(out).toContain('/home/proj');
     expect(out).toContain('019f0000'); // truncated session id
     expect(out).toContain('futu/deepseek-v4-flash-0731');
@@ -55,13 +55,13 @@ describe('renderContext', () => {
 
   it('marks running state', () => {
     const out = renderContext(makeCtx({ activeRuns: { has: () => true } as never }));
-    expect(out).toContain('运行中');
-    expect(out).toContain('是');
+    expect(out).toContain('任务状态');
+    expect(out).toContain('有任务正在执行');
   });
 
   it('shows topic tag for topic scope', () => {
     const out = renderContext(makeCtx({ chatMode: 'topic' }));
-    expect(out).toContain('话题独立');
+    expect(out).toContain('话题独立会话');
   });
 
   it('falls back to OMP defaults when model/thinking unset', () => {

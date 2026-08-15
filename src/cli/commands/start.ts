@@ -1,5 +1,4 @@
 import dns from 'node:dns';
-import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { OmpAdapter } from '../../agent';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
@@ -105,15 +104,15 @@ export async function runStart(opts: StartOptions): Promise<void> {
   await gcOldLogs();
 
   // Same-app conflict detection. Open-platform routes events to one of the
-  // long-connections at random, so two `start` of the same app makes "who
-  // answered me" unpredictable. Warn + interactive triage before connecting.
+  // long-connections at random, so two connections for the same app makes
+  // "who answered me" unpredictable (and a foreground run on top of a
+  // launchd-managed daemon would double-connect). Enforce a single process:
+  // refuse to start rather than offering a "kill the old one" path, since
+  // the proper way to replace a running instance is `restart`/`stop` (which
+  // already clean up old processes first).
   const conflicts = sameAppOthers(cfg.accounts.app.id);
   if (conflicts.length > 0) {
-    const proceed = await resolveConflict(cfg, conflicts);
-    if (!proceed) {
-      console.log('已取消启动。');
-      process.exit(0);
-    }
+    rejectDuplicates(cfg, conflicts);
   }
 
   // Register self in the process registry. Cleanup is wired via stop() and
@@ -260,52 +259,29 @@ export async function runStart(opts: StartOptions): Promise<void> {
  * manager can't answer questions, and erroring out by default would surprise
  * users running a daemon.
  */
-async function resolveConflict(
-  cfg: AppConfig,
-  conflicts: ProcessEntry[],
-): Promise<boolean> {
-  console.log(
-    `⚠️  检测到这个飞书应用已经有 ${conflicts.length} 个 bot 正在运行:`,
+/**
+ * Refuse to start when the same Feishu app already has a live process.
+ * Enforces single-process: the app's events would be routed to whichever
+ * connection answers, so a second connection is always wrong. The user
+ * should use `restart` (cleanly replaces) or `stop` + `run` instead.
+ */
+function rejectDuplicates(cfg: AppConfig, conflicts: ProcessEntry[]): never {
+  console.error(
+    `✗ 检测到飞书应用 ${cfg.accounts.app.id} 已经有 ${conflicts.length} 个 bot 正在运行，拒绝重复启动。`,
   );
   for (const e of conflicts) {
     const ago = formatAgo(Date.now() - new Date(e.startedAt).getTime());
-    // botName 只在 WS 连上后才回填,刚启动 / 连接失败的旧 entry 可能没有。
     const label = e.botName ? `bot ${e.botName} (${e.appId})` : `bot ${e.appId}`;
-    console.log(`   - ${label},进程 ${e.id},${ago}启动`);
+    console.error(`  - ${label},进程 ${e.id},${ago}启动`);
   }
-  console.log('');
-
-  if (!process.stdin.isTTY) {
-    console.warn(
-      '⚠️  当前不是交互式启动,已自动取消。如需替换,先用 `kill <bot id>` 关掉旧的。\n',
-    );
-    return false;
-  }
-
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const ask = (q: string): Promise<string> => new Promise((resolve) => rl.question(q, resolve));
-  try {
-    const verb = conflicts.length > 1 ? '它们' : '那个';
-    const answer = (await ask(`继续启动会先关掉${verb},是否继续? [y/N]: `))
-      .trim()
-      .toLowerCase();
-    if (answer !== 'y' && answer !== 'yes') {
-      return false;
-    }
-    for (const e of conflicts) {
-      try {
-        process.kill(e.pid, 'SIGTERM');
-        console.log(`✓ 已关掉 bot ${e.id}`);
-      } catch (err) {
-        console.warn(`✗ 关掉 bot ${e.id} 失败:${(err as Error).message}`);
-      }
-    }
-    // Brief wait so targets unregister themselves before we register on top.
-    await new Promise((r) => setTimeout(r, 1500));
-    return true;
-  } finally {
-    rl.close();
-  }
+  console.error('');
+  console.error('单进程约束：同一应用只允许一个连接（飞书事件随机路由，多连接会"谁应答"不确定）。');
+  console.error('');
+  console.error('要替换当前实例，请用：');
+  console.error('  feishu-omp-bridge restart   # 干净替换(先停旧的再起新的)');
+  console.error('  feishu-omp-bridge stop      # 停止后,再 run / start');
+  console.error('  feishu-omp-bridge kill <id> # 或按 /ps 显示的 id 关掉指定进程');
+  process.exit(1);
 }
 
 function formatAgo(ms: number): string {

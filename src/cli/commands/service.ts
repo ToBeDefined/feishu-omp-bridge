@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { OmpAdapter } from '../../agent';
 import { isComplete } from '../../config/schema';
 import { loadConfig } from '../../config/store';
@@ -45,16 +47,41 @@ function requireAdapter(cmdName: string): ServiceAdapter {
  * on top of the service manager's own stop. The current CLI process is
  * excluded — it must survive to finish the start/restart.
  */
+const execFileAsync = promisify(execFile);
+
 async function killStrayProcesses(): Promise<void> {
   const cfg = await loadConfig();
   const appId = cfg.accounts?.app?.id;
-  if (!appId) return;
-  for (const entry of sameAppOthers(appId)) {
-    console.log(`  清理残留进程 ${entry.id} (pid ${entry.pid})…`);
+  // Kill via the process registry first.
+  if (appId) {
+    for (const entry of sameAppOthers(appId)) {
+      console.log(`  清理残留进程 ${entry.id} (pid ${entry.pid})…`);
+      try {
+        process.kill(entry.pid, 'SIGTERM');
+      } catch {
+        // already dead
+      }
+    }
+  }
+  // Fallback: also kill any bridge `run` process that isn't in the registry
+  // (e.g. it died before registering, or the registry was cleared). Matches
+  // the CLI entry script, excluding this CLI process itself.
+  const bridgeEntry = process.argv[1] ?? '';
+  if (bridgeEntry.includes('feishu-omp-bridge.mjs')) {
     try {
-      process.kill(entry.pid, 'SIGTERM');
+      const out = await execFileAsync('pgrep', ['-f', 'feishu-omp-bridge.mjs run']);
+      for (const line of out.stdout.split('\n')) {
+        const pid = Number.parseInt(line.trim(), 10);
+        if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) continue;
+        try {
+          console.log(`  清理未注册的残留进程 (pid ${pid})…`);
+          process.kill(pid, 'SIGTERM');
+        } catch {
+          // already dead
+        }
+      }
     } catch {
-      // already dead
+      // no matches or pgrep unavailable — fine
     }
   }
   // Give strays a moment to exit before the caller boots a fresh instance.

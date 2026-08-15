@@ -165,11 +165,13 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
             const idx = Number.parseInt(idxStr, 10);
             const context = contexts?.[idx - 1];
             const sessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
+            const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+            const wsLabel = workspaceLabel(ctx, cwd);
             const full = context ? renderSearchContext(context, 'detail') : '';
             await updateManagedCard(
               ctx.channel,
               msgId,
-              searchDetailCard(sessionId, full, undefined, idx, true),
+              searchDetailCard(sessionId, full, undefined, idx, true, wsLabel),
             );
           } else {
             await updateManagedCard(
@@ -346,7 +348,9 @@ function searchDetailCard(
     workspace ? `📁 ${workspace}` : '',
     sessionId ? `🆔 ${sessionId}` : '',
   ].filter(Boolean);
-  const head = done ? '✅ 搜索详情' : parts.join(' · ');
+  // Done state keeps the full header (number / workspace / session) — only
+  // the buttons are stripped. "✅" marks it as settled.
+  const head = parts.length > 0 ? `✅ ${parts.join(' · ')}` : '✅ 搜索详情';
   const elements: object[] = [
     { tag: 'markdown', content: head },
     { tag: 'hr' },

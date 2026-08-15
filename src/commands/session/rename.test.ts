@@ -1,4 +1,8 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { paths } from '../../config/paths';
 import type { CommandContext } from '../index';
 import { handleRename } from './rename';
 
@@ -16,7 +20,9 @@ vi.mock('./context', async (importOriginal) => {
   return { ...actual, loadSessionSummary };
 });
 
-/** Build an agent mock whose run yields the given text events then `done`. */
+const origSessionsDir = paths.ompSessionsDir;
+let tmp: string;
+
 function agentYielding(...texts: string[]) {
   async function* events() {
     for (const t of texts) yield { type: 'text', delta: t };
@@ -52,9 +58,15 @@ function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
   } as unknown as CommandContext;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   reply.mockClear();
   loadSessionSummary.mockResolvedValue({ lastMessage: '帮我改一下搜索逻辑', lastReply: '已改好跨会话搜索' });
+  tmp = await mkdtemp(join(tmpdir(), 'rename-test-'));
+  paths.ompSessionsDir = tmp;
+});
+afterEach(async () => {
+  paths.ompSessionsDir = origSessionsDir;
+  await rm(tmp, { recursive: true, force: true });
 });
 
 describe('/rename command', () => {
@@ -87,7 +99,7 @@ describe('/rename command', () => {
     expect((ctx.sessions.getRaw('oc_1') as { title?: string }).title).toBeUndefined();
   });
 
-  it('generates a title with LLM and caps it at 20 chars', async () => {
+  it('generates a title in the current session and caps it at 20 chars', async () => {
     const longTitle = '这是一条特别长的自动生成标题测试内容用来验证截断逻辑';
     const agent = agentYielding(longTitle);
     const ctx = makeCtx({ agent: agent as never });
@@ -96,13 +108,27 @@ describe('/rename command', () => {
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已自动生成标题'));
     const title = (ctx.sessions.getRaw('oc_1') as { title?: string }).title;
     expect(Array.from(title ?? '')).toHaveLength(20);
-    // Runs in an isolated throwaway session dir — NOT resuming the main
-    // session, so the generation prompt can't pollute the real history.
-    expect(agent.run).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionDir: expect.stringMatching(/rename-auto-/) }),
-    );
-    const runArgs = agent.run.mock.calls[0]?.[0];
-    expect(runArgs?.sessionId).toBeUndefined();
+    // Generates by resuming the current session (no new session spawned).
+    const runArgs = agent.run.mock.calls[0]?.[0] as { sessionId?: string; sessionDir?: string };
+    expect(runArgs?.sessionId).toBe('s1');
+    expect('sessionDir' in (runArgs ?? {})).toBe(false);
+  });
+
+  it('strips the marked generation prompt from the session history', async () => {
+    // Session file for s1 containing a real message and a marked prompt line.
+    const file = join(tmp, 'sess.jsonl');
+    await writeFile(file, [
+      JSON.stringify({ type: 'session', id: 's1', cwd: '/repo', timestamp: 't' }),
+      JSON.stringify({ type: 'message', timestamp: 't1', message: { role: 'user', content: [{ type: 'text', text: '真实问题' }] } }),
+      JSON.stringify({ type: 'message', timestamp: 't2', message: { role: 'user', content: [{ type: 'text', text: '根据以下最近的对话 <rename-auto-title> 生成标题' }] } }),
+    ].join('\n') + '\n', 'utf8');
+
+    const ctx = makeCtx({ agent: agentYielding('好标题') as never });
+    await handleRename('auto', ctx);
+
+    const after = await readFile(file, 'utf8');
+    expect(after).not.toContain('<rename-auto-title>');
+    expect(after).toContain('真实问题');
   });
 
   it('fails gracefully when the model produces no text', async () => {

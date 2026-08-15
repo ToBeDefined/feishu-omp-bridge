@@ -1,6 +1,7 @@
-import { mkdtemp, rm } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { paths } from '../../config/paths';
 import { getAgentStopGraceMs, getOmpModel } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
@@ -13,6 +14,9 @@ export const renameHandlers: Record<string, Handler> = {
 
 const MAX_TITLE_LENGTH = 60;
 const AUTO_TITLE_MAX = 20;
+/** Unique marker embedded in the title-generation prompt so the generated
+ * user message can be identified and stripped from the session history. */
+const RENAME_AUTO_MARKER = '<rename-auto-title>';
 
 export async function handleRename(args: string, ctx: CommandContext): Promise<void> {
   const title = args.trim();
@@ -59,10 +63,9 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
  * trimmed title, or null if there's nothing to title or the model produced
  * no usable text.
  *
- * Runs in an isolated, throwaway session dir (per-run sessionDir override)
- * and never resumes the main session — the generation prompt must not leak
- * into the real session history and get echoed back as a user message. The
- * temp dir is deleted after the run. */
+ * Generates in the current session (resume) so no extra session is spawned,
+ * then strips the marked generation-prompt user message from the history so
+ * it can't pollute the "latest message" the next time a title is derived. */
 async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null> {
   const sess = ctx.sessions.getRaw(ctx.scope);
   if (!sess?.sessionId) return null;
@@ -76,6 +79,7 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
     '根据以下最近的对话，给这个会话起一个简洁的中文标题。',
     `标题要求：不超过 ${AUTO_TITLE_MAX} 个字符，一句话概括对话主题。`,
     '只输出标题本身，不要引号、标点、编号或任何解释。',
+    `（内部标记 ${RENAME_AUTO_MARKER}，请勿输出）`,
     '',
     `用户：${userText}`,
     replyText ? `助手：${replyText}` : '',
@@ -83,10 +87,9 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
     .filter(Boolean)
     .join('\n');
 
-  const sessionDir = await mkdtemp(join(tmpdir(), 'rename-auto-'));
   const run = ctx.agent.run({
     prompt,
-    sessionDir,
+    sessionId: sess.sessionId,
     cwd: ctx.workspaces.cwdFor(ctx.scope) ?? homedir(),
     model: getOmpModel(ctx.controls.cfg),
     stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),
@@ -104,9 +107,32 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
     await run.stop().catch(() => {
       /* stop errors are non-fatal */
     });
-    await rm(sessionDir, { recursive: true, force: true }).catch(() => {
-      /* best-effort cleanup */
-    });
+    // Remove the marked generation prompt from the session history so it
+    // never becomes the "latest user message" and skews later titles.
+    await removeGeneratedPrompt(sess.sessionId);
+  }
+}
+
+/** Drop any message line carrying the rename marker from the session file
+ * that owns `sessionId`. Best-effort; leaves the file untouched if the
+ * session isn't found or no marked line exists. */
+async function removeGeneratedPrompt(sessionId: string): Promise<void> {
+  try {
+    const entries = await readdir(paths.ompSessionsDir);
+    for (const name of entries) {
+      if (!name.endsWith('.jsonl')) continue;
+      const file = join(paths.ompSessionsDir, name);
+      const text = await readFile(file, 'utf8');
+      if (!text.includes(`"id":"${sessionId}"`)) continue;
+      const lines = text.split('\n');
+      const kept = lines.filter((line) => !line.includes(RENAME_AUTO_MARKER));
+      if (kept.length !== lines.length) {
+        await writeFile(file, kept.join('\n'), 'utf8');
+      }
+      return;
+    }
+  } catch {
+    /* best-effort cleanup */
   }
 }
 

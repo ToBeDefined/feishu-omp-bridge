@@ -255,6 +255,12 @@ function formatLastSeen(ts: number | undefined): string {
   return `${Math.floor(ms / 86_400_000)} 天前`;
 }
 
+/** Compact text for a one-line display: collapse whitespace, cap length. */
+function summarize(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > 48 ? `${flat.slice(0, 48)}…` : flat;
+}
+
 function formatClock(ts: number | undefined): string {
   if (!ts) return '（无，新会话）';
   const d = new Date(ts);
@@ -264,7 +270,10 @@ function formatClock(ts: number | undefined): string {
   return sameDay ? `今天 ${hhmm}` : `${d.getMonth() + 1}月${d.getDate()}日 ${hhmm}`;
 }
 
-export function renderContext(ctx: CommandContext): string {
+export function renderContext(
+  ctx: CommandContext,
+  summary: { lastMessage?: string; lastReply?: string } = {},
+): string {
   const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
   const sess = ctx.sessions.getRaw(ctx.scope);
   const scopeMinutes = ctx.sessions.getIdleTimeoutMinutes(ctx.scope);
@@ -290,23 +299,36 @@ export function renderContext(ctx: CommandContext): string {
         : '未启用（不自动中断任务）';
   const wsLine =
     named.length > 0 ? named.map((n) => `\`${n}\``).join(' ') : '（无）';
+  const lastMsgLine = summary.lastMessage
+    ? `💬 **最后消息**: ${summarize(summary.lastMessage)}`
+    : '';
+  const lastReplyLine = summary.lastReply
+    ? `📝 **最后回复**: ${summarize(summary.lastReply)}`
+    : '';
   const lines = [
     `💬 **聊天窗口**: ${scopeLine}`,
     `📁 **工作目录**: \`${cwd}\``,
     `🧠 **会话 ID**: ${sessionLine}`,
     `🕒 **开始对话**: ${formatClock(sess?.createdAt)}`,
     `🕘 **最后对话**: ${formatLastSeen(sess?.updatedAt)}`,
+    lastMsgLine,
+    lastReplyLine,
     `⚙️ **任务状态**: ${runningLine}`,
     `🤖 **当前模型**: ${modelLine}`,
     `💭 **思考强度**: ${thinkingLine}`,
     `⏱ **空闲超时**: ${idleLine}`,
     `📂 **快捷目录**: ${wsLine}`,
   ];
-  return lines.join('\n');
+  return lines.filter(Boolean).join('\n');
 }
 
 async function handleContext(_args: string, ctx: CommandContext): Promise<void> {
-  await reply(ctx, renderContext(ctx));
+  const sess = ctx.sessions.getRaw(ctx.scope);
+  let summary = { lastMessage: '', lastReply: '' };
+  if (sess?.sessionId) {
+    summary = await loadSessionSummary(sess.sessionId);
+  }
+  await reply(ctx, renderContext(ctx, summary));
 }
 
 interface SessionMeta {
@@ -345,6 +367,70 @@ function extractUserInput(text: string): string {
   return body;
 }
 
+interface SessionScan {
+  meta?: SessionMeta;
+  lastAssistant: string;
+  lastUserMessage: string;
+}
+
+/** Parse one session JSONL file: leading session frame + last non-empty
+ * assistant reply + last real user input. */
+function scanSessionFile(text: string): SessionScan {
+  let meta: SessionMeta | undefined;
+  let lastAssistant = '';
+  let lastUserMessage = '';
+  for (const line of text.split('\n')) {
+    if (!meta && line.includes('"type":"session"')) {
+      try {
+        meta = JSON.parse(line) as SessionMeta;
+      } catch {
+        /* skip malformed */
+      }
+      continue;
+    }
+    if (!line.includes('"type":"message"')) continue;
+    try {
+      const frame = JSON.parse(line) as {
+        message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
+      };
+      const msg = frame.message;
+      if (!msg?.role) continue;
+      const textPart = (msg.content ?? [])
+        .filter((c) => c.type === 'text' && c.text)
+        .map((c) => c.text ?? '')
+        .join('');
+      if (msg.role === 'assistant') {
+        if (textPart.trim()) lastAssistant = textPart.trim();
+      } else if (msg.role === 'user') {
+        const real = extractUserInput(textPart);
+        if (real) lastUserMessage = real;
+      }
+    } catch {
+      /* skip malformed */
+    }
+  }
+  return { meta, lastAssistant, lastUserMessage };
+}
+
+/** Load the last message / last reply for the given session id, by scanning
+ * the matching session file. Empty strings when not found. */
+async function loadSessionSummary(sessionId: string): Promise<{ lastMessage: string; lastReply: string }> {
+  try {
+    const entries = await readdir(paths.ompSessionsDir);
+    for (const name of entries) {
+      if (!name.endsWith('.jsonl')) continue;
+      const text = await readFile(join(paths.ompSessionsDir, name), 'utf8');
+      const scan = scanSessionFile(text);
+      if (scan.meta?.id === sessionId) {
+        return { lastMessage: scan.lastUserMessage, lastReply: scan.lastAssistant };
+      }
+    }
+  } catch {
+    /* fall through to empty */
+  }
+  return { lastMessage: '', lastReply: '' };
+}
+
 async function listResumableSessions(): Promise<ResumeOption[]> {
   const dir = paths.ompSessionsDir;
   const out: ResumeOption[] = [];
@@ -354,39 +440,7 @@ async function listResumableSessions(): Promise<ResumeOption[]> {
       if (!name.endsWith('.jsonl')) continue;
       try {
         const text = await readFile(join(dir, name), 'utf8');
-        let meta: SessionMeta | undefined;
-        let lastAssistant = '';
-        let lastUserMessage = '';
-        for (const line of text.split('\n')) {
-          if (!meta && line.includes('"type":"session"')) {
-            try {
-              meta = JSON.parse(line) as SessionMeta;
-            } catch {
-              /* skip malformed */
-            }
-            continue;
-          }
-          if (!line.includes('"type":"message"')) continue;
-          try {
-            const frame = JSON.parse(line) as {
-              message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
-            };
-            const msg = frame.message;
-            if (!msg?.role) continue;
-            const textPart = (msg.content ?? [])
-              .filter((c) => c.type === 'text' && c.text)
-              .map((c) => c.text ?? '')
-              .join('');
-            if (msg.role === 'assistant') {
-              if (textPart.trim()) lastAssistant = textPart.trim();
-            } else if (msg.role === 'user') {
-              const real = extractUserInput(textPart);
-              if (real) lastUserMessage = real;
-            }
-          } catch {
-            /* skip malformed */
-          }
-        }
+        const { meta, lastAssistant, lastUserMessage } = scanSessionFile(text);
         if (!meta?.id || !meta.cwd) continue;
         out.push({
           sessionId: meta.id,
@@ -417,7 +471,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
       await reply(ctx, `❌ 未找到会话 \`${sessionId}\`。`);
       return;
     }
-    applyResume(ctx, match);
+    await applyResume(ctx, match);
     return;
   }
 
@@ -455,7 +509,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     await reply(ctx, `❌ 未找到会话 \`${sub}\`。发 \`/resume\` 查看可恢复的会话列表。`);
     return;
   }
-  applyResume(ctx, match);
+  await applyResume(ctx, match);
 }
 
 async function showResumePage(ctx: CommandContext, offset: number): Promise<void> {
@@ -474,10 +528,11 @@ async function showResumePage(ctx: CommandContext, offset: number): Promise<void
   );
 }
 
-function applyResume(ctx: CommandContext, match: ResumeOption): void {
+async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<void> {
   const currentId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
   if (currentId && match.sessionId === currentId) {
     log.info('command', 'resume-already-current', { scope: ctx.scope, sessionId: match.sessionId });
+    const summary = await loadSessionSummary(match.sessionId);
     if (ctx.fromCardAction) {
       const msgId = ctx.msg.messageId;
       void (async () => {
@@ -485,12 +540,12 @@ function applyResume(ctx: CommandContext, match: ResumeOption): void {
         await updateManagedCard(
           ctx.channel,
           msgId,
-          resumeSavedCard(match.sessionId, match.cwd, renderContext(ctx)),
+          resumeSavedCard(match.sessionId, match.cwd, renderContext(ctx, summary)),
         ).catch(() => {});
         forgetManagedCard(msgId);
       })();
     } else {
-      void reply(ctx, `这个会话已经是当前会话。\n\n---\n\n${renderContext(ctx)}`);
+      void reply(ctx, `这个会话已经是当前会话。\n\n---\n\n${renderContext(ctx, summary)}`);
     }
     return;
   }
@@ -505,6 +560,7 @@ function applyResume(ctx: CommandContext, match: ResumeOption): void {
     sessionId: match.sessionId,
     cwd,
   });
+  const summary = await loadSessionSummary(match.sessionId);
   if (ctx.fromCardAction) {
     const msgId = ctx.msg.messageId;
     void (async () => {
@@ -512,14 +568,14 @@ function applyResume(ctx: CommandContext, match: ResumeOption): void {
       await updateManagedCard(
         ctx.channel,
         msgId,
-        resumeSavedCard(match.sessionId, cwd, renderContext(ctx)),
+        resumeSavedCard(match.sessionId, cwd, renderContext(ctx, summary)),
       ).catch(() => {});
       forgetManagedCard(msgId);
     })();
   } else {
     void reply(
       ctx,
-      `✅ 已恢复会话 \`${match.sessionId.slice(0, 8)}…\`\n📁 cwd: \`${cwd}\`\n\n下一条消息从该会话继续。\n\n---\n\n${renderContext(ctx)}`,
+      `✅ 已恢复会话 \`${match.sessionId.slice(0, 8)}…\`\n📁 cwd: \`${cwd}\`\n\n下一条消息从该会话继续。\n\n---\n\n${renderContext(ctx, summary)}`,
     );
   }
 }

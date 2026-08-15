@@ -112,4 +112,18 @@ describe('renderContext', () => {
     expect(started).toContain('开始对话');
     expect(started).toContain('今天'); // same-day clock
   });
+
+  it('shows last message and last reply when summary provided', () => {
+    const out = renderContext(makeCtx(), { lastMessage: '用户最后问题', lastReply: '助手最后回复' });
+    expect(out).toContain('最后消息');
+    expect(out).toContain('用户最后问题');
+    expect(out).toContain('最后回复');
+    expect(out).toContain('助手最后回复');
+  });
+
+  it('omits last message and reply when summary absent', () => {
+    const out = renderContext(makeCtx());
+    expect(out).not.toContain('最后消息');
+    expect(out).not.toContain('最后回复');
+  });
 });

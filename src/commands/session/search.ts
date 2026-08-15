@@ -24,6 +24,8 @@ interface SearchContext {
   hitIndex: number;
   sessionId?: string;
   workspace?: string;
+  /** User-assigned session title (/rename), when the hit belongs to one. */
+  title?: string;
 }
 
 /** In-memory cache of recent search results, keyed by a short query id. */
@@ -61,6 +63,7 @@ export async function searchSession(
 ): Promise<SearchContext[]> {
   const needle = keyword.toLowerCase();
   const contexts: SearchContext[] = [];
+  const sessionTitles = ctx.sessions?.titlesBySessionId?.() ?? {};
   try {
     const entries = await readdir(paths.ompSessionsDir);
     for (const name of entries) {
@@ -77,6 +80,7 @@ export async function searchSession(
       const { meta } = scanSessionFile(text);
       const sessionId = meta?.id;
       const workspace = workspaceLabel(ctx, meta?.cwd || homedir());
+      const title = sessionId ? sessionTitles[sessionId] : undefined;
 
       const stream: SearchHit[] = [];
       for (const line of text.split('\n')) {
@@ -130,6 +134,7 @@ export async function searchSession(
           hitIndex,
           sessionId,
           workspace,
+          ...(title !== undefined ? { title } : {}),
         });
       }
     }
@@ -301,6 +306,7 @@ function searchResultsCard(
   const blocks: object[] = [];
   contexts.forEach((c, i) => {
     const metaLine = [
+      c.title ? `🏷 ${c.title}` : '',
       c.workspace ? `📁 ${c.workspace}` : '',
       c.sessionId ? `🆔 ${c.sessionId}` : '',
     ]

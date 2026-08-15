@@ -77,7 +77,7 @@ export interface StatusInfo {
 
 export function statusCard(info: StatusInfo): object {
   const sessionLine = info.sessionId
-    ? `\`${info.sessionId.slice(0, 8)}…\`${info.sessionStale ? ' ⚠️ 旧 cwd，下一条会新建' : ''}`
+    ? `\`${info.sessionId}\`${info.sessionStale ? ' ⚠️ 旧 cwd，下一条会新建' : ''}`
     : '(无)';
   // For topic groups, surface that the scope is per-topic so the user
   // knows /cd / /new only affect this topic.

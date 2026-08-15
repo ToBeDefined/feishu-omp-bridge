@@ -937,7 +937,7 @@ function searchResultsCard(
   contexts.forEach((ctx, i) => {
     const metaLine = [
       meta.workspace ? `📁 ${meta.workspace}` : '',
-      meta.sessionId ? `🆔 ${meta.sessionId.slice(0, 8)}…` : '',
+      meta.sessionId ? `🆔 ${meta.sessionId}` : '',
     ]
       .filter(Boolean)
       .join(' · ');
@@ -1017,7 +1017,7 @@ function searchDetailCard(
   const parts = [
     label,
     workspace ? `📁 ${workspace}` : '',
-    sessionId ? `🆔 ${sessionId.slice(0, 8)}…` : '',
+    sessionId ? `🆔 ${sessionId}` : '',
   ].filter(Boolean);
   const head = done ? '✅ 搜索详情' : parts.join(' · ');
   const elements: object[] = [

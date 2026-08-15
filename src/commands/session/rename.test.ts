@@ -105,7 +105,7 @@ describe('/rename command', () => {
     expect((ctx.sessions.getRaw('oc_1') as { title?: string }).title).toBeUndefined();
   });
 
-  it('generates a title from user messages only, in the current session', async () => {
+  it('generates a title from user messages only, in an isolated session dir', async () => {
     await writeSessionFile();
     const longTitle = '这是一条特别长的自动生成标题测试内容用来验证截断逻辑';
     const agent = agentYielding(longTitle);
@@ -115,25 +115,25 @@ describe('/rename command', () => {
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已自动生成标题'));
     const title = (ctx.sessions.getRaw('oc_1') as { title?: string }).title;
     expect(Array.from(title ?? '')).toHaveLength(20);
-    // Prompt feeds the user's messages only (no assistant reply), and the
-    // run resumes the current session.
-    const runArgs = agent.run.mock.calls[0]?.[0] as { prompt: string; sessionId?: string };
-    expect(runArgs?.sessionId).toBe('s1');
+    // Prompt feeds the user's messages only (no assistant reply), and the run
+    // goes to a throwaway session dir — never resumes the current session.
+    const runArgs = agent.run.mock.calls[0]?.[0] as { prompt: string; sessionDir?: string; sessionId?: string };
+    expect(runArgs?.sessionDir).toBeTruthy();
+    expect(runArgs?.sessionDir).not.toBe(paths.ompSessionsDir);
+    expect(runArgs?.sessionId).toBeUndefined();
     expect(runArgs?.prompt).toContain('帮我改搜索逻辑');
     expect(runArgs?.prompt).not.toContain('已改好');
   });
 
-  it('strips the marked generation prompt from the session history', async () => {
-    const file = await writeSessionFile([
-      JSON.stringify({ type: 'message', timestamp: 't3', message: { role: 'user', content: [{ type: 'text', text: '根据最近的对话 <rename-auto-title> 生成标题' }] } }),
-    ]);
-
+  it('leaves the main session file untouched when generating', async () => {
+    const file = await writeSessionFile();
+    const before = await readFile(file, 'utf8');
     const ctx = makeCtx({ agent: agentYielding('好标题') as never });
     await handleRename('auto', ctx);
-
+    // Generation runs in a throwaway session dir, so the main session file is
+    // never modified — no generation prompt lands in the history to be echoed.
     const after = await readFile(file, 'utf8');
-    expect(after).not.toContain('<rename-auto-title>');
-    expect(after).toContain('帮我改搜索逻辑');
+    expect(after).toBe(before);
   });
 
   it('fails gracefully when the model produces no text', async () => {

@@ -1,5 +1,5 @@
-import { readdir, readFile, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { paths } from '../../config/paths';
 import { getAgentStopGraceMs, getOmpModel } from '../../config/schema';
@@ -14,8 +14,8 @@ export const renameHandlers: Record<string, Handler> = {
 
 const MAX_TITLE_LENGTH = 60;
 const AUTO_TITLE_MAX = 20;
-/** Unique marker embedded in the title-generation prompt so the generated
- * user message can be identified and stripped from the session history. */
+/** Internal marker told to the model not to emit; no longer used for
+ * history stripping since generation runs in an isolated session dir. */
 const RENAME_AUTO_MARKER = '<rename-auto-title>';
 
 export async function handleRename(args: string, ctx: CommandContext): Promise<void> {
@@ -64,9 +64,11 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
  * sent — assistant replies add noise and tokens. Returns a trimmed title, or
  * null if there's nothing to title or the model produced no usable text.
  *
- * Generates in the current session (resume) so no extra session is spawned,
- * then strips the marked generation-prompt user message from the history so
- * it can't pollute the "latest message" the next time a title is derived. */
+ * Generates in an isolated throwaway session dir, so the model sees only the
+ * user-message list below — never the main session history, which is noisy
+ * and can carry echoed generation prompts that skew the title. Isolation also
+ * means the generation prompt never lands in the main session file or gets
+ * echoed back by the bridge. */
 async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null> {
   const sess = ctx.sessions.getRaw(ctx.scope);
   if (!sess?.sessionId) return null;
@@ -87,9 +89,15 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
     .filter(Boolean)
     .join('\n');
 
+  // Generate in a throwaway session dir so the model sees ONLY the
+  // user-message list below — never the full (noisy, possibly echo-polluted)
+  // main session history, which skews the title. Isolation also keeps the
+  // generation prompt out of the main session file / bridge echo.
+  const sessionDir = await mkdtemp(join(tmpdir(), 'rename-auto-'));
+
   const run = ctx.agent.run({
     prompt,
-    sessionId: sess.sessionId,
+    sessionDir,
     cwd: ctx.workspaces.cwdFor(ctx.scope) ?? homedir(),
     model: getOmpModel(ctx.controls.cfg),
     stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),
@@ -107,9 +115,10 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
     await run.stop().catch(() => {
       /* stop errors are non-fatal */
     });
-    // Remove the marked generation prompt from the session history so it
-    // never becomes one of the "recent user messages" and skews later titles.
-    await removeGeneratedPrompt(sess.sessionId);
+    // Drop the throwaway session dir; nothing to clean from the main history.
+    await rm(sessionDir, { recursive: true, force: true }).catch(() => {
+      /* best-effort cleanup */
+    });
   }
 }
 
@@ -150,29 +159,6 @@ async function loadRecentUserMessages(
     /* fall through to empty */
   }
   return all.slice(-maxCount);
-}
-
-/** Drop any message line carrying the rename marker from the session file
- * that owns `sessionId`. Best-effort; leaves the file untouched if the
- * session isn't found or no marked line exists. */
-async function removeGeneratedPrompt(sessionId: string): Promise<void> {
-  try {
-    const entries = await readdir(paths.ompSessionsDir);
-    for (const name of entries) {
-      if (!name.endsWith('.jsonl')) continue;
-      const file = join(paths.ompSessionsDir, name);
-      const text = await readFile(file, 'utf8');
-      if (!text.includes(`"id":"${sessionId}"`)) continue;
-      const lines = text.split('\n');
-      const kept = lines.filter((line) => !line.includes(RENAME_AUTO_MARKER));
-      if (kept.length !== lines.length) {
-        await writeFile(file, kept.join('\n'), 'utf8');
-      }
-      return;
-    }
-  } catch {
-    /* best-effort cleanup */
-  }
 }
 
 /** Normalize a model title: strip markdown/whitespace/quotes and cap length

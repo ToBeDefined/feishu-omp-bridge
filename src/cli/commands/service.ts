@@ -7,7 +7,7 @@ import {
   type ServiceAdapter,
   type ServiceResultLike,
 } from '../../daemon/service-adapter';
-import { readAndPrune, type ProcessEntry } from '../../runtime/registry';
+import { readAndPrune, sameAppOthers, type ProcessEntry } from '../../runtime/registry';
 import { preFlightChecks } from '../preflight';
 
 export interface ServiceStartOptions {
@@ -38,6 +38,29 @@ function requireAdapter(cmdName: string): ServiceAdapter {
  * per-user LaunchAgents domain. Running as root targets a different
  * domain (system-wide) and won't even see our plist.
  */
+/**
+ * Best-effort kill of any leftover bridge processes for the configured app
+ * (strays not under launchd's management, or stale daemons that survived
+ * while `dist/` changed underneath them). Idempotent; used as a safety net
+ * on top of the service manager's own stop. The current CLI process is
+ * excluded — it must survive to finish the start/restart.
+ */
+async function killStrayProcesses(): Promise<void> {
+  const cfg = await loadConfig();
+  const appId = cfg.accounts?.app?.id;
+  if (!appId) return;
+  for (const entry of sameAppOthers(appId)) {
+    console.log(`  清理残留进程 ${entry.id} (pid ${entry.pid})…`);
+    try {
+      process.kill(entry.pid, 'SIGTERM');
+    } catch {
+      // already dead
+    }
+  }
+  // Give strays a moment to exit before the caller boots a fresh instance.
+  await new Promise((r) => setTimeout(r, 300));
+}
+
 function formatServiceStderr(stderr: string): string {
   return stderr
     .split('\n')
@@ -186,6 +209,9 @@ export async function runServiceStart(opts: ServiceStartOptions = {}): Promise<v
     }
   }
 
+  // Safety net: kill any leftover bridge processes before booting fresh.
+  await killStrayProcesses();
+
   await reportConnectAfter('started', adapter.start);
 }
 
@@ -244,11 +270,33 @@ export async function runServiceRestart(): Promise<void> {
     console.error('bot 还没在后台运行过。请先运行 `start` 启动。');
     process.exit(1);
   }
+
+  // Bounce via the same full stop→install→start path `start` uses, instead
+  // of an in-place kickstart. This guarantees every old process (including
+  // strays launched outside launchd, or stale ones kept alive by KeepAlive
+  // while dist/ changed underneath them) is torn down before a fresh one
+  // boots, so the daemon always loads the current build.
+  await adapter.install();
   if (adapter.isRunning()) {
-    await reportConnectAfter('restarted', adapter.restart);
-    return;
+    console.log('正在停止旧 bot 实例…');
+    const r = await adapter.stop();
+    if (!r.ok) {
+      console.warn(`⚠ 停止旧实例时有警告(继续重启):\n${formatServiceStderr(r.stderr)}`);
+    }
+    const ok = await adapter.waitUntilStopped();
+    if (!ok) {
+      console.error('✗ 旧 bot 实例没有完全停止。请稍后重试,或:');
+      console.error('  unregister  # 强制清除注册');
+      console.error('  start       # 再次启动');
+      process.exit(1);
+    }
   }
-  await reportConnectAfter('started', adapter.start);
+
+  // Safety net: kill any leftover bridge processes the service manager
+  // didn't reap (strays, stale daemons on an older build).
+  await killStrayProcesses();
+
+  await reportConnectAfter('restarted', adapter.start);
 }
 
 /** `bridge status` — report whether the daemon is running, with pid + log paths. */

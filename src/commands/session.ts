@@ -774,6 +774,25 @@ const SEARCH_CACHE_MAX = 20;
 async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   const [sub, ...rest] = args.trim().split(/\s+/);
 
+  // Mark the search card as done: keep the results, remove all buttons.
+  if (sub === 'done') {
+    const queryId = rest[0] ?? '';
+    const contexts = searchCache.get(queryId);
+    if (ctx.fromCardAction) {
+      const msgId = ctx.msg.messageId;
+      void (async () => {
+        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+        await updateManagedCard(
+          ctx.channel,
+          msgId,
+          searchResultsCard('', contexts ?? [], queryId, false),
+        ).catch(() => {});
+        forgetManagedCard(msgId);
+      })();
+    }
+    return;
+  }
+
   // Resume the conversation this search belongs to — continue chatting in
   // that session.
   if (sub === 'resume') {
@@ -863,48 +882,69 @@ function renderSearchContext(context: SearchContext): string {
 }
 
 /** Card listing search result windows, each expandable. */
-function searchResultsCard(keyword: string, contexts: SearchContext[], queryId: string): object {
-  const header = `🔍 搜索 \`${keyword}\`：找到 ${contexts.length} 个片段`;
-  const more = contexts.length >= 6 ? '\n\n_（仅显示最近 6 个片段）_' : '';
+function searchResultsCard(
+  keyword: string,
+  contexts: SearchContext[],
+  queryId: string,
+  showButtons = true,
+): object {
+  const done = !showButtons;
+  const header = done
+    ? '✅ 搜索完成'
+    : `🔍 搜索 \`${keyword}\`：找到 ${contexts.length} 个片段`;
+  const more = !done && contexts.length >= 6 ? '\n\n_（仅显示最近 6 个片段）_' : '';
   const blocks: object[] = [];
   contexts.forEach((ctx, i) => {
     const preview = renderSearchContext(ctx);
-    blocks.push(
-      { tag: 'markdown', content: preview },
-      {
-        tag: 'column_set',
-        flex_mode: 'flow',
-        horizontal_spacing: 'small',
-        columns: [
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: '查看详情' },
-                type: 'default',
-                value: { cmd: 'search.show', arg: `${queryId} ${i + 1}` },
-              },
-            ],
-          },
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: '继续对话' },
-                type: 'primary',
-                value: { cmd: 'search.resume' },
-              },
-            ],
-          },
-        ],
-      },
-    );
+    blocks.push({ tag: 'markdown', content: preview });
+    if (showButtons) {
+      blocks.push(
+        {
+          tag: 'column_set',
+          flex_mode: 'flow',
+          horizontal_spacing: 'small',
+          columns: [
+            {
+              tag: 'column',
+              width: 'auto',
+              elements: [
+                {
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: '查看详情' },
+                  type: 'default',
+                  value: { cmd: 'search.show', arg: `${queryId} ${i + 1}` },
+                },
+              ],
+            },
+            {
+              tag: 'column',
+              width: 'auto',
+              elements: [
+                {
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: '继续对话' },
+                  type: 'primary',
+                  value: { cmd: 'search.resume' },
+                },
+              ],
+            },
+          ],
+        },
+      );
+    }
     if (i < contexts.length - 1) blocks.push({ tag: 'hr' });
   });
+  if (showButtons) {
+    blocks.push(
+      { tag: 'hr' },
+      {
+        tag: 'button',
+        text: { tag: 'plain_text', content: '完成' },
+        type: 'default',
+        value: { cmd: 'search.done', arg: queryId },
+      },
+    );
+  }
   return {
     schema: '2.0',
     config: { summary: { content: '搜索结果' } },

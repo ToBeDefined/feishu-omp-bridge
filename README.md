@@ -406,6 +406,8 @@ feishu://message/<message_id>
 
 ## 开发
 
+架构与代码组织约定见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
 安装依赖：
 
 ```bash

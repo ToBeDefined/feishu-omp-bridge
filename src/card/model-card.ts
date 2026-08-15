@@ -11,18 +11,33 @@ export interface ModelProviderInfo {
   count: number;
 }
 
+/** Recent model selector buttons, shown as quick-set. */
+function modelRecentButtons(current: string | undefined, recents: string[]): object[] {
+  const items = recents.filter((m) => m !== current);
+  return items.map((m) => ({
+    tag: 'button',
+    text: { tag: 'plain_text', content: m },
+    type: 'default',
+    value: { cmd: 'model.use', arg: m },
+  }));
+}
+
 /** Provider chooser card for `/model`. */
 export function modelProviderCard(
   current: string | undefined,
   providers: ModelProviderInfo[],
+  recents: string[] = [],
 ): object {
   const lines = [
     '🎛️ **切换模型**',
     '',
     `当前:` + (current ? `\`${current}\`` : '_跟随 OMP 默认_'),
-    '',
-    '选择提供方,再选具体模型。',
   ];
+  const recentButtons = modelRecentButtons(current, recents);
+  const recentBlock: object[] =
+    recentButtons.length > 0
+      ? [{ tag: 'markdown', content: '\n**最近使用**' }, ...recentButtons, { tag: 'hr' }]
+      : [];
   const buttons = providers.map((p) => ({
     tag: 'button',
     text: { tag: 'plain_text', content: `${p.provider} (${p.count})` },
@@ -38,7 +53,14 @@ export function modelProviderCard(
   return {
     schema: '2.0',
     config: { summary: { content: '切换模型' } },
-    body: { elements: [{ tag: 'markdown', content: lines.join('\n') }, { tag: 'hr' }, ...buttons] },
+    body: {
+      elements: [
+        { tag: 'markdown', content: lines.join('\n') },
+        ...recentBlock,
+        { tag: 'markdown', content: '\n**选择提供方**' },
+        ...buttons,
+      ],
+    },
   };
 }
 

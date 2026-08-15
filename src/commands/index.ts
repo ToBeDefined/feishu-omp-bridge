@@ -1,7 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { stat } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
@@ -27,6 +28,7 @@ import {
   getMessageReplyMode,
   getOmpBinary,
   getOmpModel,
+  getOmpSessionDir,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
   getShowToolCalls,
@@ -436,6 +438,8 @@ async function handleModel(args: string, ctx: CommandContext): Promise<void> {
       return showModelProviders(ctx, current);
     case 'provider':
       return showModelPicker(rest.join(' '), ctx, current);
+    case 'use':
+      return setModel(rest.join(' '), ctx, current);
     case 'submit':
       return submitModel(ctx, current);
     case 'cancel':
@@ -453,14 +457,21 @@ async function handleModel(args: string, ctx: CommandContext): Promise<void> {
 }
 
 async function showModelProviders(ctx: CommandContext, current: string | undefined): Promise<void> {
-  const models = await listOmpModels(ctx.controls.cfg);
+  const [models, recents] = await Promise.all([
+    listOmpModels(ctx.controls.cfg),
+    recentOmpModels(ctx.controls.cfg),
+  ]);
   const byProvider = new Map<string, number>();
   for (const m of models) {
     byProvider.set(m.provider, (byProvider.get(m.provider) ?? 0) + 1);
   }
   const providers = [...byProvider.entries()].map(([provider, count]) => ({ provider, count }));
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, modelProviderCard(current, providers));
+  await sendManagedCard(
+    ctx.channel,
+    ctx.msg.chatId,
+    modelProviderCard(current, providers, recents),
+  );
 }
 
 async function showModelPicker(
@@ -523,11 +534,24 @@ async function resetModel(ctx: CommandContext, current: string | undefined): Pro
 }
 
 async function setModel(model: string, ctx: CommandContext, current: string | undefined): Promise<void> {
+  if (!model) {
+    await reply(ctx, '未指定模型。用 `/model` 打开选择卡片。');
+    return;
+  }
   const cfg = ctx.controls.cfg;
   cfg.preferences = { ...(cfg.preferences ?? {}), ompModel: model };
   await saveConfig(cfg, ctx.controls.configPath);
-  log.info('command', 'model-set', { scope: ctx.scope, model, via: 'text' });
-  await reply(ctx, `✅ 模型已设为 \`${model}\`。下一条消息生效。`);
+  log.info('command', 'model-set', { scope: ctx.scope, model, via: ctx.fromCardAction ? 'card' : 'text' });
+  if (ctx.fromCardAction) {
+    const formMsgId = ctx.msg.messageId;
+    void (async () => {
+      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+      await updateManagedCard(ctx.channel, formMsgId, modelSavedCard(model)).catch(() => {});
+      forgetManagedCard(formMsgId);
+    })();
+  } else {
+    await reply(ctx, `✅ 模型已设为 \`${model}\`。下一条消息生效。`);
+  }
 }
 
 interface OmpModelEntry {
@@ -537,6 +561,46 @@ interface OmpModelEntry {
 }
 
 const execFileAsync = promisify(execFile);
+
+interface ModelChangeFrame {
+  model?: string;
+  timestamp?: string;
+  role?: string;
+}
+
+/** Scan the bridge's OMP session JSONL files for `model_change` frames and
+ * return the most recently used model selectors (newest first, fallback
+ * resolutions excluded, deduped). */
+async function recentOmpModels(cfg: AppConfig): Promise<string[]> {
+  const dir = getOmpSessionDir(cfg);
+  const seen = new Set<string>();
+  const found: ModelChangeFrame[] = [];
+  try {
+    const entries = await readdir(dir);
+    for (const name of entries) {
+      if (!name.endsWith('.jsonl')) continue;
+      const file = join(dir, name);
+      const text = await readFile(file, 'utf8');
+      for (const line of text.split('\n')) {
+        if (!line.includes('model_change')) continue;
+        let frame: ModelChangeFrame;
+        try {
+          frame = JSON.parse(line) as ModelChangeFrame;
+        } catch {
+          continue;
+        }
+        if (frame.role === 'fallback' || !frame.model) continue;
+        if (seen.has(frame.model)) continue;
+        seen.add(frame.model);
+        found.push(frame);
+      }
+    }
+  } catch {
+    return [];
+  }
+  found.sort((a, b) => (b.timestamp ?? '').localeCompare(a.timestamp ?? ''));
+  return found.slice(0, 5).map((f) => f.model ?? '');
+}
 
 async function listOmpModels(cfg: AppConfig): Promise<OmpModelEntry[]> {
   const omp = getOmpBinary(cfg);

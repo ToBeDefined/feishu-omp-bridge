@@ -1,3 +1,5 @@
+import { homedir } from 'node:os';
+
 export interface ModelInfo {
   selector: string;
   name?: string;
@@ -270,6 +272,63 @@ export function thinkingCancelledCard(): object {
     config: { summary: { content: '已取消' } },
     body: { elements: [{ tag: 'markdown', content: '已取消,未做修改。' }] },
   };
+}
+
+export interface ResumeOption {
+  sessionId: string;
+  cwd: string;
+  timestamp: string;
+}
+
+/** Session picker card for `/resume`. */
+export function resumeCard(current: string | undefined, sessions: ResumeOption[]): object {
+  const lines = [
+    '🕘 **恢复会话**',
+    '',
+    `当前 session:` + (current ? `\`${current.slice(0, 8)}…\`` : '(无)'),
+    '',
+    '选择要恢复的历史会话。',
+  ];
+  const buttons = sessions.map((s) => ({
+    tag: 'button',
+    text: { tag: 'plain_text', content: `${s.sessionId.slice(0, 8)}… · ${shortCwd(s.cwd)}` },
+    type: 'default',
+    value: { cmd: 'resume.use', arg: s.sessionId },
+  }));
+  return {
+    schema: '2.0',
+    config: { summary: { content: '恢复会话' } },
+    body: {
+      elements: [
+        { tag: 'markdown', content: lines.join('\n') },
+        { tag: 'hr' },
+        ...buttons,
+      ],
+    },
+  };
+}
+
+export function resumeSavedCard(sessionId: string, cwd: string): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '会话已恢复' } },
+    body: {
+      elements: [
+        {
+          tag: 'markdown',
+          content:
+            `✅ **已恢复会话** \`${sessionId.slice(0, 8)}…\`\n` +
+            `📁 cwd: \`${cwd}\`\n\n下一条消息从该会话继续。`,
+        },
+      ],
+    },
+  };
+}
+
+function shortCwd(cwd: string): string {
+  const home = homedir();
+  const rel = cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
+  return rel.length > 24 ? `…${rel.slice(-24)}` : rel;
 }
 
 export function modelCancelledCard(): object {

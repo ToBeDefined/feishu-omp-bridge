@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { paths } from '../config/paths';
@@ -21,10 +21,13 @@ import {
   modelProviderCard,
   modelSavedCard,
   modelSelectCard,
+  resumeCard,
+  resumeSavedCard,
   thinkingCancelledCard,
   thinkingCard,
   thinkingSavedCard,
 } from '../card/model-card';
+import type { ResumeOption } from '../card/model-card';
 import { helpCard, statusCard, workspacesCard } from '../card/templates';
 import type { AppConfig, MessageReplyMode, TenantBrand } from '../config/schema';
 import {
@@ -118,6 +121,7 @@ const handlers: Record<string, Handler> = {
   '/think': handleThinking,
   '/context': handleContext,
   '/restart': handleRestart,
+  '/resume': handleResume,
   '/ps': handlePs,
   '/exit': handleExit,
   '/doctor': handleDoctor,
@@ -138,6 +142,7 @@ const ADMIN_COMMANDS: Record<string, true> = {
   '/think': true,
   '/restart': true,
   '/context': true,
+  '/resume': true,
   '/exit': true,
   '/reconnect': true,
   '/doctor': true,
@@ -810,6 +815,110 @@ async function handleRestart(_args: string, ctx: CommandContext): Promise<void> 
     await new Promise((r) => setTimeout(r, 800));
     await ctx.controls.exit().catch(() => {});
   })();
+}
+
+interface SessionMeta {
+  id?: string;
+  cwd?: string;
+  timestamp?: string;
+}
+
+/** Scan the bridge's OMP session dir for `.jsonl` session files, reading the
+ * leading `type:"session"` frame from each for id / cwd / timestamp. Newest
+ * first. */
+async function listResumableSessions(): Promise<ResumeOption[]> {
+  const dir = paths.ompSessionsDir;
+  const out: ResumeOption[] = [];
+  try {
+    const entries = await readdir(dir);
+    for (const name of entries) {
+      if (!name.endsWith('.jsonl')) continue;
+      try {
+        const text = await readFile(join(dir, name), 'utf8');
+        // The session frame sits near the top (after the title frame); scan
+        // the first lines instead of parsing the whole (possibly huge) file.
+        const head = text.slice(0, 16_384);
+        const line = head.split('\n').find((l) => l.includes('"type":"session"'));
+        if (!line) continue;
+        const frame = JSON.parse(line) as SessionMeta;
+        if (!frame.id || !frame.cwd) continue;
+        out.push({
+          sessionId: frame.id,
+          cwd: frame.cwd,
+          timestamp: frame.timestamp ?? name,
+        });
+      } catch {
+        continue;
+      }
+    }
+  } catch {
+    return [];
+  }
+  out.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+  return out;
+}
+
+async function handleResume(args: string, ctx: CommandContext): Promise<void> {
+  const [sub, ...rest] = args.trim().split(/\s+/);
+
+  if (sub === 'use') {
+    const sessionId = rest.join('');
+    const sessions = await listResumableSessions();
+    const match = sessions.find((s) => s.sessionId === sessionId);
+    if (!match) {
+      await reply(ctx, `❌ 未找到会话 \`${sessionId}\`。`);
+      return;
+    }
+    applyResume(ctx, match);
+    return;
+  }
+
+  if (!sub) {
+    const sessions = await listResumableSessions();
+    const currentId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
+    if (sessions.length === 0) {
+      await reply(ctx, '没有找到可恢复的历史会话。');
+      return;
+    }
+    if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, resumeCard(currentId, sessions));
+    return;
+  }
+
+  // Direct resume by id prefix: find the session anywhere in history.
+  const sessions = await listResumableSessions();
+  const match = sessions.find((s) => s.sessionId.startsWith(sub));
+  if (!match) {
+    await reply(ctx, `❌ 未找到会话 \`${sub}\`。发 \`/resume\` 查看可恢复的会话列表。`);
+    return;
+  }
+  applyResume(ctx, match);
+}
+
+function applyResume(ctx: CommandContext, match: ResumeOption): void {
+  const cwd = match.cwd || homedir();
+  // Interrupt any active run, then re-point this chat's session + cwd at
+  // the historical session. resumeFor(scope, cwd) will match next run.
+  ctx.activeRuns.interrupt(ctx.scope);
+  ctx.workspaces.setCwd(ctx.scope, cwd);
+  ctx.sessions.set(ctx.scope, match.sessionId, cwd);
+  log.info('command', 'resume', {
+    scope: ctx.scope,
+    sessionId: match.sessionId,
+    cwd,
+  });
+  if (ctx.fromCardAction) {
+    const msgId = ctx.msg.messageId;
+    void (async () => {
+      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+      await updateManagedCard(ctx.channel, msgId, resumeSavedCard(match.sessionId, cwd)).catch(
+        () => {},
+      );
+      forgetManagedCard(msgId);
+    })();
+  } else {
+    void reply(ctx, `✅ 已恢复会话 \`${match.sessionId.slice(0, 8)}…\`\n📁 cwd: \`${cwd}\`\n\n下一条消息从该会话继续。`);
+  }
 }
 
 async function handlePs(_args: string, ctx: CommandContext): Promise<void> {

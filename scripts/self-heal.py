@@ -68,23 +68,39 @@ def log(msg: str) -> None:
         pass
 
 
-# --- 互斥锁（原子 mkdir，跨平台；等价原 flock） ---
+# --- 互斥锁（fcntl 文件锁，进程退出时内核自动释放） ---
+# 相比 mkdir 原子锁：进程被 kill -9 / SIGTERM 强杀时，OS 自动释放文件锁，
+# 不会残留脏锁导致 watchdog 永远无法启动。这是自愈工具的关键可靠性点。
 class DirLock:
     def __init__(self, path: str):
-        self.path = path + ".d"
+        self.path = path
+        self._fd: int | None = None
 
     def acquire(self) -> bool:
         try:
-            os.mkdir(self.path)
-            return True
-        except FileExistsError:
+            fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
+        except OSError:
             return False
+        try:
+            import fcntl
+
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (ImportError, OSError):
+            os.close(fd)
+            return False
+        self._fd = fd
+        return True
 
     def release(self) -> None:
-        try:
-            os.rmdir(self.path)
-        except OSError:
-            pass
+        if self._fd is not None:
+            try:
+                import fcntl
+
+                fcntl.flock(self._fd, fcntl.LOCK_UN)
+            except (ImportError, OSError):
+                pass
+            os.close(self._fd)
+            self._fd = None
 
 
 def _read_state() -> dict:
@@ -270,8 +286,10 @@ def heal_once() -> None:
 def install() -> None:
     plist_path = Path.home() / "Library" / "LaunchAgents" / f"{SERVICE_LABEL}.plist"
     plist_path.parent.mkdir(parents=True, exist_ok=True)
+    # 启动用 /bin/bash 薄壳（永在），由它定位 python3 并 exec 核心逻辑。
+    # 不直接写 python 绝对路径 —— brew 管理的 python symlink 可能失效。
     bash_bin = shutil.which("bash") or "/bin/bash"
-    py = sys.executable
+    launcher = str(Path(__file__).resolve().parent / "self-heal.sh")
     content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -280,8 +298,8 @@ def install() -> None:
     <string>{SERVICE_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{py}</string>
-        <string>{Path(__file__).resolve()}</string>
+        <string>{bash_bin}</string>
+        <string>{launcher}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -314,21 +332,24 @@ def uninstall() -> None:
 
 
 def main() -> None:
-    # 互斥：同一时间只允许一个 watchdog 实例
+    arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    # install / uninstall 是管理操作，不受 watchdog 常驻锁影响。
+    if arg == "install":
+        install()
+        return
+    if arg == "uninstall":
+        uninstall()
+        return
+    # 探测/修复/常驻：同一时间只允许一个实例
     lock = DirLock(LOCK_FILE)
     if not lock.acquire():
         log("✗ 已有自愈看门狗在运行，本轮跳过。")
         sys.exit(2)
     try:
-        arg = sys.argv[1] if len(sys.argv) > 1 else ""
         if arg == "--once":
             heal_once()
         elif arg == "--repair":
             repair_with_omp_guarded()
-        elif arg == "install":
-            install()
-        elif arg == "uninstall":
-            uninstall()
         else:
             # 常驻循环（launchd 拉起后用）
             while True:

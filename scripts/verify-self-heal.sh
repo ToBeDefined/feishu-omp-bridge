@@ -87,7 +87,7 @@ run_heal() {
 }
 
 reset_round() {
-  rm -rf "$T/state" "$T/heal.lock" "$T/heal.lock.d" "$T/heal.lock.omp.d" \
+  rm -rf "$T/state" "$T/heal.lock" "$T/heal.lock.d" "$T/heal.lock.omp" "$T/heal.lock.omp.d" \
          "$T/bin" "$T/omp" "$T/calls.env"
   mkdir -p "$T/state"
   mk_fake_omp
@@ -165,9 +165,17 @@ for round in $(seq 1 "$ROUNDS"); do
   OMP_OK=1 RESTART_OK=1 RESTART_FIX=1
   printf '{"entries":[{"botName":"Agent","pid":123}]}' > "$T/state/processes.json"
   start_proc
-  mkdir -p "$T/heal.lock.d"
+  # 用 python 子进程后台持 fcntl 锁模拟另一实例在跑
+  python3 -c "
+import os, fcntl, time
+fd = os.open('$T/heal.lock', os.O_CREAT | os.O_RDWR)
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+time.sleep(30)
+" & LOCKER=$!
+  sleep 0.5
   run_heal
   check "锁冲突时跳过执行" "[ ! -f $T/bin/calls.env ]"
+  kill $LOCKER 2>/dev/null
   stop_proc
 
   # === 场景 7: omp 修复阶梯退避 ===
@@ -190,9 +198,17 @@ for round in $(seq 1 "$ROUNDS"); do
   HEAL_BACKOFF_BASE_S=0
   printf '{"entries":[{"pid":123}]}' > "$T/state/processes.json"
   rm -f "$T/omp/calls.env"
-  mkdir -p "$T/heal.lock.omp.d"   # 预占 omp 修复锁
+  # 用 python 子进程后台持 omp fcntl 锁模拟另一修复会话在跑
+  python3 -c "
+import os, fcntl, time
+fd = os.open('$T/heal.lock.omp', os.O_CREAT | os.O_RDWR)
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+time.sleep(30)
+" & OMP_LOCKER=$!
+  sleep 0.5
   run_heal; run_heal
-  check "omp 锁被占时跳过唤起" "[ ! -f $T/omp/calls.env ]"
+  check "omp 锁被占时跳过唤起" "[ ! -f $T/omp/calls.log ]"
+  kill $OMP_LOCKER 2>/dev/null
 
   # === 场景 9: omp 修复成功闭环 ===
   reset_round

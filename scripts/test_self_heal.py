@@ -1,0 +1,276 @@
+"""self-heal.py 的 pytest 测试。
+
+替代原 verify-self-heal.sh（bash + eval 断言）。用 pytest 的
+monkeypatch/tmp_path 直接驱动 self-heal 模块，覆盖全部自愈行为：
+
+  1. 健康探测不误报           2. 进程死 → restart 自愈
+  3. WS 断连 → restart         4. omp 不可用判异常
+  5. restart 失败 → 唤起 omp   6. 主锁互斥
+  7. 阶梯退避                  8. omp 并发锁
+  9. 修复成功闭环             10. 最大次数上限
+  11. 提示词契约              12. SIGKILL 后锁自动释放
+
+运行：python3 -m pytest scripts/test_self_heal.py -v
+"""
+
+import importlib.util
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+SCRIPT = Path(__file__).parent / "self-heal.py"
+
+
+def load_module():
+    spec = importlib.util.spec_from_file_location("self_heal", SCRIPT)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.fixture()
+def heal(tmp_path, monkeypatch):
+    mod = load_module()
+
+    # 隔离所有状态/锁/日志到 tmp
+    monkeypatch.setattr(mod, "STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(mod, "STATE_FILE", str(tmp_path / "heal-state.json"))
+    monkeypatch.setattr(mod, "LOCK_FILE", str(tmp_path / "heal.lock"))
+    monkeypatch.setattr(mod, "LOG_FILE", str(tmp_path / "heal.log"))
+
+    # 可控假命令：记录调用，退出码由模块变量决定
+    calls = {"restart": 0, "omp_run": 0, "ctx": None}
+
+    def fake_run(cmd, **kw):
+        argv = cmd if isinstance(cmd, list) else str(cmd).split()
+        # restart: RESTART_CMD.split() → ["fake-restart"]
+        # omp run:  ["fake-omp", "run", ...]
+        if argv and argv[0] == "fake-restart":
+            calls["restart"] += 1
+            # restart 动作让进程复活 + 写回 botName（模拟修复 WS）
+            if getattr(mod, "RESTART_FIX", False):
+                probe_state["alive"] = True
+                (tmp_path / "processes.json").write_text(
+                    '{"entries":[{"botName":"Agent","pid":123}]}'
+                )
+            rc = 0 if getattr(mod, "RESTART_OK", True) else 1
+        elif len(argv) >= 2 and argv[0] == "fake-omp" and argv[1] == "run":
+            calls["omp_run"] += 1
+            calls["ctx"] = argv[-1]
+            rc = 0 if getattr(mod, "OMP_RUN_OK", False) else 1
+            if rc == 0 and getattr(mod, "OMP_RUN_FIX", False):
+                probe_state["alive"] = True
+                (tmp_path / "processes.json").write_text(
+                    '{"entries":[{"botName":"Agent","pid":123}]}'
+                )
+        else:
+            rc = 0
+        return subprocess.CompletedProcess(argv, rc)
+
+    # 探测：进程/omp 用可控 state；WS 读真实 processes.json（restart 修复后
+    # RESTART_FIX 会写回 botName，需真实读取才能验证闭环）。
+    probe_state = {"alive": True, "omp": True}
+
+    def _proc_alive():
+        return probe_state["alive"]
+
+    def _ws_connected():
+        try:
+            return '"botName"' in (tmp_path / "processes.json").read_text()
+        except OSError:
+            return False
+
+    def _omp_available():
+        return probe_state["omp"]
+
+    monkeypatch.setattr(mod, "subprocess", type("SP", (), {"run": staticmethod(fake_run)})())
+    monkeypatch.setattr(mod, "RESTART_CMD", "fake-restart")
+    monkeypatch.setattr(mod, "OMP_BIN", "fake-omp")
+    monkeypatch.setattr(mod, "_proc_alive", _proc_alive)
+    monkeypatch.setattr(mod, "_ws_connected", _ws_connected)
+    monkeypatch.setattr(mod, "_omp_available", _omp_available)
+
+    # 默认参数
+    mod.RECOVER_WAIT_S = 0
+    mod.FAIL_THRESHOLD = 2
+    mod.BACKOFF_BASE_S = 0
+    mod.MAX_ATTEMPTS = 10
+    mod.RESTART_OK = True
+    mod.RESTART_FIX = True
+    mod.OMP_RUN_OK = False
+
+    mod.calls = calls
+    mod.probe_state = probe_state
+    # 默认健康：有 botName（RESTART_FIX/断连测试会改）
+    (tmp_path / "processes.json").write_text('{"entries":[{"botName":"Agent","pid":123}]}')
+    return mod
+
+
+# --- 1. 健康探测不误报 ---
+def test_healthy_no_false_alarm(heal):
+    heal.heal_once()
+    assert heal.state_get("fails") == 0
+    assert heal.calls["restart"] == 0
+
+
+# --- 2. 进程死 → 连续异常 → restart 自愈 ---
+def test_proc_dead_triggers_restart(heal):
+    heal.probe_state["alive"] = False
+    heal.heal_once()  # fails=1
+    assert heal.state_get("fails") == 1
+    heal.heal_once()  # 达阈值 → restart（fake 复活进程+写回 botName）→ 恢复
+    assert heal.calls["restart"] == 1
+    assert heal.state_get("fails") == 0
+
+
+# --- 3. WS 断连(无 botName) → restart ---
+def test_ws_disconnect_triggers_restart(heal):
+    (heal.STATE_DIR and Path(heal.STATE_DIR) / "processes.json").unlink(missing_ok=True)
+    heal.heal_once()
+    heal.heal_once()
+    assert heal.calls["restart"] == 1
+
+
+# --- 4. omp 不可用 → 判异常 ---
+def test_omp_unavailable_counts_failure(heal):
+    heal.probe_state["omp"] = False
+    heal.heal_once()
+    assert heal.state_get("fails") >= 1
+
+
+# --- 5. restart 失败 → 唤起 omp ---
+def test_restart_fail_invokes_omp(heal):
+    heal.probe_state["alive"] = False
+    (heal.STATE_DIR and Path(heal.STATE_DIR) / "processes.json").unlink(missing_ok=True)
+    heal.RESTART_OK = False
+    heal.RESTART_FIX = False  # restart 失败,持续断连
+    heal.OMP_RUN_OK = True
+    heal.heal_once()
+    heal.heal_once()
+    assert heal.calls["omp_run"] == 1
+
+
+# --- 6. 主锁互斥（端到端：真实子进程持锁） ---
+def test_main_lock_conflict_skips(heal, tmp_path):
+    import fcntl
+
+    lock_file = tmp_path / "held.lock"
+    fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        env = dict(os.environ, HEAL_STATE_DIR=str(tmp_path), HEAL_LOCK_FILE=str(lock_file))
+        r = subprocess.run([sys.executable, str(SCRIPT), "--once"], env=env,
+                           capture_output=True, text=True)
+        assert r.returncode == 2  # 锁冲突 → exit 2
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+# --- 7. 阶梯退避 ---
+def test_omp_backoff(heal):
+    heal.probe_state["alive"] = False
+    (heal.STATE_DIR and Path(heal.STATE_DIR) / "processes.json").unlink(missing_ok=True)
+    heal.RESTART_OK = False
+    heal.RESTART_FIX = False  # restart 失败,持续断连
+    heal.OMP_RUN_OK = False
+    heal.BACKOFF_BASE_S = 600
+    heal.heal_once()
+    heal.heal_once()  # 达阈值 → restart 失败 → omp 失败 → 设退避
+    assert heal.state_get("nextOmpAt") > 0
+    # 退避期内再次触发不应唤起 omp
+    before = heal.calls["omp_run"]
+    heal.heal_once()
+    heal.heal_once()
+    assert heal.calls["omp_run"] == before
+
+
+# --- 8. omp 并发锁 ---
+def test_omp_concurrency_lock(heal, tmp_path):
+    heal.probe_state["alive"] = False
+    (heal.STATE_DIR and Path(heal.STATE_DIR) / "processes.json").unlink(missing_ok=True)
+    heal.RESTART_OK = False
+    heal.RESTART_FIX = False  # restart 失败,持续断连
+    heal.OMP_RUN_OK = True
+    omp_lock = heal.DirLock(str(tmp_path / "heal.lock.omp"))
+    assert omp_lock.acquire()
+    try:
+        heal.heal_once()
+        heal.heal_once()
+        assert heal.calls["omp_run"] == 0
+    finally:
+        omp_lock.release()
+
+
+# --- 9. 修复成功闭环 ---
+def test_omp_success_closes_loop(heal):
+    heal.probe_state["alive"] = False
+    (Path(heal.STATE_DIR) / "processes.json").unlink(missing_ok=True)
+    heal.RESTART_OK = False
+    heal.RESTART_FIX = False  # restart 失败,持续断连
+    heal.OMP_RUN_OK = True
+    heal.OMP_RUN_FIX = True  # omp 修复成功 → 复活 + 写回 botName
+    heal.heal_once()
+    heal.heal_once()
+    assert heal.state_get("fails") == 0
+    assert heal.state_get("ompAttempts") == 0
+
+
+# --- 10. 最大次数上限 ---
+def test_max_attempts_stops(heal):
+    heal.probe_state["alive"] = False
+    (Path(heal.STATE_DIR) / "processes.json").unlink(missing_ok=True)
+    heal.RESTART_OK = False   # restart 一直失败
+    heal.RESTART_FIX = False  # 不复活 → 持续断连
+    heal.OMP_RUN_OK = False
+    heal.MAX_ATTEMPTS = 2
+    # 触发 2 次 omp 修复失败（每次需 2 次 heal_once 达阈值）
+    heal.heal_once(); heal.heal_once()
+    heal.heal_once(); heal.heal_once()
+    assert heal.state_get("ompAttempts") == 2
+    # 再触发 → 已到上限，不再唤起 omp
+    before = heal.calls["omp_run"]
+    heal.heal_once(); heal.heal_once()
+    heal.heal_once(); heal.heal_once()
+    assert heal.calls["omp_run"] == before
+
+
+# --- 11. 提示词契约 ---
+def test_prompt_contract(heal):
+    ctx = heal._build_omp_context()
+    assert "诊断" in ctx
+    assert "修复" in ctx
+    assert "restart" in ctx
+    assert "status" in ctx
+    assert "在线" in ctx
+    assert "停止" in ctx
+    assert "无关" in ctx
+
+
+# --- 12. SIGKILL 后锁自动释放（关键可靠性） ---
+def test_lock_released_after_sigkill(tmp_path):
+    import fcntl
+    import signal
+    import time
+
+    lock_path = tmp_path / "lockfile"
+    child_code = f"""
+import fcntl, os, time
+fd = os.open({str(lock_path)!r}, os.O_CREAT | os.O_RDWR)
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+print('locked', flush=True)
+time.sleep(60)
+"""
+    child = subprocess.Popen([sys.executable, "-c", child_code],
+                             stdout=subprocess.PIPE, text=True)
+    child.stdout.readline()
+    os.kill(child.pid, signal.SIGKILL)
+    child.wait()
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # 不抛即通过
+    finally:
+        os.close(fd)

@@ -90,8 +90,11 @@ def update() -> int:
         log("检测到未提交改动，先 stash 以便回滚。")
         git("stash", "push", "-m", f"self-update pre-update state {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "--", ":!dist")
 
-    # 备份 dist
-    dist_backup = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"feishu-omp-bridge-dist-{int(time.time())}")
+    # 备份 dist（目录名用纳秒时间戳，确保唯一，防并发/同秒冲突）
+    dist_backup = os.path.join(
+        os.environ.get("TMPDIR", "/tmp"),
+        f"feishu-omp-bridge-dist-{time.time_ns()}",
+    )
     if Path("dist").is_dir():
         shutil.copytree("dist", dist_backup)
         log(f"已备份 dist → {dist_backup}")

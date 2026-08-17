@@ -24,6 +24,7 @@
     "build": "tsup",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:self-heal": "python3 -m pytest scripts/test_self_heal.py scripts/test_self_update.py -q",
     "prepublishOnly": "pnpm typecheck && pnpm build"
   },
   "dependencies": {

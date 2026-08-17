@@ -427,13 +427,14 @@ feishu://message/<message_id>
   - 安装：`scripts/self-heal.py install`；卸载：`uninstall`
   - 手动一轮：`scripts/self-heal.py --once`
 
-自更新 / 自愈均有隔离环境的端到端自动测试（多轮，不影响生产）：
-  - `scripts/verify-self-heal.sh [rounds]` — 11 场景：健康不误报 / 进程死自愈 /
+自更新 / 自愈均有 pytest 测试（隔离环境，不影响生产）：
+  - `scripts/test_self_heal.py` — 12 场景：健康不误报 / 进程死自愈 /
     断连自愈 / omp 不可用判异常 / restart 失败唤起 omp / 锁互斥 / 退避 /
-    omp 并发锁 / 修复闭环 / 最大次数上限 / 提示词契约
-  - `scripts/verify-self-update.sh [rounds]` — 6 场景：更新成功 / typecheck /
-    test / build / restart 任一失败回滚 / 锁互斥
-  默认 3 轮，可传轮数（如 5）。全部断言通过才算绿。
+    omp 并发锁 / 修复闭环 / 最大次数上限 / 提示词契约 / SIGKILL 锁释放
+  - `scripts/test_self_update.py` — 6 场景：更新成功 / typecheck / test /
+    build / restart 任一失败回滚 / 锁互斥
+  运行：`pnpm test:self-heal`（或 `python3 -m pytest scripts/test_self_heal.py scripts/test_self_update.py`）。
+  需要 pytest：`python3 -m pip install --user pytest`。
 
 另外，`src/daemon/launchd.ts` 生成的 plist 带 `ThrottleInterval=10`（崩溃后
 防重启风暴），且 `start`/`restart` 若 30s 内连不上飞书会以非零码退出

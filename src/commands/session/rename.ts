@@ -13,7 +13,7 @@ export const renameHandlers: Record<string, Handler> = {
 };
 
 const MAX_TITLE_LENGTH = 60;
-const AUTO_TITLE_MAX = 20;
+const AUTO_TITLE_MAX = 30;
 /** Internal marker told to the model not to emit; no longer used for
  * history stripping since generation runs in an isolated session dir. */
 const RENAME_AUTO_MARKER = '<rename-auto-title>';

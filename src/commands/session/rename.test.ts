@@ -107,14 +107,14 @@ describe('/rename command', () => {
 
   it('generates a title from user messages only, in an isolated session dir', async () => {
     await writeSessionFile();
-    const longTitle = '这是一条特别长的自动生成标题测试内容用来验证截断逻辑';
+    const longTitle = '这是一条特别长的自动生成标题测试内容用来验证截断逻辑是否正确生效超三十字';
     const agent = agentYielding(longTitle);
     const ctx = makeCtx({ agent: agent as never });
     await handleRename('auto', ctx);
 
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已自动生成标题'));
     const title = (ctx.sessions.getRaw('oc_1') as { title?: string }).title;
-    expect(Array.from(title ?? '')).toHaveLength(20);
+    expect(Array.from(title ?? '')).toHaveLength(30);
     // Prompt feeds the user's messages only (no assistant reply), and the run
     // goes to a throwaway session dir — never resumes the current session.
     const runArgs = agent.run.mock.calls[0]?.[0] as { prompt: string; sessionDir?: string; sessionId?: string };

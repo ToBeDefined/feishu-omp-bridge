@@ -60,7 +60,19 @@ export class OmpAdapter implements AgentAdapter {
         FEISHU_OMP_BRIDGE: '1',
       },
       stdio: ['pipe', 'pipe', 'pipe'],
+      // Detach OMP from the daemon's process group. Without this, when the
+      // daemon is SIGTERM'd by launchd (e.g. `restart`), the whole group
+      // dies — including an agent-run `feishu-omp-bridge restart` that had
+      // already bootout'd the service but hadn't yet run `start`, leaving
+      // the daemon down with KeepAlive gone. Detached, OMP survives the
+      // daemon's exit and its restart command finishes the bounce.
+      // stop() still works: it kills the child by pid (SIGTERM→SIGKILL),
+      // independent of process-group membership.
+      detached: true,
     }) as OmpChild;
+    // The daemon must not wait on OMP to exit; OMP becomes a child of init
+    // once the daemon exits mid-run.
+    child.unref();
 
     log.info('agent', 'spawn', {
       pid: child.pid ?? null,

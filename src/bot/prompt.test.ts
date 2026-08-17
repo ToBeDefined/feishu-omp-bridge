@@ -47,8 +47,7 @@ describe('buildPrompt', () => {
     expect(prompt).toContain('/tmp/b.pdf (b.pdf) — 文件');
   });
 
-  it('renders quoted block between context and user text', () => {
-    const quotes: QuotedContext[] = [
+  it('renders quoted block between context and user text', () => {    const quotes: QuotedContext[] = [
       { messageId: 'om_q', senderId: 'ou_1', createdAt: '', content: 'quoted text', rawContentType: 'text' },
     ];
     const prompt = buildPrompt([msg({ content: 'reply' })], [], quotes);
@@ -57,6 +56,15 @@ describe('buildPrompt', () => {
     const replyIdx = prompt.indexOf('reply');
     expect(ctxIdx).toBeLessThan(quoteIdx);
     expect(quoteIdx).toBeLessThan(replyIdx);
+  });
+
+  it('renders voice transcript inline for audio attachments', () => {
+    const attachments: LocalAttachment[] = [
+      { path: '/tmp/voice.ogg', kind: 'audio', transcript: '帮我查下明天的天气' },
+    ];
+    const prompt = buildPrompt([msg({ content: '' })], attachments);
+    expect(prompt).toContain('/tmp/voice.ogg — 语音');
+    expect(prompt).toContain('转写: 帮我查下明天的天气');
   });
 });
 

@@ -45,12 +45,15 @@ export function buildPrompt(
       a.kind === 'image'
         ? '图片'
         : a.kind === 'audio'
-          ? '音频'
+          ? '语音'
           : a.kind === 'video'
             ? '视频'
             : '文件';
     const name = a.originalName ? ` (${a.originalName})` : '';
-    return `- ${a.path}${name} — ${label}`;
+    const line = `- ${a.path}${name} — ${label}`;
+    // Voice messages carry their transcript inline so the agent reads the
+    // content without needing to decode audio.
+    return a.kind === 'audio' && a.transcript ? `${line}\n  转写: ${a.transcript}` : line;
   });
   const userPart = texts.length > 0 ? texts.join('\n\n') : '请看下面的附件。';
   return `${prefix}${userPart}\n\n附件（本地路径）：\n${attachLines.join('\n')}`;

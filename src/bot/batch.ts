@@ -26,6 +26,7 @@ import {
 } from '../config/schema';
 import { log } from '../core/logger';
 import type { MediaCache } from '../media/cache';
+import { attachTranscripts } from '../media/transcribe';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { recordModelUse } from '../session/model-history';
@@ -79,6 +80,8 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   if (attachments.length > 0) {
     log.info('media', 'resolved', { count: attachments.length });
   }
+  // Voice messages: transcribe to text so the agent can read the content.
+  await attachTranscripts(channel, attachments);
   const imagePaths = attachments
     .filter((attachment) => attachment.kind === 'image')
     .map((attachment) => attachment.path);

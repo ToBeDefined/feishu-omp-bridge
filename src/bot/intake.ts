@@ -8,6 +8,7 @@ import {
 } from '../config/schema';
 import { log } from '../core/logger';
 import type { MediaCache } from '../media/cache';
+import { attachTranscripts } from '../media/transcribe';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import type { ActiveRuns } from './active-runs';
@@ -167,6 +168,8 @@ export async function submitToActiveRun(deps: {
   if (!activeRuns.has(scope)) return false;
   const resources = msg.resources.map((resource) => ({ messageId: msg.messageId, resource }));
   const attachments = await media.resolve(msg.chatId, resources);
+  // Voice messages: transcribe to text so the agent can read the content.
+  await attachTranscripts(channel, attachments);
   const imagePaths = attachments.filter((attachment) => attachment.kind === 'image').map((attachment) => attachment.path);
   const quotes: QuotedContext[] = [];
   if (msg.replyToMessageId) {

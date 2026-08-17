@@ -10,6 +10,8 @@ export interface LocalAttachment {
   path: string;
   kind: AttachmentKind;
   originalName?: string;
+  /** Voice message transcript (Feishu ASR); present when transcription succeeded. */
+  transcript?: string;
 }
 
 export interface ResourceRequest {
@@ -59,11 +61,12 @@ export class MediaCache {
       /* not cached */
     }
 
-    // Use the message-resource endpoint, which is required for resources
-    // that arrived from user messages. The channel's downloadResource()
-    // helper targets a different endpoint only valid for bot-uploaded files.
+    // The message-resource endpoint only accepts type=image|file. Audio,
+    // video, and generic files must use `file` (audio/video passed through
+    // verbatim → HTTP 400). Stickers are skipped above.
+    const downloadType = r.type === 'image' ? 'image' : 'file';
     const result = await this.channel.rawClient.im.v1.messageResource.get({
-      params: { type: r.type },
+      params: { type: downloadType },
       path: { message_id: messageId, file_key: r.fileKey },
     });
     await result.writeFile(path);

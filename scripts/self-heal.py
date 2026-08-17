@@ -140,11 +140,24 @@ def _proc_alive() -> bool:
 
 
 def _ws_connected() -> bool:
+    """WS 活跃探测。优先用 `bridge status`（检查 launchd 服务加载 + 进程
+    注册），比只看 processes.json 的 botName 静态标记更能捕获'进程活着但
+    WS 假死/服务未加载'。status 非零退出 = 不在后台运行。"""
     try:
-        with open(os.path.join(STATE_DIR, "processes.json"), encoding="utf-8") as f:
-            return '"botName"' in f.read()
-    except OSError:
+        r = subprocess.run(
+            [*RESTART_CMD.split(), "status"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode == 0 and "正在后台运行" in r.stdout:
+            return True
         return False
+    except (subprocess.SubprocessError, FileNotFoundError, IndexError):
+        # 兜底：回退到 botName 静态标记
+        try:
+            with open(os.path.join(STATE_DIR, "processes.json"), encoding="utf-8") as f:
+                return '"botName"' in f.read()
+        except OSError:
+            return False
 
 
 def _omp_available() -> bool:
@@ -237,6 +250,42 @@ def repair_with_omp() -> bool:
     return False
 
 
+def repair_rollback() -> bool:
+    """代码坏了时回滚到上一个稳定提交：stash → checkout HEAD~1 →
+    build → restart。比让 omp 现场改代码更稳 —— 先回到已知好版本。
+    返回 True 表示回滚后 probe 恢复。"""
+    if os.environ.get("HEAL_ROLLBACK", "1") != "1":
+        log("→ 跳过 rollback（HEAL_ROLLBACK=0）")
+        return False
+    log("→ 尝试回滚到上一个稳定提交...")
+    try:
+        # stash 未提交改动（dist 可能被改坏）
+        subprocess.run(["git", "stash", "-q"], cwd=REPO, capture_output=True, timeout=30)
+        # 回退一个提交
+        r = subprocess.run(
+            ["git", "checkout", "HEAD~1", "-q"], cwd=REPO, capture_output=True, text=True, timeout=30
+        )
+        if r.returncode != 0:
+            log(f"✗ git checkout 失败: {(r.stderr or '').strip() or 'unknown'}")
+            return False
+        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO, capture_output=True, text=True, timeout=10)
+        log(f"✓ 已回滚到 {(head.stdout or '').strip() or '?'}")
+        # 重建 dist
+        b = subprocess.run(["pnpm", "build"], cwd=REPO, capture_output=True, text=True, timeout=120)
+        if b.returncode != 0:
+            log("✗ rollback 后 build 失败")
+            return False
+        # 重启并验证
+        if repair_restart():
+            log("✓ 回滚 + 重建 + 重启成功，自愈完成")
+            return True
+        log("✗ 回滚后 restart 仍失败")
+        return False
+    except Exception as err:
+        log(f"✗ rollback 异常: {err}")
+        return False
+
+
 def repair_with_omp_guarded() -> bool:
     now = int(time.time())
     attempts = state_get("ompAttempts")
@@ -253,6 +302,9 @@ def repair_with_omp_guarded() -> bool:
         log("✗ 已有 omp 修复会话在运行，跳过本轮")
         return False
     try:
+        # 代码损坏优先回滚到上一个稳定提交 —— 比让 omp 现场改代码更稳。
+        if repair_rollback():
+            return True
         ok = repair_with_omp()
     finally:
         omp_lock.release()

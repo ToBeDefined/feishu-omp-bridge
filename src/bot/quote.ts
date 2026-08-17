@@ -152,6 +152,11 @@ export async function fetchQuotedContext(
  * question). Returns empty string when there are no quotes — keeps callers
  * concatenating without conditional checks.
  */
+/** Per-quoted-message content cap before it enters the prompt. A reply-quote
+ * or forwarded tree can be huge (50 sub-messages); without a cap an
+ * adversarial quote blows up the prompt (token cost / OMP timeout). */
+const QUOTE_CONTENT_CAP = 8000;
+
 export function renderQuotedBlock(quotes: QuotedContext[]): string {
   if (quotes.length === 0) return '';
   const parts = quotes.map((q) => {
@@ -164,7 +169,11 @@ export function renderQuotedBlock(quotes: QuotedContext[]): string {
     ]
       .filter(Boolean)
       .join(' ');
-    return `<quoted_message ${attrs}>\n${q.content}\n</quoted_message>`;
+    const body =
+      q.content.length > QUOTE_CONTENT_CAP
+        ? `${q.content.slice(0, QUOTE_CONTENT_CAP)}\n…（引用内容已截断）`
+        : q.content;
+    return `<quoted_message ${attrs}>\n${body}\n</quoted_message>`;
   });
   return parts.join('\n');
 }

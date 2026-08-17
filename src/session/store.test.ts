@@ -97,3 +97,37 @@ describe('SessionStore title', () => {
 async function writeFileAtomic(path: string, content: string): Promise<void> {
   await writeFile(path, content, 'utf8');
 }
+
+describe('SessionStore corruption tolerance', () => {
+  it('starts empty when the file is corrupt', async () => {
+    await writeFile(file, '{ not valid json');
+    const store = new SessionStore(file);
+    await store.load();
+    expect(store.chats()).toEqual([]);
+  });
+
+  it('loads valid entries and skips malformed ones', async () => {
+    await writeFile(
+      file,
+      JSON.stringify({
+        oc_good: { sessionId: 's1', cwd: '/repo', updatedAt: 1 },
+        oc_bad: { sessionId: 's2', cwd: '/repo' }, // 缺 updatedAt
+        oc_empty: {},
+      }),
+    );
+    const store = new SessionStore(file);
+    await store.load();
+    expect(store.chats().sort()).toEqual(['oc_good']);
+    expect(store.resumeFor('oc_good', '/repo')).toBe('s1');
+  });
+
+  it('persists atomically (tmp file removed after save)', async () => {
+    const store = new SessionStore(file);
+    stores.push(store);
+    store.set('oc_1', 's1', '/repo');
+    await store.flush();
+    const { readdir } = await import('node:fs/promises');
+    const names = await readdir(dir);
+    expect(names).toEqual(['sessions.json']); // 无 .tmp- 残留
+  });
+});

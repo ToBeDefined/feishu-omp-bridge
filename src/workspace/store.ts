@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
@@ -31,6 +31,12 @@ export class WorkspaceStore {
       };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      // Corrupt file: start empty rather than crash on boot.
+      if (err instanceof SyntaxError) {
+        log.warn('workspace', 'load-corrupt-reset', { path: this.path });
+        this.data = { chats: {}, named: {} };
+        return;
+      }
       throw err;
     }
   }
@@ -87,7 +93,10 @@ export class WorkspaceStore {
     this.saving = this.saving
       .then(async () => {
         await mkdir(dirname(this.path), { recursive: true });
-        await writeFile(this.path, `${JSON.stringify(this.data, null, 2)}\n`, 'utf8');
+        // Atomic write (tmp + rename): crash mid-write must not truncate.
+        const tmp = `${this.path}.tmp-${process.pid}`;
+        await writeFile(tmp, `${JSON.stringify(this.data, null, 2)}\n`, 'utf8');
+        await rename(tmp, this.path);
       })
       .catch((err: unknown) => {
         log.fail('workspace', err, { step: 'persist' });

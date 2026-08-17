@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
@@ -66,6 +66,13 @@ export class SessionStore {
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      // Corrupt file (crash mid-write, manual edit): start empty rather than
+      // crash the daemon on boot. The next persist rewrites it cleanly.
+      if (err instanceof SyntaxError) {
+        log.warn('session', 'load-corrupt-reset', { path: this.path });
+        this.data = {};
+        return;
+      }
       throw err;
     }
   }
@@ -184,7 +191,12 @@ export class SessionStore {
     this.saving = this.saving
       .then(async () => {
         await mkdir(dirname(this.path), { recursive: true });
-        await writeFile(this.path, `${JSON.stringify(this.data, null, 2)}\n`, 'utf8');
+        // Atomic write (tmp + rename): a crash / SIGKILL mid-write must not
+        // leave a truncated sessions.json behind. Matches registry /
+        // scheduler / keystore.
+        const tmp = `${this.path}.tmp-${process.pid}`;
+        await writeFile(tmp, `${JSON.stringify(this.data, null, 2)}\n`, 'utf8');
+        await rename(tmp, this.path);
       })
       .catch((err: unknown) => {
         log.fail('session', err, { step: 'persist' });

@@ -427,6 +427,13 @@ feishu://message/<message_id>
   - 安装：`scripts/self-heal.sh install`；卸载：`uninstall`
   - 手动一轮：`scripts/self-heal.sh --once`
 
+自更新 / 自愈均有隔离环境的端到端自动测试（多轮，不影响生产）：
+  - `scripts/verify-self-heal.sh [rounds]` — 6 场景：健康不误报 / 进程死自愈 /
+    断连自愈 / omp 不可用判异常 / restart 失败唤起 omp / 锁互斥
+  - `scripts/verify-self-update.sh [rounds]` — 6 场景：更新成功 / typecheck /
+    test / build / restart 任一失败回滚 / 锁互斥
+  默认 3 轮，可传轮数（如 5）。全部断言通过才算绿。
+
 另外，`src/daemon/launchd.ts` 生成的 plist 带 `ThrottleInterval=10`（崩溃后
 防重启风暴），且 `start`/`restart` 若 30s 内连不上飞书会以非零码退出
 （触发 launchd 重试）；设 `SELF_HEAL=1` 时还会自动唤起 omp 修复。

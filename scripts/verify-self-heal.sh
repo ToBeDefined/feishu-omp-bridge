@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-HEAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/self-heal.sh"
+HEAL="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/self-heal.py"
 ROUNDS="${1:-3}"
 FAILS=0
 TOTAL=0
@@ -83,7 +83,7 @@ run_heal() {
   HEAL_MAX_ATTEMPTS="${HEAL_MAX_ATTEMPTS:-10}" \
   OMP_OK="${OMP_OK:-1}" OMP_RUN_OK="${OMP_RUN_OK:-0}" \
   RESTART_OK="${RESTART_OK:-1}" RESTART_FIX="${RESTART_FIX:-0}" \
-  bash "$HEAL" --once >/dev/null 2>&1 || true
+  python3 "$HEAL" --once >/dev/null 2>&1 || true
 }
 
 reset_round() {

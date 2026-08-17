@@ -416,16 +416,16 @@ feishu://message/<message_id>
 
 以下脚本位于 `scripts/`（随仓库分发），用于防止"周末 bot 自己更新后起不来"这类问题：
 
-- **`scripts/self-update.sh`** — 受控自更新：`git pull` → `typecheck` →
+- **`scripts/self-update.py`** — 受控自更新：`git pull` → `typecheck` →
   `test` → `build` 全部通过才 `restart`；任一步失败自动回滚到旧 HEAD +
   恢复备份的 `dist/`，daemon 保持旧版本运行。原子锁防并发。
-- **`scripts/self-heal.sh`** — 自愈看门狗（launchd 常驻
+- **`scripts/self-heal.py`** — 自愈看门狗（launchd 常驻
   `ai.feishu-omp-bridge.heal`）：每 60s 探测「进程存活 + WS 连通
   (processes.json 有 botName) + omp 可用」，连续 3 次异常先 `restart`，
   仍失败则唤起一个 omp 会话带日志上下文诊断修复（并发锁 + 阶梯退避 +
   最大 10 次上限 + 提示词退出契约）。
-  - 安装：`scripts/self-heal.sh install`；卸载：`uninstall`
-  - 手动一轮：`scripts/self-heal.sh --once`
+  - 安装：`scripts/self-heal.py install`；卸载：`uninstall`
+  - 手动一轮：`scripts/self-heal.py --once`
 
 自更新 / 自愈均有隔离环境的端到端自动测试（多轮，不影响生产）：
   - `scripts/verify-self-heal.sh [rounds]` — 11 场景：健康不误报 / 进程死自愈 /

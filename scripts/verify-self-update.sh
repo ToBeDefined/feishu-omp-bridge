@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/self-update.sh"
+SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/self-update.py"
 ROUNDS="${1:-3}"
 FAILS=0
 TOTAL=0
@@ -103,7 +103,7 @@ run_update() {
      UPDATE_LOCK_FILE="$T/update.lock" \
      UPDATE_LOG_FILE="$T/update.log" \
      TC_OK="${TC_OK:-1}" TEST_OK="${TEST_OK:-1}" BUILD_OK="${BUILD_OK:-1}" RESTART_OK="${RESTART_OK:-1}" \
-     bash "$SCRIPT" >"$T/update-out.log" 2>&1; then
+     python3 "$SCRIPT" >"$T/update-out.log" 2>&1; then
     echo "ok" > "$T/update-status"
   else
     echo "fail" > "$T/update-status"

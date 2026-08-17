@@ -202,7 +202,7 @@ async function reportConnectAfter(
   // callers/scripts know the bounce didn't actually come online.
   process.exitCode = 1;
   // Self-heal hook: when invoked from the watchdog / self-update path
-  // (SELF_HEAL=1), delegate to scripts/self-heal.sh --repair — the single
+  // (SELF_HEAL=1), delegate to scripts/self-heal.py --repair — the single
   // source of truth for omp repair (lock + backoff + model config all live
   // there, so we don't maintain a second divergent implementation).
   if (process.env.SELF_HEAL === '1') {
@@ -211,16 +211,16 @@ async function reportConnectAfter(
 }
 
 /**
- * Spawn `scripts/self-heal.sh --repair` to hand a failed start/restart to
+ * Spawn `scripts/self-heal.py --repair` to hand a failed start/restart to
  * an omp agent. The script owns the repair loop (concurrency lock, ladder
  * backoff, configurable model) — the CLI just delegates.
  */
 async function invokeScriptRepair(): Promise<void> {
   const repo = new URL('../../..', import.meta.url).pathname;
-  const script = `${repo}/scripts/self-heal.sh`;
+  const script = `${repo}/scripts/self-heal.py`;
   console.log(`→ 唤起脚本自愈: ${script} --repair`);
   try {
-    const child = execFile('bash', [script, '--repair'], (err) => {
+    const child = execFile('python3', [script, '--repair'], (err) => {
       if (err) {
         console.warn('⚠ 脚本自愈异常:', err.message);
       } else {

@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""自愈看门狗：定期健康探测 bridge daemon，异常时自动修复。
+
+功能等价于原 self-heal.sh（Python 重写，接口一致）：
+
+  探测维度（每 60s，连续 FAIL_THRESHOLD 次异常才算"假死"）：
+    1. 进程存活  —— 有 feishu-omp-bridge.mjs run 进程
+    2. WS 连通    —— ~/.feishu-omp-bridge/processes.json 存在带 botName 的条目
+    3. agent 可用 —— `omp --version` 5 秒内返回
+
+  修复策略（由轻到重）：
+    A. bridge restart（每轮阈值都试，轻量）
+    B. omp run 修复会话（并发锁 + 阶梯退避 + 最大次数上限 + 提示词退出契约）
+
+用法：
+  self-heal.py            # 常驻循环（launchd KeepAlive 拉起）
+  self-heal.py --once     # 只探测一轮
+  self-heal.py --repair   # 独立唤起 omp 修复（service.ts SELF_HEAL=1 用）
+  self-heal.py install    # 注册 launchd watchdog
+  self-heal.py uninstall
+
+环境变量（测试注入点）：
+  HEAL_STATE_DIR / HEAL_LOCK_FILE / HEAL_RESTART_CMD / HEAL_OMP_BIN /
+  HEAL_PGREP_PATTERN / HEAL_RECOVER_WAIT_S / HEAL_INTERVAL_S /
+  HEAL_FAIL_THRESHOLD / HEAL_OMP_TIMEOUT_S / HEAL_MODEL /
+  HEAL_BACKOFF_BASE_S / HEAL_BACKOFF_MAX_S / HEAL_MAX_ATTEMPTS
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+# --- 配置（环境变量可覆盖，测试注入点） ---
+REPO = os.environ.get("HEAL_REPO", str(Path(__file__).resolve().parent.parent))
+STATE_DIR = os.environ.get("HEAL_STATE_DIR", os.path.join(os.path.expanduser("~"), ".feishu-omp-bridge"))
+STATE_FILE = os.path.join(STATE_DIR, "heal-state.json")
+LOCK_FILE = os.environ.get("HEAL_LOCK_FILE", os.path.join(os.environ.get("TMPDIR", "/tmp"), "feishu-omp-bridge-self-heal.lock"))
+LOG_FILE = os.environ.get("HEAL_LOG_FILE", os.path.join(STATE_DIR, "logs", "heal.log"))
+RESTART_CMD = os.environ.get("HEAL_RESTART_CMD", f"node {REPO}/bin/feishu-omp-bridge.mjs")
+OMP_BIN = os.environ.get("HEAL_OMP_BIN", "omp")
+PGREP_PATTERN = os.environ.get("HEAL_PGREP_PATTERN", "feishu-omp-bridge.mjs run")
+RECOVER_WAIT_S = int(os.environ.get("HEAL_RECOVER_WAIT_S", "5"))
+
+INTERVAL_S = int(os.environ.get("HEAL_INTERVAL_S", "60"))
+FAIL_THRESHOLD = int(os.environ.get("HEAL_FAIL_THRESHOLD", "3"))
+OMP_TIMEOUT_S = int(os.environ.get("HEAL_OMP_TIMEOUT_S", "300"))
+HEAL_MODEL = os.environ.get("HEAL_MODEL", "futu/deepseek-v4-flash-0731")
+BACKOFF_BASE_S = int(os.environ.get("HEAL_BACKOFF_BASE_S", "60"))
+BACKOFF_MAX_S = int(os.environ.get("HEAL_BACKOFF_MAX_S", "480"))
+MAX_ATTEMPTS = int(os.environ.get("HEAL_MAX_ATTEMPTS", "10"))
+
+SERVICE_LABEL = "ai.feishu-omp-bridge.heal"
+
+
+def log(msg: str) -> None:
+    line = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
+    print(line, flush=True)
+    try:
+        Path(LOG_FILE).parent.mkdir(parents=True, exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError:
+        pass
+
+
+# --- 互斥锁（原子 mkdir，跨平台；等价原 flock） ---
+class DirLock:
+    def __init__(self, path: str):
+        self.path = path + ".d"
+
+    def acquire(self) -> bool:
+        try:
+            os.mkdir(self.path)
+            return True
+        except FileExistsError:
+            return False
+
+    def release(self) -> None:
+        try:
+            os.rmdir(self.path)
+        except OSError:
+            pass
+
+
+def _read_state() -> dict:
+    try:
+        with open(STATE_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_state(updates: dict) -> None:
+    data = _read_state()
+    data.update(updates)
+    Path(STATE_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+
+def state_get(key: str) -> int:
+    return int(_read_state().get(key, 0))
+
+
+def write_fails(fails: int) -> None:
+    _write_state({"fails": fails, "lastCheck": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")})
+
+
+# --- 健康探测 ---
+def _proc_alive() -> bool:
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", PGREP_PATTERN], capture_output=True, text=True, timeout=5
+        )
+        return out.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
+def _ws_connected() -> bool:
+    try:
+        with open(os.path.join(STATE_DIR, "processes.json"), encoding="utf-8") as f:
+            return '"botName"' in f.read()
+    except OSError:
+        return False
+
+
+def _omp_available() -> bool:
+    try:
+        r = subprocess.run([OMP_BIN, "--version"], capture_output=True, timeout=5)
+        return r.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
+def probe() -> bool:
+    healthy = True
+    if not _proc_alive():
+        log("✗ 进程不存在")
+        healthy = False
+    if not _ws_connected():
+        log("✗ 未检测到 WS 连接(processes.json 无 botName)")
+        healthy = False
+    if not _omp_available():
+        log("✗ omp 不可用")
+        healthy = False
+    return healthy
+
+
+# --- 修复 ---
+def repair_restart() -> bool:
+    log("→ 执行 bridge restart 拉回...")
+    try:
+        r = subprocess.run(RESTART_CMD.split(), capture_output=True, text=True, timeout=60)
+    except (subprocess.SubprocessError, FileNotFoundError):
+        r = None
+    if r is not None and r.returncode == 0:
+        log("✓ restart 成功，等待探测恢复...")
+        time.sleep(RECOVER_WAIT_S)
+        if probe():
+            write_fails(0)
+            log("✓ 自愈完成（restart）")
+            return True
+    return False
+
+
+def _build_omp_context() -> str:
+    return (
+        "任务：修复 feishu-omp-bridge 守护进程，使其恢复在线。\n"
+        "背景：bridge 反复 restart 后仍未在 30 秒内连上飞书（自愈 watchdog 触发）。\n"
+        "\n"
+        "必须严格按顺序执行：\n"
+        f"  1. 诊断：查看日志定位根因\n"
+        f"     tail -50 {os.path.join(STATE_DIR, 'logs', 'daemon-stderr.log')}\n"
+        f"     tail -50 {os.path.join(STATE_DIR, 'logs', 'daemon-stdout.log')}\n"
+        f"  2. 修复：按根因处理。常见：dist 与源码不一致(运行 pnpm build)、\n"
+        f"     依赖损坏(pnpm install)、launchd plist 异常({RESTART_CMD} start 重装)、\n"
+        "     飞书凭据失效。若是代码问题，改源码后 pnpm typecheck && pnpm test && pnpm build。\n"
+        f"  3. 启动：运行 {RESTART_CMD} restart，然后验证 {RESTART_CMD} status 显示\"正在后台运行\"。\n"
+        "  4. 结束：确认在线后，输出一句话结论（修复了什么、当前是否在线），立即停止。\n"
+        "\n"
+        f"成功标准：{RESTART_CMD} status 显示 daemon 在线（\"正在后台运行\"或\"正在运行\"）。\n"
+        "\n"
+        "硬性约束：\n"
+        "  - 只做 bridge 自愈这一件事，禁止任何无关的改动/重构/优化/新功能。\n"
+        "  - 禁止询问用户或等待确认，直接执行，非交互。\n"
+        "  - 步骤 1-4 全部完成（无论成败）后必须结束，不要继续探索、不要追加任务。\n"
+        "  - 若按上述仍无法修复：输出失败结论 + 最后诊断，然后结束。\n"
+        "\n"
+        f"仓库路径：{REPO}"
+    )
+
+
+def repair_with_omp() -> bool:
+    log("→ 唤起 omp 修复会话（restart 仍失败）...")
+    ctx = _build_omp_context()
+    try:
+        r = subprocess.run(
+            [OMP_BIN, "run", "--cwd", REPO, "--print-json-lines", "--model", HEAL_MODEL, ctx],
+            capture_output=True, timeout=OMP_TIMEOUT_S,
+        )
+        ok = r.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError):
+        ok = False
+    if ok:
+        log("✓ omp 修复会话已执行")
+        time.sleep(RECOVER_WAIT_S)
+        if probe():
+            write_fails(0)
+            _write_state({"ompAttempts": 0, "nextOmpAt": 0})
+            log("✓ 自愈完成（omp 修复）")
+            return True
+    else:
+        log("✗ omp 修复会话失败或超时")
+    return False
+
+
+def repair_with_omp_guarded() -> bool:
+    now = int(time.time())
+    attempts = state_get("ompAttempts")
+    if attempts >= MAX_ATTEMPTS:
+        log(f"✗ 已到达 omp 修复次数上限 {MAX_ATTEMPTS}，停止自愈。需人工介入：")
+        log(f"    查看日志: tail -f {os.path.join(STATE_DIR, 'logs', 'daemon-stderr.log')}")
+        return False
+    next_at = state_get("nextOmpAt")
+    if next_at > now:
+        log(f"⏳ omp 修复退避中（剩 {next_at - now}s）")
+        return False
+    omp_lock = DirLock(LOCK_FILE + ".omp")
+    if not omp_lock.acquire():
+        log("✗ 已有 omp 修复会话在运行，跳过本轮")
+        return False
+    try:
+        ok = repair_with_omp()
+    finally:
+        omp_lock.release()
+    if ok:
+        return True
+    # 阶梯退避：2^attempts 分钟，上限 BACKOFF_MAX_S
+    backoff = min((2 ** attempts) * BACKOFF_BASE_S, BACKOFF_MAX_S)
+    _write_state({"ompAttempts": attempts + 1, "nextOmpAt": now + backoff})
+    if attempts + 1 >= MAX_ATTEMPTS:
+        log(f"⏳ omp 修复失败（第 {attempts + 1}/{MAX_ATTEMPTS} 次），已达上限，停止自愈。需人工介入。")
+    else:
+        log(f"⏳ omp 修复失败，退避 {backoff}s 后重试（第 {attempts + 1}/{MAX_ATTEMPTS} 次）")
+    return False
+
+
+def heal_once() -> None:
+    if probe():
+        write_fails(0)
+        return
+    fails = state_get("fails") + 1
+    write_fails(fails)
+    log(f"连续异常 {fails}/{FAIL_THRESHOLD}")
+    if fails >= FAIL_THRESHOLD:
+        write_fails(0)  # 重置，避免阈值耗尽后每轮都打 omp
+        if repair_restart():
+            return
+        repair_with_omp_guarded()
+
+
+# --- launchd 安装/卸载 ---
+def install() -> None:
+    plist_path = Path.home() / "Library" / "LaunchAgents" / f"{SERVICE_LABEL}.plist"
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    bash_bin = shutil.which("bash") or "/bin/bash"
+    py = sys.executable
+    content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{SERVICE_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{py}</string>
+        <string>{Path(__file__).resolve()}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>StandardOutPath</key>
+    <string>{LOG_FILE}</string>
+    <key>StandardErrorPath</key>
+    <string>{LOG_FILE}</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{os.environ.get('PATH', '')}</string>
+    </dict>
+</dict>
+</plist>
+"""
+    plist_path.write_text(content, encoding="utf-8")
+    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)], check=False)
+    log("✓ watchdog 已注册并启动 (ai.feishu-omp-bridge.heal)")
+
+
+def uninstall() -> None:
+    subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}/{SERVICE_LABEL}"], check=False)
+    plist_path = Path.home() / "Library" / "LaunchAgents" / f"{SERVICE_LABEL}.plist"
+    plist_path.unlink(missing_ok=True)
+    log("✓ watchdog 已卸载")
+
+
+def main() -> None:
+    # 互斥：同一时间只允许一个 watchdog 实例
+    lock = DirLock(LOCK_FILE)
+    if not lock.acquire():
+        log("✗ 已有自愈看门狗在运行，本轮跳过。")
+        sys.exit(2)
+    try:
+        arg = sys.argv[1] if len(sys.argv) > 1 else ""
+        if arg == "--once":
+            heal_once()
+        elif arg == "--repair":
+            repair_with_omp_guarded()
+        elif arg == "install":
+            install()
+        elif arg == "uninstall":
+            uninstall()
+        else:
+            # 常驻循环（launchd 拉起后用）
+            while True:
+                heal_once()
+                time.sleep(INTERVAL_S)
+    finally:
+        lock.release()
+
+
+if __name__ == "__main__":
+    main()

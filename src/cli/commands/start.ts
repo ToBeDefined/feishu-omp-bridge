@@ -139,7 +139,11 @@ export async function runStart(opts: StartOptions): Promise<void> {
     stopping = true;
     console.log(`\n收到 ${sig}，正在关闭...`);
     try {
-      await bridge.disconnect();
+      // SIGTERM (launchd shutdown / external restart): don't kill OMP runs —
+      // the agent may be mid-`restart` and needs to survive to re-bootstrap
+      // us. OMP exits on its own when the channel (stdin pipe) closes.
+      // Explicit user exit command: kill runs fast for a clean shutdown.
+      await bridge.disconnect(sig === 'exit-command');
     } catch (err) {
       console.error('[disconnect-failed]', err);
     }

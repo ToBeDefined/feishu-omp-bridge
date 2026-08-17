@@ -85,7 +85,7 @@ function stringifyArgs(args: unknown[]): string {
 
 export interface BridgeChannel {
   channel: LarkChannel;
-  disconnect(): Promise<void>;
+  disconnect(killRuns?: boolean): Promise<void>;
 }
 
 export interface StartChannelDeps {
@@ -327,12 +327,18 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   return {
     channel,
-    disconnect: async () => {
+    disconnect: async (killRuns = true) => {
       keepalive.stop();
       scheduler?.stop();
       pending.cancelAll();
       await channel.disconnect();
-      await activeRuns.stopAll();
+      // When we're being shut down by launchd / an external `restart`
+      // (SIGTERM), DON'T actively kill OMP runs. Closing the channel closes
+      // OMP's stdin pipe → OMP sees EOF and exits on its own. Killing OMP
+      // here would also kill the agent-run `restart` command (its child
+      // bash), leaving the daemon bootout'd with no one to re-bootstrap it.
+      // For an explicit user `exit` command (killRuns=true), kill fast.
+      if (killRuns) await activeRuns.stopAll();
       await Promise.allSettled([sessions.flush(), workspaces.flush()]);
     },
   };

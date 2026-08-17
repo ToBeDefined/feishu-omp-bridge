@@ -302,6 +302,14 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // /every can add/list/remove tasks from inside a command handler.
   if (scheduler) {
     scheduler.setHandler((task) => {
+      // Don't clobber an in-flight run in this chat: firing a scheduled
+      // prompt while the user is mid-conversation would overwrite the run's
+      // handle (breaking /stop) and run two agents against the same session.
+      // Skip this tick; the next interval will try again.
+      if (activeRuns.has(task.chatId)) {
+        log.info('scheduler', 'skip-busy', { chatId: task.chatId, id: task.id });
+        return;
+      }
       void runScheduledPrompt({
         channel,
         agent,

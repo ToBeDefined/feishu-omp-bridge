@@ -73,3 +73,41 @@ describe('Scheduler', () => {
     expect(fired).toEqual([]);
   });
 });
+
+describe('Scheduler adversarial', () => {
+  it('loads a corrupted file into an empty scheduler', async () => {
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(file(), '{not valid json');
+    const s = new Scheduler(file());
+    await s.load();
+    expect(s.list()).toEqual([]);
+  });
+
+  it('does not re-fire a task on a second tick before its next run', async () => {
+    const s = new Scheduler(file());
+    await s.load();
+    const fired: string[] = [];
+    s.setHandler((t) => fired.push(t.id));
+    const t = await s.add({ chatId: 'oc_1', prompt: 'x', intervalMs: 60_000, delayMs: 0 });
+    await s['tick']();
+    expect(fired).toEqual([t.id]);
+    // 第二次 tick：nextRunAt 已推进，不再 fire
+    await s['tick']();
+    expect(fired).toEqual([t.id]);
+  });
+
+  it('a throwing handler does not break the scheduler or other tasks', async () => {
+    const s = new Scheduler(file());
+    await s.load();
+    const fired: string[] = [];
+    s.setHandler((t) => {
+      if (t.prompt === 'boom') throw new Error('handler failed');
+      fired.push(t.id);
+    });
+    await s.add({ chatId: 'oc_1', prompt: 'boom', intervalMs: 60_000, delayMs: 0 });
+    const ok = await s.add({ chatId: 'oc_2', prompt: 'fine', intervalMs: 60_000, delayMs: 0 });
+    await s['tick']();
+    expect(fired).toEqual([ok.id]);
+  });
+
+});

@@ -332,32 +332,22 @@ export async function runServiceRestart(): Promise<void> {
     process.exit(1);
   }
 
-  // Bounce via the same full stop→install→start path `start` uses, instead
-  // of an in-place kickstart. This guarantees every old process (including
-  // strays launched outside launchd, or stale ones kept alive by KeepAlive
-  // while dist/ changed underneath them) is torn down before a fresh one
-  // boots, so the daemon always loads the current build.
+  // Re-install the service file so `process.execPath` / PATH / dist reflect
+  // the current environment. The service stays BOOTSTRAPPED in launchd —
+  // restart uses kickstart -k (kill + relaunch in place) rather than a
+  // bootout/bootout cycle.
+  //
+  // Why not bootout→start like `start`? When `restart` is invoked from
+  // inside a bridge session (an OMP agent run), bootout removes the service
+  // from launchd → the daemon's SIGTERM handler kills that OMP run (or it
+  // dies when its pipes close) → the restart command itself never reaches
+  // `start`, and with KeepAlive gone there is nobody left to bring the
+  // daemon back. kickstart keeps the service loaded, so launchd relaunches
+  // the daemon itself; the restart command only issues the kick and can be
+  // torn down safely with the rest of the session.
   await adapter.install();
-  if (adapter.isRunning()) {
-    console.log('正在停止旧 bot 实例…');
-    const r = await adapter.stop();
-    if (!r.ok) {
-      console.warn(`⚠ 停止旧实例时有警告(继续重启):\n${formatServiceStderr(r.stderr)}`);
-    }
-    const ok = await adapter.waitUntilStopped();
-    if (!ok) {
-      console.error('✗ 旧 bot 实例没有完全停止。请稍后重试,或:');
-      console.error('  unregister  # 强制清除注册');
-      console.error('  start       # 再次启动');
-      process.exit(1);
-    }
-  }
-
-  // Safety net: kill any leftover bridge processes the service manager
-  // didn't reap (strays, stale daemons on an older build).
-  await killStrayProcesses();
-
-  await reportConnectAfter('restarted', adapter.start);
+  console.log('正在重启 bot 实例…');
+  await reportConnectAfter('restarted', adapter.restart);
 }
 
 /** `bridge status` — report whether the daemon is running, with pid + log paths. */

@@ -12,6 +12,7 @@ import type { SearchContext, SearchHit } from '../../card/search-card';
 
 export const searchHandlers: Record<string, Handler> = {
   '/search': handleSearch,
+  '/s': handleSearch,
 };
 
 /** In-memory cache of recent search results, keyed by a short query id. */

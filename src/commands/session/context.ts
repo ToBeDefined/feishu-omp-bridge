@@ -13,6 +13,7 @@ import { summarize } from '../shared';
 
 export const contextHandlers: Record<string, Handler> = {
   '/context': handleContext,
+  '/ctx': handleContext,
 };
 
 function formatLastSeen(ts: number | undefined): string {

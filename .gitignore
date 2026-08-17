@@ -14,6 +14,9 @@ coverage/
 .vscode/
 .codegraph/
 
-# Internal-only: dev smoke scripts and full changelog stay local, do not ship
-scripts/
+# Internal-only scratch files stay local, do not ship. The self-update /
+# self-heal scripts themselves ARE shipped (production self-heal tooling).
+scripts/*.log
+scripts/*.tmp
+scripts/.local/
 CHANGELOG.md

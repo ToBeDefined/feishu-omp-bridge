@@ -18,7 +18,7 @@
 │  batch.ts       run 编排: 媒体/引用/prompt→agent→流式渲染        │
 │  prompt.ts      提示词构建(纯函数)                              │
 │  feishu-host.ts agent 可用的飞书工具(feishu_* host tools)       │
-│  model-history / reaction / quote / group / comments / …       │
+│  reaction / quote / comments / model-history / …              │
 └───────┬──────────────┬──────────────────┬─────────────────────┘
         │              │                  │
 ┌───────▼──────┐ ┌─────▼──────┐  ┌───────▼───────┐
@@ -97,8 +97,7 @@ src/commands/
     timeout.ts        /timeout
     context.ts        /context + renderContext + 会话扫描
     resume.ts         /resume /session
-    search.ts         /search + 搜索逻辑 + 结果卡片
-    shared.ts         session 内部共享(summarize)
+    search.ts         /search + 搜索逻辑(渲染在 card/search-card.ts)
     index.ts          sessionHandlers 汇总
   model/
     model.ts          /model
@@ -122,7 +121,7 @@ src/commands/
 3. **顶层 index.ts**：只做注册表合并 + dispatch，不含业务逻辑
 4. **共享工具分层**：
    - 跨命令通用 → `commands/shared.ts`
-   - 目录内部共享 → 目录内 `shared.ts`（如 session/shared.ts 的 summarize）
+   - 目录内部共享 → 目录内 `shared.ts`；纯工具(如 summarize)放 commands/shared.ts
 5. **数据/纯逻辑分离**：命令里的数据层抽到同目录独立文件（如 model/data.ts），与 handler 解耦，便于单测
 6. **避免**：
    - 单文件塞多个不相关命令
@@ -147,7 +146,7 @@ src/commands/
 ## 测试约定
 
 - 单元测试：`*.test.ts` 与被测文件同目录
-- 纯逻辑（数据/格式化/解析）：优先可测，如 model-history / prompt / scheduler
+- 纯逻辑（数据/格式化/解析）：优先可测，如 model-history(session/) / prompt / scheduler
 - 涉及真实飞书 SDK 的链路：`*.integration.test.ts`，用 `RUN_INTEGRATION=1` 显式启用
 - 命令 handler：mock CommandContext + store，测 dispatch / admin 门控 / 错误处理
 

@@ -7,7 +7,7 @@ import {
   modelSavedCard,
   modelSelectCard,
 } from '../../card/model-card';
-import { recentModels } from '../../bot/model-history';
+import { recentModels } from '../../session/model-history';
 import type { CommandContext, Handler } from '../index';
 import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
 import { loadModelData } from './data';

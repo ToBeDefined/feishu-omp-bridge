@@ -1,6 +1,6 @@
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
-import { createBoundChat, defaultChatName } from '../../bot/group';
+import { createBoundChat, defaultChatName } from './group';
 import { renderContext } from './context';
 
 export const newHandlers: Record<string, Handler> = {

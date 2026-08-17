@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CommandContext } from '../index';
 import { paths } from '../../config/paths';
-import { searchSession, renderSearchContext } from './search';
+import { searchSession } from './search';
+import { renderSearchContext } from '../../card/search-card';
 
 const origSessionsDir = paths.ompSessionsDir;
 let tmp: string | undefined;

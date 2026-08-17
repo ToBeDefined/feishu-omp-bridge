@@ -6,7 +6,7 @@ import { getAgentStopGraceMs, getOmpModel } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
 import { extractUserInput } from './context';
-import { summarize } from './shared';
+import { summarize } from '../shared';
 
 export const renameHandlers: Record<string, Handler> = {
   '/rename': handleRename,

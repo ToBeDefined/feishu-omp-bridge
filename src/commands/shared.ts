@@ -2,6 +2,12 @@ import { homedir } from 'node:os';
 import type { CommandContext } from './index';
 import { log } from '../core/logger';
 
+/** Compact text for a one-line display: collapse whitespace, cap length. */
+export function summarize(text: string, max = 48): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
 /** Delay before in-place card updates, letting the Feishu client settle. */
 export const FORM_SETTLE_MS = 1000;
 

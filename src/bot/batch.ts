@@ -28,7 +28,7 @@ import { log } from '../core/logger';
 import type { MediaCache } from '../media/cache';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
-import { recordModelUse } from './model-history';
+import { recordModelUse } from '../session/model-history';
 import type { ChatMode } from './chat-mode-cache';
 import { buildPrompt } from './prompt';
 import { fetchQuotedContext, type QuotedContext } from './quote';

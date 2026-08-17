@@ -24,5 +24,6 @@ export const sessionHandlers: Record<string, Handler> = {
 
 // Re-export shared internals used by other command groups.
 export { renderContext, extractUserInput } from './context';
-export { summarize } from './shared';
-export { searchSession, renderSearchContext } from './search';
+export { summarize } from '../shared';
+export { searchSession } from './search';
+export { renderSearchContext } from '../../card/search-card';

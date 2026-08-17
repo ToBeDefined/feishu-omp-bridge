@@ -9,7 +9,7 @@ import {
 } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
-import { summarize } from './shared';
+import { summarize } from '../shared';
 
 export const contextHandlers: Record<string, Handler> = {
   '/context': handleContext,

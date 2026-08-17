@@ -5,6 +5,7 @@ import { startChannel, type BridgeChannel } from '../../bot/channel';
 import { runRegistrationWizard } from '../../bot/wizard';
 import { Scheduler } from '../../scheduler';
 import type { Controls } from '../../commands';
+import { formatAgo } from '../../commands/shared';
 import { setSecret } from '../../config/keystore';
 import { paths } from '../../config/paths';
 import type { AppConfig } from '../../config/schema';
@@ -284,12 +285,6 @@ function rejectDuplicates(cfg: AppConfig, conflicts: ProcessEntry[]): never {
   process.exit(1);
 }
 
-function formatAgo(ms: number): string {
-  if (ms < 60_000) return `${Math.floor(ms / 1000)} 秒前`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)} 分钟前`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)} 小时前`;
-  return `${Math.floor(ms / 86_400_000)} 天前`;
-}
 
 /**
  * If `cfg.accounts.app.secret` is a literal plaintext string (not a

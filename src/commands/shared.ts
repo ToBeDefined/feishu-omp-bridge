@@ -40,9 +40,10 @@ export async function recallMessage(ctx: CommandContext, messageId: string): Pro
   }
 }
 
+/** Compact relative-time label (Chinese, matching CLI output style). */
 export function formatAgo(ms: number): string {
-  if (ms < 60_000) return `${Math.floor(ms / 1000)}s 前`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m 前`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h 前`;
-  return `${Math.floor(ms / 86_400_000)}d 前`;
+  if (ms < 60_000) return `${Math.floor(ms / 1000)} 秒前`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)} 分钟前`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)} 小时前`;
+  return `${Math.floor(ms / 86_400_000)} 天前`;
 }

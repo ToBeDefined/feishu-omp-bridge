@@ -1,4 +1,5 @@
 import type { AgentUiRequest, AgentUiResponse } from '../agent/types';
+import { escapeMd } from './templates';
 
 export const OMP_UI_MARKER = '__omp_ui';
 export const OMP_UI_VALUE_FIELD = 'omp_ui_value';
@@ -192,6 +193,3 @@ function normalizeFormValue(value: unknown): string {
   return String(value);
 }
 
-function escapeMd(s: string): string {
-  return s.replace(/([*_`\\])/g, '\\$1');
-}

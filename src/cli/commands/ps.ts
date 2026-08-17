@@ -1,4 +1,5 @@
 import { readAndPrune, resolveTarget, isAlive } from '../../runtime/registry';
+import { formatAgo } from '../../commands/shared';
 
 /**
  * Pretty-print the list of running feishu-omp-bridge processes.
@@ -67,12 +68,6 @@ export async function runKillCli(target: string | undefined): Promise<void> {
   }
 }
 
-function formatAgo(ms: number): string {
-  if (ms < 60_000) return `${Math.floor(ms / 1000)}s 前`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m 前`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h 前`;
-  return `${Math.floor(ms / 86_400_000)}d 前`;
-}
 
 /** Minimal fixed-width table. Header row is index 0. */
 function printTable(rows: Record<string, string>[]): void {

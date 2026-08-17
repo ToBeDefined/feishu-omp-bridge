@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { summarize } from '../commands/shared';
 
 export interface ModelInfo {
   selector: string;
@@ -309,12 +310,12 @@ export function resumeCard(
   const blocks: object[] = [];
   for (const s of sessions) {
     const isCurrent = current !== undefined && s.sessionId === current;
-    const desc = s.summary ? summarize(s.summary) : '';
+    const desc = s.summary ? summarize(s.summary, 32) : '';
     const md = [
       isCurrent ? '⭐ **当前会话**' : '',
       s.title ? `🏷 **${s.title}**` : '',
       `📁 ${shortCwd(s.cwd)}`,
-      s.lastMessage ? `💬 最后消息: ${summarize(s.lastMessage)}` : '',
+      s.lastMessage ? `💬 最后消息: ${summarize(s.lastMessage, 32)}` : '',
       desc ? `📝 最后回复: ${desc}` : '',
       `🆔 \`${s.sessionId}\``,
     ]
@@ -412,12 +413,6 @@ function shortCwd(cwd: string): string {
   return rel.length > 24 ? `…${rel.slice(-24)}` : rel;
 }
 
-/** Compact a session description for a card button: collapse newlines, cap
- * length, append ellipsis if truncated. */
-function summarize(text: string): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > 32 ? `${flat.slice(0, 32)}…` : flat;
-}
 
 export function modelCancelledCard(): object {
   return {

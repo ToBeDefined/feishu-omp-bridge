@@ -45,6 +45,8 @@ export function buildPlist(inputs: PlistInputs): string {
     <true/>
     <key>KeepAlive</key>
     <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
     <key>StandardOutPath</key>
     <string>${escape(daemonStdoutPath())}</string>
     <key>StandardErrorPath</key>

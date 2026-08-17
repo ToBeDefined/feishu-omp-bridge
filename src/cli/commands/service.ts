@@ -198,6 +198,59 @@ async function reportConnectAfter(
   console.warn(`⚠ 已下发指令,但 30 秒内未观察到 bot 连接成功 (${verb})。`);
   console.warn(`  查看日志: tail -f ${daemonStderrPath()}`);
   console.warn(`              tail -f ${daemonStdoutPath()}`);
+  // Exit non-zero so launchd (KeepAlive + ThrottleInterval) retries, and so
+  // callers/scripts know the bounce didn't actually come online.
+  process.exitCode = 1;
+  // Self-heal hook: when invoked from the watchdog / self-update path
+  // (SELF_HEAL=1), hand the failure to an omp agent so it can diagnose
+  // and repair instead of leaving the daemon down.
+  if (process.env.SELF_HEAL === '1') {
+    await repairWithOmp(verb);
+  }
+}
+
+/**
+ * Spawn a one-shot omp session to diagnose + fix a failed start/restart.
+ * Runs non-interactively (RPC mode) with the relevant log paths and the
+ * repo location; bounded by HEAL_OMP_TIMEOUT_S so a stuck agent can't
+ * hang the caller forever.
+ */
+async function repairWithOmp(verb: 'started' | 'restarted'): Promise<void> {
+  const repo = new URL('../../..', import.meta.url).pathname;
+  const timeoutS = Number(process.env.HEAL_OMP_TIMEOUT_S ?? '300');
+  console.log(`→ 唤起 omp 修复会话 (${verb} 失败)…`);
+  const ctx = [
+    `feishu-omp-bridge daemon ${verb} 失败：启动后未能在 30 秒内连上飞书。`,
+    '请诊断并修复，可能的方向：',
+    '  1. 查看 daemon 日志定位原因:',
+    `     tail -50 ${daemonStderrPath()}`,
+    `     tail -50 ${daemonStdoutPath()}`,
+    '  2. 常见根因: dist/ 与源码不一致(运行 pnpm build)、依赖损坏(pnpm install)、',
+    '     launchd plist 异常(重跑 `node bin/feishu-omp-bridge.mjs start`)、飞书凭据失效。',
+    '  3. 修复后运行 `node bin/feishu-omp-bridge.mjs restart` 并验证 `status` 在线。',
+    '  4. 若是代码问题, 修改源码后 pnpm typecheck && pnpm test && pnpm build 通过再重启。',
+    `仓库路径: ${repo}`,
+  ].join('\n');
+  try {
+    const child = execFile(
+      'omp',
+      ['run', '--cwd', repo, '--print-json-lines', '--model', 'futu/deepseek-v4-flash-0731', ctx],
+      { timeout: timeoutS * 1000 },
+      (err) => {
+        if (err && (err as NodeJS.ErrnoException).code !== 'ETIMEDOUT') {
+          console.warn('⚠ omp 修复会话异常:', err.message);
+        } else if (err) {
+          console.warn('⚠ omp 修复会话超时');
+        } else {
+          console.log('✓ omp 修复会话已结束');
+        }
+      },
+    );
+    // Detach: caller (launchd / watchdog) must not wait on the agent.
+    child.unref();
+  } catch (err) {
+    console.warn('⚠ 无法唤起 omp:', (err as Error).message);
+  }
 }
 
 /**

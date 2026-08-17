@@ -412,6 +412,25 @@ feishu://message/<message_id>
 
 架构与代码组织约定见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
+### 自更新 / 自愈（本机工具，不随仓库分发）
+
+以下两个脚本位于 `scripts/`（已被 `.gitignore` 排除，仅本机保留），
+用于防止"周末 bot 自己更新后起不来"这类问题：
+
+- **`scripts/self-update.sh`** — 受控自更新：`git pull` → `typecheck` →
+  `test` → `build` 全部通过才 `restart`；任一步失败自动回滚到旧 HEAD +
+  恢复备份的 `dist/`，daemon 保持旧版本运行。`flock` 互斥防并发。
+- **`scripts/self-heal.sh`** — 自愈看门狗（launchd 常驻
+  `ai.feishu-omp-bridge.heal`）：每 60s 探测「进程存活 + WS 连通
+  (processes.json 有 botName) + omp 可用」，连续 3 次异常先 `restart`，
+  仍失败则唤起一个 omp 会话带日志上下文诊断修复。
+  - 安装：`scripts/self-heal.sh install`；卸载：`uninstall`
+  - 手动一轮：`scripts/self-heal.sh --once`
+
+另外，`src/daemon/launchd.ts` 生成的 plist 带 `ThrottleInterval=10`（崩溃后
+防重启风暴），且 `start`/`restart` 若 30s 内连不上飞书会以非零码退出
+（触发 launchd 重试）；设 `SELF_HEAL=1` 时还会自动唤起 omp 修复。
+
 安装依赖：
 
 ```bash

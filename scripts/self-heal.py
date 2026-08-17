@@ -283,13 +283,31 @@ def heal_once() -> None:
 
 
 # --- launchd 安装/卸载 ---
+def _find_python() -> str:
+    """定位可用的 python3 解释器，供 launchd plist 写死绝对路径。
+
+    优先系统自带 /usr/bin/python3（macOS 永在），需实测可执行（是 shim，
+    仅 -x 不够）；其次 PATH 里的 python3（可能是 brew 新版）。
+    返回的路径写入 plist 的 ProgramArguments，安装时固化。
+    """
+    for cand in ("/usr/bin/python3",):
+        if os.path.isfile(cand) and subprocess.run(
+            [cand, "--version"], capture_output=True, timeout=5
+        ).returncode == 0:
+            return cand
+    p = shutil.which("python3")
+    if p:
+        return p
+    raise RuntimeError("找不到可用的 python3，无法安装 watchdog")
+
+
 def install() -> None:
     plist_path = Path.home() / "Library" / "LaunchAgents" / f"{SERVICE_LABEL}.plist"
     plist_path.parent.mkdir(parents=True, exist_ok=True)
-    # 启动用 /bin/bash 薄壳（永在），由它定位 python3 并 exec 核心逻辑。
-    # 不直接写 python 绝对路径 —— brew 管理的 python symlink 可能失效。
-    bash_bin = shutil.which("bash") or "/bin/bash"
-    launcher = str(Path(__file__).resolve().parent / "self-heal.sh")
+    # 安装时探测稳定 python 绝对路径并写死 —— 单一实现（全 Python），
+    # 不引入 shell 薄壳。若日后 python 路径失效，重跑 install 重新固化。
+    py = _find_python()
+    script = str(Path(__file__).resolve())
     content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -298,8 +316,8 @@ def install() -> None:
     <string>{SERVICE_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{bash_bin}</string>
-        <string>{launcher}</string>
+        <string>{py}</string>
+        <string>{script}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -321,7 +339,7 @@ def install() -> None:
 """
     plist_path.write_text(content, encoding="utf-8")
     subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)], check=False)
-    log("✓ watchdog 已注册并启动 (ai.feishu-omp-bridge.heal)")
+    log(f"✓ watchdog 已注册并启动 (ai.feishu-omp-bridge.heal, python={py})")
 
 
 def uninstall() -> None:

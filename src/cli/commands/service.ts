@@ -217,11 +217,11 @@ async function reportConnectAfter(
  */
 async function invokeScriptRepair(): Promise<void> {
   const repo = new URL('../../..', import.meta.url).pathname;
-  // 走 bash 薄壳（系统路径永在），由它定位 python3 并 exec 核心逻辑。
-  const script = `${repo}/scripts/self-heal.sh`;
+  // 单一实现：直接调 Python 核心（scripts/self-heal.py --repair）。
+  const script = `${repo}/scripts/self-heal.py`;
   console.log(`→ 唤起脚本自愈: ${script} --repair`);
   try {
-    const child = execFile('bash', [script, '--repair'], (err) => {
+    const child = execFile('python3', [script, '--repair'], (err) => {
       if (err) {
         console.warn('⚠ 脚本自愈异常:', err.message);
       } else {

@@ -62,7 +62,7 @@ async function resolveSecretInput(
   }
 }
 
-function resolvePlainOrTemplate(value: string): string {
+export function resolvePlainOrTemplate(value: string): string {
   if (!value) throw new Error('app secret is empty');
   const m = ENV_TEMPLATE_RE.exec(value);
   if (m) {
@@ -74,7 +74,7 @@ function resolvePlainOrTemplate(value: string): string {
   return value;
 }
 
-function lookupProvider(
+export function lookupProvider(
   secretsCfg: AppConfig['secrets'],
   ref: SecretRef,
 ): ProviderConfig | undefined {
@@ -83,7 +83,7 @@ function lookupProvider(
   return secretsCfg.providers[name];
 }
 
-function resolveEnvRef(ref: SecretRef, pc: ProviderConfig | undefined): string {
+export function resolveEnvRef(ref: SecretRef, pc: ProviderConfig | undefined): string {
   if (pc?.allowlist && pc.allowlist.length > 0 && !pc.allowlist.includes(ref.id)) {
     throw new Error(`env var ${ref.id} is not allowlisted in provider`);
   }
@@ -136,7 +136,7 @@ async function resolveExecRef(
   return spawnExecProvider(pc, ref);
 }
 
-function isSelfBridgeCommand(command: string, args: string[] | undefined): boolean {
+export function isSelfBridgeCommand(command: string, args: string[] | undefined): boolean {
   // Canonical form (post-wrapper): command is our own secrets-getter
   // script and args is empty. Match path exactly.
   if (command === paths.secretsGetterScript) return true;

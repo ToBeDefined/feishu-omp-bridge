@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { isAlive, readAndPrune } from './registry';
+import { isAlive, readAndPrune, resolveTarget, sameAppOthers } from './registry';
 import type { ProcessEntry } from './registry';
 
 function file(): string {
@@ -85,5 +85,43 @@ describe('isAlive', () => {
 
   it('returns false for nonexistent pid', () => {
     expect(isAlive(DEAD_PID)).toBe(false);
+  });
+});
+
+describe('sameAppOthers', () => {
+  it('includes only same-app entries with a different pid', () => {
+    const f = write([
+      entry({ id: 'a', appId: 'app1', pid: LIVE_PID }),
+      entry({ id: 'b', appId: 'app1', pid: DEAD_PID }),
+      entry({ id: 'c', appId: 'app2', pid: LIVE_PID }),
+    ]);
+    // b 死 pid 被 prune；a 同 app 但 pid==excludePid 排除；c 不同 app
+    expect(sameAppOthers('app1', LIVE_PID, f)).toEqual([]);
+  });
+
+  it('keeps same-app live entry when pid differs', () => {
+    const f = write([entry({ id: 'a', appId: 'app1', pid: LIVE_PID })]);
+    expect(sameAppOthers('app1', 12345, f).map((e) => e.id)).toEqual(['a']);
+  });
+});
+
+describe('resolveTarget', () => {
+  it('resolves by short id', () => {
+    const f = write([entry({ id: 'aa', pid: LIVE_PID }), entry({ id: 'bb', pid: LIVE_PID })]);
+    expect(resolveTarget('bb', f)?.id).toBe('bb');
+  });
+
+  it('resolves by 1-based index', () => {
+    const f = write([entry({ id: 'aa', pid: LIVE_PID }), entry({ id: 'bb', pid: LIVE_PID })]);
+    expect(resolveTarget('1', f)?.id).toBe('aa');
+    expect(resolveTarget('2', f)?.id).toBe('bb');
+  });
+
+  it('returns undefined for unknown / out-of-range / invalid index', () => {
+    const f = write([entry({ id: 'aa', pid: LIVE_PID })]);
+    expect(resolveTarget('zz', f)).toBeUndefined();
+    expect(resolveTarget('5', f)).toBeUndefined();
+    expect(resolveTarget('0', f)).toBeUndefined();
+    expect(resolveTarget('abc', f)).toBeUndefined();
   });
 });

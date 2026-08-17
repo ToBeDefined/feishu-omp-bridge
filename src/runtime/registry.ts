@@ -195,16 +195,23 @@ export function cleanupTmpFiles(): void {
  * Find living entries with the same appId, excluding `excludePid` (typically
  * the caller's own pid) so a process doesn't flag itself as a conflict.
  */
-export function sameAppOthers(appId: string, excludePid = process.pid): ProcessEntry[] {
-  return readAndPrune().filter((e) => e.appId === appId && e.pid !== excludePid);
+export function sameAppOthers(
+  appId: string,
+  excludePid = process.pid,
+  path: string = paths.processesFile,
+): ProcessEntry[] {
+  return readAndPrune(path).filter((e) => e.appId === appId && e.pid !== excludePid);
 }
 
 /**
  * Resolve `target` (short id OR 1-based index in the current `ps` view) to
  * an entry. Index lookup uses the same prune order as `readAndPrune()`.
  */
-export function resolveTarget(target: string): ProcessEntry | undefined {
-  const live = readAndPrune();
+export function resolveTarget(
+  target: string,
+  path: string = paths.processesFile,
+): ProcessEntry | undefined {
+  const live = readAndPrune(path);
   const byId = live.find((e) => e.id === target);
   if (byId) return byId;
   const n = Number.parseInt(target, 10);

@@ -71,8 +71,11 @@ export function searchResultsCard(
     ? `✅ 搜索完成 · ${contexts.length} 个片段`
     : `🔍 搜索 \`${keyword}\`：找到 ${contexts.length} 个片段`;
   const more = !done && contexts.length >= 6 ? '\n\n_（仅显示最近 6 个片段）_' : '';
+  // Active list caps at 6 rendered items (header already notes this); the
+  // done (settled) view renders everything for review.
+  const shown = done ? contexts : contexts.slice(0, 6);
   const blocks: object[] = [];
-  contexts.forEach((c, i) => {
+  shown.forEach((c, i) => {
     const metaLine = [
       c.title ? `🏷 ${c.title}` : '',
       c.workspace ? `📁 ${c.workspace}` : '',

@@ -118,8 +118,12 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
   try {
     const ok = await runCommandHandler(name ?? '', args, ctx);
-    if (!ok) {
+    if (ok === false) {
       log.warn('cardAction', 'unknown', { cmd });
+    } else if (ok === 'denied') {
+      // Admin command silently denied — it did NOT run, so its side effects
+      // (like resetting the pending queue) must not fire either.
+      log.info('cardAction', 'denied-no-reset', { cmd, scope });
     } else if (RESET_CONTEXT_COMMANDS[`/${name}`] === true) {
       // 与 intake 同语义：上下文切换类命令（卡片按钮 new / ws.use）成功后
       // 丢弃旧上下文的积压消息，防止其泄入新 session。

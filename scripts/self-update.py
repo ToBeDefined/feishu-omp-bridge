@@ -19,7 +19,6 @@
 import json
 import os
 import shutil
-import fcntl
 import subprocess
 import sys
 import time
@@ -62,17 +61,44 @@ def git(*args: str) -> subprocess.CompletedProcess:
 def short_head() -> str:
     return git("rev-parse", "--short", "HEAD").stdout.strip() or "unknown"
 
-
 def _acquire_lock() -> Optional[int]:
     """fcntl 文件锁（进程被 SIGKILL/SIGTERM 强杀时内核自动释放）。
-    之前的 mkdir 原子锁在强杀下目录永久残留，之后所有自更新永远被拒。"""
+    之前的 mkdir 原子锁在强杀下目录永久残留，之后所有自更新永远被拒。
+    fcntl 为 POSIX-only：Windows 上惰性导入失败则回退 mkdir 锁
+    （与 self-heal.py DirLock 同一套兜底思路，保住跨平台可用）。"""
     try:
-        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o644)
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return fd
-    except OSError:
-        return None
+        import fcntl
 
+        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            return None
+        return fd
+    except ImportError:
+        # Windows: mkdir 原子锁兜底（强杀残留需人工清理，但脚本可用）
+        try:
+            os.mkdir(LOCK_FILE + ".d")
+        except FileExistsError:
+            return None
+        return -1
+
+
+def _release_lock(fd: int) -> None:
+    if fd == -1:
+        try:
+            os.rmdir(LOCK_FILE + ".d")
+        except OSError:
+            pass
+        return
+    try:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except (ImportError, OSError):
+        pass
+    os.close(fd)
 
 def main() -> int:
     fd = _acquire_lock()
@@ -82,10 +108,8 @@ def main() -> int:
     try:
         return update()
     finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
+        _release_lock(fd)
+
 
 
 def update() -> int:

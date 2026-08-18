@@ -230,7 +230,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
   // Only real chat ids are valid receive_ids. Session store keys are scopes:
   // cloud-doc comments use `doc:<fileToken>` and topic chats use
   // `chatId:threadId` — sending to those fails every boot (N dead API calls).
-  const notifyTargets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id));
+  const notifyTargets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
   for (const chatId of notifyTargets) {
     try {
       await bridge.channel.send(

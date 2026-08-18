@@ -128,6 +128,7 @@ export function modelSelectCard(
               tag: 'select_static',
               name: 'model_selector',
               initial_option: initial,
+              options,
             },
             {
               tag: 'column_set',

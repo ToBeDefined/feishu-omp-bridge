@@ -136,12 +136,19 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   return runHandler(cmd, args, h, ctx);
 }
 
-/** Invoke a named command handler (e.g. from a card button click). */
+/**
+ * Invoke a named command handler (e.g. from a card button click).
+ * Returns false for unknown commands, `'denied'` when an admin command was
+ * silently rejected (still "handled" — truthy — so callers treat the input
+ * as consumed), and true when a handler actually ran.
+ */
+export type CommandRunResult = boolean | 'denied';
+
 export async function runCommandHandler(
   name: string,
   args: string,
   ctx: CommandContext,
-): Promise<boolean> {
+): Promise<CommandRunResult> {
   const h = handlers[`/${name}`];
   if (!h) return false;
   if (isAdminCommand(name) && !isAdmin(ctx.controls.cfg, ctx.msg.senderId)) {
@@ -153,7 +160,7 @@ export async function runCommandHandler(
     // Card actions can't reply naturally (the `msg` is synthesized); the
     // click is silently denied. The button only renders for users who got
     // the original admin card in the first place, so this is an edge case.
-    return true;
+    return 'denied';
   }
   return runHandler(`/${name}`, args, h, ctx);
 }

@@ -500,6 +500,9 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
     }
   } catch (err) {
     log.fail('scheduler', err, { chatId });
+    // Same orphaned-run hazard as runAgentBatch's catch: detached OMP child
+    // with an open stdin hangs forever if the stream dies mid-run.
+    await run.stop().catch(() => {});
     try {
       await channel.send(chatId, { markdown: `⚠️ 定时任务执行失败：${err instanceof Error ? err.message : String(err)}` }, {});
     } catch {

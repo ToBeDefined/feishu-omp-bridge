@@ -145,14 +145,15 @@ export function isTaskRegistered(): boolean {
 }
 
 /**
- * Parse `/Query /V /FO LIST` output for the current run state. Looks for
- * `Status: Running` in the verbose listing. Other states include
- * "Ready" (registered, not currently running) and "Disabled".
+ * Parse `/Query /V /FO LIST` output for the current run state. schtasks
+ * localizes the field name and value with the system locale — match both
+ * English ("Status: Running") and Chinese ("状态: 正在运行"). Other states
+ * ("Ready"/"就绪", "Disabled"/"已禁用") must not match either pattern.
  */
 export function isTaskRunning(): boolean {
   const r = runSchtasks(['/Query', '/V', '/FO', 'LIST', '/TN', WINDOWS_TASK_NAME]);
   if (!r.ok) return false;
-  return /Status:\s+Running/i.test(r.stdout);
+  return /(Status|状态)\s*:\s*(Running|正在运行)/i.test(r.stdout);
 }
 
 export function describeTask(): string {

@@ -66,6 +66,15 @@ describe('buildPrompt', () => {
     expect(prompt).toContain('/tmp/voice.ogg — 语音');
     expect(prompt).toContain('转写: 帮我查下明天的天气');
   });
+
+  it('renders transcript inline for video attachments', () => {
+    const attachments: LocalAttachment[] = [
+      { path: '/tmp/clip.mp4', kind: 'video', transcript: '这是演示视频的内容' },
+    ];
+    const prompt = buildPrompt([msg({ content: '' })], attachments);
+    expect(prompt).toContain('/tmp/clip.mp4 — 视频');
+    expect(prompt).toContain('转写: 这是演示视频的内容');
+  });
 });
 
 describe('buildBridgeContextHeader', () => {

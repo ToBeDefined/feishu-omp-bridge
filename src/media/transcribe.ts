@@ -66,8 +66,8 @@ export function asrFileId(): string {
 }
 
 /**
- * Transcribe a downloaded voice file. Best-effort: any failure logs and
- * returns `{ ok: false, text: '' }` rather than throwing — a broken voice
+ * Transcribe a downloaded voice/video file. Best-effort: any failure logs
+ * and returns `{ ok: false, text: '' }` rather than throwing — a broken
  * pipeline must not block the chat.
  */
 export async function transcribeVoice(
@@ -120,16 +120,18 @@ export async function readAudioFile(path: string): Promise<Buffer> {
 }
 
 /**
- * Transcribe every audio attachment in place (mutates `attachments` by
- * setting `.transcript`). Best-effort — a failed transcription leaves the
- * attachment without a transcript and never blocks the caller.
+ * Transcribe every voice/video attachment in place (mutates `attachments`
+ * by setting `.transcript`). Video goes through the same ffmpeg→PCM→ASR
+ * pipeline as voice — ffmpeg extracts the audio track from the container.
+ * Best-effort — a failed transcription leaves the attachment without a
+ * transcript and never blocks the caller.
  */
 export async function attachTranscripts(
   channel: LarkChannel,
   attachments: { kind: string; path: string; transcript?: string }[],
 ): Promise<void> {
   for (const a of attachments) {
-    if (a.kind !== 'audio') continue;
+    if (a.kind !== 'audio' && a.kind !== 'video') continue;
     const r = await transcribeVoice(channel, a.path);
     if (r.ok && r.text) a.transcript = r.text;
   }

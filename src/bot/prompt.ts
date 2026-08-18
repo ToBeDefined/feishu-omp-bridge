@@ -51,9 +51,11 @@ export function buildPrompt(
             : '文件';
     const name = a.originalName ? ` (${a.originalName})` : '';
     const line = `- ${a.path}${name} — ${label}`;
-    // Voice messages carry their transcript inline so the agent reads the
-    // content without needing to decode audio.
-    return a.kind === 'audio' && a.transcript ? `${line}\n  转写: ${a.transcript}` : line;
+    // Voice/video messages carry their transcript inline so the agent reads
+    // the content without needing to decode the media.
+    return (a.kind === 'audio' || a.kind === 'video') && a.transcript
+      ? `${line}\n  转写: ${a.transcript}`
+      : line;
   });
   const userPart = texts.length > 0 ? texts.join('\n\n') : '请看下面的附件。';
   return `${prefix}${userPart}\n\n附件（本地路径）：\n${attachLines.join('\n')}`;

@@ -233,7 +233,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     },
     comment: async (evt) => {
       await withTrace({ chatId: 'comment' }, async () => {
-        await handleCommentMention({ channel, evt, agent, sessions, workspaces }).catch((err) =>
+        await handleCommentMention({ channel, evt, agent, sessions, workspaces, cfg }).catch((err) =>
           log.fail('comment', err),
         );
       }).catch((err) => log.fail('comment', err));
@@ -306,7 +306,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       // prompt while the user is mid-conversation would overwrite the run's
       // handle (breaking /stop) and run two agents against the same session.
       // Skip this tick; the next interval will try again.
-      if (activeRuns.has(task.chatId)) {
+      if (activeRuns.hasAnyForChat(task.chatId)) {
         log.info('scheduler', 'skip-busy', { chatId: task.chatId, id: task.id });
         return;
       }
@@ -329,7 +329,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     channel,
     disconnect: async (killRuns = true) => {
       keepalive.stop();
-      scheduler?.stop();
+      // Scheduler 是进程级资源（runStart 创建一次），不属于单次连接：
+      // 进程内 restart（先 startChannel 新桥再 disconnect 旧桥）若在此 stop，
+      // 共享 scheduler 的 timer 会被旧桥拆掉且新桥的 start() 因幂等不重建，
+      // 定时任务从此停摆直到进程重启。timer 已 unref，进程退出不受阻。
       pending.cancelAll();
       await channel.disconnect();
       // When we're being shut down by launchd / an external `restart`

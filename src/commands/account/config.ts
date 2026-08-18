@@ -64,10 +64,12 @@ async function cancelConfig(ctx: CommandContext): Promise<void> {
 async function submitConfig(ctx: CommandContext): Promise<void> {
   const fv = ctx.formValue ?? {};
   const rawReply = String(fv.message_reply ?? '').trim();
+  // 表单未回传该字段（CardKit form_value 偶发丢弃）时回退到当前值，
+  // 而非 'card' —— 否则渲染模式会被静默切换。
   const messageReply: MessageReplyMode =
     rawReply === 'markdown' || rawReply === 'text' || rawReply === 'card'
       ? (rawReply as MessageReplyMode)
-      : 'card';
+      : getMessageReplyMode(ctx.controls.cfg);
   const rawTools = String(fv.show_tool_calls ?? '').trim();
   const showToolCalls = rawTools !== 'hide';
   const rawMaxCC = String(fv.max_concurrent_runs ?? '').trim();
@@ -109,6 +111,23 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   const allowedUsers = parseList(fv.allowed_users);
   const allowedChats = parseList(fv.allowed_chats);
   const admins = parseList(fv.admins);
+
+  // Same-class guard for the user allowlist: a submitter who removes
+  // themselves from a non-empty allowedUsers would be silently dropped by
+  // intake on the very next message (isUserAllowed) — locked out of the bot
+  // entirely, only recoverable by hand-editing the config file on disk.
+  if (allowedUsers.length > 0 && !allowedUsers.includes(ctx.msg.senderId)) {
+    log.warn('command', 'config-lockout-refused', {
+      kind: 'users',
+      sender: ctx.msg.senderId.slice(-6),
+      proposedUsers: allowedUsers.length,
+    });
+    await reply(
+      ctx,
+      `❌ 拒绝提交:你设置了非空的用户白名单,但其中不包含你自己的 open_id (\`${ctx.msg.senderId}\`)。这会让你下一条消息起被 bot 完全拒答。请把自己的 open_id 加进去再提交。`,
+    );
+    return;
+  }
 
   // Self-lockout guard: if the submitter sets a non-empty admins list that
   // doesn't include themselves, they lose access to /config immediately.

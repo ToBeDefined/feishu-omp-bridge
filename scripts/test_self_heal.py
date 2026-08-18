@@ -46,7 +46,7 @@ def heal(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "REPO", str(tmp_path))
 
     # 可控假命令：记录调用，退出码由模块变量决定
-    calls = {"restart": 0, "omp_run": 0, "ctx": None, "git_checkout": 0, "build": 0}
+    calls = {"restart": 0, "omp_run": 0, "ctx": None, "git_reset": 0, "git_checkout": 0, "build": 0}
 
     def fake_run(cmd, **kw):
         argv = cmd if isinstance(cmd, list) else str(cmd).split()
@@ -71,14 +71,21 @@ def heal(tmp_path, monkeypatch):
                     '{"entries":[{"botName":"Agent","pid":123}]}'
                 )
         else:
-            # rollback 流程: git stash / git checkout / pnpm build
-            if argv and argv[0] == "git" and len(argv) >= 2 and argv[1] == "checkout":
-                calls["git_checkout"] += 1
+            # rollback 流程: git stash / git rev-parse / git reset / pnpm build
+            if argv and argv[0] == "git":
+                if len(argv) >= 2 and argv[1] == "rev-parse":
+                    return subprocess.CompletedProcess(argv, 0, stdout="abc123def456")
+                if len(argv) >= 2 and argv[1] == "reset":
+                    calls["git_reset"] += 1
+                elif len(argv) >= 2 and argv[1] == "checkout":
+                    calls["git_checkout"] += 1
+                rc = 0
             elif argv and argv[0] == "pnpm":
                 calls["build"] += 1
                 rc = 0 if getattr(mod, "BUILD_OK", True) else 1
                 return subprocess.CompletedProcess(argv, rc)
-            rc = 0
+            else:
+                rc = 0
         return subprocess.CompletedProcess(argv, rc)
 
     # 探测：进程/omp 用可控 state；WS 读真实 processes.json（restart 修复后
@@ -262,8 +269,10 @@ def test_prompt_contract(heal):
 
 
 def test_rollback_runs_before_omp_when_enabled(heal, tmp_path, monkeypatch):
-    # 开启 rollback：restart 失败后应先 git checkout + build，再 omp
+    # 开启 rollback：restart 失败后应先 git reset + build，再 omp。
+    # 预置 lastGoodSha（模拟此前健康时记录的已知好提交）→ 回滚走 reset --hard <sha>。
     monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    heal._write_state({"lastGoodSha": "abc123def456"})
     heal.probe_state["alive"] = False
     (tmp_path / "processes.json").unlink(missing_ok=True)
     heal.RESTART_OK = False      # restart 失败
@@ -272,9 +281,9 @@ def test_rollback_runs_before_omp_when_enabled(heal, tmp_path, monkeypatch):
     heal.BACKOFF_BASE_S = 0
     heal.heal_once()
     heal.heal_once()             # 达阈值 → restart 失败 → rollback → omp
-    assert heal.calls["git_checkout"] >= 1   # rollback 执行了 git checkout
-    assert heal.calls["build"] >= 1          # rollback 执行了 build
-    assert heal.calls["omp_run"] >= 1        # rollback 后仍失败才 omp
+    assert heal.calls["git_reset"] >= 1     # rollback 执行了 git reset
+    assert heal.calls["build"] >= 1         # rollback 执行了 build
+    assert heal.calls["omp_run"] >= 1       # rollback 后仍失败才 omp
 
 
 def test_rollback_skipped_when_disabled(heal, tmp_path, monkeypatch):

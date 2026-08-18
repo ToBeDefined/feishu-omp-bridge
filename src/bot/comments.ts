@@ -1,6 +1,8 @@
 import { homedir } from 'node:os';
 import type { CommentEvent, LarkChannel } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
+import type { AppConfig } from '../config/schema';
+import { isUserAllowed } from '../config/schema';
 import { log } from '../core/logger';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -12,7 +14,9 @@ export interface CommentDeps {
   agent: AgentAdapter;
   sessions: SessionStore;
   workspaces: WorkspaceStore;
+  cfg: AppConfig;
 }
+
 
 // File types supported by drive.v1.fileComment.get; other types (slides,
 // bitable, mindnote) use different APIs and are out of scope for now.
@@ -73,6 +77,12 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   });
   if (!evt.mentionedBot) {
     log.info('comment', 'skip', { reason: 'not-mentioned' });
+    return;
+  }
+  // 与 intake 相同的用户白名单门控：云文档评论也是入口，绕过它等于任何
+  // 能看到该文档的人（不限于白名单）都能驱动 OMP。
+  if (!isUserAllowed(deps.cfg, evt.operator.openId)) {
+    log.info('comment', 'skip-not-allowed-user', { sender: evt.operator.openId });
     return;
   }
   if (!SUPPORTED_FILE_TYPES.has(evt.fileType)) {

@@ -6,7 +6,7 @@ import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../car
 import type { CommandContext, Handler } from '../index';
 import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
 import { extractUserInput, scanSessionFile } from './context';
-import { applyResume } from './resume';
+import { applyResume, listResumableSessions } from './resume';
 import { renderSearchContext, searchDetailCard, searchResultsCard, workspaceLabel } from '../../card/search-card';
 import type { SearchContext, SearchHit } from '../../card/search-card';
 
@@ -138,6 +138,19 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   const [sub, ...rest] = args.trim().split(/\s+/);
 
   if (sub === 'resume') {
+    // 卡片按钮带目标 sessionId（命中会话）。没有 arg 时保持旧语义：
+    // 提示当前会话状态（直接发 `/s resume` 的场景）。
+    const targetId = rest.join('').trim();
+    if (targetId) {
+      const sessions = await listResumableSessions(ctx);
+      const match = sessions.find((s) => s.sessionId === targetId);
+      if (!match) {
+        await reply(ctx, `❌ 该会话已不存在或无法恢复：\`${targetId}\``);
+        return;
+      }
+      await applyResume(ctx, match);
+      return;
+    }
     const sess = ctx.sessions.getRaw(ctx.scope);
     if (!sess?.sessionId) {
       await reply(ctx, '当前没有可继续的会话。');

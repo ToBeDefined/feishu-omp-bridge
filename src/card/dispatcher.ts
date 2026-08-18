@@ -3,6 +3,7 @@ import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { ChatModeCache } from '../bot/chat-mode-cache';
 import type { PendingQueue } from '../bot/pending-queue';
+import { RESET_CONTEXT_COMMANDS } from '../bot/intake';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
 import { isChatAllowed, isUserAllowed } from '../config/schema';
 import { log } from '../core/logger';
@@ -117,7 +118,14 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
   try {
     const ok = await runCommandHandler(name ?? '', args, ctx);
-    if (!ok) log.warn('cardAction', 'unknown', { cmd });
+    if (!ok) {
+      log.warn('cardAction', 'unknown', { cmd });
+    } else if (RESET_CONTEXT_COMMANDS[`/${name}`] === true) {
+      // 与 intake 同语义：上下文切换类命令（卡片按钮 new / ws.use）成功后
+      // 丢弃旧上下文的积压消息，防止其泄入新 session。
+      const dropped = deps.pending.cancel(scope);
+      log.info('cardAction', 'command-reset', { scope, cmd, droppedPending: dropped.length });
+    }
   } catch (err) {
     log.fail('cardAction', err, { cmd });
   }

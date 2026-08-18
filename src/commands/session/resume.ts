@@ -21,7 +21,7 @@ export const resumeHandlers: Record<string, Handler> = {
 
 const RESUME_PAGE_SIZE = 5;
 
-async function listResumableSessions(ctx: CommandContext): Promise<ResumeOption[]> {
+export async function listResumableSessions(ctx: CommandContext): Promise<ResumeOption[]> {
   const dir = paths.ompSessionsDir;
   const titles = ctx.sessions.titlesBySessionId();
   const out: ResumeOption[] = [];

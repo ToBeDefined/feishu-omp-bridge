@@ -26,7 +26,7 @@ const DEBOUNCE_MS = 600;
  * behind a run belong to the old context. Every other command must not
  * silently drop messages the user sent while a run was processing.
  */
-const RESET_CONTEXT_COMMANDS: Record<string, true> = {
+export const RESET_CONTEXT_COMMANDS: Record<string, true> = {
   '/new': true,
   '/reset': true,
   '/cd': true,

@@ -70,7 +70,10 @@ async function handleEvery(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   const task = await scheduler.add({
-    chatId: ctx.scope.startsWith('oc_') || ctx.scope.startsWith('cg_') ? ctx.scope : ctx.msg.chatId,
+    // 永远存纯 chat_id：话题群里 ctx.scope 是 `chatId:threadId` 复合串，
+    // 直接存会让触发端 channel.send 判不出 receive_id_type 而投递失败
+    // （报错只进日志，用户侧定时任务静默失联）。
+    chatId: ctx.msg.chatId,
     prompt,
     intervalMs,
   });

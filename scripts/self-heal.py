@@ -49,7 +49,7 @@ RECOVER_WAIT_S = int(os.environ.get("HEAL_RECOVER_WAIT_S", "5"))
 INTERVAL_S = int(os.environ.get("HEAL_INTERVAL_S", "60"))
 FAIL_THRESHOLD = int(os.environ.get("HEAL_FAIL_THRESHOLD", "3"))
 OMP_TIMEOUT_S = int(os.environ.get("HEAL_OMP_TIMEOUT_S", "300"))
-HEAL_MODEL = os.environ.get("HEAL_MODEL", "futu/deepseek-v4-flash-0731")
+HEAL_MODEL = os.environ.get("HEAL_MODEL", "zhipu-coding-plan/glm-5.2")
 BACKOFF_BASE_S = int(os.environ.get("HEAL_BACKOFF_BASE_S", "60"))
 BACKOFF_MAX_S = int(os.environ.get("HEAL_BACKOFF_MAX_S", "480"))
 MAX_ATTEMPTS = int(os.environ.get("HEAL_MAX_ATTEMPTS", "10"))
@@ -186,7 +186,9 @@ def probe() -> bool:
 def repair_restart() -> bool:
     log("→ 执行 bridge restart 拉回...")
     try:
-        r = subprocess.run(RESTART_CMD.split(), capture_output=True, text=True, timeout=60)
+        # 必须带 restart 子命令：裸命令默认落入前台 run —— daemon 还活着时
+        # 被单进程检查拒绝(rc=1)，死掉时前台阻塞到 60s 超时，哪种都修不了。
+        r = subprocess.run([*RESTART_CMD.split(), "restart"], capture_output=True, text=True, timeout=60)
     except (subprocess.SubprocessError, FileNotFoundError):
         r = None
     if r is not None and r.returncode == 0:
@@ -230,8 +232,10 @@ def repair_with_omp() -> bool:
     log("→ 唤起 omp 修复会话（restart 仍失败）...")
     ctx = _build_omp_context()
     try:
+        # -p 非交互 + --mode json：omp 没有 --print-json-lines 这个 flag
+        # （旧代码每次 1 秒即败，最后防线从未生效过）。
         r = subprocess.run(
-            [OMP_BIN, "run", "--cwd", REPO, "--print-json-lines", "--model", HEAL_MODEL, ctx],
+            [OMP_BIN, "run", "--cwd", REPO, "-p", "--mode", "json", "--model", HEAL_MODEL, ctx],
             capture_output=True, timeout=OMP_TIMEOUT_S,
         )
         ok = r.returncode == 0
@@ -250,26 +254,58 @@ def repair_with_omp() -> bool:
     return False
 
 
+def _git_head() -> str:
+    """当前 HEAD 完整 SHA（仓库不存在/异常时返回 ''）。"""
+    try:
+        r = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
 def repair_rollback() -> bool:
-    """代码坏了时回滚到上一个稳定提交：stash → checkout HEAD~1 →
-    build → restart。比让 omp 现场改代码更稳 —— 先回到已知好版本。
+    """代码坏了时回滚到已知好提交：stash → git reset --hard <lastGoodSha>
+    → build → restart。比让 omp 现场改代码更稳 —— 先回到已知好版本。
     返回 True 表示回滚后 probe 恢复。"""
     if os.environ.get("HEAL_ROLLBACK", "1") != "1":
         log("→ 跳过 rollback（HEAL_ROLLBACK=0）")
         return False
-    log("→ 尝试回滚到上一个稳定提交...")
+    head = _git_head()
+    if not head:
+        log("→ 无法读取 git HEAD，跳过 rollback")
+        return False
+    state = _read_state()
+    last_good = str(state.get("lastGoodSha") or "").strip()
+    last_tried = str(state.get("lastRollbackSha") or "").strip()
+    if last_good and last_good != head:
+        target = last_good
+        reason = f"已知好提交 {last_good[:12]}"
+    elif head and last_tried != head:
+        # 没有已记录的健康 SHA 时最多相对退一步，且同一次故障周期内不重复退：
+        # 上次已退到的位置（lastRollbackSha）不再触发 HEAD~1，防止一路退到 root。
+        target = "HEAD~1"
+        reason = "HEAD~1（无已记录健康提交，兜底单步回退）"
+    else:
+        log("→ 无可回滚目标（HEAD 已是最后尝试位置），交给 omp 修复")
+        return False
+    log(f"→ 尝试回滚到 {reason}...")
     try:
-        # stash 未提交改动（dist 可能被改坏）
+        # stash 未提交改动（dist 可能被改坏）。reset --hard 会丢弃工作区，
+        # stash 保底；回滚后不 pop —— 未提交改动可能正是故障源，留在 stash 里人工判断。
         subprocess.run(["git", "stash", "-q"], cwd=REPO, capture_output=True, timeout=30)
-        # 回退一个提交
+        # reset --hard 而非 checkout：留在当前分支上（checkout detached HEAD 会让
+        # 后续 self-update 的 ff-only pull 语义彻底混乱）。
         r = subprocess.run(
-            ["git", "checkout", "HEAD~1", "-q"], cwd=REPO, capture_output=True, text=True, timeout=30
+            ["git", "reset", "--hard", target], cwd=REPO, capture_output=True, text=True, timeout=30
         )
         if r.returncode != 0:
-            log(f"✗ git checkout 失败: {(r.stderr or '').strip() or 'unknown'}")
+            log(f"✗ git reset 失败: {(r.stderr or '').strip() or 'unknown'}")
             return False
-        head = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO, capture_output=True, text=True, timeout=10)
-        log(f"✓ 已回滚到 {(head.stdout or '').strip() or '?'}")
+        new_head = _git_head()
+        _write_state({"lastRollbackSha": new_head})
+        log(f"✓ 已回滚到 {new_head[:12] or '?'}")
         # 重建 dist
         b = subprocess.run(["pnpm", "build"], cwd=REPO, capture_output=True, text=True, timeout=120)
         if b.returncode != 0:
@@ -277,6 +313,8 @@ def repair_rollback() -> bool:
             return False
         # 重启并验证
         if repair_restart():
+            # 回滚成功同样是"自愈完成"：清零 omp 修复计数，历史失败不侵蚀后续配额。
+            _write_state({"ompAttempts": 0, "nextOmpAt": 0})
             log("✓ 回滚 + 重建 + 重启成功，自愈完成")
             return True
         log("✗ 回滚后 restart 仍失败")
@@ -284,7 +322,6 @@ def repair_rollback() -> bool:
     except Exception as err:
         log(f"✗ rollback 异常: {err}")
         return False
-
 
 def repair_with_omp_guarded() -> bool:
     now = int(time.time())
@@ -323,6 +360,10 @@ def repair_with_omp_guarded() -> bool:
 def heal_once() -> None:
     if probe():
         write_fails(0)
+        # 健康时记录当前提交为"已知好版本"，供 rollback 精确回退（而不是盲退 HEAD~1）。
+        head = _git_head()
+        if head:
+            _write_state({"lastGoodSha": head, "lastRollbackSha": ""})
         return
     fails = state_get("fails") + 1
     write_fails(fails)
@@ -410,7 +451,13 @@ def main() -> None:
     if arg == "uninstall":
         uninstall()
         return
-    # 探测/修复/常驻：同一时间只允许一个实例
+    if arg == "--repair":
+        # --repair 是 service.ts SELF_HEAL=1 的快速修复路径。它要防的是并发
+        # omp 会话，不是并发探测 —— repair_with_omp_guarded 内部已用 omp 锁
+        # 互斥。若在此抢主锁：常驻 watchdog 永远持有它，这条路径必然被拒。
+        repair_with_omp_guarded()
+        return
+    # 探测/常驻：同一时间只允许一个实例
     lock = DirLock(LOCK_FILE)
     if not lock.acquire():
         log("✗ 已有自愈看门狗在运行，本轮跳过。")
@@ -418,8 +465,6 @@ def main() -> None:
     try:
         if arg == "--once":
             heal_once()
-        elif arg == "--repair":
-            repair_with_omp_guarded()
         else:
             # 常驻循环（launchd 拉起后用）
             while True:

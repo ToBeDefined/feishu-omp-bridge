@@ -167,8 +167,15 @@ def test_restart_fail_rolls_back(upd):
 
 # 6. 锁互斥
 def test_update_lock_conflict(upd, tmp_path):
-    # 预占锁
-    lock_dir = tmp_path / "update.lock.d"
-    lock_dir.mkdir()
-    rc = upd.main()
+    # 预占 fcntl 文件锁（SIGKILL 安全），main() 应拒绝并返回 2
+    import fcntl
+    lock_path = str(tmp_path / "update.lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        rc = upd.main()
+        assert rc == 2
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
     assert rc == 2

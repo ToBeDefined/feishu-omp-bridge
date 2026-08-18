@@ -1,3 +1,4 @@
+import { writeFile as writeFileReal } from 'node:fs/promises';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,7 +18,9 @@ afterAll(() => {
 });
 
 function makeChannel() {
-  const writeFile = vi.fn(async () => undefined);
+  const writeFile = vi.fn(async (p: string) => {
+    await writeFileReal(p, 'fake-bytes');
+  });
   const get = vi.fn(async () => ({ writeFile }));
   const rawClient = { im: { v1: { messageResource: { get } } } };
   const channel = { rawClient } as never;

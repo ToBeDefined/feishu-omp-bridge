@@ -265,6 +265,11 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   } catch (err) {
     log.fail('stream', err);
+    // Stream blew up mid-run (card update network error, producer throw…):
+    // processAgentStream's tail reap never ran, and the OMP child is a
+    // detached spawn whose stdin stays open — it would hang forever,
+    // surviving even a daemon restart. Stop it here. No-op if already dead.
+    await run.stop().catch(() => {});
   } finally {
     activeRuns.unregister(scope, run);
   }

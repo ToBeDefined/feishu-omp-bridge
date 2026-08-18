@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import type { CommandContext } from './index';
 import { log } from '../core/logger';
+import { forgetManagedCard, updateManagedCard } from '../card/managed';
 
 /** Compact text for a one-line display: collapse whitespace, cap length. */
 export function summarize(text: string, max = 48): string {
@@ -36,7 +37,24 @@ export async function recallMessage(ctx: CommandContext, messageId: string): Pro
       path: { message_id: messageId },
     });
   } catch (err) {
-    console.warn('[recall failed]', err);
+    // Recall failed — the old card stays in the chat with live buttons.
+    // Neutralize it in place (managed cards only) instead of leaving a
+    // second clickable flow stacked under the new card.
+    log.warn('command', 'recall-failed', { messageId, err: String(err) });
+    try {
+      await updateManagedCard(ctx.channel, messageId, {
+        schema: '2.0',
+        config: { update_multi: true },
+        body: {
+          elements: [
+            { tag: 'markdown', content: '_⚠️ 此卡片已过期，请使用最新发出的卡片。_' },
+          ],
+        },
+      });
+      forgetManagedCard(messageId);
+    } catch {
+      /* not a managed card or update also failed — nothing more to do */
+    }
   }
 }
 

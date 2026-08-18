@@ -19,11 +19,14 @@
 import json
 import os
 import shutil
+import fcntl
 import subprocess
 import sys
 import time
+from typing import Optional
 from datetime import datetime
 from pathlib import Path
+
 
 REPO = os.environ.get("UPDATE_REPO", str(Path(__file__).resolve().parent.parent))
 BRANCH = sys.argv[1] if len(sys.argv) > 1 else ""
@@ -60,27 +63,36 @@ def short_head() -> str:
     return git("rev-parse", "--short", "HEAD").stdout.strip() or "unknown"
 
 
-def main() -> int:
-    # 原子锁互斥
-    lock_dir = LOCK_FILE + ".d"
+def _acquire_lock() -> Optional[int]:
+    """fcntl 文件锁（进程被 SIGKILL/SIGTERM 强杀时内核自动释放）。
+    之前的 mkdir 原子锁在强杀下目录永久残留，之后所有自更新永远被拒。"""
     try:
-        os.mkdir(lock_dir)
-    except FileExistsError:
+        fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return fd
+    except OSError:
+        return None
+
+
+def main() -> int:
+    fd = _acquire_lock()
+    if fd is None:
         log("✗ 已有自更新在运行，跳过。")
         return 2
     try:
         return update()
     finally:
         try:
-            os.rmdir(lock_dir)
-        except OSError:
-            pass
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def update() -> int:
     os.chdir(REPO)
     old_head = git("rev-parse", "HEAD").stdout.strip()
-    log(f"当前 HEAD: {old_head[:12]}")
+    orig_branch = git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    log(f"当前 HEAD: {old_head[:12]}（{orig_branch}）")
 
     # 未提交改动（排除 dist）→ stash
     dirty = False
@@ -101,6 +113,10 @@ def update() -> int:
 
     def rollback() -> None:
         log(f"→ 回滚到 {old_head[:12]}")
+        # 先切回原分支再 reset：BRANCH 模式失败时若停在目标分支上直接 reset，
+        # 会把目标分支的 ref 拽回旧提交、破坏该分支。
+        if orig_branch and orig_branch != "HEAD" and git("rev-parse", "--abbrev-ref", "HEAD").stdout.strip() != orig_branch:
+            git("checkout", "-q", orig_branch)
         git("reset", "--hard", old_head)
         if dirty:
             git("stash", "pop")
@@ -171,6 +187,14 @@ def update() -> int:
         return 1
 
     log(f"✓ 自更新完成：{old_head[:12]} → {new_head[:12]}")
+    # 成功路径同样恢复 pre-update stash（此前静默留在 stash 里，用户未提交
+    # 的改动被遗忘）。pop 冲突时保留 stash 并提示，绝不丢数据。
+    if dirty:
+        pop = git("stash", "pop")
+        if pop.returncode == 0:
+            log("✓ 已恢复更新前的未提交改动（stash pop）")
+        else:
+            log("⚠ stash pop 有冲突，未提交改动保留在 stash 中，请手动 git stash pop 处理。")
     return 0
 
 

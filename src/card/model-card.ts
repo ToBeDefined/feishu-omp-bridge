@@ -97,8 +97,13 @@ export function modelSelectCard(
   current: string | undefined,
   models: ModelInfo[],
 ): object {
-  const currentId = current?.split('/')[1] ?? '';
   const sorted = [...models].sort((a, b) => a.selector.localeCompare(b.selector));
+  // options 的 value 是完整 selector（provider/model）。用半段 id 永远匹配
+  // 不上任何 option —— 预选会静默落到 sorted[0]，用户看到错误的"当前模型"。
+  const initial =
+    current && sorted.some((m) => m.selector === current)
+      ? current
+      : sorted[0]?.selector;
   const options = sorted.map((m) => {
     const label = m.name && m.name !== m.selector ? `${m.selector} (${m.name})` : m.selector;
     return { text: { tag: 'plain_text', content: label }, value: m.selector };
@@ -122,8 +127,7 @@ export function modelSelectCard(
             {
               tag: 'select_static',
               name: 'model_selector',
-              initial_option: currentId || sorted[0]?.selector,
-              options,
+              initial_option: initial,
             },
             {
               tag: 'column_set',

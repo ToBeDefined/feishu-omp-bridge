@@ -1,4 +1,4 @@
-import { mkdir, readdir, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LarkChannel, ResourceDescriptor } from '@larksuiteoapi/node-sdk';
 import { paths } from '../config/paths';
@@ -69,7 +69,17 @@ export class MediaCache {
       params: { type: downloadType },
       path: { message_id: messageId, file_key: r.fileKey },
     });
-    await result.writeFile(path);
+    // Write to a .part temp then rename: a mid-download network failure
+    // used to leave a truncated file on disk that every later resolve
+    // treated as a cache hit — corrupted images/audio served forever.
+    const tmpPath = `${path}.part-${process.pid}`;
+    try {
+      await result.writeFile(tmpPath);
+      await rename(tmpPath, path);
+    } catch (err) {
+      await rm(tmpPath, { force: true }).catch(() => {});
+      throw err;
+    }
 
     const size = await stat(path).then((s) => s.size).catch(() => 0);
     log.info('media', 'downloaded', { path, size });

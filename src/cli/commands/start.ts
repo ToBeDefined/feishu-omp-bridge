@@ -227,7 +227,11 @@ export async function runStart(opts: StartOptions): Promise<void> {
   // Startup notification: after a (re)start the bot is back online — tell
   // every chat with a persisted session so the user isn't left guessing.
   // Best-effort; failures (chat gone, no permission) are logged, never fatal.
-  for (const chatId of sessions.chats()) {
+  // Only real chat ids are valid receive_ids. Session store keys are scopes:
+  // cloud-doc comments use `doc:<fileToken>` and topic chats use
+  // `chatId:threadId` — sending to those fails every boot (N dead API calls).
+  const notifyTargets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id));
+  for (const chatId of notifyTargets) {
     try {
       await bridge.channel.send(
         chatId,

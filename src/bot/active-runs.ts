@@ -26,6 +26,23 @@ export class ActiveRuns {
   }
 
   /**
+   * Whether any run is active for this chat across scopes: the bare chat
+   * id (p2p / plain group) or any topic scope `${chatId}:${threadId}`.
+   * The scheduler stores tasks by bare chat id, so its busy-check must
+   * cover topic runs too — otherwise a scheduled prompt fires while the
+   * user's run in a topic of the same chat is still going, running two
+   * agents against the same OMP session.
+   */
+  hasAnyForChat(chatId: string): boolean {
+    if (this.handles.has(chatId)) return true;
+    const prefix = `${chatId}:`;
+    for (const key of this.handles.keys()) {
+      if (key.startsWith(prefix)) return true;
+    }
+    return false;
+  }
+
+  /**
    * Interrupt the current run for this chat, if any. Returns true if an
    * interrupt was issued. Fires stop() fire-and-forget — the old run's
    * generator exits on its own as the subprocess dies.

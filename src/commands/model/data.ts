@@ -100,6 +100,6 @@ export async function loadModelData(cfg: AppConfig, force: boolean): Promise<Mod
   }
   const [list, commons] = await Promise.all([listOmpModels(cfg), commonOmpModels(cfg)]);
   const fresh: ModelsCache = { fetchedAt: Date.now(), list, commons };
-  if (!force) await saveModelsCache(fresh);
+  await saveModelsCache(fresh);
   return fresh;
 }

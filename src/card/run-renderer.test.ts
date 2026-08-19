@@ -6,15 +6,10 @@ function tool(id: number): ToolEntry {
   return { id: `t${id}`, name: 'Bash', input: { command: `cmd ${id}` }, status: 'done', output: 'ok' };
 }
 
-function text(id: number): { kind: 'text'; content: string; streaming: boolean } {
-  return { kind: 'text', content: `text block ${id}`, streaming: false };
-}
-
-/** Build a long-running-style state: many tools interleaved with text. */
 function longRunState(count: number, terminal: RunState['terminal'] = 'running'): RunState {
   const blocks: RunState['blocks'] = [];
   for (let i = 0; i < count; i++) {
-    blocks.push(text(i));
+    blocks.push({ kind: 'text', content: `text block ${i}`, streaming: false });
     blocks.push({ kind: 'tool', tool: tool(i) });
   }
   return {
@@ -26,39 +21,77 @@ function longRunState(count: number, terminal: RunState['terminal'] = 'running')
   };
 }
 
-function elementCount(card: object): number {
-  const body = (card as { body: { elements: unknown[] } }).body;
-  return body.elements.length;
+function cardElements(card: object): unknown[] {
+  if (!('body' in card)) throw new Error('card has no body');
+  const body = card.body;
+  if (typeof body !== 'object' || body === null || !('elements' in body)) {
+    throw new Error('card body has no elements');
+  }
+  if (!Array.isArray(body.elements)) throw new Error('card body elements is not an array');
+  return body.elements;
 }
 
-describe('renderCard element budget', () => {
-  it('collapses many tools into a single summary panel (regression: 60+ tools once 400\'d the card with ErrCode 11310)', () => {
-    const card = renderCard(longRunState(60));
-    // text blocks (~60) + 1 collapsed summary + 1 latest tool + footer + stop
-    // — must stay far below Feishu's element limit instead of growing linearly.
-    expect(elementCount(card)).toBeLessThan(100);
-    // The collapse path must produce exactly one collapsed summary panel for
-    // the historical tools (not 60 individual tool panels).
-    const body = (card as { body: { elements: Array<{ tag: string }> } }).body;
-    const panels = body.elements.filter((e) => e.tag === 'collapsible_panel');
-    expect(panels.length).toBe(2); // summary + latest tool
-  });
+function countByTag(elements: unknown[], tag: string): number {
+  return elements.filter(
+    (e) => typeof e === 'object' && e !== null && 'tag' in e && e.tag === tag,
+  ).length;
+}
 
-  it('keeps per-tool panels when only a couple of tools ran', () => {
-    const state = longRunState(1);
-    const card = renderCard(state);
-    const body = (card as { body: { elements: Array<{ tag: string }> } }).body;
-    const panels = body.elements.filter((e) => e.tag === 'collapsible_panel');
-    expect(panels.length).toBe(1); // single tool, rendered directly
+function isNote(e: unknown): boolean {
+  return typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'note';
+}
+
+/** Longest markdown content starting with the given prefix, if any. */
+function longMarkdown(elements: unknown[], prefix: string): string | undefined {
+  return elements.reduce<string | undefined>((acc, e) => {
+    if (acc !== undefined) return acc;
+    if (typeof e !== 'object' || e === null || !('tag' in e)) return acc;
+    if (e.tag !== 'markdown' || !('content' in e)) return acc;
+    const c = e.content;
+    return typeof c === 'string' && c.startsWith(prefix) ? c : acc;
+  }, undefined);
+}
+
+describe('renderCard', () => {
+  it('renders every tool as its own expandable panel (no collapse — pagination bounds the count)', () => {
+    const card = renderCard(longRunState(8));
+    const elements = cardElements(card);
+    expect(countByTag(elements, 'collapsible_panel')).toBe(8);
   });
 
   it('truncates an oversized text block to stay under the per-element limit', () => {
     const state = longRunState(0);
     state.blocks.push({ kind: 'text', content: 'x'.repeat(9000), streaming: false });
-    const card = renderCard(state);
-    const body = (card as { body: { elements: Array<{ tag: string; content?: string }> } }).body;
-    const md = body.elements.find((e) => e.tag === 'markdown' && e.content?.startsWith('xxx'));
-    expect(md?.content?.length).toBeLessThan(8100);
-    expect(md?.content?.endsWith('…')).toBe(true);
+    const elements = cardElements(renderCard(state));
+    const content = longMarkdown(elements, 'xxx');
+    expect(content).toBeDefined();
+    expect(content!.length).toBeLessThan(8100);
+    expect(content!.endsWith('…')).toBe(true);
+  });
+
+  it('renders page notes (top and bottom) for the pagination flow', () => {
+    const state = longRunState(0);
+    state.blocks.push({ kind: 'text', content: 'hello', streaming: false });
+    const card = renderCard(
+      { ...state, terminal: 'done' },
+      {
+        topNote: '⬆️ 接上一条消息',
+        bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
+      },
+    );
+    const elements = cardElements(card);
+    expect(countByTag(elements, 'note')).toBe(2);
+    expect(elements[0]).toSatisfy(isNote); // top note is first
+    expect(elements[elements.length - 1]).toSatisfy(isNote); // bottom note is last
+  });
+
+  it('expands only the latest tool panel while running', () => {
+    const elements = cardElements(renderCard(longRunState(3)));
+    const panels = elements.filter(
+      (e) => typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'collapsible_panel',
+    );
+    expect(panels[2]).toMatchObject({ expanded: true });
+    expect(panels[0]).toMatchObject({ expanded: false });
+    expect(panels[1]).toMatchObject({ expanded: false });
   });
 });

@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { stat } from 'node:fs/promises';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
-import type { AgentAdapter, AgentUiRequest } from '../agent/types';
+import type { AgentAdapter, AgentEvent, AgentUiRequest } from '../agent/types';
 import type { ActiveRuns, RunHandle } from './active-runs';
 import { createFeishuHostIntegration } from './feishu-host';
 import { sendManagedCard, updateManagedCard } from '../card/managed';
@@ -224,19 +224,17 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   try {
     if (replyMode === 'card') {
-      await channel.stream(
+      await streamCardPages(
+        channel,
         chatId,
-        {
-          card: {
-            initial: renderCard(initialState),
-            producer: async (ctrl) => {
-              await processAgentStream(handle, sessions, scope, cwd, idleTimeoutMs, async (state) => {
-                await ctrl.update(renderCard(filterForPrefs(state)));
-              }, uiHooks);
-            },
-          },
-        },
         sendOpts,
+        handle,
+        sessions,
+        scope,
+        cwd,
+        idleTimeoutMs,
+        uiHooks,
+        filterForPrefs,
       );
     } else if (replyMode === 'markdown') {
       await channel.stream(
@@ -276,9 +274,177 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 }
 
 /**
+ * Cross-page state for driving the agent's event stream. Card reply mode
+ * paginates (a single card can't hold an unbounded number of tool panels),
+ * so the event iterator, accumulated RunState, and idle watchdog must
+ * survive across pages. Markdown/text modes use it as a single page.
+ */
+interface StreamSession {
+  state: RunState;
+  iter: AsyncIterator<AgentEvent>;
+  idleFired: boolean;
+  timer: NodeJS.Timeout | undefined;
+  inFlightTools: Set<string>;
+  armOrPauseIdle: () => void;
+  /** True once events are exhausted or a terminal state was reached. */
+  done: boolean;
+}
+
+function createStreamSession(handle: RunHandle, idleTimeoutMs: number | undefined): StreamSession {
+  const session: StreamSession = {
+    state: initialState,
+    iter: handle.run.events[Symbol.asyncIterator](),
+    idleFired: false,
+    timer: undefined,
+    inFlightTools: new Set(),
+    armOrPauseIdle: () => {},
+    done: false,
+  };
+  // Idle watchdog: OMP going silent for `idleTimeoutMs` is treated as
+  // "presumed hung", we stop() and surface a timeout marker on the card.
+  // Paused while a tool or UI request is in flight (long-running lark-cli
+  // OAuth, native UI prompts), re-armed when the in-flight set drains.
+  session.armOrPauseIdle = (): void => {
+    if (!idleTimeoutMs) return;
+    clearTimeout(session.timer);
+    session.timer = undefined;
+    if (session.inFlightTools.size > 0 || handle.pendingUiRequests.size > 0) return;
+    session.timer = setTimeout(() => {
+      session.idleFired = true;
+      handle.interrupted = true;
+      log.warn('agent', 'idle-timeout', { idleTimeoutMs });
+      void handle.run.stop().catch(() => {
+        /* stop errors are non-fatal */
+      });
+    }, idleTimeoutMs);
+  };
+  handle.onUiSettled = session.armOrPauseIdle;
+  session.armOrPauseIdle();
+  return session;
+}
+
+/**
+ * Drain events into the session's state until the stream ends, a terminal
+ * state is reached, or `onState` returns false (page overflow — the caller
+ * paginates and calls again). `onState` sees every reduced state and may
+ * flush it.
+ */
+async function streamEvents(
+  session: StreamSession,
+  handle: RunHandle,
+  sessions: SessionStore,
+  scope: string,
+  cwd: string,
+  hooks: AgentStreamHooks | undefined,
+  onState: (state: RunState) => Promise<boolean>,
+): Promise<void> {
+  while (!session.done) {
+    const { done, value } = await session.iter.next();
+    if (done) {
+      session.done = true;
+      return;
+    }
+    const evt = value;
+    if (handle.interrupted) {
+      session.done = true;
+      return;
+    }
+
+    // Track tool/UI flight before re-arming the idle timer so the arm step
+    // sees the correct set size.
+    if (evt.type === 'tool_use') {
+      session.inFlightTools.add(evt.id);
+      log.info('agent', 'tool-in-flight', {
+        tool: evt.name,
+        inFlight: session.inFlightTools.size,
+      });
+    } else if (evt.type === 'tool_result') {
+      session.inFlightTools.delete(evt.id);
+      log.info('agent', 'tool-done', { inFlight: session.inFlightTools.size });
+    } else if (evt.type === 'ui_request') {
+      handle.pendingUiRequests.add(evt.request.id);
+      log.info('agent', 'ui-in-flight', {
+        method: evt.request.method,
+        inFlight: handle.pendingUiRequests.size,
+      });
+    } else if (evt.type === 'ui_cancel') {
+      handle.pendingUiRequests.delete(evt.targetId);
+      log.info('agent', 'ui-cancelled', { inFlight: handle.pendingUiRequests.size });
+    }
+    session.armOrPauseIdle();
+
+    if (evt.type === 'system') {
+      if (evt.sessionId) {
+        const effectiveCwd = evt.cwd ?? cwd;
+        sessions.set(scope, evt.sessionId, effectiveCwd);
+        log.info('session', 'set', { sessionId: evt.sessionId });
+      }
+      continue;
+    }
+    if (evt.type === 'usage') {
+      if (evt.costUsd !== undefined) {
+        log.info('agent', 'usage', { costUsd: Number(evt.costUsd.toFixed(4)) });
+      }
+      continue;
+    }
+    if (evt.type === 'ui_request') {
+      await hooks?.onUiRequest(evt.request);
+    } else if (evt.type === 'ui_cancel') {
+      await hooks?.onUiCancel(evt.targetId);
+    }
+
+    session.state = reduce(session.state, evt);
+    const keepGoing = await onState(session.state);
+    if (!keepGoing) return; // overflow — session.done stays false, caller paginates
+    // Stop as soon as we have a terminal state. Some OMP RPC runs may leave
+    // stdout open briefly after agent_end, which would leave the iterator
+    // waiting forever otherwise.
+    if (session.state.terminal !== 'running') {
+      session.done = true;
+      return;
+    }
+  }
+}
+
+/** Reap the OMP subprocess after the stream ends (shared by all modes). */
+async function reapRun(handle: RunHandle): Promise<void> {
+  if (handle.interrupted) {
+    // Interrupted (user /stop, idle watchdog, disconnect): stop() was already
+    // fire-and-forgotten by whoever set handle.interrupted; this awaits it.
+    await handle.run.stop();
+  } else {
+    // Natural done: agent_end can arrive before OMP has fully closed stdout.
+    // Wait it out so the run exits with code 0; SIGTERM only as a safety net.
+    const exited = await handle.run.waitForExit(POST_DONE_EXIT_GRACE_MS);
+    if (!exited) {
+      log.warn('agent', 'post-done-timeout', { graceMs: POST_DONE_EXIT_GRACE_MS });
+      await handle.run.stop();
+    }
+  }
+}
+
+/** Compute the final (non-running) state, preferring a real terminal. */
+function finalizeSessionState(
+  session: StreamSession,
+  handle: RunHandle,
+  idleTimeoutMs: number | undefined,
+): RunState {
+  let state = session.state;
+  if (state.terminal !== 'running') return state;
+  if (session.idleFired) {
+    state = markIdleTimeout(state, Math.round(idleTimeoutMs! / 60_000));
+  } else if (handle.interrupted) {
+    state = markInterrupted(state);
+  } else {
+    state = finalizeIfRunning(state);
+  }
+  return state;
+}
+
+/**
  * Drive the agent's event stream into a stateful RunState, calling `flush`
- * on every state transition. Used by both card and markdown reply modes —
- * the only difference between the two is what `flush` does with the state.
+ * on every state transition. Single-page — used by markdown and text modes
+ * (card mode paginates via streamCardPages).
  */
 async function processAgentStream(
   handle: RunHandle,
@@ -289,132 +455,123 @@ async function processAgentStream(
   flush: (state: RunState) => Promise<void>,
   hooks?: AgentStreamHooks,
 ): Promise<void> {
-  let state: RunState = initialState;
-
-  // Idle watchdog: OMP going silent for `idleTimeoutMs` is treated as
-  // "presumed hung", we stop() and surface a timeout marker on the card.
-  //
-  // BUT — OMP can legitimately be silent for a long time when it's
-  // waiting on a long-running tool call (e.g. `lark-cli` printing an
-  // OAuth URL and blocking until the user clicks authorize) or on an OMP
-  // native UI prompt that the user must answer from a Feishu card.
-  // Pause the watchdog while either a tool or UI request is in flight.
-  //
-  // The watchdog re-arms when:
-  //  - a tool_result drains the in-flight set to zero, OR
-  //  - any non-tool event arrives while the set is empty.
-  let idleFired = false;
-  let timer: NodeJS.Timeout | undefined;
-  const inFlightTools = new Set<string>();
-  const armOrPauseIdle = (): void => {
-    if (!idleTimeoutMs) return;
-    if (timer) clearTimeout(timer);
-    timer = undefined;
-    if (inFlightTools.size > 0 || handle.pendingUiRequests.size > 0) return;
-    timer = setTimeout(() => {
-      idleFired = true;
-      handle.interrupted = true;
-      log.warn('agent', 'idle-timeout', { scope, idleTimeoutMs });
-      void handle.run.stop().catch(() => {
-        /* stop errors are non-fatal */
-      });
-    }, idleTimeoutMs);
-  };
-  handle.onUiSettled = armOrPauseIdle;
-  armOrPauseIdle();
-
+  const session = createStreamSession(handle, idleTimeoutMs);
   try {
-    for await (const evt of handle.run.events) {
-      if (handle.interrupted) break;
-
-      // Track tool/UI flight before re-arming the idle timer so the arm step
-      // sees the correct set size. tool_use/ui_request open a window;
-      // tool_result/ui response/cancel closes it.
-      if (evt.type === 'tool_use') {
-        inFlightTools.add(evt.id);
-        log.info('agent', 'tool-in-flight', {
-          tool: evt.name,
-          inFlight: inFlightTools.size,
-        });
-      } else if (evt.type === 'tool_result') {
-        inFlightTools.delete(evt.id);
-        log.info('agent', 'tool-done', { inFlight: inFlightTools.size });
-      } else if (evt.type === 'ui_request') {
-        handle.pendingUiRequests.add(evt.request.id);
-        log.info('agent', 'ui-in-flight', { method: evt.request.method, inFlight: handle.pendingUiRequests.size });
-      } else if (evt.type === 'ui_cancel') {
-        handle.pendingUiRequests.delete(evt.targetId);
-        log.info('agent', 'ui-cancelled', { inFlight: handle.pendingUiRequests.size });
-      }
-      armOrPauseIdle();
-
-      if (evt.type === 'system') {
-        if (evt.sessionId) {
-          const effectiveCwd = evt.cwd ?? cwd;
-          sessions.set(scope, evt.sessionId, effectiveCwd);
-          log.info('session', 'set', { sessionId: evt.sessionId });
-        }
-        continue;
-      }
-      if (evt.type === 'usage') {
-        if (evt.costUsd !== undefined) {
-          log.info('agent', 'usage', { costUsd: Number(evt.costUsd.toFixed(4)) });
-        }
-        continue;
-      }
-      if (evt.type === 'ui_request') {
-        await hooks?.onUiRequest(evt.request);
-      } else if (evt.type === 'ui_cancel') {
-        await hooks?.onUiCancel(evt.targetId);
-      }
-
-      const prevTerminal = state.terminal;
-      const prevFooter = state.footer;
-      state = reduce(state, evt);
-      if (state.footer !== prevFooter || state.terminal !== prevTerminal) {
-        log.info('card', 'transition', { footer: state.footer, terminal: state.terminal });
-      }
+    await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
       await flush(state);
-      // Stop iterating as soon as we have a terminal state. Some OMP
-      // RPC runs may leave stdout open briefly after agent_end, which
-      // would leave the for-await waiting forever otherwise.
-      if (state.terminal !== 'running') break;
-    }
+      return true;
+    });
   } finally {
-    if (handle.onUiSettled === armOrPauseIdle) handle.onUiSettled = undefined;
-    if (timer) clearTimeout(timer);
+    if (handle.onUiSettled === session.armOrPauseIdle) handle.onUiSettled = undefined;
+    clearTimeout(session.timer);
   }
-
   // If state already reached a terminal event (done/error/etc.) before the
   // watchdog or interrupt could land, don't clobber it — that real terminal
-  // wins. This avoids "OMP finished but flush was slow → timer fired
-  // mid-flush → user sees 'idle_timeout' on a successful run".
-  if (state.terminal === 'running') {
-    if (idleFired) {
-      state = markIdleTimeout(state, Math.round(idleTimeoutMs! / 60_000));
-    } else if (handle.interrupted) {
-      state = markInterrupted(state);
-    } else {
-      state = finalizeIfRunning(state);
-    }
-  }
+  // wins.
+  const state = finalizeSessionState(session, handle, idleTimeoutMs);
   log.info('card', 'final', { terminal: state.terminal, interrupted: handle.interrupted });
   await flush(state);
-  // Reap the subprocess. Two regimes:
-  //  - Interrupted (user /stop, idle watchdog, disconnect): stop() was already
-  //    fire-and-forgotten by whoever set handle.interrupted; this awaits it.
-  //  - Natural done: agent_end can arrive before OMP has fully closed stdout.
-  //    Wait it out so the run exits with
-  //    code 0; only SIGTERM as a hung-process safety net.
-  if (handle.interrupted) {
-    await handle.run.stop();
-  } else {
-    const exited = await handle.run.waitForExit(POST_DONE_EXIT_GRACE_MS);
-    if (!exited) {
-      log.warn('agent', 'post-done-timeout', { graceMs: POST_DONE_EXIT_GRACE_MS });
-      await handle.run.stop();
+  await reapRun(handle);
+}
+
+/**
+ * Card reply mode pagination: drive the stream across multiple messages.
+ * A single card can't hold an unbounded number of tool panels (Feishu
+ * rejects cards over ~64KB, ErrCode 11310), so when a page's card JSON
+ * approaches CARD_SIZE_BUDGET we finalize it with a "continues" note and
+ * start the next page in a fresh message. The event iterator, accumulated
+ * RunState, and idle watchdog all survive across pages.
+ */
+async function streamCardPages(
+  channel: LarkChannel,
+  chatId: string,
+  sendOpts: object,
+  handle: RunHandle,
+  sessions: SessionStore,
+  scope: string,
+  cwd: string,
+  idleTimeoutMs: number | undefined,
+  hooks: AgentStreamHooks | undefined,
+  filter: (state: RunState) => RunState,
+): Promise<void> {
+  const session = createStreamSession(handle, idleTimeoutMs);
+  let pageIndex = 0;
+  try {
+    while (!session.done) {
+      // Each page starts from a clean slate: text/tool blocks and reasoning
+      // are reset so later pages render only NEW content — re-rendering the
+      // accumulated state would immediately overflow again.
+      session.state = { ...session.state, blocks: [], reasoning: { content: '', active: false } };
+      const overflow = await runCardPage(
+        channel, chatId, sendOpts, session, handle, sessions, scope, cwd,
+        idleTimeoutMs, hooks, filter, pageIndex,
+      );
+      if (!overflow) break;
+      pageIndex += 1;
     }
+  } finally {
+    if (handle.onUiSettled === session.armOrPauseIdle) handle.onUiSettled = undefined;
+    clearTimeout(session.timer);
   }
+}
+
+/** Run one card page; returns true if it overflowed (another page follows). */
+async function runCardPage(
+  channel: LarkChannel,
+  chatId: string,
+  sendOpts: object,
+  session: StreamSession,
+  handle: RunHandle,
+  sessions: SessionStore,
+  scope: string,
+  cwd: string,
+  idleTimeoutMs: number | undefined,
+  hooks: AgentStreamHooks | undefined,
+  filter: (state: RunState) => RunState,
+  pageIndex: number,
+): Promise<boolean> {
+  let overflow = false;
+  await channel.stream(
+    chatId,
+    {
+      card: {
+        initial: renderCard(
+          filter(session.state),
+          pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
+        ),
+        producer: async (ctrl) => {
+          await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
+            const card = renderCard(filter(state));
+            if (JSON.stringify(card).length > CARD_SIZE_BUDGET) {
+              overflow = true;
+              // Finalize this page as a terminal card with a "continues"
+              // note; the run itself is still going (next page picks it up).
+              await ctrl.update(
+                renderCard(filter({ ...state, terminal: 'done' }), {
+                  bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
+                }),
+              );
+              return false;
+            }
+            await ctrl.update(card);
+            return true;
+          });
+          if (!overflow) {
+            // Natural end of the whole stream: finalize + reap on this page.
+            const final = finalizeSessionState(session, handle, idleTimeoutMs);
+            log.info('card', 'final', {
+              terminal: final.terminal,
+              interrupted: handle.interrupted,
+            });
+            await ctrl.update(renderCard(filter(final)));
+            await reapRun(handle);
+          }
+        },
+      },
+    },
+    sendOpts,
+  );
+  return overflow;
 }
 
 /**
@@ -424,6 +581,13 @@ async function processAgentStream(
  * a stall (the card has already rendered terminal state by this point).
  */
 const POST_DONE_EXIT_GRACE_MS = 2000;
+/**
+ * Card JSON size budget per page. Feishu rejects cards over ~64KB (ErrCode
+ * 11310 "element exceeds the limit"); we paginate at 48KB to leave headroom
+ * for text/button/footer and JSON key overhead that a simple
+ * JSON.stringify-length check undercounts.
+ */
+const CARD_SIZE_BUDGET = 48 * 1024;
 
 /**
  * Run a one-shot agent prompt for a scheduled task and stream the result to
@@ -474,19 +638,17 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
 
   try {
     if (replyMode === 'card') {
-      await channel.stream(
+      await streamCardPages(
+        channel,
         chatId,
-        {
-          card: {
-            initial: renderCard(initialState),
-            producer: async (ctrl) => {
-              await processAgentStream(handle, sessions, scope, cwd, getRunIdleTimeoutMs(controls.cfg), async (state) => {
-                await ctrl.update(renderCard(filterToolBlocks(state, controls)));
-              });
-            },
-          },
-        },
         {},
+        handle,
+        sessions,
+        scope,
+        cwd,
+        getRunIdleTimeoutMs(controls.cfg),
+        undefined,
+        (state) => filterToolBlocks(state, controls),
       );
     } else {
       let finalState: RunState = initialState;

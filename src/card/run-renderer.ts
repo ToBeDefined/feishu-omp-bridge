@@ -2,7 +2,6 @@ import type { Block, FooterStatus, RunState, ToolEntry, UiState } from './run-st
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
 const REASONING_MAX = 1500;
-const COLLAPSE_TOOL_THRESHOLD = 3;
 /** Single markdown element cap for agent body text (feishu per-element limit ~30KB; keep well under). */
 const TEXT_BLOCK_MAX = 8000;
 
@@ -16,8 +15,18 @@ interface TextGroup {
 }
 type Group = ToolGroup | TextGroup;
 
-export function renderCard(state: RunState): object {
+/** Per-page markers for the card pagination flow (see batch.ts streamCardPages). */
+export interface CardPageOptions {
+  /** Note rendered at the top of the card ("continues previous message"). */
+  topNote?: string;
+  /** Note rendered at the bottom ("continues in the next message"). */
+  bottomNote?: string;
+}
+
+export function renderCard(state: RunState, opts?: CardPageOptions): object {
   const elements: object[] = [];
+
+  if (opts?.topNote) elements.push(noteElement(opts.topNote));
 
   if (state.reasoning.content) {
     elements.push(reasoningPanel(state.reasoning.content, state.reasoning.active));
@@ -26,38 +35,21 @@ export function renderCard(state: RunState): object {
   const ui = uiContextPanel(state.ui);
   if (ui) elements.push(ui);
 
-  const groups = [...groupBlocks(state.blocks)];
-  const finalized = state.terminal !== 'running';
-  const totalTools = groups.reduce(
-    (n, g) => n + (g.kind === 'tools' ? g.tools.length : 0),
-    0,
-  );
-
-  if (totalTools >= COLLAPSE_TOOL_THRESHOLD) {
-    // Global tool collapse: render text blocks in order, then ALL tools as a
-    // single collapsed summary (latest tool visible while running). The old
-    // per-group collapse let the element count grow linearly with tool count
-    // — long tasks (60+ tools split across many small groups) blew past
-    // Feishu's element limit (ErrCode 11310) and 400'd the whole card stream,
-    // freezing the card on a mid-run state.
-    const allTools = groups.flatMap((g) => (g.kind === 'tools' ? g.tools : []));
-    for (const group of groups) {
-      if (group.kind === 'text' && group.content.trim()) {
+  // Every tool gets its own expandable panel — body (input+output) visible.
+  // The caller (batch.ts) paginates the card stream by size budget, so the
+  // element count is bounded per page and no collapse is needed here.
+  const totalTools = state.blocks.filter((b) => b.kind === 'tool').length;
+  let toolIdx = 0;
+  for (const group of groupBlocks(state.blocks)) {
+    if (group.kind === 'text') {
+      if (group.content.trim()) {
         elements.push(markdown(truncate(group.content, TEXT_BLOCK_MAX)));
       }
-    }
-    const prior = finalized ? allTools : allTools.slice(0, -1);
-    const latest = finalized ? undefined : allTools[allTools.length - 1];
-    if (prior.length > 0) elements.push(collapsedToolSummary(prior, finalized));
-    if (latest) elements.push(toolPanel(latest, true));
-  } else {
-    for (const group of groups) {
-      if (group.kind === 'text') {
-        if (group.content.trim()) {
-          elements.push(markdown(truncate(group.content, TEXT_BLOCK_MAX)));
-        }
-      } else {
-        elements.push(...renderToolGroup(group.tools, finalized));
+    } else {
+      for (const tool of group.tools) {
+        const isLatest = state.terminal === 'running' && toolIdx === totalTools - 1;
+        elements.push(toolPanel(tool, isLatest));
+        toolIdx += 1;
       }
     }
   }
@@ -77,6 +69,8 @@ export function renderCard(state: RunState): object {
     if (state.footer) elements.push(footerStatus(state.footer));
     elements.push(stopButton());
   }
+
+  if (opts?.bottomNote) elements.push(noteElement(opts.bottomNote));
 
   return {
     schema: '2.0',
@@ -104,23 +98,6 @@ function* groupBlocks(blocks: Block[]): Generator<Group> {
   if (toolBuf.length > 0) yield { kind: 'tools', tools: toolBuf };
 }
 
-function renderToolGroup(tools: ToolEntry[], finalized: boolean): object[] {
-  if (tools.length === 0) return [];
-  if (tools.length < COLLAPSE_TOOL_THRESHOLD) {
-    return tools.map((t) => toolPanel(t, false));
-  }
-  if (finalized) {
-    return [collapsedToolSummary(tools, true)];
-  }
-  // Running: collapse prior tools, keep latest visible.
-  const prior = tools.slice(0, -1);
-  const latest = tools[tools.length - 1];
-  const out: object[] = [];
-  if (prior.length > 0) out.push(collapsedToolSummary(prior, false));
-  if (latest) out.push(toolPanel(latest, true));
-  return out;
-}
-
 function reasoningPanel(content: string, active: boolean): object {
   const title = active ? '🧠 **思考中**' : '🧠 **思考完成，点击查看**';
   return collapsiblePanel({
@@ -138,33 +115,6 @@ function toolPanel(tool: ToolEntry, expanded: boolean): object {
     border: tool.status === 'error' ? 'red' : 'grey',
     body: toolBodyMd(tool) || '_无输出_',
   });
-}
-
-/**
- * Render N tool calls as a single collapsed panel. **Body content is dropped**
- * — only the per-tool header line (icon + name + short summary) is kept.
- *
- * Why no bodies: with full input/output panels nested, the serialized JSON
- * can easily exceed Feishu's per-element size limit (~30KB), causing 400
- * errors that abort the entire card stream. Tool details are still in the
- * file log; users who really need them can `/doctor` to inspect.
- *
- * The latest-running tool, when applicable, is rendered separately via
- * `toolPanel(latest, true)` so live observation isn't sacrificed.
- */
-function collapsedToolSummary(tools: ToolEntry[], finalized: boolean): object {
-  const suffix = finalized ? '（已结束）' : '';
-  const title = `☕ **${tools.length} 个工具调用${suffix}**`;
-  const headerList = tools.map((t) => `- ${toolHeaderText(t)}`).join('\n');
-  return {
-    tag: 'collapsible_panel',
-    expanded: false,
-    header: panelHeader(title),
-    border: { color: 'blue', corner_radius: '5px' },
-    vertical_spacing: '8px',
-    padding: '8px 8px 8px 8px',
-    elements: [{ tag: 'markdown', content: headerList, text_size: 'notation' }],
-  };
 }
 
 interface PanelOpts {
@@ -202,6 +152,11 @@ function markdown(content: string): object {
 
 function noteMd(content: string): object {
   return { tag: 'markdown', content, text_size: 'notation' };
+}
+
+/** A card `note` element (small grey caption, non-interactive). */
+function noteElement(text: string): object {
+  return { tag: 'note', elements: [{ tag: 'plain_text', content: text }] };
 }
 
 function stopButton(): object {

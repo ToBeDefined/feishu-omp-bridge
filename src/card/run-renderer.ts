@@ -3,6 +3,8 @@ import { toolBodyMd, toolHeaderText } from './tool-render';
 
 const REASONING_MAX = 1500;
 const COLLAPSE_TOOL_THRESHOLD = 3;
+/** Single markdown element cap for agent body text (feishu per-element limit ~30KB; keep well under). */
+const TEXT_BLOCK_MAX = 8000;
 
 interface ToolGroup {
   kind: 'tools';
@@ -24,13 +26,39 @@ export function renderCard(state: RunState): object {
   const ui = uiContextPanel(state.ui);
   if (ui) elements.push(ui);
 
-  for (const group of groupBlocks(state.blocks)) {
-    if (group.kind === 'text') {
-      if (group.content.trim()) {
-        elements.push(markdown(group.content));
+  const groups = [...groupBlocks(state.blocks)];
+  const finalized = state.terminal !== 'running';
+  const totalTools = groups.reduce(
+    (n, g) => n + (g.kind === 'tools' ? g.tools.length : 0),
+    0,
+  );
+
+  if (totalTools >= COLLAPSE_TOOL_THRESHOLD) {
+    // Global tool collapse: render text blocks in order, then ALL tools as a
+    // single collapsed summary (latest tool visible while running). The old
+    // per-group collapse let the element count grow linearly with tool count
+    // — long tasks (60+ tools split across many small groups) blew past
+    // Feishu's element limit (ErrCode 11310) and 400'd the whole card stream,
+    // freezing the card on a mid-run state.
+    const allTools = groups.flatMap((g) => (g.kind === 'tools' ? g.tools : []));
+    for (const group of groups) {
+      if (group.kind === 'text' && group.content.trim()) {
+        elements.push(markdown(truncate(group.content, TEXT_BLOCK_MAX)));
       }
-    } else {
-      elements.push(...renderToolGroup(group.tools, state.terminal !== 'running'));
+    }
+    const prior = finalized ? allTools : allTools.slice(0, -1);
+    const latest = finalized ? undefined : allTools[allTools.length - 1];
+    if (prior.length > 0) elements.push(collapsedToolSummary(prior, finalized));
+    if (latest) elements.push(toolPanel(latest, true));
+  } else {
+    for (const group of groups) {
+      if (group.kind === 'text') {
+        if (group.content.trim()) {
+          elements.push(markdown(truncate(group.content, TEXT_BLOCK_MAX)));
+        }
+      } else {
+        elements.push(...renderToolGroup(group.tools, finalized));
+      }
     }
   }
 

@@ -55,8 +55,9 @@ async function setThinking(level: string, ctx: CommandContext, current: string |
     return;
   }
   const cfg = ctx.controls.cfg;
-  cfg.preferences = { ...(cfg.preferences ?? {}), ompThinking: level };
-  await saveConfig(cfg, ctx.controls.configPath);
+  const nextPreferences = { ...(cfg.preferences ?? {}), ompThinking: level };
+  await saveConfig({ ...cfg, preferences: nextPreferences }, ctx.controls.configPath);
+  cfg.preferences = nextPreferences;
   log.info('command', 'thinking-set', {
     scope: ctx.scope,
     level,

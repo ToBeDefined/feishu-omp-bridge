@@ -36,8 +36,4 @@ export class ChatModeCache {
       return 'group';
     }
   }
-
-  invalidate(chatId: string): void {
-    this.cache.delete(chatId);
-  }
 }

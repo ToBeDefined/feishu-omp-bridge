@@ -59,15 +59,16 @@ describe('renderCard', () => {
     expect(countByTag(elements, 'collapsible_panel')).toBe(8);
   });
 
-  it('truncates an oversized text block to stay under the per-element limit', () => {
+  it('renders a long text block in full (no silent truncation — reduce splits it first)', () => {
     const state = longRunState(0);
     state.blocks.push({ kind: 'text', content: 'x'.repeat(9000), streaming: false });
     const elements = cardElements(renderCard(state));
     const content = longMarkdown(elements, 'xxx');
     expect(content).toBeDefined();
-    expect(content!.length).toBeLessThan(8100);
-    expect(content!.endsWith('…')).toBe(true);
+    // 9000 chars rendered verbatim — truncation would have dropped content.
+    expect(content!.length).toBe(9000);
   });
+
 
   it('renders page notes (top and bottom) for the pagination flow', () => {
     const state = longRunState(0);

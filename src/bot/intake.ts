@@ -133,9 +133,11 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
   });
   if (handled) {
     const cmd = msg.content.trim().split(/\s+/)[0] ?? '';
-    if (RESET_CONTEXT_COMMANDS[cmd] === true) {
+    if (handled !== 'denied' && RESET_CONTEXT_COMMANDS[cmd] === true) {
       const dropped = pending.cancel(scope);
       log.info('intake', 'command-reset', { scope, cmd, droppedPending: dropped.length });
+    } else if (handled === 'denied') {
+      log.info('intake', 'command-denied', { scope, cmd });
     } else {
       log.info('intake', 'command', { scope, cmd });
     }

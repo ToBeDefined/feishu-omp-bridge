@@ -1,5 +1,13 @@
 import type { AgentEvent, AgentUiWidget } from '../agent/types';
 
+/**
+ * Max characters per streaming text block. Long agent bodies split into
+ * multiple blocks so each rendered markdown element stays well under
+ * Feishu's per-element limit (~30KB) — the card paginator then handles the
+ * total card size. Never truncate silently: content must not be dropped.
+ */
+export const TEXT_BLOCK_SPLIT = 4000;
+
 export type ToolStatus = 'running' | 'done' | 'error';
 
 export interface ToolEntry {
@@ -55,10 +63,24 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
     case 'text': {
       const last = state.blocks[state.blocks.length - 1];
       if (last && last.kind === 'text' && last.streaming) {
-        const next: Block = { ...last, content: last.content + evt.delta };
+        const merged = last.content + evt.delta;
+        if (merged.length <= TEXT_BLOCK_SPLIT) {
+          return {
+            ...state,
+            blocks: [...state.blocks.slice(0, -1), { ...last, content: merged }],
+            reasoning: { ...state.reasoning, active: false },
+            footer: 'streaming',
+          };
+        }
+        // Block full: close it and start a fresh block with this delta. The
+        // accumulated content stays in the closed block — nothing dropped.
         return {
           ...state,
-          blocks: [...state.blocks.slice(0, -1), next],
+          blocks: [
+            ...state.blocks.slice(0, -1),
+            { ...last, streaming: false },
+            { kind: 'text', content: evt.delta, streaming: true },
+          ],
           reasoning: { ...state.reasoning, active: false },
           footer: 'streaming',
         };

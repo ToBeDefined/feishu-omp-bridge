@@ -49,7 +49,7 @@ export class OmpAdapter implements AgentAdapter {
     const args = buildOmpArgs({
       ...opts,
       sessionDir: opts.sessionDir ?? this.sessionDir,
-      thinking: this.thinking,
+      thinking: opts.thinking ?? this.thinking,
       tools: this.tools,
     });
     const child = spawn(this.binary, args, {
@@ -87,9 +87,17 @@ export class OmpAdapter implements AgentAdapter {
     });
 
     const stderrChunks: Buffer[] = [];
+    let stderrBytes = 0;
+    // Keep only the tail of stderr for the error detail — a verbose child
+    // (warning spam, progress bars) must not grow this unboundedly.
+    const STDERR_TAIL_MAX = 64 * 1024;
     let stderrBuffer = '';
     child.stderr.on('data', (chunk: Buffer) => {
       stderrChunks.push(chunk);
+      stderrBytes += chunk.length;
+      while (stderrBytes > STDERR_TAIL_MAX && stderrChunks.length > 0) {
+        stderrBytes -= stderrChunks.shift()!.length;
+      }
       stderrBuffer += chunk.toString('utf8');
       let nl = stderrBuffer.indexOf('\n');
       while (nl !== -1) {

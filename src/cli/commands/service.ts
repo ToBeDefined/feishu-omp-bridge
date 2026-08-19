@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { OmpAdapter } from '../../agent';
 import { isComplete } from '../../config/schema';
@@ -216,9 +218,15 @@ async function reportConnectAfter(
  * backoff, configurable model) — the CLI just delegates.
  */
 async function invokeScriptRepair(): Promise<void> {
-  const repo = new URL('../../..', import.meta.url).pathname;
-  // 单一实现：直接调 Python 核心（scripts/self-heal.py --repair）。
-  const script = `${repo}/scripts/self-heal.py`;
+  // Packaged: import.meta.url is <repo>/dist/cli.js, so `..` is the repo root.
+  // (The old `../../..` resolved to the repo's PARENT — silently wrong under
+  // tsup's single-file dist.) self-heal.py locates its own repo internally.
+  const repoRoot = new URL('..', import.meta.url).pathname;
+  const script = join(repoRoot, 'scripts', 'self-heal.py');
+  if (!existsSync(script)) {
+    console.warn(`⚠ 找不到自愈脚本 ${script}，跳过脚本自愈`);
+    return;
+  }
   console.log(`→ 唤起脚本自愈: ${script} --repair`);
   try {
     const child = execFile('python3', [script, '--repair'], (err) => {

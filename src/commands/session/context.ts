@@ -165,6 +165,9 @@ export async function loadSessionSummary(
     for (const name of entries) {
       if (!name.endsWith('.jsonl')) continue;
       const text = await readFile(join(paths.ompSessionsDir, name), 'utf8');
+      // Cheap prefilter before the full line-by-line parse: session files can
+      // be many MB and this loop scans ALL of them on every /ctx.
+      if (!text.includes(`"id":"${sessionId}"`)) continue;
       const scan = scanSessionFile(text);
       if (scan.meta?.id === sessionId) {
         return { lastMessage: scan.lastUserMessage, lastReply: scan.lastAssistant };

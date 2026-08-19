@@ -175,7 +175,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       }
     };
 
-    ctx.controls.cfg.preferences = {
+    const nextPreferences = {
       ...(ctx.controls.cfg.preferences ?? {}),
       messageReply,
       messageReplyMigrated: true,
@@ -185,9 +185,14 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       requireMentionInGroup,
       access: { allowedUsers, allowedChats, admins },
     };
+    const nextCfg = { ...ctx.controls.cfg, preferences: nextPreferences };
 
     try {
-      await saveConfig(ctx.controls.cfg, configPath);
+      await saveConfig(nextCfg, configPath);
+      // Only mutate the live config after the disk write succeeded — writing
+      // first would leave memory/disk split (and a lying "no changes made"
+      // card) if saveConfig throws.
+      ctx.controls.cfg.preferences = nextPreferences;
     } catch (err) {
       log.fail('command', err, { step: 'config.save' });
       await waitForSettle();

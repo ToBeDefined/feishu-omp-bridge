@@ -89,6 +89,13 @@ program
     await runServiceUnregister();
   });
 
+program
+  .command('migrate')
+  .description('Migrate legacy config paths/shape to the current layout (idempotent no-op when already migrated)')
+  .option('-c, --config <path>', 'path to config file')
+  .action(async (opts: { config?: string }) => {
+    await runMigrate(opts);
+  });
 const secrets = program
   .command('secrets')
   .description('Manage the bridge\'s encrypted secret keystore (~/.feishu-omp-bridge/secrets.enc)');

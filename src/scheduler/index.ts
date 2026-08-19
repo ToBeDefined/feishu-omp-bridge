@@ -47,6 +47,14 @@ export class Scheduler {
       const parsed = JSON.parse(text) as ScheduledTask[];
       for (const t of Array.isArray(parsed) ? parsed : []) {
         if (!t.id || !t.chatId || !t.prompt || typeof t.intervalMs !== 'number') continue;
+        // Tolerate hand-edited / half-written files: missing `enabled` must
+        // default to true, and a bogus `nextRunAt` must re-schedule rather
+        // than silently never fire again.
+        if (typeof t.enabled !== 'boolean') t.enabled = true;
+        if (typeof t.nextRunAt !== 'number' || !Number.isFinite(t.nextRunAt)) {
+          log.warn('scheduler', 'task-rescheduled', { id: t.id, reason: 'bad nextRunAt' });
+          t.nextRunAt = Date.now() + t.intervalMs;
+        }
         this.tasks.set(t.id, t);
       }
     } catch {

@@ -1,9 +1,10 @@
 import type { Block, FooterStatus, RunState, ToolEntry, UiState } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
+/** Max chars per reasoning body — reasoning is auxiliary, truncation is fine. */
 const REASONING_MAX = 1500;
-/** Single markdown element cap for agent body text (feishu per-element limit ~30KB; keep well under). */
-const TEXT_BLOCK_MAX = 8000;
+/** Cap for the OMP UI panel body (widget/status text). */
+const UI_PANEL_MAX = 2500;
 
 interface ToolGroup {
   kind: 'tools';
@@ -43,7 +44,7 @@ export function renderCard(state: RunState, opts?: CardPageOptions): object {
   for (const group of groupBlocks(state.blocks)) {
     if (group.kind === 'text') {
       if (group.content.trim()) {
-        elements.push(markdown(truncate(group.content, TEXT_BLOCK_MAX)));
+        elements.push(markdown(group.content));
       }
     } else {
       for (const tool of group.tools) {
@@ -196,7 +197,7 @@ function uiContextPanel(ui: UiState): object | undefined {
     title: '🧩 **OMP 状态 / Widget**',
     expanded: true,
     border: 'blue',
-    body: lines.join('\n\n'),
+    body: truncate(lines.join('\n\n'), UI_PANEL_MAX),
   });
 }
 

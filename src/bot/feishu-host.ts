@@ -1,5 +1,5 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import type { AgentHostTool, AgentHostUriScheme } from '../agent/types';
 import type { ActiveRuns } from './active-runs';
@@ -147,6 +147,12 @@ function sendFileTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTo
       const path = requiredString(args, 'path');
       const fileName = optionalString(args, 'fileName') ?? basename(path);
       const chatId = optionalString(args, 'chatId') ?? ctx.chatId;
+      // Feishu's upload ceiling is ~30MB; refuse earlier than OOM-ing on a
+      // GB-sized path an agent could be tricked into sending.
+      const st = await stat(path);
+      if (st.size > 30 * 1024 * 1024) {
+        throw new Error(`文件过大（${Math.round(st.size / 1024 / 1024)}MB），飞书上限约 30MB`);
+      }
       const buffer = await readFile(path);
       if (buffer.length === 0) throw new Error(`cannot send empty file: ${path}`);
       const ext = extname(path).toLowerCase();
@@ -238,7 +244,7 @@ function viewImageTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostT
       if (!IMAGE_MIME[ext]) {
         throw new Error(`not an image file (supported: png/jpg/gif/webp/bmp/tiff/ico): ${path}`);
       }
-      await readFile(path); // verify readable
+      await stat(path); // verify readable without reading the whole image
       const activeRuns = ctx.activeRuns;
       if (!activeRuns || !activeRuns.has(ctx.scope)) {
         throw new Error('no active run for this chat; cannot inject an image');

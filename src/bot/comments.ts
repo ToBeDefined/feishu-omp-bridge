@@ -22,6 +22,13 @@ export interface CommentDeps {
 // bitable, mindnote) use different APIs and are out of scope for now.
 const SUPPORTED_FILE_TYPES = new Set(['doc', 'docx', 'sheet', 'file']);
 
+/**
+ * Serialize comment runs per doc. Two @-mentions in the same doc would
+ * otherwise spawn two OMP processes resuming the SAME session JSONL —
+ * concurrent writes corrupt the session file. Skip while one is running.
+ */
+const commentInFlight = new Set<string>();
+
 const REPLY_MAX_CHARS = 2000;
 
 interface ReplyContentElement {
@@ -121,6 +128,10 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   // probably won't do filesystem work for doc replies but we keep a sane
   // default in case it does.
   const synthChatId = `doc:${evt.fileToken}`;
+  if (commentInFlight.has(synthChatId)) {
+    log.info('comment', 'skip', { reason: 'in-flight', synthChatId });
+    return;
+  }
   const cwd = workspaces.cwdFor(synthChatId) ?? homedir();
   const resumeFrom = sessions.resumeFor(synthChatId, cwd);
   log.info('comment', 'session', { synthChatId, resumeFrom: resumeFrom ?? null, cwd });
@@ -174,11 +185,8 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
     if (errorMsg) reply = `⚠️ OMP 报错：${errorMsg}`;
     if (!reply) reply = '（无回复内容）';
     if (reply.length > REPLY_MAX_CHARS) reply = `${reply.slice(0, REPLY_MAX_CHARS - 1)}…`;
-
-    await postCommentReply(channel, target, evt, reply).catch((err) => {
-      log.fail('comment', err, { step: 'postCommentReply' });
-    });
   } finally {
+    commentInFlight.delete(synthChatId);
     if (reactionAdded && ctx.targetReplyId) {
       await removeCommentReaction(
         channel,

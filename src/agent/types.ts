@@ -92,7 +92,8 @@ export interface AgentRunOptions {
    */
   sessionDir?: string;
   model?: string;
-  permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
+  /** Thinking level override; falls back to the adapter's default when unset. */
+  thinking?: string;
   /** Local image paths to pass to agents that support native image flags. */
   imagePaths?: string[];
   /**

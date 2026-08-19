@@ -90,7 +90,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   // into the scope's pending queue so OMP resumes its session and sees
   // the click as a follow-up message, with full context of what it sent.
   if (AGENT_CALLBACK_MARKER in payload) {
-    forwardToAgent(deps, payload, formValue, scope, threadId);
+    forwardToAgent(deps, payload, formValue, scope, threadId, mode);
     return;
   }
 
@@ -100,7 +100,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
   const ctx: CommandContext = {
     channel: deps.channel,
-    msg: makeFakeMsg(deps.evt, threadId),
+    msg: makeFakeMsg(deps.evt, threadId, mode),
     scope,
     chatMode: mode,
     sessions: deps.sessions,
@@ -178,6 +178,7 @@ function forwardToAgent(
   formValue: Record<string, unknown> | undefined,
   scope: string,
   threadId: string | undefined,
+  mode: 'p2p' | 'group' | 'topic',
 ): void {
   // Strip the marker so OMP only sees the meaningful fields it set.
   const { [AGENT_CALLBACK_MARKER]: _marker, ...agentPayload } = payload;
@@ -189,7 +190,7 @@ function forwardToAgent(
   const synthetic: NormalizedMessage = {
     messageId: deps.evt.messageId,
     chatId: deps.evt.chatId,
-    chatType: 'p2p',
+    chatType: mode === 'p2p' ? 'p2p' : 'group',
     threadId,
     senderId: deps.evt.operator.openId,
     senderName: deps.evt.operator.name,
@@ -244,11 +245,12 @@ function composeArgs(sub: string, payload: Record<string, unknown>): string {
 function makeFakeMsg(
   evt: CardActionEvent,
   threadId: string | undefined,
+  mode: 'p2p' | 'group' | 'topic',
 ): NormalizedMessage {
   return {
     messageId: evt.messageId,
     chatId: evt.chatId,
-    chatType: 'p2p',
+    chatType: mode === 'p2p' ? 'p2p' : 'group',
     threadId,
     senderId: evt.operator.openId,
     senderName: evt.operator.name,

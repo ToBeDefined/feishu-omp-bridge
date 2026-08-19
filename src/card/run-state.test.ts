@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { initialState, reduce } from './run-state';
+import { TEXT_BLOCK_SPLIT, initialState, reduce } from './run-state';
+
+describe('text chunking', () => {
+  it('splits a long streaming body into multiple blocks instead of dropping content', () => {
+    let state = initialState;
+    const chunk = 'a'.repeat(TEXT_BLOCK_SPLIT);
+    state = reduce(state, { type: 'text', delta: chunk });
+    state = reduce(state, { type: 'text', delta: 'tail' });
+    const texts = state.blocks.filter((b) => b.kind === 'text');
+    expect(texts.length).toBe(2);
+    expect(texts[0]).toMatchObject({ kind: 'text', content: chunk, streaming: false });
+    expect(texts[1]).toMatchObject({ kind: 'text', content: 'tail', streaming: true });
+  });
+});
 
 describe('run-state OMP UI integration', () => {
   it('pauses the footer while waiting for native UI input', () => {

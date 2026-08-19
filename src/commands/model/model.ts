@@ -105,8 +105,9 @@ async function submitModel(ctx: CommandContext, current: string | undefined): Pr
     return;
   }
   const cfg = ctx.controls.cfg;
-  cfg.preferences = { ...(cfg.preferences ?? {}), ompModel: selector };
-  await saveConfig(cfg, ctx.controls.configPath);
+  const nextPreferences = { ...(cfg.preferences ?? {}), ompModel: selector };
+  await saveConfig({ ...cfg, preferences: nextPreferences }, ctx.controls.configPath);
+  cfg.preferences = nextPreferences;
   log.info('command', 'model-set', { scope: ctx.scope, model: selector, via: 'card' });
   if (ctx.fromCardAction) {
     const formMsgId = ctx.msg.messageId;
@@ -136,8 +137,9 @@ async function resetModel(ctx: CommandContext, current: string | undefined): Pro
     await reply(ctx, '本来就没设置过模型,一直跟随 OMP 默认。');
     return;
   }
-  cfg.preferences = { ...(cfg.preferences ?? {}), ompModel: undefined };
-  await saveConfig(cfg, ctx.controls.configPath);
+  const nextPreferences = { ...(cfg.preferences ?? {}), ompModel: undefined };
+  await saveConfig({ ...cfg, preferences: nextPreferences }, ctx.controls.configPath);
+  cfg.preferences = nextPreferences;
   log.info('command', 'model-reset', { scope: ctx.scope });
   await reply(ctx, '✅ 已清除模型设置,回退 OMP 默认。下一条消息生效。');
 }
@@ -148,8 +150,9 @@ async function setModel(model: string, ctx: CommandContext, current: string | un
     return;
   }
   const cfg = ctx.controls.cfg;
-  cfg.preferences = { ...(cfg.preferences ?? {}), ompModel: model };
-  await saveConfig(cfg, ctx.controls.configPath);
+  const nextPreferences = { ...(cfg.preferences ?? {}), ompModel: model };
+  await saveConfig({ ...cfg, preferences: nextPreferences }, ctx.controls.configPath);
+  cfg.preferences = nextPreferences;
   log.info('command', 'model-set', { scope: ctx.scope, model, via: ctx.fromCardAction ? 'card' : 'text' });
   if (ctx.fromCardAction) {
     const formMsgId = ctx.msg.messageId;

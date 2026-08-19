@@ -21,6 +21,7 @@ import {
   getAgentStopGraceMs,
   getMessageReplyMode,
   getOmpModel,
+  getOmpThinking,
   getRunIdleTimeoutMs,
   getShowToolCalls,
 } from '../config/schema';
@@ -113,19 +114,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prompt = buildPrompt(batch, attachments, quotes);
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
-  let cwd = workspaces.cwdFor(scope) ?? homedir();
-  // The chat's recorded cwd may point at a deleted/renamed directory;
-  // spawning omp there fails with ENOENT. Verify it exists, falling back to
-  // $HOME and repairing the stored workspace so the next run doesn't trip
-  // the same way.
-  try {
-    const st = await stat(cwd);
-    if (!st.isDirectory()) throw new Error('not a directory');
-  } catch {
-    log.warn('session', 'cwd-missing', { staleCwd: cwd });
-    cwd = homedir();
-    workspaces.setCwd(scope, cwd);
-  }
+  const cwd = await resolveRunCwd(workspaces, scope);
   const resumeFrom = sessions.resumeFor(scope, cwd);
   if (resumeFrom) {
     log.info('session', 'resume', { sessionId: resumeFrom, cwd });
@@ -157,6 +146,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     sessionId: resumeFrom,
     cwd,
     model: runModel,
+    thinking: getOmpThinking(controls.cfg),
     imagePaths,
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     hostTools: feishuHost.tools,
@@ -406,6 +396,25 @@ async function streamEvents(
   }
 }
 
+/**
+ * Resolve a run's working directory: the chat's recorded cwd, verified to
+ * exist (a deleted/renamed directory would make every omp spawn ENOENT).
+ * Falls back to $HOME and repairs the stored workspace. Shared by the
+ * normal batch and scheduled-prompt paths.
+ */
+async function resolveRunCwd(workspaces: WorkspaceStore, scope: string): Promise<string> {
+  let cwd = workspaces.cwdFor(scope) ?? homedir();
+  try {
+    const st = await stat(cwd);
+    if (!st.isDirectory()) throw new Error('not a directory');
+  } catch {
+    log.warn('session', 'cwd-missing', { staleCwd: cwd });
+    cwd = homedir();
+    workspaces.setCwd(scope, cwd);
+  }
+  return cwd;
+}
+
 /** Reap the OMP subprocess after the stream ends (shared by all modes). */
 async function reapRun(handle: RunHandle): Promise<void> {
   if (handle.interrupted) {
@@ -507,9 +516,15 @@ async function streamCardPages(
         idleTimeoutMs, hooks, filter, pageIndex,
       );
       if (!overflow) break;
+      // A terminal event that ALSO overflowed means the content is complete;
+      // opening another page would just emit an empty "continues" card.
+      if (session.state.terminal !== 'running') break;
       pageIndex += 1;
     }
   } finally {
+    // Single reap point: normal end, interrupt, and mid-stream failure all
+    // converge here — the OMP child must never outlive the run.
+    await reapRun(handle);
     if (handle.onUiSettled === session.armOrPauseIdle) handle.onUiSettled = undefined;
     clearTimeout(session.timer);
   }
@@ -564,7 +579,7 @@ async function runCardPage(
               interrupted: handle.interrupted,
             });
             await ctrl.update(renderCard(filter(final)));
-            await reapRun(handle);
+            // (reap happens once in streamCardPages' finally, after all pages)
           }
         },
       },
@@ -606,13 +621,13 @@ export interface ScheduledRunDeps {
   controls: Controls;
   chatId: string;
   prompt: string;
-  senderId: string;
+
 }
 
 export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> {
-  const { channel, agent, sessions, workspaces, activeRuns, controls, chatId, prompt, senderId } = deps;
+  const { channel, agent, sessions, workspaces, activeRuns, controls, chatId, prompt } = deps;
   const scope = chatId;
-  const cwd = workspaces.cwdFor(scope) ?? homedir();
+  const cwd = await resolveRunCwd(workspaces, scope);
   const replyMode = getMessageReplyMode(controls.cfg);
   const runModel = getOmpModel(controls.cfg);
   if (runModel) await recordModelUse(runModel).catch(() => {});
@@ -630,6 +645,7 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
     sessionId: sessions.resumeFor(scope, cwd),
     cwd,
     model: runModel,
+    thinking: getOmpThinking(controls.cfg),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     hostTools: feishuHost.tools,
     hostUriSchemes: feishuHost.uriSchemes,

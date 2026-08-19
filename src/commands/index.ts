@@ -118,7 +118,7 @@ async function runHandler(
   return true;
 }
 
-export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
+export async function tryHandleCommand(ctx: CommandContext): Promise<boolean | 'denied'> {
   const trimmed = ctx.msg.content.trim();
   if (!trimmed.startsWith('/')) return false;
   const parts = trimmed.split(/\s+/);
@@ -131,7 +131,9 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
       cmd,
       sender: ctx.msg.senderId.slice(-6),
     });
-    return true;
+    // 'denied' is truthy so callers treat the input as consumed, but lets
+    // intake distinguish "ran" from "rejected" and skip reset side effects.
+    return 'denied';
   }
   return runHandler(cmd, args, h, ctx);
 }

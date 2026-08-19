@@ -319,7 +319,6 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         controls,
         chatId: task.chatId,
         prompt: task.prompt,
-        senderId: controls.cfg.preferences?.access?.admins?.[0] ?? '',
       }).catch((err) => log.fail('scheduler', err, { id: task.id }));
     });
     scheduler.start();

@@ -163,4 +163,23 @@ describe('extractUserInput', () => {
   it('returns empty for empty input', () => {
     expect(extractUserInput('')).toBe('');
   });
+
+  it('strips quoted_message blocks, keeping only the real user input', () => {
+    const frame =
+      '<bridge_context>\nchat_id: oc_1\n</bridge_context>\n' +
+      '<quoted_message id="om_x" sender_id="cli_a" type="interactive">\n' +
+      '被引用的卡片内容\n' +
+      '</quoted_message>\n' +
+      '帮我看看这个';
+    expect(extractUserInput(frame)).toBe('帮我看看这个');
+  });
+
+  it('returns empty when the user only quoted without typing', () => {
+    const frame =
+      '<bridge_context>\nchat_id: oc_1\n</bridge_context>\n' +
+      '<quoted_message id="om_x" sender_id="cli_a" type="text">\n' +
+      '被引用的消息\n' +
+      '</quoted_message>';
+    expect(extractUserInput(frame)).toBe('');
+  });
 });

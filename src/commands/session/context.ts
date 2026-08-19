@@ -148,11 +148,15 @@ export function extractUserInput(text: string): string {
   const body = idx >= 0 ? text.slice(idx + '</bridge_context>'.length).trim() : text.trim();
   if (!body) return '';
   if (body.startsWith('运行约定') || body.includes('你正在 feishu-omp-bridge 里运行')) return '';
-  return body;
+  // Strip <quoted_message> blocks: when the user replies with a quote,
+  // bridge injects the referenced content BEFORE their actual input. The
+  // quoted content isn't user input — showing it as "最后消息" is noise
+  // (and leaks the raw XML tags into summaries).
+  const cleaned = body
+    .replace(/<quoted_message\b[^>]*>[\s\S]*?<\/quoted_message>/g, '')
+    .trim();
+  return cleaned;
 }
-
-/** Load the last message / last reply for the given session id, by scanning
- * the matching session file. Empty strings when not found. */
 export async function loadSessionSummary(
   sessionId: string,
 ): Promise<{ lastMessage: string; lastReply: string }> {

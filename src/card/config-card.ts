@@ -43,12 +43,13 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'select_static',
               name: 'message_reply',
-              // 'card' (交互卡片) is hidden from the picker for now; existing
-              // configs with `messageReply: 'card'` still work — showConfigForm
-              // displays them as 'markdown' in the form, but submitting only
-              // overwrites if the user actually picks something.
-              initial_option: opts.messageReply === 'card' ? 'markdown' : opts.messageReply,
+              // CardKit always submits the select's value (defaulting to
+              // initial_option), so the option list must include the current
+              // mode — otherwise a 'card' user submitting ANY unrelated
+              // change silently downgrades to 'markdown'.
+              initial_option: opts.messageReply,
               options: [
+                { text: { tag: 'plain_text', content: '交互卡片' }, value: 'card' },
                 { text: { tag: 'plain_text', content: '纯文本' }, value: 'text' },
                 { text: { tag: 'plain_text', content: '消息卡片(默认)' }, value: 'markdown' },
               ],

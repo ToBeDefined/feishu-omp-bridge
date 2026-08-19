@@ -9,7 +9,7 @@ import {
 } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
-import { summarize } from '../shared';
+import { summarizeMd } from '../shared';
 
 export const contextHandlers: Record<string, Handler> = {
   '/context': handleContext,
@@ -68,10 +68,10 @@ export function renderContext(
   const wsLine =
     matchingNames.length > 0 ? matchingNames.join(' ') : '（当前目录无快捷方式）';
   const lastMsgLine = summary.lastMessage
-    ? `💬 **最后消息**: ${summarize(summary.lastMessage)}`
+    ? `💬 **最后消息**: ${summarizeMd(summary.lastMessage)}`
     : '';
   const lastReplyLine = summary.lastReply
-    ? `📝 **最后回复**: ${summarize(summary.lastReply)}`
+    ? `📝 **最后回复**: ${summarizeMd(summary.lastReply)}`
     : '';
   const lines = [
     `💬 **聊天窗口**: ${scopeLine}`,

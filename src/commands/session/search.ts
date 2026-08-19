@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { paths } from '../../config/paths';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { FORM_SETTLE_MS, codeSpan, recallMessage, reply } from '../shared';
 import { extractUserInput, scanSessionFile } from './context';
 import { applyResume, listResumableSessions } from './resume';
 import { renderSearchContext, searchDetailCard, searchResultsCard, workspaceLabel } from '../../card/search-card';
@@ -237,7 +237,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   }
   const contexts = await searchSession(keyword, ctx);
   if (contexts.length === 0) {
-    await reply(ctx, `未找到包含 \`${keyword}\` 的消息。`);
+    await reply(ctx, `未找到包含 \`${codeSpan(keyword)}\` 的消息。`);
     return;
   }
   const queryId = `s${Date.now().toString(36)}`;

@@ -1,4 +1,4 @@
-import { summarize } from '../commands/shared';
+import { codeSpan, summarizeMd } from '../commands/shared';
 import type { CommandContext } from '../commands';
 
 /**
@@ -36,7 +36,7 @@ export function renderSearchContext(
         mode === 'detail' ? (m.role === 'user' ? 600 : 1000) : m.role === 'user' ? 80 : 120;
       // Escape markdown header markers (# at line start) so message content
       // that happens to start with "# Foo" isn't rendered as a huge heading.
-      const escaped = escapeSearchContent(summarize(m.content, max));
+      const escaped = escapeSearchContent(summarizeMd(m.content, max));
       // Markdown: role label on its own line, message content as a block
       // quote so longer snippets wrap nicely and stay visually grouped.
       return `${marker}${role}\n> ${escaped}`;
@@ -69,7 +69,7 @@ export function searchResultsCard(
   const done = !showButtons;
   const header = done
     ? `✅ 搜索完成 · ${contexts.length} 个片段`
-    : `🔍 搜索 \`${keyword}\`：找到 ${contexts.length} 个片段`;
+    : `🔍 搜索 \`${codeSpan(keyword)}\`：找到 ${contexts.length} 个片段`;
   const more = !done && contexts.length >= 6 ? '\n\n_（仅显示最近 6 个片段）_' : '';
   // Active list caps at 6 rendered items (header already notes this); the
   // done (settled) view renders everything for review.

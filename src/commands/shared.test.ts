@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatAgo, summarize } from './shared';
+import { codeSpan, formatAgo, summarize, summarizeMd } from './shared';
 
 describe('formatAgo', () => {
   it('renders seconds for sub-minute', () => {
@@ -56,5 +56,31 @@ describe('summarize', () => {
 
   it('handles only-whitespace input', () => {
     expect(summarize('   \n  ')).toBe('');
+  });
+});
+
+describe('summarizeMd', () => {
+  it('escapes markdown metacharacters so user text cannot break the card', () => {
+    expect(summarizeMd('a *bold* _em_ `code`', 100)).toBe(
+      'a \\*bold\\* \\_em\\_ \\`code\\`',
+    );
+  });
+
+  it('never leaves an escape sequence half-cut at the truncation point', () => {
+    const out = summarizeMd('*'.repeat(100), 48);
+    // Truncate on raw text first, then escape: 48 raw stars become 48
+    // escaped stars, not a stray trailing backslash.
+    expect(out.endsWith('\\*…')).toBe(true);
+    expect(out.startsWith('\\*')).toBe(true);
+  });
+});
+
+describe('codeSpan', () => {
+  it('replaces backticks so a code span cannot be closed early', () => {
+    expect(codeSpan('ls `pwd`')).toBe("ls 'pwd'");
+  });
+
+  it('passes through clean values unchanged', () => {
+    expect(codeSpan('hello world')).toBe('hello world');
   });
 });

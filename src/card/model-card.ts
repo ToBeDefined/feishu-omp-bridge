@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
-import { summarize } from '../commands/shared';
+import { summarizeMd } from '../commands/shared';
+import { escapeMd } from './templates';
 
 export interface ModelInfo {
   selector: string;
@@ -315,12 +316,12 @@ export function resumeCard(
   const blocks: object[] = [];
   for (const s of sessions) {
     const isCurrent = current !== undefined && s.sessionId === current;
-    const desc = s.summary ? summarize(s.summary, 32) : '';
+    const desc = s.summary ? summarizeMd(s.summary, 32) : '';
     const md = [
       isCurrent ? '⭐ **当前会话**' : '',
-      s.title ? `🏷 **${s.title}**` : '',
+      s.title ? `🏷 **${escapeMd(s.title)}**` : '',
       `📁 ${shortCwd(s.cwd)}`,
-      s.lastMessage ? `💬 最后消息: ${summarize(s.lastMessage, 32)}` : '',
+      s.lastMessage ? `💬 最后消息: ${summarizeMd(s.lastMessage, 32)}` : '',
       desc ? `📝 最后回复: ${desc}` : '',
       `🆔 \`${s.sessionId}\``,
     ]

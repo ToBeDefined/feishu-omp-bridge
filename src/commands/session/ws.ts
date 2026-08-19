@@ -1,5 +1,5 @@
 import type { CommandContext, Handler } from '../index';
-import { recallMessage, reply } from '../shared';
+import { codeSpan, recallMessage, reply } from '../shared';
 import { workspacesCard } from '../../card/templates';
 import { log } from '../../core/logger';
 
@@ -50,7 +50,7 @@ async function handleWsSave(name: string, ctx: CommandContext): Promise<void> {
     return;
   }
   ctx.workspaces.saveNamed(name, cwd);
-  await reply(ctx, `✅ 工作空间已保存：\`${name}\` → ${cwd}`);
+  await reply(ctx, `✅ 工作空间已保存：\`${codeSpan(name)}\` → ${cwd}`);
 }
 
 async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
@@ -60,7 +60,7 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
   }
   const cwd = ctx.workspaces.getNamed(name);
   if (!cwd) {
-    await reply(ctx, `未找到工作空间：\`${name}\``);
+    await reply(ctx, `未找到工作空间：\`${codeSpan(name)}\``);
     return;
   }
   const prevCwd = ctx.workspaces.cwdFor(ctx.scope);
@@ -97,10 +97,10 @@ async function handleWsRemove(name: string, ctx: CommandContext): Promise<void> 
     return;
   }
   if (!ctx.workspaces.removeNamed(name)) {
-    await reply(ctx, `未找到工作空间：\`${name}\``);
+    await reply(ctx, `未找到工作空间：\`${codeSpan(name)}\``);
     return;
   }
-  await reply(ctx, `✅ 已删除工作空间：\`${name}\``);
+  await reply(ctx, `✅ 已删除工作空间：\`${codeSpan(name)}\``);
 }
 
 async function handleWsUndo(ctx: CommandContext): Promise<void> {
@@ -113,5 +113,5 @@ async function handleWsUndo(ctx: CommandContext): Promise<void> {
   ctx.workspaces.setCwd(ctx.scope, target);
   ctx.workspaces.clearUndo(ctx.scope);
   ctx.sessions.clear(ctx.scope);
-  await reply(ctx, `↩️ 已撤回工作区切换，回到 \`${target}\`\n（session 已重置）`);
+  await reply(ctx, `↩️ 已撤回工作区切换，回到 \`${codeSpan(target)}\`\n（session 已重置）`);
 }

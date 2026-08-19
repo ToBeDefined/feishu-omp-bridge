@@ -1,5 +1,6 @@
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
+import { escapeMd } from '../../card/templates';
 import { createBoundChat, defaultChatName } from './group';
 import { renderContext } from './context';
 
@@ -55,5 +56,5 @@ async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void
     console.warn('[new-chat] welcome message failed:', err);
   }
 
-  await reply(ctx, `✅ 已创建群 **${created.name}**，去新群里继续。`);
+  await reply(ctx, `✅ 已创建群 **${escapeMd(created.name)}**，去新群里继续。`);
 }

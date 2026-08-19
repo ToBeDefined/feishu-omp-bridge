@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { paths } from '../../config/paths';
 import { getAgentStopGraceMs, getOmpModel } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
-import { reply } from '../shared';
+import { codeSpan, reply } from '../shared';
 import { extractUserInput } from './context';
 import { summarize } from '../shared';
 
@@ -46,7 +46,7 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
       return;
     }
     ctx.sessions.setTitle(ctx.scope, generated);
-    await reply(ctx, `✅ 已自动生成标题：\`${generated}\``);
+    await reply(ctx, `✅ 已自动生成标题：\`${codeSpan(generated)}\``);
     return;
   }
 

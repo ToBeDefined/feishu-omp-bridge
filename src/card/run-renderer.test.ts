@@ -95,4 +95,20 @@ describe('renderCard', () => {
     expect(panels[0]).toMatchObject({ expanded: false });
     expect(panels[1]).toMatchObject({ expanded: false });
   });
+
+  it('skips the reasoning panel when thinking is a bare placeholder (e.g. ".")', () => {
+    const state = longRunState(0);
+    state.reasoning = { content: '.', active: false };
+    state.blocks.push({ kind: 'text', content: 'real answer', streaming: false });
+    const elements = cardElements(renderCard({ ...state, terminal: 'done' }));
+    expect(countByTag(elements, 'collapsible_panel')).toBe(0);
+    expect(longMarkdown(elements, 'real')).toBe('real answer');
+  });
+
+  it('keeps the reasoning panel when thinking has actual substance', () => {
+    const state = longRunState(0);
+    state.reasoning = { content: '先核对数字，再追触发方', active: false };
+    const elements = cardElements(renderCard({ ...state, terminal: 'done' }));
+    expect(countByTag(elements, 'collapsible_panel')).toBe(1);
+  });
 });

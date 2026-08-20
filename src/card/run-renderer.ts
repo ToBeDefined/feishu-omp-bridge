@@ -29,7 +29,7 @@ export function renderCard(state: RunState, opts?: CardPageOptions): object {
 
   if (opts?.topNote) elements.push(noteElement(opts.topNote));
 
-  if (state.reasoning.content) {
+  if (hasReasoningSubstance(state.reasoning.content)) {
     elements.push(reasoningPanel(state.reasoning.content, state.reasoning.active));
   }
 
@@ -97,6 +97,12 @@ function* groupBlocks(blocks: Block[]): Generator<Group> {
     }
   }
   if (toolBuf.length > 0) yield { kind: 'tools', tools: toolBuf };
+}
+
+/** Some models emit a bare "." as an empty thinking slot — reasoning panels
+ * need actual words/digits to be worth a collapsible panel. */
+function hasReasoningSubstance(content: string): boolean {
+  return /[\p{L}\p{N}]/u.test(content);
 }
 
 function reasoningPanel(content: string, active: boolean): object {

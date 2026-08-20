@@ -71,6 +71,11 @@ export class ActiveRuns {
     return h?.run.submitPrompt?.(kind, message, imagePaths) ?? Promise.resolve(false);
   }
 
+  compact(chatId: string, customInstructions?: string): boolean {
+    const h = this.handles.get(chatId);
+    return h?.run.compact?.(customInstructions) === true;
+  }
+
   async stopAll(): Promise<void> {
     const all = [...this.handles.values()];
     this.handles.clear();

@@ -56,4 +56,24 @@ describe('ActiveRuns OMP UI routing', () => {
     expect(activeRuns.has('scope-1')).toBe(true);
     expect(prompts).toEqual([{ kind: 'follow_up', message: 'next', imagePaths: ['a.png'] }]);
   });
+
+  it('routes compact to the active run', () => {
+    const activeRuns = new ActiveRuns();
+    const compacts: Array<string | undefined> = [];
+    const run: AgentRun = {
+      events: emptyEvents(),
+      stop: async () => {},
+      waitForExit: async () => true,
+      compact(customInstructions) {
+        compacts.push(customInstructions);
+        return true;
+      },
+    };
+
+    activeRuns.register('scope-1', run);
+
+    expect(activeRuns.compact('scope-1', 'keep the last question')).toBe(true);
+    expect(activeRuns.compact('missing')).toBe(false);
+    expect(compacts).toEqual(['keep the last question']);
+  });
 });

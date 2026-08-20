@@ -76,7 +76,8 @@ export type AgentEvent =
   | { type: 'ui_widget'; widget: AgentUiWidget }
   | { type: 'ui_title'; title: string }
   | { type: 'ui_editor_text'; text: string }
-  | { type: 'ui_open_url'; url: string; instructions?: string }
+  | { type: 'ui_open_url'; url: string; instructions?: string; launchUrl?: string }
+  | { type: 'subagent_lifecycle'; id: string; agent: string; description?: string; status: 'started' | 'completed' | 'failed' | 'aborted' }
   | { type: 'done'; sessionId?: string }
   | { type: 'error'; message: string };
 
@@ -113,6 +114,8 @@ export interface AgentRun {
   stop(): Promise<void>;
   respondToUi?(requestId: string, response: AgentUiResponse): boolean;
   submitPrompt?(kind: 'steer' | 'follow_up', message: string, imagePaths?: string[]): Promise<boolean>;
+  /** Ask the agent to compact its session context (OMP `compact` command). */
+  compact?(customInstructions?: string): boolean;
   /**
    * Wait up to `timeoutMs` for the agent process to exit on its own.
    * Resolves true if it exited within the window, false if the timer

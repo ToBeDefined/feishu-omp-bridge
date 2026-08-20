@@ -153,6 +153,14 @@ export class OmpAdapter implements AgentAdapter {
           ...(images.length > 0 ? { images } : {}),
         });
       },
+      compact(customInstructions?: string): boolean {
+        if (child.exitCode !== null || child.signalCode !== null) return false;
+        return writeFrame(child, {
+          id: `compact_${Date.now()}`,
+          type: 'compact',
+          ...(customInstructions ? { customInstructions } : {}),
+        });
+      },
       waitForExit(timeoutMs: number): Promise<boolean> {
         return waitForExitWithin(child, timeoutMs);
       },

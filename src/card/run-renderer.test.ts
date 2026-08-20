@@ -13,6 +13,7 @@ function longRunState(count: number, terminal: RunState['terminal'] = 'running')
     blocks.push({ kind: 'tool', tool: tool(i) });
   }
   return {
+    subagents: [],
     blocks,
     reasoning: { content: '', active: false },
     footer: 'streaming',
@@ -110,5 +111,16 @@ describe('renderCard', () => {
     state.reasoning = { content: '先核对数字，再追触发方', active: false };
     const elements = cardElements(renderCard({ ...state, terminal: 'done' }));
     expect(countByTag(elements, 'collapsible_panel')).toBe(1);
+  });
+
+  it('renders subagent lifecycle lines', () => {
+    const state = longRunState(0);
+    state.subagents = [
+      { id: 'sa-1', agent: 'reviewer', description: 'review auth flow', status: 'started' },
+      { id: 'sa-2', agent: 'scout', status: 'failed' },
+    ];
+    const elements = cardElements(renderCard({ ...state, terminal: 'done' }));
+    expect(longMarkdown(elements, '🤖 子代理 `reviewer` — review auth flow _工作中_')).toBeDefined();
+    expect(longMarkdown(elements, '❌ 子代理 `scout` _失败_')).toBeDefined();
   });
 });

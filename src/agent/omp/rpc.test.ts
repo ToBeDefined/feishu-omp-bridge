@@ -94,6 +94,22 @@ describe('translateOmpFrame', () => {
       { type: 'error', message: 'bad' },
     ]);
   });
+
+  it('maps subagent lifecycle frames', () => {
+    expect(events({
+      type: 'subagent_lifecycle',
+      payload: { id: 'sa-1', agent: 'reviewer', description: 'review auth', status: 'started' },
+    })).toEqual([
+      { type: 'subagent_lifecycle', id: 'sa-1', agent: 'reviewer', description: 'review auth', status: 'started' },
+    ]);
+
+    expect(events({
+      type: 'subagent_lifecycle',
+      payload: { id: 'sa-1', agent: 'reviewer', status: 'failed' },
+    })).toEqual([
+      { type: 'subagent_lifecycle', id: 'sa-1', agent: 'reviewer', description: undefined, status: 'failed' },
+    ]);
+  });
 });
 
 describe('extension UI frames', () => {
@@ -137,6 +153,24 @@ describe('extension UI frames', () => {
       widgetLines: ['a', 'b'],
       widgetPlacement: 'belowEditor',
     })).toEqual([{ type: 'ui_widget', widget: { key: 'todo', lines: ['a', 'b'], placement: 'belowEditor' } }]);
+  });
+
+  it('surfaces the loopback launchUrl when present', () => {
+    expect(events({
+      type: 'extension_ui_request',
+      id: 'url-1',
+      method: 'open_url',
+      url: 'https://login.example.com/oauth?token=verylong',
+      launchUrl: 'http://127.0.0.1:39211/launch/abc',
+      instructions: 'copy this to authorize',
+    })).toEqual([
+      {
+        type: 'ui_open_url',
+        url: 'https://login.example.com/oauth?token=verylong',
+        instructions: 'copy this to authorize',
+        launchUrl: 'http://127.0.0.1:39211/launch/abc',
+      },
+    ]);
   });
 });
 

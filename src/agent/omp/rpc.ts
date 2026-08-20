@@ -63,6 +63,15 @@ interface OmpFrame {
   text?: string;
   url?: string;
   instructions?: string;
+  launchUrl?: string;
+  payload?: OmpSubagentLifecycle;
+}
+
+interface OmpSubagentLifecycle {
+  id?: string;
+  agent?: string;
+  description?: string;
+  status?: string;
 }
 
 export interface OmpImageContent {
@@ -139,6 +148,20 @@ export function* translateOmpFrame(raw: unknown): Generator<AgentEvent> {
       return;
     case 'notice':
       if (typeof frame.error === 'string') yield { type: 'error', message: frame.error };
+      return;
+    case 'subagent_lifecycle':
+      if (isRecord(frame.payload)) {
+        const p = frame.payload as OmpSubagentLifecycle;
+        if (typeof p.id === 'string' && typeof p.agent === 'string' && isSubagentStatus(p.status)) {
+          yield {
+            type: 'subagent_lifecycle',
+            id: p.id,
+            agent: p.agent,
+            description: typeof p.description === 'string' ? p.description : undefined,
+            status: p.status,
+          };
+        }
+      }
       return;
     case 'extension_ui_request':
       yield* translateExtensionUiRequest(frame);
@@ -274,7 +297,12 @@ function* translateExtensionUiRequest(frame: OmpFrame): Generator<AgentEvent> {
       return;
     case 'open_url':
       if (typeof frame.url === 'string') {
-        yield { type: 'ui_open_url', url: frame.url, instructions: frame.instructions };
+        yield {
+          type: 'ui_open_url',
+          url: frame.url,
+          instructions: frame.instructions,
+          launchUrl: typeof frame.launchUrl === 'string' ? frame.launchUrl : undefined,
+        };
       }
       return;
     default:
@@ -289,6 +317,10 @@ function stringArray(value: unknown): string[] {
 function stringArrayOrUndefined(value: unknown): string[] | undefined {
   const items = stringArray(value);
   return items.length > 0 ? items : undefined;
+}
+
+function isSubagentStatus(value: unknown): value is 'started' | 'completed' | 'failed' | 'aborted' {
+  return value === 'started' || value === 'completed' || value === 'failed' || value === 'aborted';
 }
 
 function noticeType(value: unknown): AgentUiNoticeType | undefined {

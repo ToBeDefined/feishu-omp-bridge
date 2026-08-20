@@ -1,5 +1,6 @@
-import type { Block, FooterStatus, RunState, ToolEntry, UiState } from './run-state';
+import type { Block, FooterStatus, RunState, SubagentEntry, ToolEntry, UiState } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
+import { escapeMd } from './templates';
 
 /** Max chars per reasoning body — reasoning is auxiliary, truncation is fine. */
 const REASONING_MAX = 1500;
@@ -35,6 +36,8 @@ export function renderCard(state: RunState, opts?: CardPageOptions): object {
 
   const ui = uiContextPanel(state.ui);
   if (ui) elements.push(ui);
+
+  for (const line of subagentLines(state.subagents)) elements.push(noteMd(line));
 
   // Every tool gets its own expandable panel — body (input+output) visible.
   // The caller (batch.ts) paginates the card stream by size budget, so the
@@ -103,6 +106,23 @@ function* groupBlocks(blocks: Block[]): Generator<Group> {
  * need actual words/digits to be worth a collapsible panel. */
 function hasReasoningSubstance(content: string): boolean {
   return /[\p{L}\p{N}]/u.test(content);
+}
+
+function subagentLines(entries: SubagentEntry[]): string[] {
+  return entries.map((s) => {
+    const label = escapeMd(s.agent);
+    const desc = s.description ? ` — ${escapeMd(truncate(s.description, 80))}` : '';
+    switch (s.status) {
+      case 'started':
+        return `🤖 子代理 \`${label}\`${desc} _工作中_`;
+      case 'completed':
+        return `✅ 子代理 \`${label}\`${desc} _完成_`;
+      case 'failed':
+        return `❌ 子代理 \`${label}\`${desc} _失败_`;
+      case 'aborted':
+        return `⏹ 子代理 \`${label}\`${desc} _已中止_`;
+    }
+  });
 }
 
 function reasoningPanel(content: string, active: boolean): object {

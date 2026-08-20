@@ -1,4 +1,5 @@
 import type { Handler } from '../index';
+import { compactHandlers } from './compact';
 import { everyHandlers } from './every';
 import { exitHandlers } from './exit';
 import { helpHandlers } from './help';
@@ -9,6 +10,7 @@ import { stopHandlers } from './stop';
 
 /** All lifecycle commands, merged from per-command files. */
 export const lifecycleHandlers: Record<string, Handler> = {
+  ...compactHandlers,
   ...stopHandlers,
   ...restartHandlers,
   ...reconnectHandlers,

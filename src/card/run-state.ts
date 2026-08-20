@@ -32,7 +32,18 @@ export interface UiState {
 export type FooterStatus = 'thinking' | 'tool_running' | 'streaming' | 'waiting_input' | null;
 export type Terminal = 'running' | 'done' | 'interrupted' | 'error' | 'idle_timeout';
 
+export type SubagentStatus = 'started' | 'completed' | 'failed' | 'aborted';
+
+export interface SubagentEntry {
+  id: string;
+  agent: string;
+  description?: string;
+  status: SubagentStatus;
+}
+
 export interface RunState {
+  /** Subagent lifecycle entries, ordered by first appearance. */
+  subagents: SubagentEntry[];
   blocks: Block[];
   reasoning: { content: string; active: boolean };
   footer: FooterStatus;
@@ -46,6 +57,7 @@ export interface RunState {
 
 export const initialState: RunState = {
   blocks: [],
+  subagents: [],
   reasoning: { content: '', active: false },
   footer: 'thinking',
   terminal: 'running',
@@ -184,18 +196,34 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
     case 'ui_editor_text':
       return { ...state, ui: { ...state.ui, editorText: evt.text } };
 
-    case 'ui_open_url':
+    case 'ui_open_url': {
+      const link = evt.launchUrl ?? evt.url;
+      const extra = evt.launchUrl ? `\n\n（完整链接：${evt.url}）` : '';
       return {
         ...state,
         blocks: [
           ...closeStreamingText(state.blocks),
           {
             kind: 'text',
-            content: `🔗 OMP 请求打开链接：${evt.url}${evt.instructions ? `\n\n${evt.instructions}` : ''}`,
+            content: `🔗 OMP 请求打开链接：${link}${extra}${evt.instructions ? `\n\n${evt.instructions}` : ''}`,
             streaming: false,
           },
         ],
       };
+    }
+    case 'subagent_lifecycle': {
+      const existing = state.subagents.find((s) => s.id === evt.id);
+      const entry: SubagentEntry = {
+        id: evt.id,
+        agent: evt.agent,
+        description: evt.description ?? existing?.description,
+        status: evt.status,
+      };
+      const subagents = existing
+        ? state.subagents.map((s) => (s.id === evt.id ? entry : s))
+        : [...state.subagents, entry];
+      return { ...state, subagents };
+    }
     case 'error': {
       return { ...state, terminal: 'error', errorMsg: evt.message, footer: null };
     }

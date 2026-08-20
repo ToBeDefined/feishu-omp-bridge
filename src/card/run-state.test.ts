@@ -61,4 +61,41 @@ describe('run-state OMP UI integration', () => {
     expect(updated.blocks[0]).toMatchObject({ kind: 'tool', tool: { output: 'working', status: 'running' } });
     expect(done.blocks[0]).toMatchObject({ kind: 'tool', tool: { output: 'done', status: 'done' } });
   });
+
+  it('tracks subagent lifecycle entries and preserves description on status updates', () => {
+    const started = reduce(initialState, {
+      type: 'subagent_lifecycle',
+      id: 'sa-1',
+      agent: 'reviewer',
+      description: 'review auth flow',
+      status: 'started',
+    });
+    expect(started.subagents).toEqual([
+      { id: 'sa-1', agent: 'reviewer', description: 'review auth flow', status: 'started' },
+    ]);
+
+    const failed = reduce(started, {
+      type: 'subagent_lifecycle',
+      id: 'sa-1',
+      agent: 'reviewer',
+      status: 'failed',
+    });
+    expect(failed.subagents).toEqual([
+      { id: 'sa-1', agent: 'reviewer', description: 'review auth flow', status: 'failed' },
+    ]);
+  });
+
+  it('surfaces the short launchUrl with the full URL as context', () => {
+    const state = reduce(initialState, {
+      type: 'ui_open_url',
+      url: 'https://login.example.com/oauth?token=verylong',
+      launchUrl: 'http://127.0.0.1:39211/launch/abc',
+    });
+    const block = state.blocks[0];
+    expect(block).toMatchObject({ kind: 'text' });
+    if (block?.kind === 'text') {
+      expect(block.content).toContain('http://127.0.0.1:39211/launch/abc');
+      expect(block.content).toContain('https://login.example.com/oauth?token=verylong');
+    }
+  });
 });

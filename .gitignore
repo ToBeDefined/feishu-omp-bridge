@@ -19,7 +19,7 @@ coverage/
 scripts/*.log
 scripts/*.tmp
 scripts/.local/
-CHANGELOG.md
+
 __pycache__/
 
 .pytest_cache/

@@ -4,8 +4,12 @@
 [Keep a Changelog](https://keepachangelog.com/zh-CN/)，语义遵循
 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-项目为持续迭代，`package.json` 的 `version` 尚未随变更发布；近期工作
-汇总在 `Unreleased`，历史功能按域合并记录。
+项目为持续迭代，`package.json` 的 `version` 尚未随变更发布。维护约定：
+
+- **累积模式**：所有新变更一律追加到 `[Unreleased]` 对应分类
+  （Added / Changed / Fixed / Removed）。
+- **发版时**：把 `[Unreleased]` 整段提升为 `[<version>] - <date>`，
+  同时 bump `package.json` 的 `version`，并清空 `[Unreleased]` 各分类。
 
 ## [Unreleased]
 

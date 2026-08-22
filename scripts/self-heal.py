@@ -53,6 +53,11 @@ HEAL_MODEL = os.environ.get("HEAL_MODEL", "zhipu-coding-plan/glm-5.2")
 BACKOFF_BASE_S = int(os.environ.get("HEAL_BACKOFF_BASE_S", "60"))
 BACKOFF_MAX_S = int(os.environ.get("HEAL_BACKOFF_MAX_S", "480"))
 MAX_ATTEMPTS = int(os.environ.get("HEAL_MAX_ATTEMPTS", "10"))
+# 回退退避：每次回退尝试之间的阶梯间隔，防对暂时性故障连续过激回退。
+ROLLBACK_BASE_S = int(os.environ.get("HEAL_ROLLBACK_BASE_S", "60"))
+ROLLBACK_MAX_S = int(os.environ.get("HEAL_ROLLBACK_MAX_S", "480"))
+# 逐节点回退最多退几步，超过交给 omp（防止一路退到 root）。
+MAX_ROLLBACK_STEPS = int(os.environ.get("HEAL_MAX_ROLLBACK_STEPS", "10"))
 
 SERVICE_LABEL = "ai.feishu-omp-bridge.heal"
 
@@ -288,10 +293,39 @@ def _git_is_ancestor(ancestor: str, descendant: str) -> bool:
         return False
 
 
+def _git_commit_time(ref: str) -> int:
+    """ref 的 commit unix 时间戳。失败返回 0。"""
+    try:
+        r = subprocess.run(
+            ["git", "log", "-1", "--format=%ct", ref],
+            cwd=REPO, capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            return int(r.stdout.strip() or "0")
+    except Exception:
+        pass
+    return 0
+
+
+def _dist_matches_head(head: str) -> bool:
+    """dist/cli.js 存在且 mtime 不早于 HEAD commit 时间 → dist 是当前 HEAD
+    build 出的。避免把「HEAD 已前进但 dist 还是旧代码」记成 good sha。"""
+    commit_time = _git_commit_time(head)
+    if commit_time <= 0:
+        return False
+    dist = Path(REPO) / "dist" / "cli.js"
+    try:
+        return dist.exists() and dist.stat().st_mtime >= commit_time
+    except OSError:
+        return False
+
+
 def repair_rollback() -> bool:
-    """逐节点回退：代码坏了时一个个 commit 往回退，退一步 build + restart
-    + probe，失败再退下一步，直到恢复或退到 lastGoodSha（不越过）。
-    比一步跳回 lastGoodSha 更精细 —— 能停在最近的好节点，少丢有效改动。
+    """代码坏了时按优先级恢复：
+    1) 优先回退到 lastGoodSha（最近验证过健康、且 dist 匹配的提交）；
+    2) 失败则进入阶梯退避 —— 可能只是暂时性环境故障，先等再试；
+    3) 退避过后仍失败，从 lastGoodSha 起一个个 commit 往前回退尝试。
+    每一步都 build + restart + probe；最多退 MAX_ROLLBACK_STEPS 步。
     返回 True 表示回退后 probe 恢复。"""
     if os.environ.get("HEAL_ROLLBACK", "1") != "1":
         log("→ 跳过 rollback（HEAL_ROLLBACK=0）")
@@ -303,22 +337,35 @@ def repair_rollback() -> bool:
     state = _read_state()
     last_good = str(state.get("lastGoodSha") or "").strip()
     cursor = str(state.get("rollbackCursor") or "").strip()
+    steps = int(state.get("rollbackSteps") or 0)
+    backoff_until = int(state.get("rollbackBackoffUntil") or 0)
+    now = int(time.time())
 
-    # 下一个要试的节点：首次从 HEAD~1 开始；之后从上次失败节点再退一步。
-    target = f"{cursor}~1" if cursor else "HEAD~1"
+    # 退避：每次回退尝试之间阶梯间隔，防对暂时性故障连续过激回退。
+    if backoff_until and now < backoff_until:
+        log(f"⏳ 回退退避中（剩 {backoff_until - now}s）")
+        return False
+    # 步数上限：退太多就停，交给 omp。
+    if steps >= MAX_ROLLBACK_STEPS:
+        log(f"✗ 回退已达上限 {MAX_ROLLBACK_STEPS} 步，交给 omp")
+        return False
 
-    # 下限：不退过 lastGoodSha。target 解析后是 lastGoodSha 的严格祖先
-    # （比它更老）说明已退到底，上一轮试过 lastGoodSha 且失败，交给 omp。
-    if last_good:
-        target_sha = _git_rev(target)
-        if not target_sha:
-            log("→ 无法解析回退目标，跳过 rollback")
-            return False
-        if target_sha != last_good and _git_is_ancestor(target_sha, last_good):
-            log("→ 回退已越过 lastGoodSha，停止回退，交给 omp")
-            return False
+    # target 决策：游标驱动逐节点 > 优先 lastGoodSha > lastGood 往前 > HEAD~1。
+    if cursor:
+        target = f"{cursor}~1"
+    elif last_good and last_good != head:
+        target = last_good
+    elif last_good:
+        target = f"{last_good}~1"
+    else:
+        target = "HEAD~1"
 
-    log(f"→ 尝试回退到 {target}...")
+    target_sha = _git_rev(target)
+    if not target_sha:
+        log("→ 无法解析回退目标，跳过 rollback")
+        return False
+
+    log(f"→ 尝试回退到 {target}（第 {steps + 1}/{MAX_ROLLBACK_STEPS} 步）...")
     try:
         # 仅在首次回退时 stash：保存可能被改坏的工作区；reset --hard 后
         # 工作区已 clean，后续节点无需再 stash。
@@ -335,21 +382,35 @@ def repair_rollback() -> bool:
         new_head = _git_head()
         if not new_head:
             return False
-        # 记录游标：本次试到这个节点；失败时下一轮从这里再退一步。
-        _write_state({"rollbackCursor": new_head})
         log(f"✓ 已回退到 {new_head[:12] or '?'}")
         # 重建 dist
         b = subprocess.run(["pnpm", "build"], cwd=REPO, capture_output=True, text=True, timeout=120)
         if b.returncode != 0:
-            log("✗ rollback 后 build 失败")
+            log("✗ rollback 后 build 失败，推进游标退更早节点")
+            backoff = min((2 ** steps) * ROLLBACK_BASE_S, ROLLBACK_MAX_S)
+            _write_state({
+                "rollbackCursor": target_sha,
+                "rollbackSteps": steps + 1,
+                "rollbackBackoffUntil": now + backoff,
+            })
             return False
         # 重启并验证
         if repair_restart():
             # 回退成功同样是"自愈完成"：更新已知好版本，清零计数与游标。
-            _write_state({"ompAttempts": 0, "nextOmpAt": 0, "lastGoodSha": new_head, "rollbackCursor": ""})
+            _write_state({
+                "ompAttempts": 0, "nextOmpAt": 0,
+                "lastGoodSha": new_head, "rollbackCursor": "",
+                "rollbackSteps": 0, "rollbackBackoffUntil": 0,
+            })
             log("✓ 回退 + 重建 + 重启成功，自愈完成")
             return True
-        log("✗ 此节点回退后 restart 仍失败，下一轮继续退更早节点")
+        backoff = min((2 ** steps) * ROLLBACK_BASE_S, ROLLBACK_MAX_S)
+        _write_state({
+            "rollbackCursor": target_sha,
+            "rollbackSteps": steps + 1,
+            "rollbackBackoffUntil": now + backoff,
+        })
+        log(f"✗ 此节点回退后仍失败，{backoff}s 后尝试更早节点")
         return False
     except Exception as err:
         log(f"✗ rollback 异常: {err}")
@@ -392,10 +453,15 @@ def repair_with_omp_guarded() -> bool:
 def heal_once() -> None:
     if probe():
         write_fails(0)
-        # 健康时记录当前提交为"已知好版本"，供 rollback 精确回退（而不是盲退 HEAD~1）。
+        # 健康时记录当前提交为"已知好版本"，供 rollback 精确回退。只有
+        # dist 确实由当前 HEAD build 出才记 —— 否则 HEAD 已前进但 dist 还
+        # 是旧代码，记了会把坏提交误当 good。
         head = _git_head()
-        if head:
-            _write_state({"lastGoodSha": head, "rollbackCursor": ""})
+        if head and _dist_matches_head(head):
+            _write_state({
+                "lastGoodSha": head, "rollbackCursor": "",
+                "rollbackSteps": 0, "rollbackBackoffUntil": 0,
+            })
         return
     fails = state_get("fails") + 1
     write_fails(fails)

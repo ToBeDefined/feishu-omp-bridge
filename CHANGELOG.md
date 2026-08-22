@@ -26,10 +26,11 @@
   链接，完整 URL 作为上下文说明，避免长 query 被终端 viewport 截断。
 
 ### Fixed
-- 自愈回退改为逐节点：原来要么一步跳到 lastGoodSha、要么只退 HEAD~1
-  就停 → 改为一个个 commit 往回退，退一步 build + restart + 探测，失败
-  再退下一步，直到恢复或退到 lastGoodSha（不越过）。游标跨周期持久化，
-  成功即更新已知好版本。
+- 自愈回退改为三级策略：① 优先回退到 lastGoodSha（最近验证过健康、
+  dist 匹配的提交）；② 失败进入阶梯退避，防对暂时性故障连续过激回退；
+  ③ 退避后仍失败，从 lastGoodSha 起一个个 commit 往前回退，步数上限
+  10 交给 omp。lastGoodSha 仅在 dist 确由当前 HEAD build 出时才记录，
+  避免"HEAD 已前进但 dist 还是旧代码"把坏提交误当 good。
 - `/restart` 名不副实：原来只做进程内重连，不重载代码，改完代码
   重启"几次"仍是旧行为 → 改为 launchd kickstart 真重启进程，加载新
   代码；非 launchd 环境自动回退进程内重连。`/reconnect` 保持重连语义。

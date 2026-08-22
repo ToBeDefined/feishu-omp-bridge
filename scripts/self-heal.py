@@ -265,10 +265,34 @@ def _git_head() -> str:
     return ""
 
 
+def _git_rev(ref: str) -> str:
+    """解析任意 ref（如 HEAD~1、<sha>~1）为完整 SHA。失败返回 ''。"""
+    try:
+        r = subprocess.run(["git", "rev-parse", ref], cwd=REPO, capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return ""
+
+
+def _git_is_ancestor(ancestor: str, descendant: str) -> bool:
+    """ancestor 是否是 descendant 的祖先（严格祖先，不含相等）。"""
+    try:
+        r = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=REPO, capture_output=True, timeout=10,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def repair_rollback() -> bool:
-    """代码坏了时回滚到已知好提交：stash → git reset --hard <lastGoodSha>
-    → build → restart。比让 omp 现场改代码更稳 —— 先回到已知好版本。
-    返回 True 表示回滚后 probe 恢复。"""
+    """逐节点回退：代码坏了时一个个 commit 往回退，退一步 build + restart
+    + probe，失败再退下一步，直到恢复或退到 lastGoodSha（不越过）。
+    比一步跳回 lastGoodSha 更精细 —— 能停在最近的好节点，少丢有效改动。
+    返回 True 表示回退后 probe 恢复。"""
     if os.environ.get("HEAL_ROLLBACK", "1") != "1":
         log("→ 跳过 rollback（HEAL_ROLLBACK=0）")
         return False
@@ -278,25 +302,30 @@ def repair_rollback() -> bool:
         return False
     state = _read_state()
     last_good = str(state.get("lastGoodSha") or "").strip()
-    last_tried = str(state.get("lastRollbackSha") or "").strip()
-    if last_good and last_good != head:
-        target = last_good
-        reason = f"已知好提交 {last_good[:12]}"
-    elif head and last_tried != head:
-        # 没有已记录的健康 SHA 时最多相对退一步，且同一次故障周期内不重复退：
-        # 上次已退到的位置（lastRollbackSha）不再触发 HEAD~1，防止一路退到 root。
-        target = "HEAD~1"
-        reason = "HEAD~1（无已记录健康提交，兜底单步回退）"
-    else:
-        log("→ 无可回滚目标（HEAD 已是最后尝试位置），交给 omp 修复")
-        return False
-    log(f"→ 尝试回滚到 {reason}...")
+    cursor = str(state.get("rollbackCursor") or "").strip()
+
+    # 下一个要试的节点：首次从 HEAD~1 开始；之后从上次失败节点再退一步。
+    target = f"{cursor}~1" if cursor else "HEAD~1"
+
+    # 下限：不退过 lastGoodSha。target 解析后是 lastGoodSha 的严格祖先
+    # （比它更老）说明已退到底，上一轮试过 lastGoodSha 且失败，交给 omp。
+    if last_good:
+        target_sha = _git_rev(target)
+        if not target_sha:
+            log("→ 无法解析回退目标，跳过 rollback")
+            return False
+        if target_sha != last_good and _git_is_ancestor(target_sha, last_good):
+            log("→ 回退已越过 lastGoodSha，停止回退，交给 omp")
+            return False
+
+    log(f"→ 尝试回退到 {target}...")
     try:
-        # stash 未提交改动（dist 可能被改坏）。reset --hard 会丢弃工作区，
-        # stash 保底；回滚后不 pop —— 未提交改动可能正是故障源，留在 stash 里人工判断。
-        subprocess.run(["git", "stash", "-q"], cwd=REPO, capture_output=True, timeout=30)
-        # reset --hard 而非 checkout：留在当前分支上（checkout detached HEAD 会让
-        # 后续 self-update 的 ff-only pull 语义彻底混乱）。
+        # 仅在首次回退时 stash：保存可能被改坏的工作区；reset --hard 后
+        # 工作区已 clean，后续节点无需再 stash。
+        if not cursor:
+            subprocess.run(["git", "stash", "-q"], cwd=REPO, capture_output=True, timeout=30)
+        # reset --hard 而非 checkout：留在当前分支上（checkout detached HEAD
+        # 会让后续 self-update 的 ff-only pull 语义彻底混乱）。
         r = subprocess.run(
             ["git", "reset", "--hard", target], cwd=REPO, capture_output=True, text=True, timeout=30
         )
@@ -304,8 +333,11 @@ def repair_rollback() -> bool:
             log(f"✗ git reset 失败: {(r.stderr or '').strip() or 'unknown'}")
             return False
         new_head = _git_head()
-        _write_state({"lastRollbackSha": new_head})
-        log(f"✓ 已回滚到 {new_head[:12] or '?'}")
+        if not new_head:
+            return False
+        # 记录游标：本次试到这个节点；失败时下一轮从这里再退一步。
+        _write_state({"rollbackCursor": new_head})
+        log(f"✓ 已回退到 {new_head[:12] or '?'}")
         # 重建 dist
         b = subprocess.run(["pnpm", "build"], cwd=REPO, capture_output=True, text=True, timeout=120)
         if b.returncode != 0:
@@ -313,11 +345,11 @@ def repair_rollback() -> bool:
             return False
         # 重启并验证
         if repair_restart():
-            # 回滚成功同样是"自愈完成"：清零 omp 修复计数，历史失败不侵蚀后续配额。
-            _write_state({"ompAttempts": 0, "nextOmpAt": 0})
-            log("✓ 回滚 + 重建 + 重启成功，自愈完成")
+            # 回退成功同样是"自愈完成"：更新已知好版本，清零计数与游标。
+            _write_state({"ompAttempts": 0, "nextOmpAt": 0, "lastGoodSha": new_head, "rollbackCursor": ""})
+            log("✓ 回退 + 重建 + 重启成功，自愈完成")
             return True
-        log("✗ 回滚后 restart 仍失败")
+        log("✗ 此节点回退后 restart 仍失败，下一轮继续退更早节点")
         return False
     except Exception as err:
         log(f"✗ rollback 异常: {err}")
@@ -363,7 +395,7 @@ def heal_once() -> None:
         # 健康时记录当前提交为"已知好版本"，供 rollback 精确回退（而不是盲退 HEAD~1）。
         head = _git_head()
         if head:
-            _write_state({"lastGoodSha": head, "lastRollbackSha": ""})
+            _write_state({"lastGoodSha": head, "rollbackCursor": ""})
         return
     fails = state_get("fails") + 1
     write_fails(fails)

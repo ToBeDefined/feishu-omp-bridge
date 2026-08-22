@@ -26,6 +26,10 @@
   链接，完整 URL 作为上下文说明，避免长 query 被终端 viewport 截断。
 
 ### Fixed
+- 自愈回退改为逐节点：原来要么一步跳到 lastGoodSha、要么只退 HEAD~1
+  就停 → 改为一个个 commit 往回退，退一步 build + restart + 探测，失败
+  再退下一步，直到恢复或退到 lastGoodSha（不越过）。游标跨周期持久化，
+  成功即更新已知好版本。
 - `/restart` 名不副实：原来只做进程内重连，不重载代码，改完代码
   重启"几次"仍是旧行为 → 改为 launchd kickstart 真重启进程，加载新
   代码；非 launchd 环境自动回退进程内重连。`/reconnect` 保持重连语义。

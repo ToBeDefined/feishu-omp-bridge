@@ -286,6 +286,57 @@ def test_rollback_runs_before_omp_when_enabled(heal, tmp_path, monkeypatch):
     assert heal.calls["omp_run"] >= 1       # rollback 后仍失败才 omp
 
 
+def test_rollback_steps_node_by_node(heal, monkeypatch):
+    """逐节点回退：失败时记录游标，下一轮从游标的父节点继续退；
+    成功时更新 lastGoodSha 并清空游标。"""
+    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    heal._write_state({"lastGoodSha": "c1", "rollbackCursor": ""})
+
+    head = {"v": "c3"}
+    parent = {"c3": "c2", "c2": "c1", "c1": "c0"}
+
+    def fake_head():
+        return head["v"]
+
+    def fake_rev(ref):
+        base = "c3" if ref == "HEAD~1" else ref[:-2]
+        return parent.get(base, "c0")
+
+    def fake_subprocess(cmd, **kw):
+        argv = cmd if isinstance(cmd, list) else str(cmd).split()
+        if argv and argv[0] == "git" and len(argv) >= 4 and argv[1] == "reset":
+            target = argv[3]
+            head["v"] = "c2" if target == "HEAD~1" else parent.get(target[:-2], "c0")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(heal, "_git_head", fake_head)
+    monkeypatch.setattr(heal, "_git_rev", fake_rev)
+    monkeypatch.setattr(heal, "_git_is_ancestor", lambda a, d: a == "c0")
+    monkeypatch.setattr(heal, "subprocess", type("SP", (), {"run": staticmethod(fake_subprocess)})())
+
+    # 第一次：restart 失败 → 游标推进到 c2，返回 False
+    monkeypatch.setattr(heal, "repair_restart", lambda: False)
+    assert heal.repair_rollback() is False
+    assert heal._read_state().get("rollbackCursor") == "c2"
+
+    # 第二次：restart 成功 → lastGoodSha=c1，游标清空
+    monkeypatch.setattr(heal, "repair_restart", lambda: True)
+    assert heal.repair_rollback() is True
+    state = heal._read_state()
+    assert state.get("lastGoodSha") == "c1"
+    assert state.get("rollbackCursor") == ""
+
+
+def test_rollback_stops_at_last_good(heal, monkeypatch):
+    """已退到 lastGoodSha 时不再越过，返回 False 交给 omp。"""
+    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    heal._write_state({"lastGoodSha": "c1", "rollbackCursor": ""})
+    monkeypatch.setattr(heal, "_git_head", lambda: "c1")      # HEAD 已是已知好版本
+    monkeypatch.setattr(heal, "_git_rev", lambda ref: "c0")   # HEAD~1 → c0（更老）
+    monkeypatch.setattr(heal, "_git_is_ancestor", lambda a, d: True)
+    assert heal.repair_rollback() is False
+
+
 def test_rollback_skipped_when_disabled(heal, tmp_path, monkeypatch):
     # 默认 HEAL_ROLLBACK=0（fixture）：restart 失败直接 omp，无 git 操作
     heal.probe_state["alive"] = False

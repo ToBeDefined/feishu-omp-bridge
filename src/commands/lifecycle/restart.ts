@@ -10,7 +10,7 @@ async function handleRestart(_args: string, ctx: CommandContext): Promise<void> 
   log.info('command', 'restart', { scope: ctx.scope });
   await reply(
     ctx,
-    `🔄 正在重启当前 bot \`${ctx.controls.processId}\`…\n\n_采用进程内重连（先建新连接再断旧的），即使重连失败也会保留当前连接，不会掉线。约几秒完成。_`,
+    `🔄 正在重启 bot \`${ctx.controls.processId}\`…`,
   );
   let restarted = false;
   try {

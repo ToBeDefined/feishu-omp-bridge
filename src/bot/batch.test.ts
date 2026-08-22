@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { fallbackCard, fallbackContent } from './batch';
-import { initialState, type RunState } from '../card/run-state';
+import { carryOverBlocks, fallbackCard, fallbackContent } from './batch';
+import { initialState, type Block, type RunState } from '../card/run-state';
 
 const base: RunState = {
   ...initialState,
@@ -50,5 +50,26 @@ describe('fallbackContent', () => {
     }));
     expect(body).toContain('result');
     expect(body).not.toContain('Bash');
+  });
+});
+
+describe('carryOverBlocks', () => {
+  const blocks: Block[] = [
+    { kind: 'text', content: 'done text', streaming: false },
+    { kind: 'tool', tool: { id: 't1', name: 'Bash', input: {}, status: 'done', output: 'ok' } },
+    { kind: 'tool', tool: { id: 't2', name: 'Read', input: {}, status: 'running' } },
+  ];
+
+  it('keeps only running tools (their result may land on the next page)', () => {
+    const carried = carryOverBlocks(blocks);
+    expect(carried).toHaveLength(1);
+    expect(carried[0]).toMatchObject({ kind: 'tool', tool: { id: 't2', status: 'running' } });
+  });
+
+  it('drops done tools and text blocks (already rendered on the closed page)', () => {
+    const carried = carryOverBlocks(blocks);
+    const ids = carried.map((b) => (b.kind === 'tool' ? b.tool.id : b.kind));
+    expect(ids).not.toContain('t1');
+    expect(ids).not.toContain('text');
   });
 });

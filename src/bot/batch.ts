@@ -13,6 +13,7 @@ import {
   markIdleTimeout,
   markInterrupted,
   reduce,
+  type Block,
   type RunState,
 } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
@@ -512,8 +513,10 @@ async function streamCardPages(
     while (!session.done) {
       // Each page starts from a clean slate: text/tool blocks and reasoning
       // are reset so later pages render only NEW content — re-rendering the
-      // accumulated state would immediately overflow again.
-      session.state = { ...session.state, blocks: [], reasoning: { content: '', active: false } };
+      // accumulated state would immediately overflow again. Running tools
+      // survive: their tool_result can land on the next page, and clearing
+      // them would drop the result (reduce can't find the block by id).
+      session.state = { ...session.state, blocks: carryOverBlocks(session.state.blocks), reasoning: { content: '', active: false } };
       const overflow = await runCardPage(
         channel, chatId, sendOpts, session, handle, sessions, scope, cwd,
         idleTimeoutMs, hooks, filter, pageIndex,
@@ -569,6 +572,17 @@ export function fallbackCard(state: RunState, filter: (s: RunState) => RunState)
     body: { elements: [{ tag: 'markdown', content: fallbackContent(state, filter) }] },
   };
 }
+
+/**
+ * Blocks carried into the next page. Only running tools survive: their
+ * `tool_result` may arrive after the page boundary, and clearing them would
+ * make `reduce` fail to find the block by id, silently dropping the result.
+ * Done tools and text blocks are already rendered on the page being closed.
+ */
+export function carryOverBlocks(blocks: Block[]): Block[] {
+  return blocks.filter((b) => b.kind === 'tool' && b.tool.status === 'running');
+}
+
 
 
 /** Run one card page; returns true if it overflowed (another page follows). */

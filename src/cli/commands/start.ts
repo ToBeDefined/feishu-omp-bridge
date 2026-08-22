@@ -256,7 +256,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
     try {
       await bridge.channel.send(
         chatId,
-        { markdown: '✅ **已上线**' },
+        { markdown: '🚀 **已上线**' },
         {},
       );
       log.info('notify', 'online', { chatId });

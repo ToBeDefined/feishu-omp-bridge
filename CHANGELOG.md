@@ -14,7 +14,9 @@
 ## [Unreleased]
 
 ### Added
-
+- **`feishu_send_card` host tool**：Agent 用高层结构（标题 + markdown 正文 +
+  按钮列表）发飞书交互卡片，点击经既有 `__codex_cb` 链路回填为
+  `[card-click]`，无需 shell 出 `lark-cli im send-card`。
 - **子代理生命周期渲染**：OMP 派发并行子代理时，卡片显示状态行
   （🤖 工作中 / ✅ 完成 / ❌ 失败 / ⏹ 已中止），不再黑盒。
 - **`/compact` 命令**：运行中压缩当前会话上下文，支持自定义指令

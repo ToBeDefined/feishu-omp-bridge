@@ -76,6 +76,10 @@ OMP RPC 的 extension UI request 会被映射为飞书卡片，并把用户响�
 | `feishu_send_message` | 向当前 chat 或显式 `chatId` 发送 Markdown。 |
 | `feishu_reply_message` | 回复触发消息或显式 `messageId`。 |
 | `feishu_get_message` | 按 `messageId` 拉取并规范化飞书消息。 |
+| `feishu_send_file` | 上传本地文件 / 图片并发送到当前 chat 或显式 `chatId`。 |
+| `feishu_send_card` | 用标题 + markdown 正文 + 按钮列表发交互卡片，点击经 `__codex_cb` 回填为 `[card-click]`。 |
+| `feishu_recall_message` | 撤回 bot 自己发出的消息。 |
+| `feishu_view_image` | 把本地图片注入当前 run，让模型直接看图。 |
 
 同时注册只读 `feishu://` host URI scheme：
 

@@ -13,6 +13,11 @@ export interface AgentCardButton {
   value: Record<string, unknown>;
 }
 
+/** Column-set row cap — Feishu rejects oversized cards; keep buttons sane. */
+const MAX_BUTTONS = 10;
+/** Markdown body cap — matches the text-block split used elsewhere. */
+const MAX_TEXT_CHARS = 4000;
+
 /**
  * Build a CardKit 2.0 card from a high-level shape: a markdown body plus a
  * row of callback buttons. Every button's value gets the agent-callback
@@ -22,6 +27,12 @@ export interface AgentCardButton {
 export function buildAgentCard(title: string, text: string, buttons: unknown): object {
   if (!Array.isArray(buttons) || buttons.length === 0) {
     throw new Error('buttons is required (at least one button)');
+  }
+  if (buttons.length > MAX_BUTTONS) {
+    throw new Error(`buttons 最多 ${MAX_BUTTONS} 个按钮，收到 ${buttons.length} 个`);
+  }
+  if (text.length > MAX_TEXT_CHARS) {
+    throw new Error(`正文过长：最多 ${MAX_TEXT_CHARS} 字符，收到 ${text.length} 字符`);
   }
   const normalized = buttons.map((raw) => {
     const b = raw as Partial<AgentCardButton> | null;

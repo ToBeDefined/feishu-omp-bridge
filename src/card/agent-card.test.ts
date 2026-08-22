@@ -61,6 +61,21 @@ describe('buildAgentCard', () => {
     expect(() => buildAgentCard('t', 'text', [{ label: 'x', value: 'not-object' }])).toThrow('label (string) and value (object)');
   });
 
+  it('rejects more than 10 buttons', () => {
+    const buttons = Array.from({ length: 11 }, (_, i) => ({ label: `b${i}`, value: { i } }));
+    expect(() => buildAgentCard('t', 'text', buttons)).toThrow('最多 10 个按钮');
+  });
+
+  it('rejects text longer than 4000 chars', () => {
+    expect(() => buildAgentCard('t', 'x'.repeat(4001), [{ label: 'go', value: {} }])).toThrow('正文过长');
+  });
+
+  it('accepts the boundary (10 buttons, 4000-char text)', () => {
+    const buttons = Array.from({ length: 10 }, (_, i) => ({ label: `b${i}`, value: { i } }));
+    const card = buildAgentCard('t', 'x'.repeat(4000), buttons) as unknown as Card;
+    expect(buttonsOf(card)).toHaveLength(10);
+  });
+
   it('exports the callback marker shared with the dispatcher', () => {
     expect(AGENT_CALLBACK_MARKER).toBe('__codex_cb');
   });

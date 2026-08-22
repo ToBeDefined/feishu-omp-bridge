@@ -10,7 +10,7 @@ async function handleRestart(_args: string, ctx: CommandContext): Promise<void> 
   log.info('command', 'restart', { scope: ctx.scope });
   await reply(
     ctx,
-    `🔄 正在重启 bot \`${ctx.controls.processId}\`…`,
+    `🔄 正在重启…`,
   );
   let restarted = false;
   try {

@@ -245,7 +245,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
     );
   }
 
-  // Startup notification: after a (re)start the bot is back online — tell
+  // Startup notification: the bot is back online after any (re)start — tell
   // every chat with a persisted session so the user isn't left guessing.
   // Best-effort; failures (chat gone, no permission) are logged, never fatal.
   // Only real chat ids are valid receive_ids. Session store keys are scopes:
@@ -256,12 +256,12 @@ export async function runStart(opts: StartOptions): Promise<void> {
     try {
       await bridge.channel.send(
         chatId,
-        { markdown: '🚀 **重启完成**' },
+        { markdown: '✅ **已上线**' },
         {},
       );
-      log.info('notify', 'restarted', { chatId });
+      log.info('notify', 'online', { chatId });
     } catch (err) {
-      log.warn('notify', 'restart-failed', {
+      log.warn('notify', 'online-failed', {
         chatId,
         err: err instanceof Error ? err.message : String(err),
       });

@@ -256,7 +256,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
     try {
       await bridge.channel.send(
         chatId,
-        { markdown: '🚀 **重启完成**\n\n已重新上线,可以继续聊天。' },
+        { markdown: '🚀 **重启完成**' },
         {},
       );
       log.info('notify', 'restarted', { chatId });

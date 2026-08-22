@@ -423,6 +423,7 @@ def repair_with_omp_guarded() -> bool:
     if not omp_lock.acquire():
         log("✗ 已有 omp 修复会话在运行，跳过本轮")
         return False
+    ok = False  # 初始化：repair_with_omp 若抛异常，finally 后仍安全
     try:
         # 代码损坏优先回滚到上一个稳定提交 —— 比让 omp 现场改代码更稳。
         if repair_rollback():

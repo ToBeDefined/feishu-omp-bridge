@@ -128,12 +128,29 @@ def heal(tmp_path, monkeypatch):
     return mod
 
 
+
+
+def test_healthy_records_good_sha_only_when_dist_matches(heal, monkeypatch):
+    """健康时仅在 dist 确由当前 HEAD build 出才更新 lastGoodSha。"""
+    monkeypatch.setattr(heal, "_git_head", lambda: "new")
+
+    # dist 匹配 → 记录
+    monkeypatch.setattr(heal, "_dist_matches_head", lambda head: True)
+    heal.heal_once()
+    assert heal._read_state().get("lastGoodSha") == "new"
+
+    # dist 不匹配 → 保留旧值，不把"没 build 的新 HEAD"记成 good
+    heal._write_state({"lastGoodSha": "old"})
+    monkeypatch.setattr(heal, "_dist_matches_head", lambda head: False)
+    heal.heal_once()
+    assert heal._read_state().get("lastGoodSha") == "old"
+
+
 # --- 1. 健康探测不误报 ---
 def test_healthy_no_false_alarm(heal):
     heal.heal_once()
     assert heal.state_get("fails") == 0
     assert heal.calls["restart"] == 0
-
 
 # --- 2. 进程死 → 连续异常 → restart 自愈 ---
 def test_proc_dead_triggers_restart(heal):

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderQuotedBlock, type QuotedContext } from './quote';
+import { parseMessageContent, renderQuotedBlock, type QuotedContext } from './quote';
 
 function q(over: Partial<QuotedContext> = {}): QuotedContext {
   return {
@@ -47,5 +47,29 @@ describe('renderQuotedBlock', () => {
     const out = renderQuotedBlock([q({ content: small })]);
     expect(out).toContain(small);
     expect(out).not.toContain('（引用内容已截断）');
+  });
+});
+
+describe('parseMessageContent', () => {
+  it('extracts text messages', () => {
+    expect(parseMessageContent('text', JSON.stringify({ text: 'hello' }))).toBe('hello');
+  });
+
+  it('joins post blocks', () => {
+    const post = JSON.stringify({
+      content: [
+        [{ tag: 'text', text: 'line1' }, { tag: 'text', text: 'line2' }],
+        [{ tag: 'text', text: 'line3' }],
+      ],
+    });
+    expect(parseMessageContent('post', post)).toBe('line1\nline2\nline3');
+  });
+
+  it('falls back to a type marker for other types', () => {
+    expect(parseMessageContent('image', JSON.stringify({ image_key: 'img_1' }))).toContain('[image]');
+  });
+
+  it('returns empty for empty content', () => {
+    expect(parseMessageContent('text', '')).toBe('');
   });
 });

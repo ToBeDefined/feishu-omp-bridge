@@ -177,3 +177,36 @@ export function renderQuotedBlock(quotes: QuotedContext[]): string {
   });
   return parts.join('\n');
 }
+
+/**
+ * Extract human-readable text from a raw Feishu message body. `rawContent`
+ * is the JSON string from `im.v1.message.list`'s `body.content`. Text and
+ * post messages get their text; anything else falls back to a `[type]`
+ * marker plus a capped raw prefix so the agent still sees what it is.
+ */
+export function parseMessageContent(msgType: string, rawContent: string): string {
+  if (!rawContent) return '';
+  try {
+    const parsed = JSON.parse(rawContent) as Record<string, unknown>;
+    if (msgType === 'text' && typeof parsed.text === 'string') {
+      return parsed.text;
+    }
+    if (msgType === 'post') {
+      const lines: string[] = [];
+      for (const block of Array.isArray(parsed.content) ? parsed.content : []) {
+        if (!Array.isArray(block)) continue;
+        for (const el of block) {
+          if (el && typeof el === 'object' && 'text' in el) {
+            const text = (el as { text?: unknown }).text;
+            if (typeof text === 'string' && text.trim()) lines.push(text);
+          }
+        }
+      }
+      return lines.join('\n');
+    }
+  } catch {
+    /* fall through to raw marker */
+  }
+  const prefix = rawContent.slice(0, 200);
+  return `[${msgType}] ${prefix}`;
+}

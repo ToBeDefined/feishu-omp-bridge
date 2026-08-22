@@ -26,6 +26,7 @@ describe('createFeishuHostIntegration', () => {
       'feishu_send_message',
       'feishu_reply_message',
       'feishu_get_message',
+      'feishu_list_messages',
       'feishu_send_file',
       'feishu_send_card',
       'feishu_recall_message',
@@ -213,5 +214,57 @@ describe('feishu_send_card', () => {
     const tool = host.tools.find((t) => t.definition.name === 'feishu_send_card')!;
     await expect(tool.execute({ text: 'x', buttons: [{ label: 'a', value: {} }] })).rejects.toThrow('title is required');
     await expect(tool.execute({ title: 't', text: 'x' })).rejects.toThrow('at least one button');
+  });
+});
+
+describe('feishu_list_messages', () => {
+  it('lists recent messages with normalized text content', async () => {
+    const listed: unknown[] = [];
+    const channel = {
+      rawClient: {
+        im: {
+          v1: {
+            message: {
+              list: async (p: unknown) => {
+                listed.push(p);
+                return {
+                  data: {
+                    items: [
+                      {
+                        message_id: 'om_1',
+                        msg_type: 'text',
+                        create_time: '1720000000000',
+                        sender: { id: 'ou_1', sender_name: 'alice' },
+                        body: { content: JSON.stringify({ text: 'hello world' }) },
+                      },
+                      {
+                        message_id: 'om_2',
+                        msg_type: 'image',
+                        create_time: '1719990000000',
+                        sender: { id: 'ou_2', sender_name: 'bob' },
+                        body: { content: JSON.stringify({ image_key: 'img_1' }) },
+                      },
+                    ],
+                  },
+                };
+              },
+            },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+    const host = createFeishuHostIntegration(channel, { scope: 's', chatId: 'chat-1', cwd: '/x' });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_list_messages')!;
+
+    const res = await tool.execute({ limit: 10 });
+    const out = JSON.parse(JSON.stringify(res.result));
+    const messages = out.content[0].text ? JSON.parse(out.content[0].text).messages : [];
+    expect(messages).toHaveLength(2);
+    expect(messages[0].content).toBe('hello world');
+    expect(messages[0].senderName).toBe('alice');
+    expect(messages[1].content).toContain('[image]');
+    const call = listed[0] as { params: Record<string, unknown> };
+    expect(call.params.container_id).toBe('chat-1');
+    expect(call.params.page_size).toBe(10);
   });
 });

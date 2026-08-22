@@ -14,6 +14,9 @@
 ## [Unreleased]
 
 ### Added
+- **`feishu_list_messages` host tool**：Agent 拉取当前 chat 最近消息（可
+  指定 chatId / 条数上限 / 截止时间），用于回顾讨论历史、整理群聊纪要、
+  回答"刚才是谁说了什么"。
 - **`feishu_send_card` host tool**：Agent 用高层结构（标题 + markdown 正文 +
   按钮列表）发飞书交互卡片，点击经既有 `__codex_cb` 链路回填为
   `[card-click]`，无需 shell 出 `lark-cli im send-card`。按钮上限 10 个、

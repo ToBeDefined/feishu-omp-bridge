@@ -4,8 +4,8 @@ import { basename, extname } from 'node:path';
 import type { AgentHostTool, AgentHostUriScheme } from '../agent/types';
 import { buildAgentCard } from '../card/agent-card';
 import { sendManagedCard } from '../card/managed';
+import { fetchQuotedContext, parseMessageContent } from './quote';
 import type { ActiveRuns } from './active-runs';
-import { fetchQuotedContext } from './quote';
 
 export interface FeishuHostContext {
   scope: string;
@@ -32,6 +32,7 @@ export function createFeishuHostIntegration(
       sendMessageTool(channel, ctx),
       replyMessageTool(channel, ctx),
       getMessageTool(channel),
+      listMessagesTool(channel, ctx),
       sendFileTool(channel, ctx),
       sendCardTool(channel, ctx),
       recallMessageTool(channel),
@@ -114,6 +115,71 @@ function getMessageTool(channel: LarkChannel): AgentHostTool {
       const message = await fetchQuotedContext(channel, messageId);
       if (!message) return { result: textResult(`message not found or inaccessible: ${messageId}`), isError: true };
       return { result: jsonResult(message) };
+    },
+  };
+}
+
+function listMessagesTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTool {
+  return {
+    definition: {
+      name: 'feishu_list_messages',
+      label: 'List Feishu messages',
+      description:
+        'List recent messages in a Feishu chat (newest first). Useful for reviewing discussion history, summarizing a group chat, or finding context before replying.',
+      parameters: objectSchema({
+        chatId: { type: 'string', description: 'Optional target chat_id. Defaults to the current chat.' },
+        limit: { type: 'number', description: 'Max messages to return (1-50, default 20).' },
+        beforeTime: { type: 'string', description: 'Optional ISO 8601 timestamp; only return messages created before this time.' },
+      }),
+    },
+    async execute(args) {
+      const chatId = optionalString(args, 'chatId') ?? ctx.chatId;
+      const rawLimit = args['limit'];
+      const limit =
+        typeof rawLimit === 'number' && Number.isFinite(rawLimit)
+          ? Math.max(1, Math.min(50, Math.floor(rawLimit)))
+          : 20;
+      const params: {
+        container_id_type: string;
+        container_id: string;
+        sort_type: 'ByCreateTimeDesc';
+        page_size: number;
+        end_time?: string;
+      } = {
+        container_id_type: 'chat',
+        container_id: chatId,
+        sort_type: 'ByCreateTimeDesc',
+        page_size: limit,
+      };
+      const before = optionalString(args, 'beforeTime');
+      if (before) {
+        const ms = Date.parse(before);
+        if (Number.isFinite(ms)) params.end_time = String(Math.floor(ms / 1000));
+      }
+      const r = (await channel.rawClient.im.v1.message.list({ params })) as {
+        data?: {
+          items?: Array<{
+            message_id?: string;
+            msg_type?: string;
+            create_time?: string;
+            sender?: { id?: string; sender_name?: string };
+            body?: { content?: string };
+          }>;
+        };
+      };
+      const items = r?.data?.items ?? [];
+      const messages = items.map((m) => ({
+        messageId: m.message_id ?? '',
+        senderId: m.sender?.id ?? '',
+        senderName: m.sender?.sender_name ?? '',
+        msgType: m.msg_type ?? 'text',
+        createTime:
+          m.create_time && Number.parseInt(m.create_time, 10) > 0
+            ? new Date(Number.parseInt(m.create_time, 10)).toISOString()
+            : '',
+        content: parseMessageContent(m.msg_type ?? 'text', m.body?.content ?? ''),
+      }));
+      return { result: jsonResult({ chatId, count: messages.length, messages }) };
     },
   };
 }

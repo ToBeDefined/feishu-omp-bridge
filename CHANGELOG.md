@@ -26,6 +26,9 @@
   链接，完整 URL 作为上下文说明，避免长 query 被终端 viewport 截断。
 
 ### Fixed
+- `/restart` 名不副实：原来只做进程内重连，不重载代码，改完代码
+  重启"几次"仍是旧行为 → 改为 launchd kickstart 真重启进程，加载新
+  代码；非 launchd 环境自动回退进程内重连。`/reconnect` 保持重连语义。
 - Agent 卡片点击后无反馈、可重复点击：回调转发后卡片按钮仍可点 →
   点击即冻结为"✅ 已选择 xxx"（bridge 托管卡更新卡片，按钮加 `name`
   供识别），并按 messageId 去重，双击/重复点不再重复转发。

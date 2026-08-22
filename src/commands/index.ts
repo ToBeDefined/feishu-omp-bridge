@@ -16,6 +16,10 @@ export interface Controls {
   /** Restart the bridge in-process: disconnect WS, kill OMP runs, reload
    * config, reconnect with the new credentials. */
   restart(): Promise<void>;
+  /** True process restart: ask launchd to kill this process so the daemon
+   * relaunches with newly built code. Returns false when not running under
+   * launchd (caller falls back to in-process `restart`). */
+  restartProcess(): Promise<boolean>;
   /** Stop this whole process gracefully (disconnect + exit). Used by /exit
    * when the user targets the receiving process itself. */
   exit(): Promise<void>;

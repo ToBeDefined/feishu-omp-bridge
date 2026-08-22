@@ -24,6 +24,7 @@ import {
   saveConfig,
 } from '../../config/store';
 import { gcOldLogs, log } from '../../core/logger';
+import { kickstart } from '../../daemon/launchd';
 import { gcMediaCache } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
 import {
@@ -155,6 +156,57 @@ export async function runStart(opts: StartOptions): Promise<void> {
   const scheduler = new Scheduler();
   await scheduler.load();
 
+  // In-process reconnect: new channel + reloaded config, same process. Used
+  // by /account, /reconnect, and the keepalive force-reconnect. Does NOT
+  // reload code — for that, `restartProcess` bounces the whole process.
+  const restartInProcess = async (): Promise<void> => {
+    if (restarting) return;
+    restarting = true;
+    try {
+      const next = await loadConfig(configPath);
+      if (!isComplete(next)) throw new Error('config incomplete after change');
+      console.log(
+        `[restart] connecting new bridge with appId=${next.accounts.app.id} tenant=${next.accounts.app.tenant}...`,
+      );
+      // Connect-before-disconnect: if the new bridge fails to come up
+      // (e.g. network outage during a force-reconnect), throwing here
+      // leaves the old bridge — and its keepalive timer — untouched, so
+      // the next keepalive tick (~15s later) can retry restart. Without
+      // this ordering, a failed restart would tear down the only
+      // keepalive in the process and the bot would never recover until
+      // someone manually restarts it.
+      const next_bridge = await startChannel({
+        cfg: next,
+        agent,
+        sessions,
+        workspaces,
+        controls,
+        scheduler,
+      });
+      console.log('[restart] disconnecting old bridge...');
+      try {
+        await bridge.disconnect();
+      } catch (err) {
+        console.warn('[restart] old disconnect failed:', err);
+      }
+      bridge = next_bridge;
+      controls.cfg = next;
+      // Keep the registry in sync so /ps reflects the new app after an
+      // /account change. Same process id, new app fields.
+      await updateEntry(entry.id, {
+        appId: next.accounts.app.id,
+        tenant: next.accounts.app.tenant,
+        configPath,
+        botName: bridge.channel.botIdentity?.name,
+      }).catch((err) =>
+        log.warn('registry', 'update-failed', { err: String(err) }),
+      );
+      console.log('✓ 已用新凭据重连');
+    } finally {
+      restarting = false;
+    }
+  };
+
   const controls: Controls = {
     configPath,
     cfg,
@@ -164,51 +216,20 @@ export async function runStart(opts: StartOptions): Promise<void> {
       await stop('exit-command');
     },
     async restart() {
-      if (restarting) return;
-      restarting = true;
-      try {
-        const next = await loadConfig(configPath);
-        if (!isComplete(next)) throw new Error('config incomplete after change');
-        console.log(
-          `[restart] connecting new bridge with appId=${next.accounts.app.id} tenant=${next.accounts.app.tenant}...`,
-        );
-        // Connect-before-disconnect: if the new bridge fails to come up
-        // (e.g. network outage during a force-reconnect), throwing here
-        // leaves the old bridge — and its keepalive timer — untouched, so
-        // the next keepalive tick (~15s later) can retry restart. Without
-        // this ordering, a failed restart would tear down the only
-        // keepalive in the process and the bot would never recover until
-        // someone manually restarts it.
-        const next_bridge = await startChannel({
-          cfg: next,
-          agent,
-          sessions,
-          workspaces,
-          controls,
-          scheduler,
-        });
-        console.log('[restart] disconnecting old bridge...');
-        try {
-          await bridge.disconnect();
-        } catch (err) {
-          console.warn('[restart] old disconnect failed:', err);
-        }
-        bridge = next_bridge;
-        controls.cfg = next;
-        // Keep the registry in sync so /ps reflects the new app after an
-        // /account change. Same process id, new app fields.
-        await updateEntry(entry.id, {
-          appId: next.accounts.app.id,
-          tenant: next.accounts.app.tenant,
-          configPath,
-          botName: bridge.channel.botIdentity?.name,
-        }).catch((err) =>
-          log.warn('registry', 'update-failed', { err: String(err) }),
-        );
-        console.log('✓ 已用新凭据重连');
-      } finally {
-        restarting = false;
+      await restartInProcess();
+    },
+    async restartProcess() {
+      // Bounce the whole process so the daemon relaunches with newly built
+      // code. launchctl kickstart -k kills this process; KeepAlive starts
+      // the fresh binary. Only meaningful under launchd — elsewhere fall
+      // back to the in-process reconnect so /restart still does something.
+      const result = kickstart();
+      if (!result.ok) {
+        log.warn('restart', 'kickstart-failed', { stderr: result.stderr.slice(0, 200) });
+        await restartInProcess();
+        return false;
       }
+      return true;
     },
   };
 

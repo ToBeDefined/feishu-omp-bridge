@@ -10,6 +10,7 @@ import { log } from '../core/logger';
 import type { SessionStore } from '../session/store';
 import { AGENT_CALLBACK_MARKER } from './agent-card';
 import { updateManagedCard } from './managed';
+import { escapeMd } from './templates';
 import {
   isOmpUiPayload,
   ompUiRequestId,
@@ -84,7 +85,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   // into the scope's pending queue so OMP resumes its session and sees
   // the click as a follow-up message, with full context of what it sent.
   if (AGENT_CALLBACK_MARKER in payload) {
-    forwardToAgent(deps, payload, formValue, scope, threadId, mode);
+    await forwardToAgent(deps, payload, formValue, scope, threadId, mode);
     return;
   }
 
@@ -166,14 +167,25 @@ async function lookupMessageThreadId(
   }
 }
 
-function forwardToAgent(
+/** Cards whose click was already forwarded — one click per card, no double-send. */
+const forwardedCardClicks = new Set<string>();
+
+async function forwardToAgent(
   deps: CardDispatchDeps,
   payload: Record<string, unknown>,
   formValue: Record<string, unknown> | undefined,
   scope: string,
   threadId: string | undefined,
   mode: 'p2p' | 'group' | 'topic',
-): void {
+): Promise<void> {
+  // One click per card: a second tap (double-tap, or an un-updated card)
+  // must not forward the same choice twice.
+  if (forwardedCardClicks.has(deps.evt.messageId)) {
+    log.info('cardAction', 'duplicate-click', { messageId: deps.evt.messageId });
+    return;
+  }
+  forwardedCardClicks.add(deps.evt.messageId);
+
   // Strip the marker so OMP only sees the meaningful fields it set.
   const { [AGENT_CALLBACK_MARKER]: _marker, ...agentPayload } = payload;
   const merged = formValue ? { ...agentPayload, form_value: formValue } : agentPayload;
@@ -181,6 +193,19 @@ function forwardToAgent(
     scope,
     payload: JSON.stringify(merged).slice(0, 200),
   });
+
+  // Reflect the choice on the card so the buttons stop being re-clickable.
+  // Bridge-managed cards (feishu_send_card) update in place; externally
+  // sent cards (lark-cli) aren't managed, so the update silently no-ops.
+  const label = typeof deps.evt.action.name === 'string' && deps.evt.action.name.trim()
+    ? deps.evt.action.name.trim()
+    : undefined;
+  if (label) {
+    await updateManagedCard(deps.channel, deps.evt.messageId, renderAgentSelectedCard(label)).catch(() => {
+      /* unmanaged card — nothing to update */
+    });
+  }
+
   const synthetic: NormalizedMessage = {
     messageId: deps.evt.messageId,
     chatId: deps.evt.chatId,
@@ -197,6 +222,15 @@ function forwardToAgent(
     createTime: Date.now(),
   };
   deps.pending.push(scope, synthetic);
+}
+
+/** Card shown after an agent-card click: the choice, frozen, no buttons. */
+export function renderAgentSelectedCard(label: string): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: `✅ 已选择 ${label}` } },
+    body: { elements: [{ tag: 'markdown', content: `✅ 已选择：**${escapeMd(label)}**` }] },
+  };
 }
 
 async function respondToOmpUi(

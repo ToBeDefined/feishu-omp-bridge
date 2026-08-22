@@ -50,6 +50,7 @@ export function buildAgentCard(title: string, text: string, buttons: unknown): o
               {
                 tag: 'button',
                 text: { tag: 'plain_text', content: label },
+                name: label,
                 type: i === 0 ? 'primary' : 'default',
                 behaviors: [{ type: 'callback', value: { ...value, [AGENT_CALLBACK_MARKER]: true } }],
               },

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AGENT_CALLBACK_MARKER, buildAgentCard } from './agent-card';
 
-type Button = { text: { content: string }; type: string; behaviors: Array<{ type: string; value: unknown }> };
+type Button = { name: string; text: { content: string }; type: string; behaviors: Array<{ type: string; value: unknown }> };
 type Card = {
   schema: string;
   config: { summary: { content: string } };
@@ -29,6 +29,7 @@ describe('buildAgentCard', () => {
 
     const buttons = buttonsOf(card);
     expect(buttons).toHaveLength(2);
+    expect(buttons[0]?.name).toBe('发布');
     expect(buttons[0]?.text.content).toBe('发布');
     expect(buttons[0]?.type).toBe('primary');
     expect(buttons[0]?.behaviors[0]?.type).toBe('callback');

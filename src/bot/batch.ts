@@ -483,6 +483,9 @@ async function processAgentStream(
   await reapRun(handle);
 }
 
+/** Outbound options shared by the card stream and fallback sends. */
+type SendOpts = { replyTo?: string; replyInThread?: boolean };
+
 /**
  * Card reply mode pagination: drive the stream across multiple messages.
  * A single card can't hold an unbounded number of tool panels (Feishu
@@ -494,7 +497,7 @@ async function processAgentStream(
 async function streamCardPages(
   channel: LarkChannel,
   chatId: string,
-  sendOpts: object,
+  sendOpts: SendOpts,
   handle: RunHandle,
   sessions: SessionStore,
   scope: string,
@@ -523,12 +526,16 @@ async function streamCardPages(
     }
   } catch (err) {
     // Card stream died mid-run (schema rejected, network, SDK limit…). Pages
-    // already posted survive; deliver the current page's content as plain
-    // markdown so the user's turn is never silently swallowed. Rethrow so
+    // already posted survive. Deliver the current page as a minimal card
+    // first (near-impossible to reject); if even that fails, fall back to
+    // plain text so the user's turn is never silently swallowed. Rethrow so
     // runAgentBatch still logs the failure.
-    await channel
-      .send(chatId, { markdown: fallbackBody(session.state, filter) }, sendOpts)
-      .catch(() => log.fail('card', new Error('fallback send failed')));
+    const replyTo = sendOpts.replyTo;
+    await sendManagedCard(channel, chatId, fallbackCard(session.state, filter), replyTo).catch(() =>
+      channel.send(chatId, { markdown: fallbackContent(session.state, filter) }, sendOpts).catch(() =>
+        log.fail('card', new Error('fallback send failed')),
+      ),
+    );
     throw err;
   } finally {
     // Single reap point: normal end, interrupt, and mid-stream failure all
@@ -540,15 +547,27 @@ async function streamCardPages(
 }
 
 /**
- * Markdown body for the card-stream fallback. When card rendering dies
- * mid-run we deliver whatever the current page holds as plain markdown
- * instead of stranding the user on a forever-running card.
+ * Markdown text for the card-stream fallback. When card rendering dies
+ * mid-run we deliver whatever the current page holds instead of stranding
+ * the user on a forever-running card.
  */
-export function fallbackBody(state: RunState, filter: (s: RunState) => RunState): string {
+export function fallbackContent(state: RunState, filter: (s: RunState) => RunState): string {
   const text = renderText(filter(state)).trim();
   return text
-    ? `⚠️ 卡片渲染中断，剩余内容降级为文本：\n\n${text}`
+    ? `⚠️ 卡片渲染中断，剩余内容如下：\n\n${text}`
     : '⚠️ 回复渲染失败。可 /doctor 查看日志。';
+}
+
+/**
+ * Minimal schema-2.0 card for the fallback: a single markdown element, no
+ * panels/buttons/notes — the smallest surface Feishu can reject.
+ */
+export function fallbackCard(state: RunState, filter: (s: RunState) => RunState): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '回复（降级）' } },
+    body: { elements: [{ tag: 'markdown', content: fallbackContent(state, filter) }] },
+  };
 }
 
 
@@ -556,7 +575,7 @@ export function fallbackBody(state: RunState, filter: (s: RunState) => RunState)
 async function runCardPage(
   channel: LarkChannel,
   chatId: string,
-  sendOpts: object,
+  sendOpts: SendOpts,
   session: StreamSession,
   handle: RunHandle,
   sessions: SessionStore,

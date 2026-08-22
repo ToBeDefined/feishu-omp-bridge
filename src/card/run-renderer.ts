@@ -28,7 +28,7 @@ export interface CardPageOptions {
 export function renderCard(state: RunState, opts?: CardPageOptions): object {
   const elements: object[] = [];
 
-  if (opts?.topNote) elements.push(noteElement(opts.topNote));
+  if (opts?.topNote) elements.push(noteMd(opts.topNote));
 
   if (hasReasoningSubstance(state.reasoning.content)) {
     elements.push(reasoningPanel(state.reasoning.content, state.reasoning.active));
@@ -74,7 +74,7 @@ export function renderCard(state: RunState, opts?: CardPageOptions): object {
     elements.push(stopButton());
   }
 
-  if (opts?.bottomNote) elements.push(noteElement(opts.bottomNote));
+  if (opts?.bottomNote) elements.push(noteMd(opts.bottomNote));
 
   return {
     schema: '2.0',
@@ -179,11 +179,6 @@ function markdown(content: string): object {
 
 function noteMd(content: string): object {
   return { tag: 'markdown', content, text_size: 'notation' };
-}
-
-/** A card `note` element (small grey caption, non-interactive). */
-function noteElement(text: string): object {
-  return { tag: 'note', elements: [{ tag: 'plain_text', content: text }] };
 }
 
 function stopButton(): object {

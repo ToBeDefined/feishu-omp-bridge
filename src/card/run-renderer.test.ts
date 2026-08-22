@@ -38,9 +38,7 @@ function countByTag(elements: unknown[], tag: string): number {
   ).length;
 }
 
-function isNote(e: unknown): boolean {
-  return typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'note';
-}
+
 
 /** Longest markdown content starting with the given prefix, if any. */
 function longMarkdown(elements: unknown[], prefix: string): string | undefined {
@@ -71,7 +69,7 @@ describe('renderCard', () => {
   });
 
 
-  it('renders page notes (top and bottom) for the pagination flow', () => {
+  it('renders page notes as notation markdown (schema 2.0 rejects the `note` tag)', () => {
     const state = longRunState(0);
     state.blocks.push({ kind: 'text', content: 'hello', streaming: false });
     const card = renderCard(
@@ -82,9 +80,17 @@ describe('renderCard', () => {
       },
     );
     const elements = cardElements(card);
-    expect(countByTag(elements, 'note')).toBe(2);
-    expect(elements[0]).toSatisfy(isNote); // top note is first
-    expect(elements[elements.length - 1]).toSatisfy(isNote); // bottom note is last
+    expect(countByTag(elements, 'note')).toBe(0);
+    expect(elements[0]).toMatchObject({
+      tag: 'markdown',
+      content: '⬆️ 接上一条消息',
+      text_size: 'notation',
+    });
+    expect(elements[elements.length - 1]).toMatchObject({
+      tag: 'markdown',
+      content: '⬇️ 内容较长，已分页，下一条消息继续',
+      text_size: 'notation',
+    });
   });
 
   it('expands only the latest tool panel while running', () => {

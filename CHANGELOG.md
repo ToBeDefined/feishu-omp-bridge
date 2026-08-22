@@ -25,7 +25,9 @@
   链接，完整 URL 作为上下文说明，避免长 query 被终端 viewport 截断。
 
 ### Fixed
-
+- 分页卡片 400 失败：run-renderer 用 `tag: 'note'` 渲染分页提示，而
+  CardKit 2.0 schema 已不支持 `note` 元素（ErrCode 200861）→ 改用
+  `markdown` + `text_size: 'notation'`，与其余注记统一。
 - 长正文静默截断：run-renderer 对 text 块截断与分页机制冲突导致内容
   丢失 → 改为按 4000 字符分块 + 卡片分页，内容零丢失。
 - `/thinking` 不生效：thinking 在 adapter 构造时固化，per-run 不读配置

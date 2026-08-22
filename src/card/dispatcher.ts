@@ -8,6 +8,7 @@ import { runCommandHandler, type CommandContext, type Controls } from '../comman
 import { isChatAllowed, isUserAllowed } from '../config/schema';
 import { log } from '../core/logger';
 import type { SessionStore } from '../session/store';
+import { AGENT_CALLBACK_MARKER } from './agent-card';
 import { updateManagedCard } from './managed';
 import {
   isOmpUiPayload,
@@ -18,13 +19,6 @@ import {
 } from './omp-ui';
 import type { WorkspaceStore } from '../workspace/store';
 
-/** Marker key on a button's value object that flags the cardAction as
- * a callback that should be forwarded back to the agent instead of dispatched
- * to a built-in command handler. The double-underscore sigils make it
- * virtually impossible to collide with normal payload fields the agent
- * might set.
- */
-const AGENT_CALLBACK_MARKER = '__codex_cb';
 
 export interface CardDispatchDeps {
   channel: LarkChannel;

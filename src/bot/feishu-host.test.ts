@@ -27,6 +27,7 @@ describe('createFeishuHostIntegration', () => {
       'feishu_reply_message',
       'feishu_get_message',
       'feishu_send_file',
+      'feishu_send_card',
       'feishu_recall_message',
       'feishu_view_image',
     ]);
@@ -165,5 +166,52 @@ describe('feishu_view_image', () => {
     await import('node:fs/promises').then((fs) => fs.writeFile(tmp, Buffer.from([0x89, 0x50, 0x4e, 0x47])));
     await expect(tool.execute({ path: tmp })).rejects.toThrow('no active run');
     await import('node:fs/promises').then((fs) => fs.rm(tmp, { force: true }));
+  });
+});
+
+describe('feishu_send_card', () => {
+  it('builds and sends an agent callback card, replying to the triggering message', async () => {
+    const cardCreated: unknown[] = [];
+    const replies: unknown[] = [];
+    const channel = {
+      rawClient: {
+        cardkit: {
+          v1: {
+            card: { create: async (p: unknown) => { cardCreated.push(p); return { data: { card_id: 'card_1' } }; } },
+          },
+        },
+        im: {
+          v1: { message: { reply: async (p: unknown) => { replies.push(p); return { data: { message_id: 'om_sent' } }; } } },
+        },
+      },
+    } as unknown as LarkChannel;
+    const host = createFeishuHostIntegration(channel, {
+      scope: 'chat-1', chatId: 'chat-1', replyToMessageId: 'msg-1', cwd: '/x',
+    });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_send_card')!;
+
+    const res = await tool.execute({
+      title: '确认发布',
+      text: '要发布吗？',
+      buttons: [{ label: '发布', value: { action: 'deploy' } }],
+    });
+
+    expect(JSON.stringify(res.result)).toContain('om_sent');
+    const cardCall = cardCreated[0] as { data: { type: string; data: string } };
+    expect(cardCall.data.type).toBe('card_json');
+    const card = JSON.parse(cardCall.data.data);
+    expect(card.body.elements[1].actions[0].behaviors[0].value).toEqual({
+      action: 'deploy', __codex_cb: true,
+    });
+    expect(replies[0]).toEqual({ path: { message_id: 'msg-1' }, data: { msg_type: 'interactive', content: expect.any(String) } });
+  });
+
+  it('requires title and buttons', async () => {
+    const host = createFeishuHostIntegration({} as unknown as LarkChannel, {
+      scope: 'chat-1', chatId: 'chat-1', cwd: '/x',
+    });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_send_card')!;
+    await expect(tool.execute({ text: 'x', buttons: [{ label: 'a', value: {} }] })).rejects.toThrow('title is required');
+    await expect(tool.execute({ title: 't', text: 'x' })).rejects.toThrow('at least one button');
   });
 });

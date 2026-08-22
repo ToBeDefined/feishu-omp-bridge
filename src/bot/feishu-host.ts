@@ -2,6 +2,8 @@ import type { LarkChannel } from '@larksuiteoapi/node-sdk';
 import { readFile, stat } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import type { AgentHostTool, AgentHostUriScheme } from '../agent/types';
+import { buildAgentCard } from '../card/agent-card';
+import { sendManagedCard } from '../card/managed';
 import type { ActiveRuns } from './active-runs';
 import { fetchQuotedContext } from './quote';
 
@@ -31,6 +33,7 @@ export function createFeishuHostIntegration(
       replyMessageTool(channel, ctx),
       getMessageTool(channel),
       sendFileTool(channel, ctx),
+      sendCardTool(channel, ctx),
       recallMessageTool(channel),
       viewImageTool(channel, ctx),
     ],
@@ -253,6 +256,42 @@ function viewImageTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostT
       const ok = await activeRuns.submitPrompt(ctx.scope, 'follow_up' as const, message, [path]);
       if (!ok) throw new Error('failed to inject image into the active run');
       return { result: textResult(`已注入图片 ${path} 供查看`) };
+    },
+  };
+}
+
+function sendCardTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTool {
+  return {
+    definition: {
+      name: 'feishu_send_card',
+      label: 'Send Feishu interactive card',
+      description:
+        'Send an interactive card with buttons to the current Feishu chat (or as a reply to a message_id). When the user clicks a button, the button value is delivered back to this conversation as a card-click. Use for confirmations, choices, and structured input.',
+      parameters: objectSchema({
+        title: { type: 'string', description: 'Card summary / title.' },
+        text: { type: 'string', description: 'Markdown body shown on the card.' },
+        buttons: {
+          type: 'array',
+          description: 'Buttons to show; each needs label (string) and value (object). First button renders primary.',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string' },
+              value: { type: 'object' },
+            },
+            required: ['label', 'value'],
+          },
+        },
+        replyTo: { type: 'string', description: 'Optional message_id to reply to. Defaults to the triggering message.' },
+      }, ['title', 'text', 'buttons']),
+    },
+    async execute(args) {
+      const title = requiredString(args, 'title');
+      const text = requiredString(args, 'text');
+      const replyTo = optionalString(args, 'replyTo') ?? ctx.replyToMessageId;
+      const card = buildAgentCard(title, text, args['buttons']);
+      const { messageId } = await sendManagedCard(channel, ctx.chatId, card, replyTo);
+      return { result: jsonResult({ messageId }) };
     },
   };
 }

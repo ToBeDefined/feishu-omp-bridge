@@ -22,7 +22,7 @@ async function handleRestart(_args: string, ctx: CommandContext): Promise<void> 
   }
   try {
     if (restarted) {
-      await reply(ctx, '✅ 重启完成，已重新连接。');
+      await reply(ctx, '🚀 重启完成，已重新连接。');
     } else {
       await reply(ctx, '❌ 重启失败，但原连接已保留，bot 仍在线。');
     }

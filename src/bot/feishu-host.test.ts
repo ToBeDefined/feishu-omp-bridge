@@ -200,7 +200,7 @@ describe('feishu_send_card', () => {
     const cardCall = cardCreated[0] as { data: { type: string; data: string } };
     expect(cardCall.data.type).toBe('card_json');
     const card = JSON.parse(cardCall.data.data);
-    expect(card.body.elements[1].actions[0].behaviors[0].value).toEqual({
+    expect(card.body.elements[1].columns[0].elements[0].behaviors[0].value).toEqual({
       action: 'deploy', __codex_cb: true,
     });
     expect(replies[0]).toEqual({ path: { message_id: 'msg-1' }, data: { msg_type: 'interactive', content: expect.any(String) } });

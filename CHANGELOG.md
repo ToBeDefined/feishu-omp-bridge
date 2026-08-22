@@ -28,6 +28,9 @@
 - 卡片渲染失败导致回复永久停在"工作中"：card 流一旦中断（schema 400 /
   网络 / SDK 限制）只 stop run，用户回复被吞 → 新增降级路径，优先发
   极简卡片（仅 markdown 元素），再失败兜底纯文本，绝不让用户消息石沉大海。
+- 交互卡片按钮 400 失败：`feishu_send_card` 与 OMP confirm 卡片用
+  `tag: 'action'` 放按钮，schema 2.0 同样不支持（ErrCode 200861
+  `unsupported tag action`）→ 改为 `column_set` + `column` 布局。
 - 分页卡片 400 失败：run-renderer 用 `tag: 'note'` 渲染分页提示，而
   CardKit 2.0 schema 已不支持 `note` 元素（ErrCode 200861）→ 改用
   `markdown` + `text_size: 'notation'`，与其余注记统一。

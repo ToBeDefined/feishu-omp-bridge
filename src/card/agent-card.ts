@@ -40,12 +40,20 @@ export function buildAgentCard(title: string, text: string, buttons: unknown): o
       elements: [
         { tag: 'markdown', content: text },
         {
-          tag: 'action',
-          actions: normalized.map(({ label, value }, i) => ({
-            tag: 'button',
-            text: { tag: 'plain_text', content: label },
-            type: i === 0 ? 'primary' : 'default',
-            behaviors: [{ type: 'callback', value: { ...value, [AGENT_CALLBACK_MARKER]: true } }],
+          tag: 'column_set',
+          flex_mode: 'flow',
+          horizontal_spacing: 'small',
+          columns: normalized.map(({ label, value }, i) => ({
+            tag: 'column',
+            width: 'auto',
+            elements: [
+              {
+                tag: 'button',
+                text: { tag: 'plain_text', content: label },
+                type: i === 0 ? 'primary' : 'default',
+                behaviors: [{ type: 'callback', value: { ...value, [AGENT_CALLBACK_MARKER]: true } }],
+              },
+            ],
           })),
         },
       ],

@@ -48,11 +48,13 @@ export function renderOmpUiRequestCard(request: AgentUiRequest, scope?: string):
   if (request.method === 'confirm') {
     elements.push(markdown(request.message));
     elements.push({
-      tag: 'action',
-      actions: [
-        button('确认', 'primary', callbackValue(request, 'confirm', scope)),
-        button('否', 'default', callbackValue(request, 'deny', scope)),
-        button('取消', 'danger', callbackValue(request, 'cancel', scope)),
+      tag: 'column_set',
+      flex_mode: 'flow',
+      horizontal_spacing: 'small',
+      columns: [
+        { tag: 'column', width: 'auto', elements: [button('确认', 'primary', callbackValue(request, 'confirm', scope))] },
+        { tag: 'column', width: 'auto', elements: [button('否', 'default', callbackValue(request, 'deny', scope))] },
+        { tag: 'column', width: 'auto', elements: [button('取消', 'danger', callbackValue(request, 'cancel', scope))] },
       ],
     });
   } else if (request.method === 'select') {

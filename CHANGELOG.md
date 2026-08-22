@@ -25,6 +25,9 @@
   链接，完整 URL 作为上下文说明，避免长 query 被终端 viewport 截断。
 
 ### Fixed
+- 卡片渲染失败导致回复永久停在"工作中"：card 流一旦中断（schema 400 /
+  网络 / SDK 限制）只 stop run，用户回复被吞 → 新增降级路径，把当前页
+  内容以 markdown 交付，绝不让用户消息石沉大海。
 - 分页卡片 400 失败：run-renderer 用 `tag: 'note'` 渲染分页提示，而
   CardKit 2.0 schema 已不支持 `note` 元素（ErrCode 200861）→ 改用
   `markdown` + `text_size: 'notation'`，与其余注记统一。

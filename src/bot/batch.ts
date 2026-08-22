@@ -521,6 +521,15 @@ async function streamCardPages(
       if (session.state.terminal !== 'running') break;
       pageIndex += 1;
     }
+  } catch (err) {
+    // Card stream died mid-run (schema rejected, network, SDK limit…). Pages
+    // already posted survive; deliver the current page's content as plain
+    // markdown so the user's turn is never silently swallowed. Rethrow so
+    // runAgentBatch still logs the failure.
+    await channel
+      .send(chatId, { markdown: fallbackBody(session.state, filter) }, sendOpts)
+      .catch(() => log.fail('card', new Error('fallback send failed')));
+    throw err;
   } finally {
     // Single reap point: normal end, interrupt, and mid-stream failure all
     // converge here — the OMP child must never outlive the run.
@@ -529,6 +538,19 @@ async function streamCardPages(
     clearTimeout(session.timer);
   }
 }
+
+/**
+ * Markdown body for the card-stream fallback. When card rendering dies
+ * mid-run we deliver whatever the current page holds as plain markdown
+ * instead of stranding the user on a forever-running card.
+ */
+export function fallbackBody(state: RunState, filter: (s: RunState) => RunState): string {
+  const text = renderText(filter(state)).trim();
+  return text
+    ? `⚠️ 卡片渲染中断，剩余内容降级为文本：\n\n${text}`
+    : '⚠️ 回复渲染失败。可 /doctor 查看日志。';
+}
+
 
 /** Run one card page; returns true if it overflowed (another page follows). */
 async function runCardPage(

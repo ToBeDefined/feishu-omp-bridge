@@ -281,18 +281,6 @@ def _git_rev(ref: str) -> str:
     return ""
 
 
-def _git_is_ancestor(ancestor: str, descendant: str) -> bool:
-    """ancestor 是否是 descendant 的祖先（严格祖先，不含相等）。"""
-    try:
-        r = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-            cwd=REPO, capture_output=True, timeout=10,
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
-
-
 def _git_commit_time(ref: str) -> int:
     """ref 的 commit unix 时间戳。失败返回 0。"""
     try:
@@ -367,10 +355,9 @@ def repair_rollback() -> bool:
 
     log(f"→ 尝试回退到 {target}（第 {steps + 1}/{MAX_ROLLBACK_STEPS} 步）...")
     try:
-        # 仅在首次回退时 stash：保存可能被改坏的工作区；reset --hard 后
-        # 工作区已 clean，后续节点无需再 stash。
-        if not cursor:
-            subprocess.run(["git", "stash", "-q"], cwd=REPO, capture_output=True, timeout=30)
+        # 每次 reset 前 stash：幂等（clean 工作区时 git stash 无操作），
+        # 但能保底任何未提交改动 —— 包括回退期间用户/其他进程的手动修改。
+        subprocess.run(["git", "stash", "-q"], cwd=REPO, capture_output=True, timeout=30)
         # reset --hard 而非 checkout：留在当前分支上（checkout detached HEAD
         # 会让后续 self-update 的 ff-only pull 语义彻底混乱）。
         r = subprocess.run(
@@ -426,6 +413,11 @@ def repair_with_omp_guarded() -> bool:
     next_at = state_get("nextOmpAt")
     if next_at > now:
         log(f"⏳ omp 修复退避中（剩 {next_at - now}s）")
+        return False
+    # 回退退避中：先等回退退避结束，不抢跑 omp（omp 是回退之后的兜底）。
+    rb_backoff = int(_read_state().get("rollbackBackoffUntil") or 0)
+    if rb_backoff and now < rb_backoff:
+        log(f"⏳ 回退退避中（剩 {rb_backoff - now}s），暂不 omp")
         return False
     omp_lock = DirLock(LOCK_FILE + ".omp")
     if not omp_lock.acquire():

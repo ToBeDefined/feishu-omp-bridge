@@ -92,13 +92,18 @@ export function renderOmpUiRequestCard(request: AgentUiRequest, scope?: string):
   return shell('等待 OMP 交互', elements);
 }
 
-export function renderOmpUiResultCard(title: string, status: 'submitted' | 'cancelled' | 'unavailable'): object {
+export function renderOmpUiResultCard(
+  title: string,
+  status: 'submitted' | 'cancelled' | 'timed_out' | 'unavailable',
+): object {
   const text =
     status === 'submitted'
       ? '✅ 已提交给 OMP。'
       : status === 'cancelled'
         ? '已取消，OMP 会按取消处理。'
-        : '⚠️ 当前 OMP 任务已结束，无法提交这个交互。';
+        : status === 'timed_out'
+          ? '⏱ 已超时，OMP 会按取消处理。'
+          : '⚠️ 当前 OMP 任务已结束，无法提交这个交互。';
   return shell('OMP 交互已处理', [markdown(`🧩 **${escapeMd(title)}**`), markdown(text)]);
 }
 

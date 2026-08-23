@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { AgentRun, AgentUiResponse } from '../agent/types';
 import { ActiveRuns } from './active-runs';
 
@@ -75,5 +75,40 @@ describe('ActiveRuns OMP UI routing', () => {
     expect(activeRuns.compact('scope-1', 'keep the last question')).toBe(true);
     expect(activeRuns.compact('missing')).toBe(false);
     expect(compacts).toEqual(['keep the last question']);
+  });
+
+  it('fires the UI timeout callback when the user never responds', () => {
+    vi.useFakeTimers();
+    const activeRuns = new ActiveRuns();
+    const run: AgentRun = {
+      events: emptyEvents(),
+      stop: async () => {},
+      waitForExit: async () => true,
+      respondToUi: () => true,
+    };
+    activeRuns.register('scope-1', run);
+    let fired = false;
+    expect(activeRuns.armUiTimeout('scope-1', 'ui-1', 30, () => { fired = true; })).toBe(true);
+    vi.advanceTimersByTime(50);
+    expect(fired).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('cancels the UI timeout when a response arrives first', () => {
+    vi.useFakeTimers();
+    const activeRuns = new ActiveRuns();
+    const run: AgentRun = {
+      events: emptyEvents(),
+      stop: async () => {},
+      waitForExit: async () => true,
+      respondToUi: () => true,
+    };
+    activeRuns.register('scope-1', run);
+    let fired = false;
+    activeRuns.armUiTimeout('scope-1', 'ui-1', 30, () => { fired = true; });
+    activeRuns.respondToUi('scope-1', 'ui-1', { confirmed: true });
+    vi.advanceTimersByTime(50);
+    expect(fired).toBe(false);
+    vi.useRealTimers();
   });
 });

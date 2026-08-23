@@ -5,20 +5,31 @@ export interface RunHandle {
   interrupted: boolean;
   pendingUiRequests: Set<string>;
   onUiSettled?: () => void;
+  /** Per-request timeout timers, keyed by UI request id. */
+  uiTimers: Map<string, ReturnType<typeof setTimeout>>;
 }
 
 export class ActiveRuns {
   private readonly handles = new Map<string, RunHandle>();
 
   register(chatId: string, run: AgentRun): RunHandle {
-    const handle: RunHandle = { run, interrupted: false, pendingUiRequests: new Set() };
+    const handle: RunHandle = {
+      run,
+      interrupted: false,
+      pendingUiRequests: new Set(),
+      uiTimers: new Map(),
+    };
     this.handles.set(chatId, handle);
     return handle;
   }
 
   unregister(chatId: string, run: AgentRun): void {
     const existing = this.handles.get(chatId);
-    if (existing?.run === run) this.handles.delete(chatId);
+    if (existing?.run === run) {
+      for (const timer of existing.uiTimers.values()) clearTimeout(timer);
+      existing.uiTimers.clear();
+      this.handles.delete(chatId);
+    }
   }
 
   has(chatId: string): boolean {
@@ -60,10 +71,35 @@ export class ActiveRuns {
 
   respondToUi(chatId: string, requestId: string, response: AgentUiResponse): boolean {
     const h = this.handles.get(chatId);
+    // A user response wins over the timeout — cancel the pending timer so a
+    // late timeout can't fire a second response for the same request.
+    const timer = h?.uiTimers.get(requestId);
+    if (timer) {
+      clearTimeout(timer);
+      h?.uiTimers.delete(requestId);
+    }
     const ok = h?.run.respondToUi?.(requestId, response) === true;
     if (ok) h?.pendingUiRequests.delete(requestId);
     if (ok) h?.onUiSettled?.();
     return ok;
+  }
+
+  /**
+   * Arm a timeout for an in-flight UI request. When `timeoutMs` elapses
+   * without a user response, `onTimeout` fires (once). Re-arming the same
+   * request id clears the previous timer. Returns false when no active run
+   * exists for the chat.
+   */
+  armUiTimeout(chatId: string, requestId: string, timeoutMs: number, onTimeout: () => void): boolean {
+    const h = this.handles.get(chatId);
+    if (!h) return false;
+    const existing = h.uiTimers.get(requestId);
+    if (existing) clearTimeout(existing);
+    h.uiTimers.set(requestId, setTimeout(() => {
+      h.uiTimers.delete(requestId);
+      onTimeout();
+    }, timeoutMs));
+    return true;
   }
 
   submitPrompt(chatId: string, kind: 'steer' | 'follow_up', message: string, imagePaths?: string[]): Promise<boolean> {
@@ -75,11 +111,14 @@ export class ActiveRuns {
     const h = this.handles.get(chatId);
     return h?.run.compact?.(customInstructions) === true;
   }
-
   async stopAll(): Promise<void> {
     const all = [...this.handles.values()];
     this.handles.clear();
-    for (const h of all) h.interrupted = true;
+    for (const h of all) {
+      h.interrupted = true;
+      for (const timer of h.uiTimers.values()) clearTimeout(timer);
+      h.uiTimers.clear();
+    }
     await Promise.allSettled(all.map((h) => h.run.stop()));
   }
 }

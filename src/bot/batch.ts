@@ -198,6 +198,19 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         }
         const sent = await sendManagedCard(channel, chatId, renderOmpUiRequestCard(request, scope), lastMsg.messageId);
         uiCards.set(request.id, { messageId: sent.messageId, title: request.title });
+        // Auto-cancel on timeout: while OMP waits for UI input the idle
+        // watchdog is paused, so an unanswered prompt would hang the run
+        // forever. The timer is cancelled in ActiveRuns.respondToUi when the
+        // user answers first.
+        if ('timeout' in request && request.timeout !== undefined && request.timeout > 0) {
+          activeRuns.armUiTimeout(scope, request.id, request.timeout, () => {
+            activeRuns.respondToUi(scope, request.id, { cancelled: true, timedOut: true });
+            updateManagedCard(channel, sent.messageId, renderOmpUiResultCard(request.title, 'timed_out')).catch(() => {
+              /* card update is best-effort */
+            });
+            uiCards.delete(request.id);
+          });
+        }
       } catch (err) {
         log.fail('omp-ui', err, { scope, requestId: request.id, method: request.method });
       }

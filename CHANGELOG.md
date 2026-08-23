@@ -25,12 +25,11 @@
   正文上限 4000 字符，超出即报清晰错误而非让飞书拒卡。
 - **子代理生命周期渲染**：OMP 派发并行子代理时，卡片显示状态行
   （🤖 工作中 / ✅ 完成 / ❌ 失败 / ⏹ 已中止），不再黑盒。
-- **`/compact` 命令**：运行中压缩当前会话上下文，支持自定义指令
-  （如 `/compact 只保留最后一个问题`）。
-- **`open_url` OAuth 短链透传**：OMP 提供的 `launchUrl` 作为主展示
-  链接，完整 URL 作为上下文说明，避免长 query 被终端 viewport 截断。
-
 ### Fixed
+- OMP 原生 UI 卡片超时自动取消：OMP 带 `timeout` 的 confirm/select/input
+  等待用户输入时，idle watchdog 是暂停的，用户一直不回会永久挂死 run →
+  超时后自动回 `cancelled + timedOut` 并更新卡片为"⏱ 已超时"；用户先答
+  则取消定时器，不产生第二个响应。
 - 自愈回退改为三级策略：① 优先回退到 lastGoodSha（最近验证过健康、
   dist 匹配的提交）；② 失败进入阶梯退避，防对暂时性故障连续过激回退；
   ③ 退避后仍失败，从 lastGoodSha 起一个个 commit 往前回退，步数上限

@@ -135,7 +135,12 @@ function listMessagesTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHo
       }),
     },
     async execute(args) {
-      const chatId = optionalString(args, 'chatId') ?? ctx.chatId;
+      const explicitChat = optionalString(args, 'chatId');
+      // Topic scope: list the thread's messages, not the whole chat. Only
+      // when the caller didn't pass an explicit chatId (that wins).
+      const threadId = ctx.threadId;
+      const useThread = !explicitChat && threadId !== undefined;
+      const containerId = useThread ? (threadId ?? ctx.chatId) : (explicitChat ?? ctx.chatId);
       const rawLimit = args['limit'];
       const limit =
         typeof rawLimit === 'number' && Number.isFinite(rawLimit)
@@ -148,8 +153,8 @@ function listMessagesTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHo
         page_size: number;
         end_time?: string;
       } = {
-        container_id_type: 'chat',
-        container_id: chatId,
+        container_id_type: useThread ? 'thread' : 'chat',
+        container_id: containerId,
         sort_type: 'ByCreateTimeDesc',
         page_size: limit,
       };
@@ -181,7 +186,7 @@ function listMessagesTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHo
             : '',
         content: parseMessageContent(m.msg_type ?? 'text', m.body?.content ?? ''),
       }));
-      return { result: jsonResult({ chatId, count: messages.length, messages }) };
+      return { result: jsonResult({ chatId: containerId, count: messages.length, messages }) };
     },
   };
 }

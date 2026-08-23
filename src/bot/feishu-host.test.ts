@@ -268,6 +268,32 @@ describe('feishu_list_messages', () => {
     expect(call.params.container_id).toBe('chat-1');
     expect(call.params.page_size).toBe(10);
   });
+
+  it('uses the thread container when the scope is a topic', async () => {
+    const listed: unknown[] = [];
+    const channel = {
+      rawClient: {
+        im: {
+          v1: {
+            message: {
+              list: async (p: unknown) => {
+                listed.push(p);
+                return { data: { items: [] } };
+              },
+            },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+    const host = createFeishuHostIntegration(channel, {
+      scope: 'chat-1:thread-1', chatId: 'chat-1', threadId: 'thread-1', cwd: '/x',
+    });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_list_messages')!;
+    await tool.execute({});
+    const call = listed[0] as { params: Record<string, unknown> };
+    expect(call.params.container_id_type).toBe('thread');
+    expect(call.params.container_id).toBe('thread-1');
+  });
 });
 
 describe('feishu_add_reaction', () => {

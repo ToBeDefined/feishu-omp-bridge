@@ -24,6 +24,21 @@ describe('OMP UI cards', () => {
     expect(json).toContain('ui-1');
   });
 
+  it('renders confirm requests as column_set buttons (no unsupported action tag)', () => {
+    const card = renderOmpUiRequestCard({
+      id: 'ui-2',
+      method: 'confirm',
+      title: 'Confirm',
+      message: 'Sure?',
+    });
+    const json = JSON.stringify(card);
+    expect(json).toContain('column_set');
+    expect(json).not.toContain('"tag":"action"');
+    expect(json).toContain('确认');
+    expect(json).toContain('否');
+    expect(json).toContain('取消');
+  });
+
   it('turns confirm actions into OMP UI responses', () => {
     expect(responseFromOmpUiAction({ [OMP_UI_MARKER]: true, method: 'confirm', action: 'confirm' }, undefined)).toEqual({
       confirmed: true,

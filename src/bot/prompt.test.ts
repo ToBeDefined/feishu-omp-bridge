@@ -47,6 +47,24 @@ describe('buildPrompt', () => {
     expect(prompt).toContain('/tmp/b.pdf (b.pdf) — 文件');
   });
 
+  it('inlines extracted text-file content instead of only a path', () => {
+    const attachments: LocalAttachment[] = [
+      { path: '/tmp/notes.md', kind: 'file', originalName: 'notes.md', content: 'hello from file' },
+    ];
+    const prompt = buildPrompt([msg({ content: '' })], attachments);
+    expect(prompt).toContain('内容：');
+    expect(prompt).toContain('hello from file');
+    expect(prompt).toContain('```');
+  });
+
+  it('does not inline text content for non-file kinds', () => {
+    const attachments: LocalAttachment[] = [
+      { path: '/tmp/voice.ogg', kind: 'audio', transcript: '转写文本' },
+    ];
+    const prompt = buildPrompt([msg({ content: '' })], attachments);
+    expect(prompt).not.toContain('内容：');
+  });
+
   it('renders quoted block between context and user text', () => {    const quotes: QuotedContext[] = [
       { messageId: 'om_q', senderId: 'ou_1', createdAt: '', content: 'quoted text', rawContentType: 'text' },
     ];

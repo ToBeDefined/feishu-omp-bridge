@@ -86,7 +86,11 @@ OMP RPC 的 extension UI request 会被映射为飞书卡片，并把用户响�
 - `feishu://current/context`
 - `feishu://message/<message_id>`
 
-这使 OMP 可以通过结构化 host callback 使用飞书资源，而不是让模型在 shell 里拼 `lark-cli` 命令。桥接层负责权限、当前上下文、消息解析和结果格式化。
+这使 OMP 可以通过结构化 host callback 使用飞书**消息面**资源（消息收发、历史、卡片、文件），而不是让模型在 shell 里拼 `lark-cli` 命令。桥接层负责权限、当前上下文、消息解析和结果格式化。
+
+> **能力边界**：bridge 只封装 IM 消息面。飞书生态面（文档 / 表格 / 多维表格 /
+> 日历 / 会议 / 审批等）**不重复实现** —— agent 需要时直接调用 `lark-cli`
+> （或对应的 lark-* skill），bridge 不做第二份封装。
 
 ### Mid-run follow-up / steer
 

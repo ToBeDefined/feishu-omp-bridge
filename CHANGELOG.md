@@ -14,6 +14,8 @@
 ## [Unreleased]
 
 ### Added
+- **`feishu_add_reaction` host tool**：Agent 给消息加表情回应（OK/LAUGH/
+  LIKE 等），用于确认收到或标记完成。
 - **`feishu_list_messages` host tool**：Agent 拉取当前 chat 最近消息（可
   指定 chatId / 条数上限 / 截止时间），用于回顾讨论历史、整理群聊纪要、
   回答"刚才是谁说了什么"。

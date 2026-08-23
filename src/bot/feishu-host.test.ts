@@ -30,6 +30,7 @@ describe('createFeishuHostIntegration', () => {
       'feishu_send_file',
       'feishu_send_card',
       'feishu_recall_message',
+      'feishu_add_reaction',
       'feishu_view_image',
     ]);
     expect(host.uriSchemes[0]?.definition.scheme).toBe('feishu');
@@ -266,5 +267,53 @@ describe('feishu_list_messages', () => {
     const call = listed[0] as { params: Record<string, unknown> };
     expect(call.params.container_id).toBe('chat-1');
     expect(call.params.page_size).toBe(10);
+  });
+});
+
+describe('feishu_add_reaction', () => {
+  it('adds an OK reaction to the triggering message by default', async () => {
+    const reacted: unknown[] = [];
+    const channel = {
+      rawClient: {
+        im: {
+          v1: {
+            messageReaction: {
+              create: async (p: unknown) => {
+                reacted.push(p);
+                return { data: { reaction_id: 'r_1' } };
+              },
+            },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+    const host = createFeishuHostIntegration(channel, {
+      scope: 's', chatId: 'chat-1', replyToMessageId: 'msg-1', cwd: '/x',
+    });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_add_reaction')!;
+
+    const res = await tool.execute({});
+    expect(JSON.stringify(res.result)).toContain('added reaction OK');
+    const call = reacted[0] as { path: { message_id: string }; data: { reaction_type: { emoji_type: string } } };
+    expect(call.path.message_id).toBe('msg-1');
+    expect(call.data.reaction_type.emoji_type).toBe('OK');
+  });
+
+  it('reports failure when the reaction call fails', async () => {
+    const channel = {
+      rawClient: {
+        im: {
+          v1: {
+            messageReaction: { create: async () => ({ data: {} }) },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+    const host = createFeishuHostIntegration(channel, {
+      scope: 's', chatId: 'chat-1', replyToMessageId: 'msg-1', cwd: '/x',
+    });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_add_reaction')!;
+    const res = await tool.execute({});
+    expect((res as { isError?: boolean }).isError).toBe(true);
   });
 });

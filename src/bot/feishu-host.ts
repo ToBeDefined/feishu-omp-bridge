@@ -5,6 +5,7 @@ import type { AgentHostTool, AgentHostUriScheme } from '../agent/types';
 import { buildAgentCard } from '../card/agent-card';
 import { sendManagedCard } from '../card/managed';
 import { fetchQuotedContext, parseMessageContent } from './quote';
+import { addReaction } from './reaction';
 import type { ActiveRuns } from './active-runs';
 
 export interface FeishuHostContext {
@@ -36,6 +37,7 @@ export function createFeishuHostIntegration(
       sendFileTool(channel, ctx),
       sendCardTool(channel, ctx),
       recallMessageTool(channel),
+      addReactionTool(channel, ctx),
       viewImageTool(channel, ctx),
     ],
     uriSchemes: [feishuUriScheme(channel, ctx)],
@@ -180,6 +182,31 @@ function listMessagesTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHo
         content: parseMessageContent(m.msg_type ?? 'text', m.body?.content ?? ''),
       }));
       return { result: jsonResult({ chatId, count: messages.length, messages }) };
+    },
+  };
+}
+
+function addReactionTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTool {
+  return {
+    definition: {
+      name: 'feishu_add_reaction',
+      label: 'Add Feishu reaction',
+      description:
+        'Add an emoji reaction to a Feishu message. Use to acknowledge a message or signal completion. Common emoji types: OK, LAUGH, LIKE, HEART, THUMBSUP.',
+      parameters: objectSchema({
+        messageId: { type: 'string', description: 'Optional message_id to react to. Defaults to the triggering message.' },
+        emoji: { type: 'string', description: 'Emoji type (e.g. OK, LAUGH, LIKE). Defaults to OK.' },
+      }),
+    },
+    async execute(args) {
+      const messageId = optionalString(args, 'messageId') ?? ctx.replyToMessageId;
+      if (!messageId) throw new Error('messageId is required when no triggering message is available');
+      const emoji = optionalString(args, 'emoji') ?? 'OK';
+      const reactionId = await addReaction(channel, messageId, emoji);
+      if (!reactionId) {
+        return { result: textResult(`failed to add reaction ${emoji} to ${messageId}`), isError: true };
+      }
+      return { result: textResult(`added reaction ${emoji} to ${messageId}`) };
     },
   };
 }

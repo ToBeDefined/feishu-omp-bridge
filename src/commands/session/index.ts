@@ -1,6 +1,7 @@
 import type { Handler } from '../index';
 import { cdHandlers } from './cd';
 import { contextHandlers } from './context';
+import { diffHandlers } from './diff';
 import { newHandlers } from './new';
 import { renameHandlers } from './rename';
 import { resumeHandlers } from './resume';
@@ -13,6 +14,7 @@ import { wsHandlers } from './ws';
 export const sessionHandlers: Record<string, Handler> = {
   ...newHandlers,
   ...cdHandlers,
+  ...diffHandlers,
   ...wsHandlers,
   ...statusHandlers,
   ...timeoutHandlers,

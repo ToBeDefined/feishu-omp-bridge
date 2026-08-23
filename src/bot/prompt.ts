@@ -51,6 +51,11 @@ export function buildPrompt(
             : '文件';
     const name = a.originalName ? ` (${a.originalName})` : '';
     const line = `- ${a.path}${name} — ${label}`;
+    // Text-like files: inline the extracted content directly so the agent
+    // reads what the user sent without an extra tool call.
+    if (a.kind === 'file' && a.content !== undefined) {
+      return `${line}\n  内容：\n\`\`\`\n${a.content}\n\`\`\``;
+    }
     // Voice/video messages carry their transcript inline so the agent reads
     // the content without needing to decode the media.
     return (a.kind === 'audio' || a.kind === 'video') && a.transcript

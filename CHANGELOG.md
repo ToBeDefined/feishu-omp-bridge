@@ -14,6 +14,11 @@
 ## [Unreleased]
 
 ### Added
+- **文件内容提取**：用户发 txt/md/json/代码等文本文件，bridge 直接提取
+  内容内联进 prompt（截断 8000 字符），agent 不用再自己读路径；二进制
+  与 PDF/docx 保持路径（PDF/docx 由 agent 的 read 工具解析）。
+- **`/diff` 命令**：展示当前 session cwd 的 `git diff`（stat 摘要 + 正文，
+  截断 4000 字符），review 改动不用开电脑。
 - **`feishu_add_reaction` host tool**：Agent 给消息加表情回应（OK/LAUGH/
   LIKE 等），用于确认收到或标记完成。
 - **`feishu_list_messages` host tool**：Agent 拉取当前 chat 最近消息（可

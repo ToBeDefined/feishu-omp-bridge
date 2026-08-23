@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { paths } from '../config/paths';
-import { MediaCache } from './cache';
+import { attachTextExtracts, MediaCache, type LocalAttachment } from './cache';
 
 let dir: string;
 
@@ -67,5 +67,32 @@ describe('MediaCache.resolve', () => {
     ]);
     expect(attachments).toEqual([]);
     expect(get).not.toHaveBeenCalled();
+  });
+});
+
+describe('attachTextExtracts', () => {
+  it('extracts text from .md files', async () => {
+    const p = join(dir, 'notes.md');
+    await writeFileReal(p, 'hello agent');
+    const att: LocalAttachment = { path: p, kind: 'file', originalName: 'notes.md' };
+    await attachTextExtracts([att]);
+    expect(att.content).toBe('hello agent');
+  });
+
+  it('skips binary files', async () => {
+    const p = join(dir, 'pic.png');
+    await writeFileReal(p, '\u0000binary');
+    const att: LocalAttachment = { path: p, kind: 'file', originalName: 'pic.png' };
+    await attachTextExtracts([att]);
+    expect(att.content).toBeUndefined();
+  });
+
+  it('caps oversized text', async () => {
+    const p = join(dir, 'big.txt');
+    await writeFileReal(p, 'x'.repeat(9000));
+    const att: LocalAttachment = { path: p, kind: 'file', originalName: 'big.txt' };
+    await attachTextExtracts([att]);
+    expect(att.content).toContain('内容已截断');
+    expect(att.content!.length).toBeLessThan(9000);
   });
 });

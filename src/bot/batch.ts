@@ -27,7 +27,7 @@ import {
   getShowToolCalls,
 } from '../config/schema';
 import { log } from '../core/logger';
-import type { MediaCache } from '../media/cache';
+import { attachTextExtracts, type MediaCache } from '../media/cache';
 import { attachTranscripts } from '../media/transcribe';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -84,6 +84,8 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
   // Voice messages: transcribe to text so the agent can read the content.
   await attachTranscripts(channel, attachments);
+  // Text-like files: inline their content so the agent sees it directly.
+  await attachTextExtracts(attachments);
   const imagePaths = attachments
     .filter((attachment) => attachment.kind === 'image')
     .map((attachment) => attachment.path);

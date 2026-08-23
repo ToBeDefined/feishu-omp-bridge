@@ -1,5 +1,5 @@
-import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
+import { extname, join } from 'node:path';
 import type { LarkChannel, ResourceDescriptor } from '@larksuiteoapi/node-sdk';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
@@ -12,6 +12,42 @@ export interface LocalAttachment {
   originalName?: string;
   /** Voice message transcript (Feishu ASR); present when transcription succeeded. */
   transcript?: string;
+  /** Extracted plain text for text-like files (populated by attachTextExtracts). */
+  content?: string;
+}
+
+/** File extensions whose bytes are plain text — safe to inline into the prompt. */
+export const TEXT_FILE_EXTS = new Set([
+  '.txt', '.md', '.markdown', '.json', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.py', '.sh', '.bash', '.zsh', '.yml', '.yaml', '.toml', '.xml', '.html', '.css',
+  '.scss', '.less', '.csv', '.tsv', '.log', '.env', '.gitignore', '.gitattributes',
+  '.java', '.go', '.rs', '.c', '.h', '.cpp', '.hpp', '.cc', '.rb', '.php', '.sql',
+  '.conf', '.ini', '.properties', '.gradle', '.kt', '.kts', '.swift', '.vue', '.svelte',
+  '.diff', '.patch', '.lock', '.prisma', '.proto',
+]);
+
+const TEXT_EXTRACT_MAX = 8000;
+
+/**
+ * Inline plain-text file contents into the attachment (capped), so the agent
+ * sees what the user sent without having to read the path itself. Binary /
+ * unreadable files are left untouched (content stays undefined).
+ */
+export async function attachTextExtracts(attachments: LocalAttachment[]): Promise<void> {
+  for (const a of attachments) {
+    if (a.kind !== 'file' || a.content !== undefined) continue;
+    const ext = extname(a.path).toLowerCase();
+    if (!TEXT_FILE_EXTS.has(ext)) continue;
+    try {
+      const raw = await readFile(a.path, 'utf8');
+      a.content =
+        raw.length > TEXT_EXTRACT_MAX
+          ? `${raw.slice(0, TEXT_EXTRACT_MAX)}\n…（文件内容已截断）`
+          : raw;
+    } catch {
+      /* binary or unreadable — leave content undefined */
+    }
+  }
 }
 
 export interface ResourceRequest {

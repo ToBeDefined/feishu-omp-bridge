@@ -100,6 +100,7 @@ feishu-omp-bridge unregister            删除 daemon 注册文件
 | `/timeout [N|off|default]` | 设置当前 session 的 idle 探活分钟数，或关闭 / 恢复全局默认。 |
 | `/ps` | 列出本机所有 bot，并标识当前正在回复的进程。 |
 | `/release` | 自发布：`pnpm typecheck` → `pnpm test` → `pnpm build` 后重启 daemon 加载新代码。失败即中止、不重启。 |
+| `/exec <命令>` | 在当前 cwd 下执行 shell 命令并回退出码 + 输出（30s 超时，输出截断 1000 字符）。admin 命令。 |
 | `/exit <id|#>` | 关闭指定 bot 进程。 |
 | `/reconnect` | 强制重连 WebSocket。 |
 | `/doctor [描述]` | 把最近日志和故障描述交给 OMP 自助诊断。 |

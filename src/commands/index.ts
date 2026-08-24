@@ -97,6 +97,7 @@ const ADMIN_COMMANDS: Record<string, true> = {
   '/cd': true,
   '/ws': true,
   '/release': true,
+  '/exec': true,
 };
 
 function isAdminCommand(cmd: string): boolean {

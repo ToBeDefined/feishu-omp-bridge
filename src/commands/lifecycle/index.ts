@@ -1,6 +1,7 @@
 import type { Handler } from '../index';
 import { compactHandlers } from './compact';
 import { everyHandlers } from './every';
+import { execHandlers } from './exec';
 import { exitHandlers } from './exit';
 import { helpHandlers } from './help';
 import { psHandlers } from './ps';
@@ -15,6 +16,7 @@ export const lifecycleHandlers: Record<string, Handler> = {
   ...stopHandlers,
   ...restartHandlers,
   ...releaseHandlers,
+  ...execHandlers,
   ...reconnectHandlers,
   ...psHandlers,
   ...exitHandlers,

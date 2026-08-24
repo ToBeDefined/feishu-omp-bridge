@@ -10,7 +10,7 @@ bridge 把飞书消息桥到本地 OMP，但没有「用户在飞书里直接跑
 
 ## 目标
 
-新增 `/exec <命令>`：admin only，在当前 scope 的 cwd 下用 `/bin/sh -c` 执行任意
+新增 `/exec <命令>`：admin only，在当前 scope 的 cwd 下用 `bash -c` 执行任意
 shell 命令（支持管道 / 重定向 / 变量），回退出码 + 合并后的输出。
 
 ## 方案
@@ -26,7 +26,7 @@ shell 命令（支持管道 / 重定向 / 变量），回退出码 + 合并后�
 runCommand(cmd: string, cwd: string, timeoutMs: number): Promise<RunResult>
 ```
 
-- `spawn('/bin/sh', ['-c', cmd], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true })`。
+- `spawn('bash', ['-c', cmd], { cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: true })`。
 - `detached: true` 使子进程自成进程组；超时 `process.kill(-pid, 'SIGKILL')` 整组杀，
   防 `sh` fork 出的孙进程残留。
 - stdin `ignore`（EOF）：交互式命令（`vim`/`top`）立即退出或等超时被杀。

@@ -16,13 +16,13 @@ export interface RunResult {
 }
 
 /**
- * Run a shell command via `/bin/sh -c`. stdin is EOF (no interaction);
+ * Run a shell command via `bash -c`. stdin is EOF (no interaction);
  * stdout/stderr are merged and tail-truncated. On timeout the whole process
  * group is SIGKILLed so grandchildren don't leak.
  */
 export function runCommand(cmd: string, cwd: string, timeoutMs: number): Promise<RunResult> {
   return new Promise((resolve) => {
-    const child = spawn('/bin/sh', ['-c', cmd], {
+    const child = spawn('bash', ['-c', cmd], {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,

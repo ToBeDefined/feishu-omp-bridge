@@ -71,7 +71,7 @@ describe('runCommand', () => {
     vi.mocked(spawn).mockReturnValue(child as never);
     runCommand('pwd && ls', '/some/cwd', 30000);
     expect(spawn).toHaveBeenCalledWith(
-      '/bin/sh',
+      'bash',
       ['-c', 'pwd && ls'],
       expect.objectContaining({ cwd: '/some/cwd' }),
     );
@@ -102,7 +102,7 @@ describe('runCommand', () => {
     const child = fakeChild();
     vi.mocked(spawn).mockReturnValue(child as never);
     const p = runCommand('x', '/bad-cwd', 30000);
-    child.emit('error', new Error('spawn /bin/sh ENOENT'));
+    child.emit('error', new Error('spawn bash ENOENT'));
     await expect(p).resolves.toMatchObject({ exitCode: null, timedOut: false });
   });
 

@@ -38,7 +38,7 @@
   `pnpm build` → 重启 daemon；任一步失败即中止、不重启，避免「改源码后
   漏 build、重启加载旧 dist」的坑。admin 命令。
 - **`/exec` 直接执行命令**：admin 在飞书里直接跑 shell 命令
-  （`/bin/sh -c`，支持管道/重定向），当前 cwd 执行、30s 超时、输出截断
+  （`bash -c`，支持管道/重定向），当前 cwd 执行、30s 超时、输出截断
   1000 字符、禁交互、写审计日志。
 ### Fixed
 - OMP 原生 UI 卡片超时自动取消：OMP 带 `timeout` 的 confirm/select/input

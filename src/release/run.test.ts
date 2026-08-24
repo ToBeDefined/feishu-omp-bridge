@@ -76,4 +76,13 @@ describe('runRelease', () => {
     expect(res.output).toHaveLength(2000);
     expect(res.output).toBe(long.slice(-2000));
   });
+  it('passes cwd through to the exec runner', async () => {
+    const seen: Array<string | undefined> = [];
+    const exec: ReleaseExec = async (_command, _args, options) => {
+      seen.push(options.cwd);
+      return { stdout: '', stderr: '' };
+    };
+    await runRelease(exec, '/repo/root');
+    expect(seen.every((cwd) => cwd === '/repo/root')).toBe(true);
+  });
 });

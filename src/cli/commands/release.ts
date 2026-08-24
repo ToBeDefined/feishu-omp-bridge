@@ -15,7 +15,7 @@ function renderCliFailure(result: ReleaseResult): string {
 
 export async function runReleaseCli(): Promise<void> {
   console.log('发布：pnpm typecheck → pnpm test → pnpm build → restart…');
-  const result = await runRelease();
+  const result = await runRelease(undefined, process.cwd());
   if (!result.ok) {
     console.error(renderCliFailure(result));
     process.exit(1);

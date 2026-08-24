@@ -1,7 +1,7 @@
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
 import { log } from '../../core/logger';
-import { runRelease, type ReleaseResult } from '../../release/run';
+import { repoRoot, runRelease, type ReleaseResult } from '../../release/run';
 
 let inFlight = false;
 
@@ -29,7 +29,7 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
   inFlight = true;
   try {
     await reply(ctx, '🔄 开始发布：`pnpm typecheck` → `pnpm test` → `pnpm build` → 重启…');
-    const result = await runRelease();
+    const result = await runRelease(undefined, repoRoot());
     if (!result.ok) {
       await reply(ctx, renderFailure(result));
       return;

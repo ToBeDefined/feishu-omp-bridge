@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 
 export interface ReleaseExecOptions {
   timeout: number;
+  cwd?: string;
 }
 
 /** Subprocess runner contract, injectable for tests. */
@@ -64,10 +65,20 @@ const execFileAsync: ReleaseExec = (command, args, options) =>
     });
   });
 
-export async function runRelease(exec: ReleaseExec = execFileAsync): Promise<ReleaseResult> {
+/** The repo root. When bundled, import.meta.url is `<repo>/dist/cli.js`,
+ *  so `..` is the repo root. The bridge daemon's process.cwd() is `/`
+ *  (launchd default), so callers must pass an explicit cwd to `pnpm`. */
+export function repoRoot(): string {
+  return new URL('..', import.meta.url).pathname;
+}
+
+export async function runRelease(
+  exec: ReleaseExec = execFileAsync,
+  cwd?: string,
+): Promise<ReleaseResult> {
   for (const step of RELEASE_STEPS) {
     try {
-      await exec('pnpm', step.args, { timeout: step.timeoutMs });
+      await exec('pnpm', step.args, { timeout: step.timeoutMs, cwd });
     } catch (err) {
       const e = err as ExecError;
       if (e.code === 'ENOENT') {

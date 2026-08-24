@@ -4,7 +4,7 @@ import type { CommandContext } from '../index';
 import { releaseHandlers } from './release';
 import { runRelease, type ReleaseResult } from '../../release/run';
 
-vi.mock('../../release/run', () => ({ runRelease: vi.fn() }));
+vi.mock('../../release/run', () => ({ runRelease: vi.fn(), repoRoot: vi.fn(() => '/repo') }));
 vi.mock('../../core/logger', () => ({
   log: { info: vi.fn(), fail: vi.fn(), warn: vi.fn() },
 }));

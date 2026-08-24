@@ -119,6 +119,18 @@ describe('runCommand', () => {
 });
 
 describe('/exec', () => {
+  it('aliases /run to the /exec handler', async () => {
+    expect(execHandlers['/run']).toBe(execHandlers['/exec']);
+    const child = fakeChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const { ctx, sent } = makeCtx();
+    const p = execHandlers['/run']!('echo run-alias', ctx);
+    child.stdout.emit('data', Buffer.from('run-alias'));
+    child.emit('close', 0);
+    await p;
+    expect(sent[0]).toContain('run-alias');
+  });
+
   it('shows usage on an empty command', async () => {
     const { ctx, sent } = makeCtx();
     await execHandlers['/exec']!('', ctx);

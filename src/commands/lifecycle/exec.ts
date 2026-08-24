@@ -76,8 +76,8 @@ export function runCommand(cmd: string, cwd: string, timeoutMs: number): Promise
 
 export const execHandlers: Record<string, Handler> = {
   '/exec': handleExec,
+  '/run': handleExec,
 };
-
 async function handleExec(args: string, ctx: CommandContext): Promise<void> {
   const cmd = args.trim();
   if (!cmd) {

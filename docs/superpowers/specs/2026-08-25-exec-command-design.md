@@ -17,8 +17,7 @@ shell 命令（支持管道 / 重定向 / 变量），回退出码 + 合并后�
 
 ### 命令签名与门禁
 
-- 命令名 `/exec`，参数即 shell 命令字符串。
-- 加入 `ADMIN_COMMANDS`：非 admin 由 dispatch 层直接拒绝（现有机制）。
+- 命令名 `/exec`（别名 `/run`），参数即 shell 命令字符串。
 
 ### 执行 `src/commands/lifecycle/exec.ts`
 

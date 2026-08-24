@@ -273,7 +273,8 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
     "access": {
       "allowedUsers": ["ou_xxx"],
       "allowedChats": ["oc_xxx"],
-      "admins": ["ou_xxx"]
+      "admins": ["ou_xxx"],
+      "owner": "ou_xxx"
     }
   }
 }
@@ -284,7 +285,9 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 - `allowedUsers` 空或未设置：允许所有用户。
 - `allowedChats` 空或未设置：允许所有 chat。
 - `admins` 空或未设置：所有允许用户都可执行管理员命令。
-- 管理员命令包括：`/account`、`/config`、`/exit`、`/reconnect`、`/doctor`、`/cd`、`/ws`、`/release`、`/exec`、`/run`。
+- `owner` 未设置：回退到 `admins[0]`；两者都未设置时，高危命令对所有人拒绝。
+- 管理员命令（`admins`）：`/account`、`/config`、`/exit`、`/reconnect`、`/doctor`、`/cd`、`/ws`。
+- 归属者命令（`owner`，比 admins 更严）：`/release`、`/exec`、`/run` —— 只有 owner 能跑，协作者拿 admin 也无法执行 shell。
 
 ## 数据目录
 

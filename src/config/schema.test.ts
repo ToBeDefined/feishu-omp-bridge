@@ -5,6 +5,7 @@ import {
   getOmpSessionDir,
   getOmpThinking,
   getOmpTools,
+  isOwner,
   type AppConfig,
 } from './schema';
 
@@ -40,5 +41,24 @@ describe('OMP preferences', () => {
     expect(getOmpThinking(cfg({ ompThinking: ' xhigh ' }))).toBe('xhigh');
     expect(getOmpTools(cfg({ ompTools: ' read,bash ' }))).toBe('read,bash');
     expect(getOmpSessionDir(cfg({ ompSessionDir: ' /tmp/sessions ' }))).toBe('/tmp/sessions');
+  });
+});
+
+describe('isOwner', () => {
+  it('accepts the explicit owner over any other admin', () => {
+    const c = cfg({ access: { owner: 'ou_1', admins: ['ou_1', 'ou_2'] } });
+    expect(isOwner(c, 'ou_1')).toBe(true);
+    expect(isOwner(c, 'ou_2')).toBe(false);
+  });
+
+  it('falls back to the first admin when owner is unset', () => {
+    const c = cfg({ access: { admins: ['ou_1', 'ou_2'] } });
+    expect(isOwner(c, 'ou_1')).toBe(true);
+    expect(isOwner(c, 'ou_2')).toBe(false);
+  });
+
+  it('refuses everyone when neither owner nor admins is set', () => {
+    expect(isOwner(cfg({}), 'ou_1')).toBe(false);
+    expect(isOwner(cfg({ access: {} }), 'ou_1')).toBe(false);
   });
 });

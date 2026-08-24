@@ -89,7 +89,13 @@ export interface AppAccess {
    * (/account, /config, /exit, /reconnect, /doctor, /cd, /ws). Empty /
    * undefined = no admin restriction (every allowed user is an admin). */
   admins?: string[];
-}
+  /** The bot owner's open_id. Gates the highest-risk commands (/exec, /run,
+   * /release) — tighter than `admins`, so the owner can grant admin rights
+   * without handing out shell access. Unset = fall back to `admins[0]`
+   * (the first admin is presumed to be the owner); if neither is set, the
+   * owner-gated commands are refused for everyone. */
+  owner?: string;
+};
 
 export interface AppPreferences {
   /** OMP executable name or path. Default: omp. */
@@ -307,6 +313,15 @@ export function isAdmin(cfg: AppConfig, senderId: string): boolean {
   const list = cfg.preferences?.access?.admins;
   if (!list || list.length === 0) return true;
   return list.includes(senderId);
+}
+
+/** True when `senderId` is the bot owner — the gate for the highest-risk
+ * commands (/exec, /run, /release). Explicit `owner` wins; otherwise the
+ * first admin is treated as the owner. No owner info at all → refuse. */
+export function isOwner(cfg: AppConfig, senderId: string): boolean {
+  const access = cfg.preferences?.access;
+  const owner = access?.owner ?? access?.admins?.[0];
+  return owner !== undefined && owner === senderId;
 }
 
 export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {

@@ -2,7 +2,7 @@ import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { AppConfig } from '../config/schema';
-import { isAdmin } from '../config/schema';
+import { isAdmin, isOwner } from '../config/schema';
 import { log } from '../core/logger';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -106,6 +106,21 @@ function isAdminCommand(cmd: string): boolean {
 }
 
 /**
+ * Highest-risk commands — arbitrary shell execution and self-release.
+ * Gated on the owner (config `access.owner`, falling back to `admins[0]`),
+ * which is stricter than the admin allowlist. See `isOwner` in config/schema.
+ */
+const OWNER_COMMANDS: Record<string, true> = {
+  '/exec': true,
+  '/run': true,
+  '/release': true,
+};
+
+function isOwnerCommand(cmd: string): boolean {
+  return OWNER_COMMANDS[cmd.startsWith('/') ? cmd : `/${cmd}`] === true;
+}
+
+/**
  * Run a handler with a uniform error net: a thrown handler error is logged
  * (tagged with the command) and swallowed — a crash in one slash command
  * must not take down the whole bridge. Returns whether the command existed
@@ -140,6 +155,13 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean | '
     });
     // 'denied' is truthy so callers treat the input as consumed, but lets
     // intake distinguish "ran" from "rejected" and skip reset side effects.
+    return 'denied';
+  }
+  if (isOwnerCommand(cmd) && !isOwner(ctx.controls.cfg, ctx.msg.senderId)) {
+    log.info('command', 'owner-deny', {
+      cmd,
+      sender: ctx.msg.senderId.slice(-6),
+    });
     return 'denied';
   }
   return runHandler(cmd, args, h, ctx);

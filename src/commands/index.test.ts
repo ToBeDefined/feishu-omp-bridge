@@ -83,6 +83,28 @@ describe('command dispatch', () => {
     }
   });
 
+  it('denies owner-gated commands for non-owner admins', async () => {
+    for (const cmd of ['/exec', '/run', '/release']) {
+      let sent = false;
+      const ctx = makeCtx({
+        msg: { ...makeCtx().msg, content: cmd, senderId: 'ou_other_admin' },
+        controls: {
+          cfg: {
+            accounts: { app: { id: 'cli_x', secret: 's', tenant: 'feishu' } },
+            preferences: { access: { admins: ['ou_admin', 'ou_other_admin'] } },
+          },
+        } as never,
+        channel: {
+          send: async () => {
+            sent = true;
+          },
+        } as never,
+      });
+      expect(await tryHandleCommand(ctx)).toBe('denied');
+      expect(sent).toBe(false);
+    }
+  });
+
   it('runCommandHandler routes card button cmds to the right handler', async () => {
     let invoked = '';
     const ctx = makeCtx();

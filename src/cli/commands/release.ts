@@ -1,4 +1,4 @@
-import { runRelease, type ReleaseResult } from '../../release/run';
+import { repoRoot, runRelease, type ReleaseResult } from '../../release/run';
 import { runServiceRestart } from './service';
 
 function renderCliFailure(result: ReleaseResult): string {
@@ -15,7 +15,7 @@ function renderCliFailure(result: ReleaseResult): string {
 
 export async function runReleaseCli(): Promise<void> {
   console.log('发布：pnpm typecheck → pnpm test → pnpm build → restart…');
-  const result = await runRelease(undefined, process.cwd());
+  const result = await runRelease(undefined, repoRoot());
   if (!result.ok) {
     console.error(renderCliFailure(result));
     process.exit(1);

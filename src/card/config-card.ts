@@ -154,7 +154,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
               tag: 'markdown',
               content:
                 '\n**管理员**(`admins`)\n' +
-                '_只允许这些 open_id 跑敏感命令: `/account` `/config` `/exit` `/reconnect` `/doctor` `/cd` `/ws`_\n' +
+                '_只允许这些 open_id 跑敏感命令: `/account` `/config` `/exit` `/reconnect` `/doctor` `/cd` `/ws` `/release` `/exec` `/run`_\n' +
                 '_留空 = 不做管理员限制(所有放行的用户都能跑)。⚠️ 改为非空时务必把自己包含在内,否则会自锁出 /config_',
             },
             {

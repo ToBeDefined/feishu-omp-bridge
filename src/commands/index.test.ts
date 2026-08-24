@@ -62,18 +62,25 @@ describe('command dispatch', () => {
   });
 
   it('denies admin commands for non-admin senders', async () => {
-    // /config is admin-gated; a non-admin sender must be denied.
-    let sent = false;
-    const ctx = makeCtx({
-      msg: { ...makeCtx().msg, content: '/config', senderId: 'ou_other' },
-      channel: {
-        send: async () => {
-          sent = true;
-        },
-      } as never,
-    });
-    expect(await tryHandleCommand(ctx)).toBe(true); // consumed, but not invoked
-    expect(sent).toBe(false);
+    for (const cmd of ['/config', '/release', '/exec', '/run']) {
+      let sent = false;
+      const ctx = makeCtx({
+        msg: { ...makeCtx().msg, content: cmd, senderId: 'ou_other' },
+        controls: {
+          cfg: {
+            accounts: { app: { id: 'cli_x', secret: 's', tenant: 'feishu' } },
+            preferences: { access: { admins: ['ou_admin'] } },
+          },
+        } as never,
+        channel: {
+          send: async () => {
+            sent = true;
+          },
+        } as never,
+      });
+      expect(await tryHandleCommand(ctx)).toBe('denied');
+      expect(sent).toBe(false);
+    }
   });
 
   it('runCommandHandler routes card button cmds to the right handler', async () => {

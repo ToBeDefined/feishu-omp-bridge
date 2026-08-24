@@ -98,6 +98,7 @@ const ADMIN_COMMANDS: Record<string, true> = {
   '/ws': true,
   '/release': true,
   '/exec': true,
+  '/run': true,
 };
 
 function isAdminCommand(cmd: string): boolean {

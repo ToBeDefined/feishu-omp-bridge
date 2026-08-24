@@ -126,6 +126,8 @@ export function helpCard(): object {
         '- `/search <关键词>` — 跨会话历史检索；别名 `/s`',
         '- `/rename <标题>` — 给当前会话起名;`/rename auto` 用 LLM 生成,`/rename clear` 清除',
         '- `/restart` — 重启当前 bot(launchd 自动拉起新实例)',
+        '- `/release` — 自发布:typecheck→test→build→重启加载新代码',
+        '- `/exec <命令>` `/run` — 在当前 cwd 执行 shell 命令(admin)',
         '- `/ps` — 列出本机所有 bot,标识当前正在回复的那个',
         '- `/exit <id|#>` — 关掉指定 bot(用 `/ps` 看 id/序号)',
         '- `/reconnect` — 强制重连 WebSocket(网络抖动后 bot 没反应时用)',

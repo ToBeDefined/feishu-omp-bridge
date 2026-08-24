@@ -284,7 +284,7 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 - `allowedUsers` 空或未设置：允许所有用户。
 - `allowedChats` 空或未设置：允许所有 chat。
 - `admins` 空或未设置：所有允许用户都可执行管理员命令。
-- 管理员命令包括：`/account`、`/config`、`/exit`、`/reconnect`、`/doctor`、`/cd`、`/ws`。
+- 管理员命令包括：`/account`、`/config`、`/exit`、`/reconnect`、`/doctor`、`/cd`、`/ws`、`/release`、`/exec`、`/run`。
 
 ## 数据目录
 

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 export interface ReleaseExecOptions {
   timeout: number;
@@ -69,7 +70,7 @@ const execFileAsync: ReleaseExec = (command, args, options) =>
  *  so `..` is the repo root. The bridge daemon's process.cwd() is `/`
  *  (launchd default), so callers must pass an explicit cwd to `pnpm`. */
 export function repoRoot(): string {
-  return new URL('..', import.meta.url).pathname;
+  return fileURLToPath(new URL('..', import.meta.url));
 }
 
 export async function runRelease(

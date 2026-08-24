@@ -17,6 +17,7 @@ import { ActiveRuns } from './active-runs';
 import { ChatModeCache } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
 import { intakeMessage } from './intake';
+import { resolveOwner } from './owner';
 import { startKeepalive } from './keepalive';
 import { configureNetwork } from './network-config';
 import { PendingQueue } from './pending-queue';
@@ -154,6 +155,9 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   };
 
   const channel = createLarkChannel(opts);
+  // Auto-detect the bot owner (Feishu app creator_id) before the channel
+  // starts serving messages; in-memory only, best-effort.
+  await resolveOwner(channel, cfg);
   const media = new MediaCache(channel);
 
   // Pending → run handoff: while a run is active on a chat, block its pending

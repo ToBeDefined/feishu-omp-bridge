@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import pkg from '../../package.json';
 import { runMigrate } from './commands/migrate';
 import { runKillCli, runPs } from './commands/ps';
+import { runReleaseCli } from './commands/release';
 import {
   runSecretsGet,
   runSecretsList,
@@ -73,6 +74,13 @@ program
   .description('Restart the OS-managed daemon')
   .action(async () => {
     await runServiceRestart();
+  });
+
+program
+  .command('release')
+  .description('Self-release: typecheck → test → build, then restart the daemon')
+  .action(async () => {
+    await runReleaseCli();
   });
 
 program

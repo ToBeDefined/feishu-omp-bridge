@@ -89,7 +89,7 @@ feishu-omp-bridge unregister            删除 daemon 注册文件
 | --- | --- |
 | `/new`、`/reset` | 清空当前 chat / topic 的 OMP session，下一条消息新建会话。 |
 | `/new chat [name]` | 新建群并拉你进去，继承当前 cwd。 |
-| `/cd <path>` | 切换当前 chat / topic 的工作目录；会重置 session。支持 `~/xxx`。 |
+| `/cd <path>` | 切换当前 chat / topic 的工作目录；会重置 session。支持绝对路径、`~/xxx`、相对当前目录的路径（如 `src`、`../x`）。 |
 | `/ws list` | 查看命名工作空间。 |
 | `/ws add <name> <path>` | 保存命名工作空间。 |
 | `/ws use <name>` | 切换到命名工作空间并重置 session。 |
@@ -99,6 +99,7 @@ feishu-omp-bridge unregister            删除 daemon 注册文件
 | `/stop` | 终止当前正在跑的 OMP 任务。 |
 | `/timeout [N|off|default]` | 设置当前 session 的 idle 探活分钟数，或关闭 / 恢复全局默认。 |
 | `/ps` | 列出本机所有 bot，并标识当前正在回复的进程。 |
+| `/release` | 自发布：`pnpm typecheck` → `pnpm test` → `pnpm build` 后重启 daemon 加载新代码。失败即中止、不重启。 |
 | `/exit <id|#>` | 关闭指定 bot 进程。 |
 | `/reconnect` | 强制重连 WebSocket。 |
 | `/doctor [描述]` | 把最近日志和故障描述交给 OMP 自助诊断。 |

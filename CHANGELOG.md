@@ -30,6 +30,13 @@
   正文上限 4000 字符，超出即报清晰错误而非让飞书拒卡。
 - **子代理生命周期渲染**：OMP 派发并行子代理时，卡片显示状态行
   （🤖 工作中 / ✅ 完成 / ❌ 失败 / ⏹ 已中止），不再黑盒。
+- **`/cd` 相对路径**：`/cd <path>` 现在支持相对当前工作目录的路径
+  （如 `src`、`../x`、`./a/b`），不再强制绝对路径或 `~/xxx`；相对路径
+  基于当前 chat/topic 的 cwd 解析。
+- **`/release` 自发布命令**：飞书 `/release` 与 CLI
+  `feishu-omp-bridge release` 一键完成 `pnpm typecheck` → `pnpm test` →
+  `pnpm build` → 重启 daemon；任一步失败即中止、不重启，避免「改源码后
+  漏 build、重启加载旧 dist」的坑。admin 命令。
 ### Fixed
 - OMP 原生 UI 卡片超时自动取消：OMP 带 `timeout` 的 confirm/select/input
   等待用户输入时，idle watchdog 是暂停的，用户一直不回会永久挂死 run →

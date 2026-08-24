@@ -5,6 +5,7 @@ import { exitHandlers } from './exit';
 import { helpHandlers } from './help';
 import { psHandlers } from './ps';
 import { reconnectHandlers } from './reconnect';
+import { releaseHandlers } from './release';
 import { restartHandlers } from './restart';
 import { stopHandlers } from './stop';
 
@@ -13,6 +14,7 @@ export const lifecycleHandlers: Record<string, Handler> = {
   ...compactHandlers,
   ...stopHandlers,
   ...restartHandlers,
+  ...releaseHandlers,
   ...reconnectHandlers,
   ...psHandlers,
   ...exitHandlers,

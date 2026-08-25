@@ -89,9 +89,9 @@ def heal(tmp_path, monkeypatch):
                 rc = 0
         return subprocess.CompletedProcess(argv, rc)
 
-    # 探测：进程/omp 用可控 state；WS 读真实 processes.json（restart 修复后
+    # 探测：进程用可控 state；WS 读真实 processes.json（restart 修复后
     # RESTART_FIX 会写回 botName，需真实读取才能验证闭环）。
-    probe_state = {"alive": True, "omp": True}
+    probe_state = {"alive": True}
 
     def _proc_alive():
         return probe_state["alive"]
@@ -102,15 +102,11 @@ def heal(tmp_path, monkeypatch):
         except OSError:
             return False
 
-    def _omp_available():
-        return probe_state["omp"]
-
     monkeypatch.setattr(mod, "subprocess", type("SP", (), {"run": staticmethod(fake_run)})())
     monkeypatch.setattr(mod, "RESTART_CMD", "fake-restart")
     monkeypatch.setattr(mod, "OMP_BIN", "fake-omp")
     monkeypatch.setattr(mod, "_proc_alive", _proc_alive)
     monkeypatch.setattr(mod, "_ws_connected", _ws_connected)
-    monkeypatch.setattr(mod, "_omp_available", _omp_available)
 
     # 默认参数
     mod.RECOVER_WAIT_S = 0
@@ -170,11 +166,12 @@ def test_ws_disconnect_triggers_restart(heal):
     assert heal.calls["restart"] == 1
 
 
-# --- 4. omp 不可用 → 判异常 ---
-def test_omp_unavailable_counts_failure(heal):
-    heal.probe_state["omp"] = False
+def test_online_bridge_does_not_depend_on_omp_cli(heal):
+    """在线 bridge 的健康判定只依赖自身进程和 WS。"""
+    heal.OMP_BIN = "definitely-missing-omp"
     heal.heal_once()
-    assert heal.state_get("fails") >= 1
+    assert heal.state_get("fails") == 0
+    assert heal.calls["restart"] == 0
 
 
 # --- 5. restart 失败 → 唤起 omp ---

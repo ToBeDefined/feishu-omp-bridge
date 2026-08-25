@@ -41,6 +41,7 @@
   （`bash -c`，支持管道/重定向），当前 cwd 执行、30s 超时、输出截断
   1000 字符、禁交互、写审计日志。
 ### Fixed
+- 自愈看门狗不再把 `omp --version` 的短暂失败当成 bridge 假死；在线状态只由 bridge 进程和 WS 决定，避免无故重启、回退并重复发送上线通知。
 - OMP 原生 UI 卡片超时自动取消：OMP 带 `timeout` 的 confirm/select/input
   等待用户输入时，idle watchdog 是暂停的，用户一直不回会永久挂死 run →
   超时后自动回 `cancelled + timedOut` 并更新卡片为"⏱ 已超时"；用户先答

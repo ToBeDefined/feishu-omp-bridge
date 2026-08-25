@@ -5,8 +5,9 @@
 
   探测维度（每 60s，连续 FAIL_THRESHOLD 次异常才算"假死"）：
     1. 进程存活  —— 有 feishu-omp-bridge.mjs run 进程
-    2. WS 连通    —— ~/.feishu-omp-bridge/processes.json 存在带 botName 的条目
-    3. agent 可用 —— `omp --version` 5 秒内返回
+    2. WS 连通    —— bridge status 显示正在后台运行
+  OMP 是 bridge 的外部依赖；它不可用时由具体 agent 请求报告错误，不能
+  反过来把在线 bridge 判成假死并触发破坏性重启或回滚。
 
   修复策略（由轻到重）：
     A. bridge restart（每轮阈值都试，轻量）
@@ -165,12 +166,6 @@ def _ws_connected() -> bool:
             return False
 
 
-def _omp_available() -> bool:
-    try:
-        r = subprocess.run([OMP_BIN, "--version"], capture_output=True, timeout=5)
-        return r.returncode == 0
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return False
 
 
 def probe() -> bool:
@@ -180,9 +175,6 @@ def probe() -> bool:
         healthy = False
     if not _ws_connected():
         log("✗ 未检测到 WS 连接(processes.json 无 botName)")
-        healthy = False
-    if not _omp_available():
-        log("✗ omp 不可用")
         healthy = False
     return healthy
 

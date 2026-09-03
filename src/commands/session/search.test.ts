@@ -271,4 +271,25 @@ describe('searchSession', () => {
     expect(bySession.sessA).toBe('修搜索');
     expect(bySession.sessB).toBeUndefined();
   });
+
+  it('groups multiple hits from one session into a single context', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    await writeSession(tmp, 'a.jsonl', { id: 'sessA', cwd: '/repo', ts: '2026-08-15T10:00:00.000Z' }, [
+      { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: '第一处 codegraph 提问' }] },
+      { role: 'assistant', ts: '2026-08-15T10:00:02.000Z', content: [{ type: 'text', text: '第一处 codegraph 回答' }] },
+      { role: 'user', ts: '2026-08-15T10:00:03.000Z', content: [{ type: 'text', text: '第二处 codegraph 追问' }] },
+      { role: 'assistant', ts: '2026-08-15T10:00:04.000Z', content: [{ type: 'text', text: '第二处 codegraph 回答' }] },
+    ]);
+
+    const hits = await searchSession('codegraph', ctxFor());
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.sessionId).toBe('sessA');
+    expect(hits[0]!.matchCount).toBe(2);
+    // Representative is the newest matching pair inside the session.
+    expect(hits[0]!.messages.map((m) => m.content)).toEqual([
+      '第二处 codegraph 追问',
+      '第二处 codegraph 回答',
+    ]);
+  });
 });

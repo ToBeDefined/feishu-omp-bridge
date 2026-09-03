@@ -18,6 +18,8 @@ export interface SearchContext {
   hitIndex: number;
   sessionId?: string;
   workspace?: string;
+  /** Number of matched Q&A pairs in the session; >1 when grouped. */
+  matchCount?: number;
   /** User-assigned session title (/rename), when the hit belongs to one. */
   title?: string;
 }
@@ -68,9 +70,9 @@ export function searchResultsCard(
 ): object {
   const done = !showButtons;
   const header = done
-    ? `✅ 搜索完成 · ${contexts.length} 个片段`
-    : `🔍 搜索 \`${codeSpan(keyword)}\`：找到 ${contexts.length} 个片段`;
-  const more = !done && contexts.length >= 6 ? '\n\n_（仅显示最近 6 个片段）_' : '';
+    ? `✅ 搜索完成 · ${contexts.length} 个会话`
+    : `🔍 搜索 \`${codeSpan(keyword)}\`：找到 ${contexts.length} 个会话`;
+  const more = !done && contexts.length >= 6 ? '\n\n_（仅显示最近 6 个会话）_' : '';
   // Active list caps at 6 rendered items (header already notes this); the
   // done (settled) view renders everything for review.
   const shown = done ? contexts : contexts.slice(0, 6);
@@ -80,6 +82,7 @@ export function searchResultsCard(
       c.title ? `🏷 ${c.title}` : '',
       c.workspace ? `📁 ${c.workspace}` : '',
       c.sessionId ? `🆔 ${c.sessionId}` : '',
+      c.matchCount && c.matchCount > 1 ? `🔎 ${c.matchCount} 处匹配` : '',
     ]
       .filter(Boolean)
       .join(' · ');

@@ -93,10 +93,15 @@ describe('searchResultsCard', () => {
     const many = Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
     const card = searchResultsCard('foo', many, 'q1', true);
     const body = JSON.stringify(card);
-    expect(body).toContain('仅显示最近 6 个片段');
+    expect(body).toContain('仅显示最近 6 个会话');
     // 8 items → 6 rendered headings (#1..#6); #7 not a heading
     expect(body).toContain('"content":"#6 ·');
     expect(body).not.toContain('"content":"#7 ·');
+  });
+
+  it('shows a match count when a session has multiple hits', () => {
+    const card = searchResultsCard('foo', [sampleContext({ matchCount: 3 })], 'q1', true);
+    expect(JSON.stringify(card)).toContain('🔎 3 处匹配');
   });
 
   it('renders all items in the done (settled) view', () => {

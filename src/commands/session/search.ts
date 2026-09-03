@@ -41,15 +41,16 @@ function messageText(msg: {
 }
 
 /** Search every session file (across workspaces), returning one context per
- * unique matched Q&A pair (the hit plus its user/assistant counterpart).
- * Newest first, capped at `limit`. */
+ * matched session: hits within one session collapse into a single entry
+ * (newest hit pair as the representative snippet, total in `matchCount`).
+ * Newest first, capped at `limit` sessions. */
 export async function searchSession(
   keyword: string,
   ctx: CommandContext,
   limit = 6,
 ): Promise<SearchContext[]> {
   const needle = keyword.toLowerCase();
-  const contexts: SearchContext[] = [];
+  const contexts: Array<SearchContext & { groupKey: string }> = [];
   const sessionTitles = ctx.sessions?.titlesBySessionId?.() ?? {};
   try {
     const entries = await readdir(paths.ompSessionsDir);
@@ -122,6 +123,10 @@ export async function searchSession(
           sessionId,
           workspace,
           ...(title !== undefined ? { title } : {}),
+          // Group key: one session id per file pair; fall back to the file
+          // name when a session file has no id, so the same session never
+          // shows up more than once.
+          groupKey: sessionId ?? name,
         });
       }
     }
@@ -131,7 +136,19 @@ export async function searchSession(
   contexts.sort((a, b) =>
     (b.messages[b.hitIndex]?.timestamp ?? '').localeCompare(a.messages[a.hitIndex]?.timestamp ?? ''),
   );
-  return contexts.slice(0, limit);
+  // Collapse same-session hits into one entry, newest pair first; the first
+  // (newest) pair stays as the representative snippet.
+  const grouped = new Map<string, SearchContext>();
+  for (const c of contexts) {
+    const existing = grouped.get(c.groupKey);
+    if (existing) {
+      existing.matchCount = (existing.matchCount ?? 1) + 1;
+      continue;
+    }
+    const { groupKey: _ignored, ...rest } = c;
+    grouped.set(c.groupKey, { ...rest, matchCount: 1 });
+  }
+  return [...grouped.values()].slice(0, limit);
 }
 
 async function handleSearch(args: string, ctx: CommandContext): Promise<void> {

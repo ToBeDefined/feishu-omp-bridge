@@ -30,6 +30,9 @@ export class OmpAdapter implements AgentAdapter {
   private readonly thinking: string | undefined;
   private readonly tools: string | undefined;
 
+  /** Hard cap for compactSession: compaction runs an LLM over the whole session. */
+  private static readonly COMPACT_TIMEOUT_MS = 10 * 60_000;
+
   constructor(opts: OmpAdapterOptions = {}) {
     this.binary = opts.binary ?? 'omp';
     this.sessionDir = opts.sessionDir;
@@ -165,6 +168,106 @@ export class OmpAdapter implements AgentAdapter {
         return waitForExitWithin(child, timeoutMs);
       },
     };
+  }
+
+  /**
+   * One-shot compact: spawn omp --mode rpc with --resume, wait for ready,
+   * send the compact frame, resolve on the response frame, kill the child.
+   * The RPC server answers every request with a `{success, error?}`
+   * response frame, so no success heuristics are needed.
+   */
+  compactSession(opts: {
+    sessionId: string;
+    cwd?: string;
+    model?: string;
+    customInstructions?: string;
+  }): Promise<string | undefined> {
+    const args = buildOmpArgs({
+      prompt: '',
+      sessionId: opts.sessionId,
+      cwd: opts.cwd,
+      model: opts.model,
+      sessionDir: this.sessionDir,
+      thinking: this.thinking,
+      tools: this.tools,
+    });
+    const child = spawn(this.binary, args, {
+      cwd: opts.cwd,
+      env: { ...process.env, FEISHU_OMP_BRIDGE: '1' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    // Manual withResolvers: Promise.withResolvers requires Node 22+, this
+    // package still supports Node >=20.
+    let resolve!: (error: string | undefined) => void;
+    const done = new Promise<string | undefined>((r) => {
+      resolve = r;
+    });
+    // Compaction summarizes the whole session via the LLM — long sessions
+    // can take minutes. Kill the child either way once settled.
+    const settle = (error: string | undefined): void => {
+      clearTimeout(timer);
+      if (child.exitCode === null && child.signalCode === null) {
+        endInput(child);
+        child.kill('SIGTERM');
+      }
+      resolve(error);
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      settle(`omp 压缩超时（${OmpAdapter.COMPACT_TIMEOUT_MS / 1000}s）`);
+    }, OmpAdapter.COMPACT_TIMEOUT_MS);
+
+    const stderrTail: string[] = [];
+    let stderrLen = 0;
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrTail.push(chunk.toString('utf8'));
+      stderrLen += chunk.length;
+      while (stderrLen > 4096 && stderrTail.length > 1) stderrLen -= stderrTail.shift()!.length;
+    });
+
+    const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    let settled = false;
+    rl.on('line', (line) => {
+      if (settled) return;
+      const parsed = parseOmpJsonLine(line);
+      if (parsed === undefined) return;
+      if (isReadyFrame(parsed)) {
+        if (!writeFrame(child, {
+          id: 'compact_oneshot',
+          type: 'compact',
+          ...(opts.customInstructions ? { customInstructions: opts.customInstructions } : {}),
+        })) {
+          settled = true;
+          settle('omp stdin 已关闭，无法发送压缩请求');
+        }
+        return;
+      }
+      if (isRecord(parsed) && parsed.type === 'response' && parsed.id === 'compact_oneshot') {
+        settled = true;
+        if (parsed.success === true) {
+          settle(undefined);
+        } else {
+          const detail = typeof parsed.error === 'string' && parsed.error ? parsed.error : '未知错误';
+          const stderr = stderrTail.join('').trim();
+          settle(stderr ? `${detail}（stderr: ${stderr.slice(-2000)}）` : detail);
+        }
+      }
+    });
+    child.on('error', (err) => {
+      if (!settled) {
+        settled = true;
+        settle(`omp 启动失败: ${errorText(err)}`);
+      }
+    });
+    child.on('exit', (code, signal) => {
+      if (!settled) {
+        settled = true;
+        const stderr = stderrTail.join('').trim();
+        settle(`omp 提前退出 (code=${code ?? '?'} signal=${signal ?? '?'})${stderr ? `: ${stderr.slice(-2000)}` : ''}`);
+      }
+    });
+    return done;
   }
 }
 

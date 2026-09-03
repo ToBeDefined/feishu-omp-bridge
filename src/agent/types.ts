@@ -135,4 +135,12 @@ export interface AgentAdapter {
   readonly displayName: string;
   isAvailable(): Promise<boolean>;
   run(opts: AgentRunOptions): AgentRun;
+  /**
+   * Compact a persisted session by spawning a short-lived agent process:
+   * resume the session, send the compact command, wait for the result.
+   * Used when no run is active for the chat — the bridge spawns one OMP
+   * process per message, so idle sessions have no live process to compact.
+   * Returns the human-readable error on failure, undefined on success.
+   */
+  compactSession?(opts: { sessionId: string; cwd?: string; model?: string; customInstructions?: string }): Promise<string | undefined>;
 }

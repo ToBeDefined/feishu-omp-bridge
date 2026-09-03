@@ -7,6 +7,8 @@ export interface RunHandle {
   onUiSettled?: () => void;
   /** Per-request timeout timers, keyed by UI request id. */
   uiTimers: Map<string, ReturnType<typeof setTimeout>>;
+  /** Compact requested mid-run; fired once the run unregisters. */
+  deferredCompact?: () => void;
 }
 
 export class ActiveRuns {
@@ -29,6 +31,11 @@ export class ActiveRuns {
       for (const timer of existing.uiTimers.values()) clearTimeout(timer);
       existing.uiTimers.clear();
       this.handles.delete(chatId);
+      // Run is over (normal end or mid-stream failure) — the session file
+      // is settled, so a compact requested while it ran can fire now. The
+      // callback re-resolves its own session id, so a /cd reset between
+      // request and fire degrades to a no-op inside the callback.
+      existing.deferredCompact?.();
     }
   }
 
@@ -111,6 +118,19 @@ export class ActiveRuns {
     const h = this.handles.get(chatId);
     return h?.run.compact?.(customInstructions) === true;
   }
+
+  /**
+   * Queue a compact to fire when the chat's current run finishes. Only the
+   * latest request is kept — a second /compact replaces the first. Returns
+   * false when no run is active (caller should compact immediately).
+   */
+  deferCompact(chatId: string, fn: () => void): boolean {
+    const h = this.handles.get(chatId);
+    if (!h) return false;
+    h.deferredCompact = fn;
+    return true;
+  }
+
   async stopAll(): Promise<void> {
     const all = [...this.handles.values()];
     this.handles.clear();

@@ -17,9 +17,10 @@ async function fakeOmp(source: string): Promise<string> {
 
 function makeCtx(overrides: {
   activeRuns?: ActiveRuns;
-  compactSession?: (opts: { sessionId: string; cwd?: string; model?: string; customInstructions?: string }) => Promise<string | undefined>;
+  compactSession?: (opts: { sessionId: string; cwd?: string; model?: string; customInstructions?: string; timeoutMs?: number }) => Promise<string | undefined>;
   cwd?: string;
   sessionId?: string;
+  sessionDir?: string;
 }): CommandContext {
   const send = vi.fn(async () => {});
   return {
@@ -31,7 +32,11 @@ function makeCtx(overrides: {
     sessions: { resumeFor: () => overrides.sessionId },
     activeRuns: overrides.activeRuns ?? new ActiveRuns(),
     agent: { compactSession: overrides.compactSession },
-    controls: { cfg: {} },
+    controls: {
+      cfg: {
+        preferences: { ompSessionDir: overrides.sessionDir ?? '/nonexistent-omp-bridge-test' },
+      },
+    },
   } as unknown as CommandContext;
 }
 
@@ -68,6 +73,7 @@ describe('/compact command', () => {
       cwd: '/repo',
       model: undefined,
       customInstructions: 'keep the last question',
+      timeoutMs: 600_000,
     });
   });
 
@@ -82,6 +88,7 @@ describe('/compact command', () => {
       cwd: '/repo',
       model: undefined,
       customInstructions: 'keep the last question',
+      timeoutMs: 600_000,
     });
     const bodies = sentBodies(ctx).join('\n');
     expect(bodies).toContain('正在压缩');
@@ -107,6 +114,38 @@ describe('/compact command', () => {
 
     expect(compactSession).not.toHaveBeenCalled();
     expect(sentBodies(ctx).join('\n')).toContain('没有可压缩的会话');
+  });
+
+  it('sizes the timeout to the session and shows an ETA', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omp-compact-size-'));
+    // A fake session whose last assistant turn reports a 400k-token context.
+    const lines = [
+      JSON.stringify({ type: 'session', id: 'big-session', cwd: '/repo', timestamp: '2026-01-01T00:00:00.000Z' }),
+      JSON.stringify({
+        type: 'message',
+        message: { role: 'assistant', content: [], usage: { input: 10, output: 5, cacheRead: 399985, cacheWrite: 0, totalTokens: 400000 } },
+      }),
+    ];
+    await writeFile(join(dir, '2026-01-01T00-00-00-000Z_big-session.jsonl'), lines.join('\n') + '\n', 'utf8');
+
+    const compactSession = vi.fn(async (_o: { timeoutMs?: number }) => undefined);
+    const ctx = makeCtx({ compactSession, sessionId: 'big-session', sessionDir: dir });
+
+    await compactHandlers['/compact']!('', ctx);
+
+    // 399,995 tokens × 1.35 s/k × safety 3 = 1,620 s ≈ 27 min, above the floor.
+    const call = compactSession.mock.calls[0]![0];
+    expect(call.timeoutMs).toBe(1_620_000);
+  });
+
+  it('falls back to the default timeout for unknown sessions', async () => {
+    const compactSession = vi.fn(async (_o: { timeoutMs?: number }) => undefined);
+    const ctx = makeCtx({ compactSession, sessionId: 'ghost', sessionDir: '/nonexistent-omp-bridge-test' });
+
+    await compactHandlers['/compact']!('', ctx);
+
+    expect(compactSession.mock.calls[0]![0].timeoutMs).toBe(600_000);
+    expect(sentBodies(ctx).join('\n')).toContain('正在压缩');
   });
 });
 
@@ -204,5 +243,20 @@ process.stdout.write(JSON.stringify({ type: 'ready', protocolVersion: 1 }) + '\\
     const adapter = new OmpAdapter({ binary: '/nonexistent/omp-binary' });
     const error = await adapter.compactSession({ sessionId: 's1', cwd: tmpdir() });
     expect(error).toMatch(/omp 启动失败/);
+  });
+
+  // Integration exception to the no-timers rule: this exercises the adapter's
+  // real timeout against a real child process — fake timers can't drive stdin
+  // I/O. 50 ms keeps the wall-clock cost negligible.
+  it('kills the child and reports a timeout when compact never answers', async () => {
+    // Ready but never responds to the compact frame — the incident shape.
+    const binary = await fakeOmp(`
+process.stdout.write(JSON.stringify({ type: 'ready', protocolVersion: 1 }) + '\\n');
+setInterval(() => {}, 1000);
+`);
+    const adapter = new OmpAdapter({ binary });
+    await expect(
+      adapter.compactSession({ sessionId: 's1', cwd: tmpdir(), timeoutMs: 50 }),
+    ).resolves.toMatch(/omp 压缩超时/);
   });
 });

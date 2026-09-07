@@ -142,5 +142,5 @@ export interface AgentAdapter {
    * process per message, so idle sessions have no live process to compact.
    * Returns the human-readable error on failure, undefined on success.
    */
-  compactSession?(opts: { sessionId: string; cwd?: string; model?: string; customInstructions?: string }): Promise<string | undefined>;
+  compactSession?(opts: { sessionId: string; cwd?: string; model?: string; customInstructions?: string; timeoutMs?: number }): Promise<string | undefined>;
 }

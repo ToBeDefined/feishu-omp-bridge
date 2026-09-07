@@ -181,6 +181,8 @@ export class OmpAdapter implements AgentAdapter {
     cwd?: string;
     model?: string;
     customInstructions?: string;
+    /** Hard cap for this compaction; defaults to COMPACT_TIMEOUT_MS. */
+    timeoutMs?: number;
   }): Promise<string | undefined> {
     const args = buildOmpArgs({
       prompt: '',
@@ -204,7 +206,11 @@ export class OmpAdapter implements AgentAdapter {
       resolve = r;
     });
     // Compaction summarizes the whole session via the LLM — long sessions
-    // can take minutes. Kill the child either way once settled.
+    // can take tens of minutes, so callers pass a size-aware timeout; the
+    // default only has to cover ordinary sessions. Kill the child either
+    // way once settled.
+    const timeoutMs = opts.timeoutMs ?? OmpAdapter.COMPACT_TIMEOUT_MS;
+    const startedAt = Date.now();
     const settle = (error: string | undefined): void => {
       clearTimeout(timer);
       if (child.exitCode === null && child.signalCode === null) {
@@ -215,8 +221,8 @@ export class OmpAdapter implements AgentAdapter {
     };
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
-      settle(`omp 压缩超时（${OmpAdapter.COMPACT_TIMEOUT_MS / 1000}s）`);
-    }, OmpAdapter.COMPACT_TIMEOUT_MS);
+      settle(`omp 压缩超时（${Math.round((Date.now() - startedAt) / 1000)}s 上限 ${timeoutMs / 1000}s）`);
+    }, timeoutMs);
 
     const stderrTail: string[] = [];
     let stderrLen = 0;

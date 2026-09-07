@@ -25,6 +25,7 @@ import {
 } from '../../config/store';
 import { gcOldLogs, log } from '../../core/logger';
 import { kickstart } from '../../daemon/launchd';
+import { takeReleaseOnline } from '../../release/notify';
 import { gcMediaCache } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
 import {
@@ -252,6 +253,12 @@ export async function runStart(opts: StartOptions): Promise<void> {
   // cloud-doc comments use `doc:<fileToken>` and topic chats use
   // `chatId:threadId` — sending to those fails every boot (N dead API calls).
   const notifyTargets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
+  // A chat that just ran /release gets the confirmation even without a
+  // persisted session (its entry may have been cleared by /new, /cd, /ws).
+  const releaseChat = await takeReleaseOnline();
+  if (releaseChat && !notifyTargets.includes(releaseChat)) {
+    notifyTargets.push(releaseChat);
+  }
   for (const chatId of notifyTargets) {
     try {
       await bridge.channel.send(

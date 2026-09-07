@@ -1,7 +1,10 @@
+import { unlink } from 'node:fs/promises';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
 import { log } from '../../core/logger';
 import { repoRoot, runRelease, type ReleaseResult } from '../../release/run';
+import { markReleaseOnline } from '../../release/notify';
+import { paths } from '../../config/paths';
 
 let inFlight = false;
 
@@ -35,8 +38,14 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
       return;
     }
     await reply(ctx, '✅ 构建成功，正在重启加载新代码…');
+    // Persist which chat asked, so the post-boot "已上线" reaches it even
+    // when its session entry was cleared (/new, /cd, /ws) before /release.
+    await markReleaseOnline(ctx.msg.chatId);
     const realRestart = await ctx.controls.restartProcess();
     if (!realRestart) {
+      // In-process reconnect: no boot happens, so nothing would consume
+      // the marker — drop it instead of leaking a stale notification.
+      await unlink(paths.releaseNotifyFile).catch(() => {});
       await reply(ctx, '🚀 已重新连接（当前不在 launchd 下，进程内重连）。');
     }
     log.info('command', 'release-ok', { realRestart });

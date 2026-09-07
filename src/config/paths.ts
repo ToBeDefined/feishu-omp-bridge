@@ -18,6 +18,7 @@ export const paths = {
   modelsCacheFile: join(appDir, 'models-cache.json'),
   modelHistoryFile: join(appDir, 'model-history.json'),
   schedulerFile: join(appDir, 'scheduler.json'),
+  releaseNotifyFile: join(appDir, 'release-notify.json'),
 };
 
 export const legacyPaths = {

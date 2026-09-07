@@ -647,7 +647,7 @@ function runContentChars(state: RunState): number {
     if (b.kind === 'text') {
       n += b.content.length;
     } else {
-      n += (b.tool.output?.length ?? 0) + 64;
+      n += (b.tool.output?.length ?? 0) + 400; // per-tool collapsible_panel chrome (header/icon/border JSON)
       const input = b.tool.input;
       if (typeof input === 'string') n += input.length;
       else if (input && typeof input === 'object') {
@@ -665,7 +665,7 @@ function runContentChars(state: RunState): number {
   return n;
 }
 
-function cardExceedsBudget(card: object, state: RunState): boolean {
+export function cardExceedsBudget(card: object, state: RunState): boolean {
   // Envelope covers JSON keys, tool-panel chrome, buttons. Skip stringify
   // until content is actually near the Feishu 64KB cap.
   if (runContentChars(state) + 8 * 1024 < CARD_SIZE_BUDGET) return false;

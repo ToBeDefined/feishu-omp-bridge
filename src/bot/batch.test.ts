@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { carryOverBlocks, coalesceLatest, fallbackCard, fallbackContent } from './batch';
+import { carryOverBlocks, coalesceLatest, fallbackCard, fallbackContent, cardExceedsBudget } from './batch';
 import { initialState, type Block, type RunState } from '../card/run-state';
+import { renderCard } from '../card/run-renderer';
 
 const base: RunState = {
   ...initialState,
@@ -117,5 +118,31 @@ describe('coalesceLatest', () => {
     q.push(1);
     await expect(q.flush()).rejects.toThrow('nope');
     expect(() => q.push(2)).toThrow('nope');
+  });
+});
+describe('cardExceedsBudget', () => {
+  it('stays under budget for a small card', () => {
+    expect(cardExceedsBudget(renderCard(base), base)).toBe(false);
+  });
+
+  it('flags a card whose text alone exceeds the budget', () => {
+    const big: RunState = {
+      ...initialState,
+      blocks: [{ kind: 'text', content: 'x'.repeat(60 * 1024), streaming: false }],
+    };
+    expect(cardExceedsBudget(renderCard(big), big)).toBe(true);
+  });
+
+  it('accounts for per-tool panel chrome, not just output length', () => {
+    // Many short-output tools: the real card JSON is dominated by each
+    // tool's collapsible_panel chrome. An estimate that counts only the
+    // output length misses the overflow and Feishu rejects the card.
+    const blocks: Block[] = Array.from({ length: 100 }, (_, i) => ({
+      kind: 'tool',
+      tool: { id: `t${i}`, name: 'Bash', input: { command: 'x' }, status: 'done' as const, output: 'x'.repeat(50) },
+    }));
+    const state: RunState = { ...initialState, blocks };
+    expect(JSON.stringify(renderCard(state)).length).toBeGreaterThan(48 * 1024);
+    expect(cardExceedsBudget(renderCard(state), state)).toBe(true);
   });
 });

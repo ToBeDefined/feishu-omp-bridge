@@ -1,3 +1,5 @@
 allowBuilds:
   esbuild: true
   protobufjs: true
+patchedDependencies:
+  '@larksuiteoapi/node-sdk@1.65.0': patches/@larksuiteoapi__node-sdk@1.65.0.patch

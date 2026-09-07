@@ -1,0 +1,74 @@
+diff --git a/es/index.js b/es/index.js
+index 8d6e87e616d8a2a8fece170433d8ea906e2edaed..e4b7916f52a875b248c532fc0d68d1071478566b 100644
+--- a/es/index.js
++++ b/es/index.js
+@@ -89921,6 +89921,12 @@ class Throttle {
+      * or do nothing (a fire is already scheduled).
+      */
+     note(deltaChars) {
++        // feishu-omp-bridge patch: a timer-fired flush that rejects used to
++        // die as an unhandledRejection (fireSoon voids doFire's promise) and
++        // the stream kept hammering the API with the same failing snapshot.
++        // Capture it and surface it to the producer on the next note/flush.
++        if (this.lastError)
++            throw this.lastError;
+         this.pendingChars += deltaChars;
+         if (this.pendingChars >= this.opts.chars) {
+             this.fireSoon(0);
+@@ -89937,7 +89943,9 @@ class Throttle {
+             clearTimeout(this.timer);
+         this.timer = setTimeout(() => {
+             this.timer = undefined;
+-            void this.doFire();
++            this.doFire().catch((e) => {
++                this.lastError = e;
++            });
+         }, delay);
+     }
+     /**
+@@ -89949,6 +89957,8 @@ class Throttle {
+      */
+     flushNow() {
+         return __awaiter(this, void 0, void 0, function* () {
++            if (this.lastError)
++                throw this.lastError;
+             if (this.timer) {
+                 clearTimeout(this.timer);
+                 this.timer = undefined;
+diff --git a/lib/index.js b/lib/index.js
+index 9bceeb22a63f774a26c22857f9be66599186f8e8..05c228ee59d19e4708a4a23ad25f5049a451d906 100644
+--- a/lib/index.js
++++ b/lib/index.js
+@@ -89939,6 +89939,12 @@ class Throttle {
+      * or do nothing (a fire is already scheduled).
+      */
+     note(deltaChars) {
++        // feishu-omp-bridge patch: a timer-fired flush that rejects used to
++        // die as an unhandledRejection (fireSoon voids doFire's promise) and
++        // the stream kept hammering the API with the same failing snapshot.
++        // Capture it and surface it to the producer on the next note/flush.
++        if (this.lastError)
++            throw this.lastError;
+         this.pendingChars += deltaChars;
+         if (this.pendingChars >= this.opts.chars) {
+             this.fireSoon(0);
+@@ -89955,7 +89961,9 @@ class Throttle {
+             clearTimeout(this.timer);
+         this.timer = setTimeout(() => {
+             this.timer = undefined;
+-            void this.doFire();
++            this.doFire().catch((e) => {
++                this.lastError = e;
++            });
+         }, delay);
+     }
+     /**
+@@ -89967,6 +89975,8 @@ class Throttle {
+      */
+     flushNow() {
+         return __awaiter(this, void 0, void 0, function* () {
++            if (this.lastError)
++                throw this.lastError;
+             if (this.timer) {
+                 clearTimeout(this.timer);
+                 this.timer = undefined;

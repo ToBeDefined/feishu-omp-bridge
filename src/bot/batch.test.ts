@@ -145,4 +145,28 @@ describe('cardExceedsBudget', () => {
     expect(JSON.stringify(renderCard(state)).length).toBeGreaterThan(48 * 1024);
     expect(cardExceedsBudget(renderCard(state), state)).toBe(true);
   });
+  it('flags a card past the element budget even when bytes stay small', () => {
+    // Production failure shape: many tiny tool calls → 55 elements / 44KB,
+    // Feishu 400 ErrCode 11310 "element exceeds the limit". Bytes never
+    // approach 48KB, so only an element-count check paginates this.
+    const blocks: Block[] = Array.from({ length: 41 }, (_, i) => ({
+      kind: 'tool',
+      tool: { id: `t${i}`, name: 'Bash', input: { command: 'x' }, status: 'done' as const, output: 'ok' },
+    }));
+    const state: RunState = { ...initialState, blocks };
+    const card = renderCard(state);
+    expect(JSON.stringify(card).length).toBeLessThan(48 * 1024);
+    expect(card.body.elements.length).toBeGreaterThan(40);
+    expect(cardExceedsBudget(card, state)).toBe(true);
+  });
+
+  it('accepts a card at the element budget boundary', () => {
+    const blocks: Block[] = Array.from({ length: 40 }, (_, i) => ({
+      kind: 'tool',
+      tool: { id: `t${i}`, name: 'Bash', input: { command: 'x' }, status: 'done' as const, output: 'ok' },
+    }));
+    // terminal: 'done' — a running card also carries footer + stop button.
+    const state: RunState = { ...initialState, blocks, terminal: 'done', footer: null };
+    expect(cardExceedsBudget(renderCard(state), state)).toBe(false);
+  });
 });

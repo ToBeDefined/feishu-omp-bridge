@@ -6,7 +6,7 @@ import type { ActiveRuns, RunHandle } from './active-runs';
 import { createFeishuHostIntegration } from './feishu-host';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { renderOmpUiRequestCard, renderOmpUiResultCard } from '../card/omp-ui';
-import { renderCard } from '../card/run-renderer';
+import { renderCard, type RunCard } from '../card/run-renderer';
 import {
   finalizeIfRunning,
   initialState,
@@ -601,6 +601,13 @@ export function carryOverBlocks(blocks: Block[]): Block[] {
  * JSON.stringify-length check undercounts.
  */
 const CARD_SIZE_BUDGET = 48 * 1024;
+/**
+ * Element-count budget per page. Feishu also rejects a streaming card whose
+ * body grows past ~50 elements — same ErrCode 11310, observed in production
+ * at 55 elements / 44KB (well under the byte budget). Runs with many small
+ * tool calls hit this first, so paginate on count too.
+ */
+const CARD_ELEMENT_BUDGET = 40;
 
 export function coalesceLatest<T>(write: (value: T) => Promise<void>): {
   push(value: T): void;
@@ -665,7 +672,8 @@ function runContentChars(state: RunState): number {
   return n;
 }
 
-export function cardExceedsBudget(card: object, state: RunState): boolean {
+export function cardExceedsBudget(card: RunCard, state: RunState): boolean {
+  if (card.body.elements.length > CARD_ELEMENT_BUDGET) return true;
   // Envelope covers JSON keys, tool-panel chrome, buttons. Skip stringify
   // until content is actually near the Feishu 64KB cap.
   if (runContentChars(state) + 8 * 1024 < CARD_SIZE_BUDGET) return false;

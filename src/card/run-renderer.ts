@@ -25,7 +25,15 @@ export interface CardPageOptions {
   bottomNote?: string;
 }
 
-export function renderCard(state: RunState, opts?: CardPageOptions): object {
+/** The CardKit 2.0 envelope `renderCard` produces. Named so callers can
+ *  read `body.elements.length` (pagination budget) without casts. */
+export interface RunCard {
+  schema: string;
+  config: { streaming_mode: boolean; summary: { content: string } };
+  body: { elements: object[] };
+}
+
+export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   const elements: object[] = [];
 
   if (opts?.topNote) elements.push(noteMd(opts.topNote));

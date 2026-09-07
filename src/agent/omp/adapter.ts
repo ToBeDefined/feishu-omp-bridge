@@ -94,20 +94,11 @@ export class OmpAdapter implements AgentAdapter {
     // Keep only the tail of stderr for the error detail — a verbose child
     // (warning spam, progress bars) must not grow this unboundedly.
     const STDERR_TAIL_MAX = 64 * 1024;
-    let stderrBuffer = '';
     child.stderr.on('data', (chunk: Buffer) => {
       stderrChunks.push(chunk);
       stderrBytes += chunk.length;
       while (stderrBytes > STDERR_TAIL_MAX && stderrChunks.length > 0) {
         stderrBytes -= stderrChunks.shift()!.length;
-      }
-      stderrBuffer += chunk.toString('utf8');
-      let nl = stderrBuffer.indexOf('\n');
-      while (nl !== -1) {
-        const line = stderrBuffer.slice(0, nl);
-        stderrBuffer = stderrBuffer.slice(nl + 1);
-        if (line.trim()) log.warn('agent', 'stderr', { line });
-        nl = stderrBuffer.indexOf('\n');
       }
     });
 

@@ -77,12 +77,12 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
       if (last && last.kind === 'text' && last.streaming) {
         const merged = last.content + evt.delta;
         if (merged.length <= TEXT_BLOCK_SPLIT) {
-          return {
-            ...state,
-            blocks: [...state.blocks.slice(0, -1), { ...last, content: merged }],
-            reasoning: { ...state.reasoning, active: false },
-            footer: 'streaming',
-          };
+          // Hot path: mutate the streaming block. Nothing snapshots
+          // RunState between deltas, so copying `blocks` every token
+          // is wasted.
+          last.content = merged;
+          if (state.footer === 'streaming' && !state.reasoning.active) return state;
+          return { ...state, reasoning: { ...state.reasoning, active: false }, footer: 'streaming' };
         }
         // Block full: close it and start a fresh block with this delta. The
         // accumulated content stays in the closed block — nothing dropped.
@@ -106,6 +106,10 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
     }
 
     case 'thinking': {
+      if (state.reasoning.active && state.footer === 'thinking') {
+        state.reasoning.content += evt.delta;
+        return state;
+      }
       return {
         ...state,
         reasoning: { content: state.reasoning.content + evt.delta, active: true },

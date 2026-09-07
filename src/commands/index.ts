@@ -140,6 +140,32 @@ async function runHandler(
   return true;
 }
 
+/** Shared admin/owner gate for text commands and card-button invocations. */
+function denyIfUnauthorized(
+  cmd: string,
+  ctx: CommandContext,
+  via?: 'card',
+): 'denied' | undefined {
+  const name = cmd.startsWith('/') ? cmd : `/${cmd}`;
+  if (isAdminCommand(name) && !isAdmin(ctx.controls.cfg, ctx.msg.senderId)) {
+    log.info('command', 'admin-deny', {
+      cmd: name,
+      sender: ctx.msg.senderId.slice(-6),
+      ...(via ? { via } : {}),
+    });
+    return 'denied';
+  }
+  if (isOwnerCommand(name) && !isOwner(ctx.controls.cfg, ctx.msg.senderId)) {
+    log.info('command', 'owner-deny', {
+      cmd: name,
+      sender: ctx.msg.senderId.slice(-6),
+      ...(via ? { via } : {}),
+    });
+    return 'denied';
+  }
+  return undefined;
+}
+
 export async function tryHandleCommand(ctx: CommandContext): Promise<boolean | 'denied'> {
   const trimmed = ctx.msg.content.trim();
   if (!trimmed.startsWith('/')) return false;
@@ -148,30 +174,18 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean | '
   const args = parts.slice(1).join(' ');
   const h = handlers[cmd];
   if (!h) return false;
-  if (isAdminCommand(cmd) && !isAdmin(ctx.controls.cfg, ctx.msg.senderId)) {
-    log.info('command', 'admin-deny', {
-      cmd,
-      sender: ctx.msg.senderId.slice(-6),
-    });
-    // 'denied' is truthy so callers treat the input as consumed, but lets
-    // intake distinguish "ran" from "rejected" and skip reset side effects.
-    return 'denied';
-  }
-  if (isOwnerCommand(cmd) && !isOwner(ctx.controls.cfg, ctx.msg.senderId)) {
-    log.info('command', 'owner-deny', {
-      cmd,
-      sender: ctx.msg.senderId.slice(-6),
-    });
-    return 'denied';
-  }
+  // 'denied' is truthy so callers treat the input as consumed, but lets
+  // intake distinguish "ran" from "rejected" and skip reset side effects.
+  const denied = denyIfUnauthorized(cmd, ctx);
+  if (denied) return denied;
   return runHandler(cmd, args, h, ctx);
 }
 
 /**
  * Invoke a named command handler (e.g. from a card button click).
- * Returns false for unknown commands, `'denied'` when an admin command was
- * silently rejected (still "handled" — truthy — so callers treat the input
- * as consumed), and true when a handler actually ran.
+ * Returns false for unknown commands, `'denied'` when an admin/owner command
+ * was silently rejected (still "handled" — truthy — so callers treat the
+ * input as consumed), and true when a handler actually ran.
  */
 export type CommandRunResult = boolean | 'denied';
 
@@ -182,16 +196,9 @@ export async function runCommandHandler(
 ): Promise<CommandRunResult> {
   const h = handlers[`/${name}`];
   if (!h) return false;
-  if (isAdminCommand(name) && !isAdmin(ctx.controls.cfg, ctx.msg.senderId)) {
-    log.info('command', 'admin-deny', {
-      cmd: name,
-      sender: ctx.msg.senderId.slice(-6),
-      via: 'card',
-    });
-    // Card actions can't reply naturally (the `msg` is synthesized); the
-    // click is silently denied. The button only renders for users who got
-    // the original admin card in the first place, so this is an edge case.
-    return 'denied';
-  }
+  // Card actions can't reply naturally (the `msg` is synthesized); the
+  // click is silently denied. Same admin/owner gate as the text path.
+  const denied = denyIfUnauthorized(name, ctx, 'card');
+  if (denied) return denied;
   return runHandler(`/${name}`, args, h, ctx);
 }

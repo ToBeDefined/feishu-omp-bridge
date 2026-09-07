@@ -18,8 +18,6 @@ import { buildPrompt } from './prompt';
 import { fetchQuotedContext, type QuotedContext } from './quote';
 import { addReaction } from './reaction';
 
-const DEBOUNCE_MS = 600;
-
 /**
  * Commands that reset the per-scope conversation context (new session /
  * different cwd). Only these discard queued messages — messages queued
@@ -156,7 +154,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
   }
 
   const size = pending.push(scope, msg);
-  log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
+  log.info('intake', 'queued', { scope, queueSize: size });
 }
 
 export async function submitToActiveRun(deps: {

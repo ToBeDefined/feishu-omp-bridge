@@ -4,7 +4,7 @@ import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter, AgentEvent, AgentUiRequest } from '../agent/types';
 import type { ActiveRuns, RunHandle } from './active-runs';
 import { createFeishuHostIntegration } from './feishu-host';
-import { sendManagedCard, updateManagedCard } from '../card/managed';
+import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { renderOmpUiRequestCard, renderOmpUiResultCard } from '../card/omp-ui';
 import { renderCard } from '../card/run-renderer';
 import {
@@ -101,17 +101,11 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         .filter((id): id is string => Boolean(id) && !batchIds.has(id!)),
     ),
   ];
-  const quotes: QuotedContext[] = [];
-  for (const targetId of quoteTargets) {
-    const q = await fetchQuotedContext(channel, targetId);
-    if (q) {
-      quotes.push(q);
-      log.info('quote', 'fetched', {
-        messageId: targetId,
-        type: q.rawContentType,
-        contentChars: q.content.length,
-      });
-    }
+  const quotes = (
+    await Promise.all(quoteTargets.map((id) => fetchQuotedContext(channel, id)))
+  ).filter((q): q is QuotedContext => Boolean(q));
+  if (quotes.length > 0) {
+    log.info('quote', 'fetched', { count: quotes.length });
   }
 
   const prompt = buildPrompt(batch, attachments, quotes);
@@ -175,10 +169,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   // Re-read prefs on every flush so toggling /config mid-stream takes
   // effect immediately. Cheap object lookups, no allocation when on.
-  const filterForPrefs = (state: RunState): RunState => {
-    if (getShowToolCalls(controls.cfg)) return state;
-    return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
-  };
+  const filter = (state: RunState): RunState => filterToolBlocks(state, controls);
 
   // For topic groups: thread the reply so it lands in the same topic as the
   // user's message. Otherwise the SDK posts at top level and the user's
@@ -207,9 +198,11 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         if ('timeout' in request && request.timeout !== undefined && request.timeout > 0) {
           activeRuns.armUiTimeout(scope, request.id, request.timeout, () => {
             activeRuns.respondToUi(scope, request.id, { cancelled: true, timedOut: true });
-            updateManagedCard(channel, sent.messageId, renderOmpUiResultCard(request.title, 'timed_out')).catch(() => {
-              /* card update is best-effort */
-            });
+            updateManagedCard(channel, sent.messageId, renderOmpUiResultCard(request.title, 'timed_out'))
+              .catch(() => {
+                /* card update is best-effort */
+              })
+              .finally(() => forgetManagedCard(sent.messageId));
             uiCards.delete(request.id);
           });
         }
@@ -220,10 +213,13 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     async onUiCancel(targetId) {
       const entry = uiCards.get(targetId);
       if (!entry) return;
+      uiCards.delete(targetId);
       try {
         await updateManagedCard(channel, entry.messageId, renderOmpUiResultCard(entry.title, 'cancelled'));
       } catch (err) {
         log.fail('omp-ui', err, { scope, requestId: targetId, step: 'cancel-update' });
+      } finally {
+        forgetManagedCard(entry.messageId);
       }
     },
   };
@@ -240,16 +236,18 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         cwd,
         idleTimeoutMs,
         uiHooks,
-        filterForPrefs,
+        filter,
       );
     } else if (replyMode === 'markdown') {
       await channel.stream(
         chatId,
         {
           markdown: async (ctrl) => {
+            const q = coalesceLatest((text: string) => ctrl.setContent(text));
             await processAgentStream(handle, sessions, scope, cwd, idleTimeoutMs, async (state) => {
-              await ctrl.setContent(renderText(filterForPrefs(state)));
+              q.push(renderText(filter(state)));
             }, uiHooks);
+            await q.flush();
           },
         },
         sendOpts,
@@ -262,7 +260,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       await processAgentStream(handle, sessions, scope, cwd, idleTimeoutMs, async (state) => {
         finalState = state;
       }, uiHooks);
-      const body = renderText(filterForPrefs(finalState));
+      const body = renderText(filter(finalState));
       if (body.trim()) {
         await channel.send(chatId, { markdown: body }, sendOpts);
       }
@@ -275,6 +273,8 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     // surviving even a daemon restart. Stop it here. No-op if already dead.
     await run.stop().catch(() => {});
   } finally {
+    for (const { messageId } of uiCards.values()) forgetManagedCard(messageId);
+    uiCards.clear();
     activeRuns.unregister(scope, run);
   }
 }
@@ -360,22 +360,12 @@ async function streamEvents(
     // sees the correct set size.
     if (evt.type === 'tool_use') {
       session.inFlightTools.add(evt.id);
-      log.info('agent', 'tool-in-flight', {
-        tool: evt.name,
-        inFlight: session.inFlightTools.size,
-      });
     } else if (evt.type === 'tool_result') {
       session.inFlightTools.delete(evt.id);
-      log.info('agent', 'tool-done', { inFlight: session.inFlightTools.size });
     } else if (evt.type === 'ui_request') {
       handle.pendingUiRequests.add(evt.request.id);
-      log.info('agent', 'ui-in-flight', {
-        method: evt.request.method,
-        inFlight: handle.pendingUiRequests.size,
-      });
     } else if (evt.type === 'ui_cancel') {
       handle.pendingUiRequests.delete(evt.targetId);
-      log.info('agent', 'ui-cancelled', { inFlight: handle.pendingUiRequests.size });
     }
     session.armOrPauseIdle();
 
@@ -599,6 +589,88 @@ export function carryOverBlocks(blocks: Block[]): Block[] {
 }
 
 
+/**
+ * Latest-wins write coalescer. At most one write in flight; newer values
+ * overwrite the pending slot. `flush()` waits for in-flight + pending so
+ * the last value always lands. Errors surface on the next `push`/`flush`.
+ */
+/**
+ * Card JSON size budget per page. Feishu rejects cards over ~64KB (ErrCode
+ * 11310 "element exceeds the limit"); we paginate at 48KB to leave headroom
+ * for text/button/footer and JSON key overhead that a simple
+ * JSON.stringify-length check undercounts.
+ */
+const CARD_SIZE_BUDGET = 48 * 1024;
+
+export function coalesceLatest<T>(write: (value: T) => Promise<void>): {
+  push(value: T): void;
+  flush(): Promise<void>;
+} {
+  let pending: T | undefined;
+  let inFlight: Promise<void> | undefined;
+  let failed: unknown;
+  const pump = async (): Promise<void> => {
+    try {
+      while (pending !== undefined) {
+        const value = pending;
+        pending = undefined;
+        await write(value);
+      }
+    } catch (err) {
+      failed = err;
+    } finally {
+      inFlight = undefined;
+      if (pending !== undefined && !failed) inFlight = pump();
+    }
+  };
+  return {
+    push(value) {
+      if (failed) throw failed;
+      pending = value;
+      inFlight ??= pump();
+    },
+    async flush() {
+      while (inFlight) await inFlight;
+      if (failed) throw failed;
+      if (pending !== undefined) {
+        const value = pending;
+        pending = undefined;
+        await write(value);
+      }
+    },
+  };
+}
+
+function runContentChars(state: RunState): number {
+  let n = 0;
+  for (const b of state.blocks) {
+    if (b.kind === 'text') {
+      n += b.content.length;
+    } else {
+      n += (b.tool.output?.length ?? 0) + 64;
+      const input = b.tool.input;
+      if (typeof input === 'string') n += input.length;
+      else if (input && typeof input === 'object') {
+        for (const v of Object.values(input as Record<string, unknown>)) {
+          if (typeof v === 'string') n += v.length;
+        }
+      }
+    }
+  }
+  n += Math.min(state.reasoning.content.length, 1500);
+  if (state.ui.editorText) n += Math.min(state.ui.editorText.length, 1200);
+  for (const w of Object.values(state.ui.widgets)) {
+    n += (w.lines ?? []).reduce((sum, line) => sum + line.length, 0);
+  }
+  return n;
+}
+
+function cardExceedsBudget(card: object, state: RunState): boolean {
+  // Envelope covers JSON keys, tool-panel chrome, buttons. Skip stringify
+  // until content is actually near the Feishu 64KB cap.
+  if (runContentChars(state) + 8 * 1024 < CARD_SIZE_BUDGET) return false;
+  return JSON.stringify(card).length > CARD_SIZE_BUDGET;
+}
 
 /** Run one card page; returns true if it overflowed (another page follows). */
 async function runCardPage(
@@ -625,20 +697,23 @@ async function runCardPage(
           pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
         ),
         producer: async (ctrl) => {
+          const q = coalesceLatest((card: object) => ctrl.update(card));
           await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
-            const card = renderCard(filter(state));
-            if (JSON.stringify(card).length > CARD_SIZE_BUDGET) {
+            const filtered = filter(state);
+            const card = renderCard(filtered);
+            if (cardExceedsBudget(card, filtered)) {
               overflow = true;
               // Finalize this page as a terminal card with a "continues"
               // note; the run itself is still going (next page picks it up).
-              await ctrl.update(
+              q.push(
                 renderCard(filter({ ...state, terminal: 'done' }), {
                   bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
                 }),
               );
+              await q.flush();
               return false;
             }
-            await ctrl.update(card);
+            q.push(card);
             return true;
           });
           if (!overflow) {
@@ -648,7 +723,8 @@ async function runCardPage(
               terminal: final.terminal,
               interrupted: handle.interrupted,
             });
-            await ctrl.update(renderCard(filter(final)));
+            q.push(renderCard(filter(final)));
+            await q.flush();
             // (reap happens once in streamCardPages' finally, after all pages)
           }
         },
@@ -666,13 +742,6 @@ async function runCardPage(
  * a stall (the card has already rendered terminal state by this point).
  */
 const POST_DONE_EXIT_GRACE_MS = 2000;
-/**
- * Card JSON size budget per page. Feishu rejects cards over ~64KB (ErrCode
- * 11310 "element exceeds the limit"); we paginate at 48KB to leave headroom
- * for text/button/footer and JSON key overhead that a simple
- * JSON.stringify-length check undercounts.
- */
-const CARD_SIZE_BUDGET = 48 * 1024;
 
 /**
  * Run a one-shot agent prompt for a scheduled task and stream the result to

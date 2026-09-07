@@ -58,6 +58,12 @@ export async function sendManagedCard(
   }
 
   byMessageId.set(messageId, { cardId, sequence: 0 });
+  // ponytail: cap at 200; streaming run cards don't use this map. Forms
+  // forget on settle; leftovers are abandoned clicks / agent cards.
+  if (byMessageId.size > 200) {
+    const oldest = byMessageId.keys().next().value;
+    if (oldest) byMessageId.delete(oldest);
+  }
   return { messageId, cardId };
 }
 

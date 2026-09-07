@@ -9,7 +9,7 @@ import { isChatAllowed, isUserAllowed } from '../config/schema';
 import { log } from '../core/logger';
 import type { SessionStore } from '../session/store';
 import { AGENT_CALLBACK_MARKER } from './agent-card';
-import { updateManagedCard } from './managed';
+import { forgetManagedCard, updateManagedCard } from './managed';
 import { escapeMd } from './templates';
 import {
   isOmpUiPayload,
@@ -169,6 +169,17 @@ async function lookupMessageThreadId(
 
 /** Cards whose click was already forwarded — one click per card, no double-send. */
 const forwardedCardClicks = new Set<string>();
+const FORWARDED_CLICK_CAP = 2000;
+
+function rememberForwardedClick(messageId: string): boolean {
+  if (forwardedCardClicks.has(messageId)) return false;
+  if (forwardedCardClicks.size >= FORWARDED_CLICK_CAP) {
+    const oldest = forwardedCardClicks.keys().next().value;
+    if (oldest) forwardedCardClicks.delete(oldest);
+  }
+  forwardedCardClicks.add(messageId);
+  return true;
+}
 
 async function forwardToAgent(
   deps: CardDispatchDeps,
@@ -180,11 +191,10 @@ async function forwardToAgent(
 ): Promise<void> {
   // One click per card: a second tap (double-tap, or an un-updated card)
   // must not forward the same choice twice.
-  if (forwardedCardClicks.has(deps.evt.messageId)) {
+  if (!rememberForwardedClick(deps.evt.messageId)) {
     log.info('cardAction', 'duplicate-click', { messageId: deps.evt.messageId });
     return;
   }
-  forwardedCardClicks.add(deps.evt.messageId);
 
   // Strip the marker so OMP only sees the meaningful fields it set.
   const { [AGENT_CALLBACK_MARKER]: _marker, ...agentPayload } = payload;
@@ -204,6 +214,7 @@ async function forwardToAgent(
     await updateManagedCard(deps.channel, deps.evt.messageId, renderAgentSelectedCard(label)).catch(() => {
       /* unmanaged card — nothing to update */
     });
+    forgetManagedCard(deps.evt.messageId);
   }
 
   const synthetic: NormalizedMessage = {
@@ -255,6 +266,8 @@ async function respondToOmpUi(
     await updateManagedCard(deps.channel, deps.evt.messageId, renderOmpUiResultCard(title, status));
   } catch (err) {
     log.fail('cardAction', err, { step: 'omp-ui-update', requestId });
+  } finally {
+    forgetManagedCard(deps.evt.messageId);
   }
 }
 

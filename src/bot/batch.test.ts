@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { carryOverBlocks, fallbackCard, fallbackContent } from './batch';
+import { carryOverBlocks, coalesceLatest, fallbackCard, fallbackContent } from './batch';
 import { initialState, type Block, type RunState } from '../card/run-state';
 
 const base: RunState = {
@@ -71,5 +71,51 @@ describe('carryOverBlocks', () => {
     const ids = carried.map((b) => (b.kind === 'tool' ? b.tool.id : b.kind));
     expect(ids).not.toContain('t1');
     expect(ids).not.toContain('text');
+  });
+});
+
+describe('coalesceLatest', () => {
+  it('drops superseded values while a write is in flight', async () => {
+    const seen: number[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let first = true;
+    const q = coalesceLatest(async (v: number) => {
+      seen.push(v);
+      if (first) {
+        first = false;
+        await gate;
+      }
+    });
+    q.push(1);
+    q.push(2);
+    q.push(3);
+    release();
+    await q.flush();
+    expect(seen[0]).toBe(1);
+    expect(seen.at(-1)).toBe(3);
+    expect(seen).not.toContain(2);
+  });
+
+  it('flush delivers the last pending value', async () => {
+    const seen: string[] = [];
+    const q = coalesceLatest(async (v: string) => {
+      seen.push(v);
+    });
+    q.push('a');
+    q.push('b');
+    await q.flush();
+    expect(seen.at(-1)).toBe('b');
+  });
+
+  it('rethrows a failed write on the next push and on flush', async () => {
+    const q = coalesceLatest(async () => {
+      throw new Error('nope');
+    });
+    q.push(1);
+    await expect(q.flush()).rejects.toThrow('nope');
+    expect(() => q.push(2)).toThrow('nope');
   });
 });

@@ -52,87 +52,27 @@ export async function searchSession(
   const needle = keyword.toLowerCase();
   const contexts: Array<SearchContext & { groupKey: string }> = [];
   const sessionTitles = ctx.sessions?.titlesBySessionId?.() ?? {};
+  let names: string[] = [];
   try {
-    const entries = await readdir(paths.ompSessionsDir);
-    for (const name of entries) {
-      if (!name.endsWith('.jsonl')) continue;
-      let text: string;
-      try {
-        text = await readFile(join(paths.ompSessionsDir, name), 'utf8');
-      } catch {
-        continue;
-      }
-      // Cheap prefilter: skip files that can't contain the keyword at all.
-      if (!text.toLowerCase().includes(needle)) continue;
-
-      const { meta } = scanSessionFile(text);
-      const sessionId = meta?.id;
-      const workspace = workspaceLabel(ctx, meta?.cwd || homedir());
-      const title = sessionId ? sessionTitles[sessionId] : undefined;
-
-      const stream: SearchHit[] = [];
-      for (const line of text.split('\n')) {
-        if (!line.includes('"type":"message"')) continue;
-        try {
-          const frame = JSON.parse(line) as {
-            timestamp?: string;
-            message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
-          };
-          const hit = messageText(frame.message as { role?: string; content?: Array<{ type?: string; text?: string }> });
-          if (hit) {
-            hit.timestamp = frame.timestamp;
-            stream.push(hit);
-          }
-        } catch {
-          /* skip malformed */
-        }
-      }
-
-      // One context per unique matched Q&A pair. Both halves of a pair can
-      // match the keyword (question and answer), so dedupe by pair identity
-      // to avoid emitting the same exchange twice.
-      const seenPairs = new Set<string>();
-      for (let i = 0; i < stream.length; i++) {
-        if (!stream[i]!.content.toLowerCase().includes(needle)) continue;
-        let pair: SearchHit[];
-        let hitIndex: number;
-        if (
-          stream[i]!.role === 'user' &&
-          i + 1 < stream.length &&
-          stream[i + 1]!.role === 'assistant'
-        ) {
-          pair = [stream[i]!, stream[i + 1]!];
-          hitIndex = 0;
-        } else if (
-          stream[i]!.role === 'assistant' &&
-          i - 1 >= 0 &&
-          stream[i - 1]!.role === 'user'
-        ) {
-          pair = [stream[i - 1]!, stream[i]!];
-          hitIndex = 1;
-        } else {
-          pair = [stream[i]!];
-          hitIndex = 0;
-        }
-        const key = pair.map((m) => m.timestamp ?? m.content).join('|');
-        if (seenPairs.has(key)) continue;
-        seenPairs.add(key);
-        contexts.push({
-          messages: pair.map((m) => ({ ...m, timestamp: m.timestamp })),
-          hitIndex,
-          sessionId,
-          workspace,
-          ...(title !== undefined ? { title } : {}),
-          // Group key: one session id per file pair; fall back to the file
-          // name when a session file has no id, so the same session never
-          // shows up more than once.
-          groupKey: sessionId ?? name,
-        });
-      }
-    }
+    names = (await readdir(paths.ompSessionsDir)).filter((n) => n.endsWith('.jsonl'));
   } catch {
-    /* fall through */
+    return [];
   }
+  // Bound parallelism: session dirs can have hundreds of jsonl files;
+  // unbounded Promise.all would spike RSS on a big history.
+  const SCAN_CONCURRENCY = 8;
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(SCAN_CONCURRENCY, names.length) }, async () => {
+      while (true) {
+        const idx = cursor++;
+        if (idx >= names.length) break;
+        const name = names[idx]!;
+        const found = await scanSessionHits(name, needle, ctx, sessionTitles);
+        if (found.length > 0) contexts.push(...found);
+      }
+    }),
+  );
   contexts.sort((a, b) =>
     (b.messages[b.hitIndex]?.timestamp ?? '').localeCompare(a.messages[a.hitIndex]?.timestamp ?? ''),
   );
@@ -149,6 +89,83 @@ export async function searchSession(
     grouped.set(c.groupKey, { ...rest, matchCount: 1 });
   }
   return [...grouped.values()].slice(0, limit);
+}
+
+async function scanSessionHits(
+  name: string,
+  needle: string,
+  ctx: CommandContext,
+  sessionTitles: Record<string, string>,
+): Promise<Array<SearchContext & { groupKey: string }>> {
+  let text: string;
+  try {
+    text = await readFile(join(paths.ompSessionsDir, name), 'utf8');
+  } catch {
+    return [];
+  }
+  // Cheap prefilter: skip files that can't contain the keyword at all.
+  if (!text.toLowerCase().includes(needle)) return [];
+
+  const { meta } = scanSessionFile(text);
+  const sessionId = meta?.id;
+  const workspace = workspaceLabel(ctx, meta?.cwd || homedir());
+  const title = sessionId ? sessionTitles[sessionId] : undefined;
+
+  const stream: SearchHit[] = [];
+  for (const line of text.split('\n')) {
+    if (!line.includes('"type":"message"')) continue;
+    try {
+      const frame = JSON.parse(line) as {
+        timestamp?: string;
+        message?: { role?: string; content?: Array<{ type?: string; text?: string }> };
+      };
+      const hit = messageText(frame.message as { role?: string; content?: Array<{ type?: string; text?: string }> });
+      if (hit) {
+        hit.timestamp = frame.timestamp;
+        stream.push(hit);
+      }
+    } catch {
+      /* skip malformed */
+    }
+  }
+
+  const out: Array<SearchContext & { groupKey: string }> = [];
+  const seenPairs = new Set<string>();
+  for (let i = 0; i < stream.length; i++) {
+    if (!stream[i]!.content.toLowerCase().includes(needle)) continue;
+    let pair: SearchHit[];
+    let hitIndex: number;
+    if (
+      stream[i]!.role === 'user' &&
+      i + 1 < stream.length &&
+      stream[i + 1]!.role === 'assistant'
+    ) {
+      pair = [stream[i]!, stream[i + 1]!];
+      hitIndex = 0;
+    } else if (
+      stream[i]!.role === 'assistant' &&
+      i - 1 >= 0 &&
+      stream[i - 1]!.role === 'user'
+    ) {
+      pair = [stream[i - 1]!, stream[i]!];
+      hitIndex = 1;
+    } else {
+      pair = [stream[i]!];
+      hitIndex = 0;
+    }
+    const key = pair.map((m) => m.timestamp ?? m.content).join('|');
+    if (seenPairs.has(key)) continue;
+    seenPairs.add(key);
+    out.push({
+      messages: pair.map((m) => ({ ...m, timestamp: m.timestamp })),
+      hitIndex,
+      sessionId,
+      workspace,
+      ...(title !== undefined ? { title } : {}),
+      groupKey: sessionId ?? name,
+    });
+  }
+  return out;
 }
 
 async function handleSearch(args: string, ctx: CommandContext): Promise<void> {

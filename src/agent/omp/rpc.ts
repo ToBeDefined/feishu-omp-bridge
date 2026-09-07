@@ -173,16 +173,16 @@ export function* translateOmpFrame(raw: unknown): Generator<AgentEvent> {
 
 export async function loadOmpImages(imagePaths: readonly string[] | undefined): Promise<OmpImageContent[]> {
   if (!imagePaths || imagePaths.length === 0) return [];
-  const images: OmpImageContent[] = [];
-  for (const imagePath of imagePaths) {
-    const data = await readFile(imagePath);
-    images.push({
-      type: 'image',
-      data: data.toString('base64'),
-      mimeType: mimeTypeForPath(imagePath),
-    });
-  }
-  return images;
+  return Promise.all(
+    imagePaths.map(async (imagePath) => {
+      const data = await readFile(imagePath);
+      return {
+        type: 'image' as const,
+        data: data.toString('base64'),
+        mimeType: mimeTypeForPath(imagePath),
+      };
+    }),
+  );
 }
 
 function* translateResponse(frame: OmpFrame): Generator<AgentEvent> {

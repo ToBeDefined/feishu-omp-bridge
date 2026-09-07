@@ -12,6 +12,16 @@ describe('text chunking', () => {
     expect(texts[0]).toMatchObject({ kind: 'text', content: chunk, streaming: false });
     expect(texts[1]).toMatchObject({ kind: 'text', content: 'tail', streaming: true });
   });
+
+  it('appends streaming text in place without copying the block list', () => {
+    let state = reduce(initialState, { type: 'text', delta: 'hel' });
+    const block = state.blocks[0];
+    const blocks = state.blocks;
+    state = reduce(state, { type: 'text', delta: 'lo' });
+    expect(state.blocks).toBe(blocks);
+    expect(state.blocks[0]).toBe(block);
+    expect(block).toMatchObject({ kind: 'text', content: 'hello', streaming: true });
+  });
 });
 
 describe('run-state OMP UI integration', () => {

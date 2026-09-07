@@ -58,6 +58,10 @@ function logsDir(): string {
 }
 
 function getStream(): WriteStream | null {
+  // Tests run the real handlers (command gating, intake, …) whose log calls
+  // must not leak fake entries into the production JSON log — /doctor and
+  // humans grep that file. Console rendering stays on for test output.
+  if (process.env.VITEST) return null;
   const today = todayKey();
   if (stream && currentDate === today) return stream;
   if (stream) {

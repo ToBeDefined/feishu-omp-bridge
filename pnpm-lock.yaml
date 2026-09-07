@@ -5,7 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 patchedDependencies:
-  '@larksuiteoapi/node-sdk@1.65.0': e78535fc3a8ea4cc42113506814e882da2f0c2b5a9745851b32ff105cd118787
+  '@larksuiteoapi/node-sdk@1.65.0': 90a704ce503a923f8cfe181f56c2fcbcb9a5fcd8b01f5a7ff085b7bd529550ec
 
 importers:
 
@@ -16,7 +16,7 @@ importers:
         version: 1.4.0
       '@larksuiteoapi/node-sdk':
         specifier: ^1.65.0
-        version: 1.65.0(patch_hash=e78535fc3a8ea4cc42113506814e882da2f0c2b5a9745851b32ff105cd118787)(debug@4.4.3)
+        version: 1.65.0(patch_hash=90a704ce503a923f8cfe181f56c2fcbcb9a5fcd8b01f5a7ff085b7bd529550ec)(debug@4.4.3)
       commander:
         specifier: ^12.1.0
         version: 12.1.0
@@ -1268,7 +1268,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@larksuiteoapi/node-sdk@1.65.0(patch_hash=e78535fc3a8ea4cc42113506814e882da2f0c2b5a9745851b32ff105cd118787)(debug@4.4.3)':
+  '@larksuiteoapi/node-sdk@1.65.0(patch_hash=90a704ce503a923f8cfe181f56c2fcbcb9a5fcd8b01f5a7ff085b7bd529550ec)(debug@4.4.3)':
     dependencies:
       axios: 1.13.6(debug@4.4.3)
       lodash.identity: 3.0.0

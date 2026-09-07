@@ -1,5 +1,5 @@
 diff --git a/es/index.js b/es/index.js
-index 8d6e87e616d8a2a8fece170433d8ea906e2edaed..e4b7916f52a875b248c532fc0d68d1071478566b 100644
+index 8d6e87e616d8a2a8fece170433d8ea906e2edaed..2b0e6edba0a714b6e4fca9b63aa15f5350349705 100644
 --- a/es/index.js
 +++ b/es/index.js
 @@ -89921,6 +89921,12 @@ class Throttle {
@@ -35,8 +35,16 @@ index 8d6e87e616d8a2a8fece170433d8ea906e2edaed..e4b7916f52a875b248c532fc0d68d107
              if (this.timer) {
                  clearTimeout(this.timer);
                  this.timer = undefined;
+@@ -89971,6 +89981,7 @@ class Throttle {
+                 this.pendingChars = 0;
+                 this.lastFireAt = Date.now();
+                 yield this.fire();
++                this.lastError = undefined;
+             }))();
+             this.inFlight = p;
+             try {
 diff --git a/lib/index.js b/lib/index.js
-index 9bceeb22a63f774a26c22857f9be66599186f8e8..05c228ee59d19e4708a4a23ad25f5049a451d906 100644
+index 9bceeb22a63f774a26c22857f9be66599186f8e8..0ef1413eb25a591e37b8b887ec58ca054feb5c2c 100644
 --- a/lib/index.js
 +++ b/lib/index.js
 @@ -89939,6 +89939,12 @@ class Throttle {
@@ -72,3 +80,11 @@ index 9bceeb22a63f774a26c22857f9be66599186f8e8..05c228ee59d19e4708a4a23ad25f5049
              if (this.timer) {
                  clearTimeout(this.timer);
                  this.timer = undefined;
+@@ -89989,6 +89999,7 @@ class Throttle {
+                 this.pendingChars = 0;
+                 this.lastFireAt = Date.now();
+                 yield this.fire();
++                this.lastError = undefined;
+             }))();
+             this.inFlight = p;
+             try {

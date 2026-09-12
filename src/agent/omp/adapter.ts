@@ -147,14 +147,6 @@ export class OmpAdapter implements AgentAdapter {
           ...(images.length > 0 ? { images } : {}),
         });
       },
-      compact(customInstructions?: string): boolean {
-        if (child.exitCode !== null || child.signalCode !== null) return false;
-        return writeFrame(child, {
-          id: `compact_${Date.now()}`,
-          type: 'compact',
-          ...(customInstructions ? { customInstructions } : {}),
-        });
-      },
       waitForExit(timeoutMs: number): Promise<boolean> {
         return waitForExitWithin(child, timeoutMs);
       },
@@ -163,9 +155,11 @@ export class OmpAdapter implements AgentAdapter {
 
   /**
    * One-shot compact: spawn omp --mode rpc with --resume, wait for ready,
-   * send the compact frame, resolve on the response frame, kill the child.
-   * The RPC server answers every request with a `{success, error?}`
-   * response frame, so no success heuristics are needed.
+   * send the compact frame, resolve on the response frame. On success wait
+   * for the child to exit on its own — the RPC may still be flushing the
+   * session jsonl after `{success:true}`. SIGTERM only if it outlives the
+   * remaining timeout. Detached so a daemon restart does not SIGTERM a
+   * compaction that can run for tens of minutes.
    */
   compactSession(opts: {
     sessionId: string;
@@ -174,7 +168,10 @@ export class OmpAdapter implements AgentAdapter {
     customInstructions?: string;
     /** Hard cap for this compaction; defaults to COMPACT_TIMEOUT_MS. */
     timeoutMs?: number;
+    signal?: AbortSignal;
   }): Promise<string | undefined> {
+    if (opts.signal?.aborted) return Promise.resolve('压缩已取消');
+
     const args = buildOmpArgs({
       prompt: '',
       sessionId: opts.sessionId,
@@ -188,7 +185,9 @@ export class OmpAdapter implements AgentAdapter {
       cwd: opts.cwd,
       env: { ...process.env, FEISHU_OMP_BRIDGE: '1' },
       stdio: ['pipe', 'pipe', 'pipe'],
-    });
+      detached: true,
+    }) as OmpChild;
+    child.unref();
 
     // Manual withResolvers: Promise.withResolvers requires Node 22+, this
     // package still supports Node >=20.
@@ -196,24 +195,34 @@ export class OmpAdapter implements AgentAdapter {
     const done = new Promise<string | undefined>((r) => {
       resolve = r;
     });
-    // Compaction summarizes the whole session via the LLM — long sessions
-    // can take tens of minutes, so callers pass a size-aware timeout; the
-    // default only has to cover ordinary sessions. Kill the child either
-    // way once settled.
     const timeoutMs = opts.timeoutMs ?? OmpAdapter.COMPACT_TIMEOUT_MS;
     const startedAt = Date.now();
-    const settle = (error: string | undefined): void => {
+    let finished = false;
+    let settled = false;
+    const finish = (error: string | undefined): void => {
+      if (finished) return;
+      finished = true;
+      settled = true;
       clearTimeout(timer);
+      opts.signal?.removeEventListener('abort', onAbort);
+      resolve(error);
+    };
+    const timer = setTimeout(() => {
+      settled = true;
+      child.kill('SIGKILL');
+      finish(`omp 压缩超时（${Math.round((Date.now() - startedAt) / 1000)}s 上限 ${timeoutMs / 1000}s）`);
+    }, timeoutMs);
+
+    const onAbort = (): void => {
       if (child.exitCode === null && child.signalCode === null) {
         endInput(child);
         child.kill('SIGTERM');
       }
-      resolve(error);
+      if (settled) return;
+      settled = true;
+      finish('压缩已取消');
     };
-    const timer = setTimeout(() => {
-      child.kill('SIGKILL');
-      settle(`omp 压缩超时（${Math.round((Date.now() - startedAt) / 1000)}s 上限 ${timeoutMs / 1000}s）`);
-    }, timeoutMs);
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     const stderrTail: string[] = [];
     let stderrLen = 0;
@@ -224,7 +233,6 @@ export class OmpAdapter implements AgentAdapter {
     });
 
     const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-    let settled = false;
     rl.on('line', (line) => {
       if (settled) return;
       const parsed = parseOmpJsonLine(line);
@@ -236,32 +244,46 @@ export class OmpAdapter implements AgentAdapter {
           ...(opts.customInstructions ? { customInstructions: opts.customInstructions } : {}),
         })) {
           settled = true;
-          settle('omp stdin 已关闭，无法发送压缩请求');
+          finish('omp stdin 已关闭，无法发送压缩请求');
         }
         return;
       }
       if (isRecord(parsed) && parsed.type === 'response' && parsed.id === 'compact_oneshot') {
         settled = true;
         if (parsed.success === true) {
-          settle(undefined);
+          clearTimeout(timer);
+          endInput(child);
+          const remaining = Math.max(1000, timeoutMs - (Date.now() - startedAt));
+          void waitForExitWithin(child, remaining).then(async (exited) => {
+            if (!exited && child.exitCode === null && child.signalCode === null) {
+              child.kill('SIGTERM');
+              const dead = await waitForExitWithin(child, 2000);
+              if (!dead) child.kill('SIGKILL');
+            }
+            finish(undefined);
+          });
         } else {
+          if (child.exitCode === null && child.signalCode === null) {
+            endInput(child);
+            child.kill('SIGTERM');
+          }
           const detail = typeof parsed.error === 'string' && parsed.error ? parsed.error : '未知错误';
           const stderr = stderrTail.join('').trim();
-          settle(stderr ? `${detail}（stderr: ${stderr.slice(-2000)}）` : detail);
+          finish(stderr ? `${detail}（stderr: ${stderr.slice(-2000)}）` : detail);
         }
       }
     });
     child.on('error', (err) => {
       if (!settled) {
         settled = true;
-        settle(`omp 启动失败: ${errorText(err)}`);
+        finish(`omp 启动失败: ${errorText(err)}`);
       }
     });
     child.on('exit', (code, signal) => {
       if (!settled) {
         settled = true;
         const stderr = stderrTail.join('').trim();
-        settle(`omp 提前退出 (code=${code ?? '?'} signal=${signal ?? '?'})${stderr ? `: ${stderr.slice(-2000)}` : ''}`);
+        finish(`omp 提前退出 (code=${code ?? '?'} signal=${signal ?? '?'})${stderr ? `: ${stderr.slice(-2000)}` : ''}`);
       }
     });
     return done;

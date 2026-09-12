@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PendingQueue } from './pending-queue';
+import { ActiveRuns } from './active-runs';
+import { PendingQueue, requeueIfBusy } from './pending-queue';
 
 function msg(id: string) {
   return { messageId: id, content: id } as never;
@@ -67,5 +68,52 @@ describe('PendingQueue', () => {
     expect(dropped).toEqual([msg('a')]);
     vi.advanceTimersByTime(1000);
     expect(flushed).toHaveLength(0);
+  });
+
+  it('requeueIfBusy pushes the batch back and arms a fresh window', () => {
+    const started: unknown[][] = [];
+    const q = new PendingQueue(600, (_scope, batch) => {
+      if (requeueIfBusy(q, 's', batch, true)) return;
+      started.push(batch);
+    });
+
+    q.push('s', msg('a'));
+    q.push('s', msg('b'));
+    vi.advanceTimersByTime(600);
+    expect(started).toHaveLength(0);
+
+    vi.advanceTimersByTime(600);
+    expect(started).toHaveLength(0);
+  });
+
+  it('flush starts a run once the slot is free', () => {
+    const started: unknown[][] = [];
+    const activeRuns = new ActiveRuns();
+    const occupy = {
+      events: (async function* () {})(),
+      stop: async () => {},
+      waitForExit: async () => true,
+    };
+    activeRuns.register('s', occupy);
+
+    const q = new PendingQueue(600, (scope, batch) => {
+      if (requeueIfBusy(q, scope, batch, activeRuns.has(scope))) return;
+      started.push(batch);
+    });
+
+    q.push('s', msg('a'));
+    vi.advanceTimersByTime(600);
+    expect(started).toHaveLength(0);
+
+    activeRuns.unregister('s', occupy);
+    vi.advanceTimersByTime(600);
+    expect(started).toEqual([[msg('a')]]);
+  });
+
+  it('requeueIfBusy is a no-op when idle or the batch is empty', () => {
+    const q = new PendingQueue(600, () => {});
+    expect(requeueIfBusy(q, 's', [msg('a')], false)).toBe(false);
+    expect(requeueIfBusy(q, 's', [], true)).toBe(false);
+    vi.advanceTimersByTime(1000);
   });
 });

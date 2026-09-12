@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { compactTimeoutMs, estimateSessionTokens, findSessionFile, tokensFromLine } from './estimate';
+import { compactTimeoutMs, estimateCompactSeconds, estimateSessionTokens, findSessionFile, tokensFromLine } from './estimate';
 
 function assistantLine(input: number, cacheRead: number, totalTokens?: number): string {
   return JSON.stringify({
@@ -75,6 +75,38 @@ describe('estimateSessionTokens', () => {
     expect((await estimateSessionTokens(dir, 's1'))?.tokens).toBe(701);
     expect(await findSessionFile(dir, 's1')).toContain('2026-02-01');
   });
+
+  it('reads usage when a CJK character straddles the 256 KiB chunk boundary', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omp-estimate-cjk-'));
+    const CHUNK = 256 * 1024;
+    const old = assistantLine(1, 100) + '\n';
+    const prefix = '{"type":"message","message":{"role":"assistant","content":"';
+    const zh = '中';
+    const afterZh = '","usage":{"input":20,"output":3,"cacheRead":688108,"cacheWrite":0}}}\n';
+    const padAfterBytes = CHUNK - 2 - Buffer.byteLength(afterZh, 'utf8');
+    const padAfter = 'a'.repeat(padAfterBytes);
+    const body = old + prefix + zh + afterZh + padAfter;
+    const zhIndex = Buffer.byteLength(old + prefix, 'utf8');
+    const size = Buffer.byteLength(body, 'utf8');
+    expect(zhIndex).toBe(size - CHUNK - 1);
+    await writeFile(join(dir, '2026-01-01T00-00-00-000Z_s1.jsonl'), body, 'utf8');
+
+    const est = await estimateSessionTokens(dir, 's1');
+    expect(est?.tokens).toBe(688128);
+  });
+
+  it('returns zero tokens when the session has no usage frames', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'omp-estimate-empty-'));
+    await writeFile(join(dir, '2026-01-01T00-00-00-000Z_s1.jsonl'), '{"type":"session","id":"s1"}\n', 'utf8');
+    expect(await estimateSessionTokens(dir, 's1')).toEqual({ tokens: 0, bytes: expect.any(Number) });
+  });
+
+  it('returns undefined when the matched path is not a readable file', async () => {
+    const { mkdir } = await import('node:fs/promises');
+    const dir = await mkdtemp(join(tmpdir(), 'omp-estimate-dir-'));
+    await mkdir(join(dir, '2026-01-01T00-00-00-000Z_s1.jsonl'));
+    expect(await estimateSessionTokens(dir, 's1')).toBeUndefined();
+  });
 });
 
 describe('compactTimeoutMs', () => {
@@ -92,5 +124,12 @@ describe('compactTimeoutMs', () => {
 
   it('caps at 6 hours', () => {
     expect(compactTimeoutMs(10_000_000)).toBe(6 * 3600_000);
+  });
+});
+
+describe('estimateCompactSeconds', () => {
+  it('is 1.35 s per 1k tokens', () => {
+    expect(estimateCompactSeconds(0)).toBe(0);
+    expect(estimateCompactSeconds(1000)).toBe(1.35);
   });
 });

@@ -57,24 +57,20 @@ describe('ActiveRuns OMP UI routing', () => {
     expect(prompts).toEqual([{ kind: 'follow_up', message: 'next', imagePaths: ['a.png'] }]);
   });
 
-  it('routes compact to the active run', () => {
+  it('keeps the handle on interrupt so unregister can still fire', () => {
     const activeRuns = new ActiveRuns();
-    const compacts: Array<string | undefined> = [];
+    let stopped = 0;
     const run: AgentRun = {
       events: emptyEvents(),
-      stop: async () => {},
+      stop: async () => { stopped += 1; },
       waitForExit: async () => true,
-      compact(customInstructions) {
-        compacts.push(customInstructions);
-        return true;
-      },
     };
-
     activeRuns.register('scope-1', run);
-
-    expect(activeRuns.compact('scope-1', 'keep the last question')).toBe(true);
-    expect(activeRuns.compact('missing')).toBe(false);
-    expect(compacts).toEqual(['keep the last question']);
+    expect(activeRuns.interrupt('scope-1')).toBe(true);
+    expect(activeRuns.has('scope-1')).toBe(true);
+    expect(stopped).toBe(1);
+    activeRuns.unregister('scope-1', run);
+    expect(activeRuns.has('scope-1')).toBe(false);
   });
 
   it('fires the UI timeout callback when the user never responds', () => {
@@ -110,5 +106,56 @@ describe('ActiveRuns OMP UI routing', () => {
     vi.advanceTimersByTime(50);
     expect(fired).toBe(false);
     vi.useRealTimers();
+  });
+
+  it('hasAnyForChat covers the bare chat and any topic scope', () => {
+    const activeRuns = new ActiveRuns();
+    const run: AgentRun = { events: emptyEvents(), stop: async () => {}, waitForExit: async () => true };
+    expect(activeRuns.hasAnyForChat('oc_1')).toBe(false);
+    activeRuns.register('oc_1:tid', run);
+    expect(activeRuns.has('oc_1')).toBe(false);
+    expect(activeRuns.hasAnyForChat('oc_1')).toBe(true);
+    expect(activeRuns.hasAnyForChat('oc_2')).toBe(false);
+    activeRuns.unregister('oc_1:tid', run);
+    expect(activeRuns.hasAnyForChat('oc_1')).toBe(false);
+  });
+
+  it('deferCompact and interrupt are no-ops without a handle', () => {
+    const activeRuns = new ActiveRuns();
+    expect(activeRuns.deferCompact('missing', () => {})).toBe(false);
+    expect(activeRuns.interrupt('missing')).toBe(false);
+  });
+
+  it('unregister ignores a stale run and does not fire its compact', () => {
+    const activeRuns = new ActiveRuns();
+    const live: AgentRun = { events: emptyEvents(), stop: async () => {}, waitForExit: async () => true };
+    const stale: AgentRun = { events: emptyEvents(), stop: async () => {}, waitForExit: async () => true };
+    activeRuns.register('scope-1', live);
+    let fired = 0;
+    activeRuns.deferCompact('scope-1', () => { fired += 1; });
+    activeRuns.unregister('scope-1', stale);
+    expect(activeRuns.has('scope-1')).toBe(true);
+    expect(fired).toBe(0);
+    activeRuns.unregister('scope-1', live);
+    expect(fired).toBe(1);
+  });
+
+  it('stopAll kills every run and drops deferred compact', async () => {
+    const activeRuns = new ActiveRuns();
+    let stopped = 0;
+    let fired = 0;
+    const run: AgentRun = {
+      events: emptyEvents(),
+      stop: async () => { stopped += 1; },
+      waitForExit: async () => true,
+    };
+    activeRuns.register('scope-1', run);
+    activeRuns.deferCompact('scope-1', () => { fired += 1; });
+    await activeRuns.stopAll();
+    expect(stopped).toBe(1);
+    expect(fired).toBe(0);
+    expect(activeRuns.has('scope-1')).toBe(false);
+    activeRuns.unregister('scope-1', run);
+    expect(fired).toBe(0);
   });
 });

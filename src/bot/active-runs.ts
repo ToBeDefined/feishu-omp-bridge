@@ -64,12 +64,16 @@ export class ActiveRuns {
    * Interrupt the current run for this chat, if any. Returns true if an
    * interrupt was issued. Fires stop() fire-and-forget — the old run's
    * generator exits on its own as the subprocess dies.
+   *
+   * The handle stays in the map until unregister (after reap). Deleting it
+   * here would drop a deferred /compact and let the next message --resume
+   * the same jsonl while the child is still dying. /new /cd /ws clear the
+   * session first; compactIdle then no-ops via resumeFor.
    */
   interrupt(chatId: string): boolean {
     const h = this.handles.get(chatId);
     if (!h) return false;
     h.interrupted = true;
-    this.handles.delete(chatId);
     void h.run.stop().catch(() => {
       /* stop errors are non-fatal */
     });
@@ -112,11 +116,6 @@ export class ActiveRuns {
   submitPrompt(chatId: string, kind: 'steer' | 'follow_up', message: string, imagePaths?: string[]): Promise<boolean> {
     const h = this.handles.get(chatId);
     return h?.run.submitPrompt?.(kind, message, imagePaths) ?? Promise.resolve(false);
-  }
-
-  compact(chatId: string, customInstructions?: string): boolean {
-    const h = this.handles.get(chatId);
-    return h?.run.compact?.(customInstructions) === true;
   }
 
   /**

@@ -100,3 +100,21 @@ export class PendingQueue {
     }
   }
 }
+
+/**
+ * If the scope is busy (agent run or oneshot compact), push the flushed
+ * batch back so the next quiet window retries. Returns true when the
+ * caller must not start a run — otherwise two omp processes --resume the
+ * same session jsonl.
+ */
+export function requeueIfBusy(
+  pending: PendingQueue,
+  scope: string,
+  batch: NormalizedMessage[],
+  busy: boolean,
+): boolean {
+  if (!busy || batch.length === 0) return false;
+  for (const m of batch) pending.push(scope, m);
+  log.info('flush', 'defer-busy', { scope, batchSize: batch.length });
+  return true;
+}

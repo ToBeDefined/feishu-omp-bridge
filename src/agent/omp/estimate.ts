@@ -42,6 +42,11 @@ export async function findSessionFile(
  * Read the last assistant-message `usage` from a session file by streaming
  * from the tail: a 10 MB session gets scanned in ≤256 KB chunks instead of
  * being slurped whole into the bridge process on every /compact.
+ *
+ * Chunks are split on the 0x0A byte, not via UTF-8 `toString`. A CJK
+ * character sitting on a 256 KB boundary would otherwise become U+FFFD,
+ * JSON.parse would skip the newest usage line, and the timeout would
+ * collapse to the 600 s floor.
  */
 export async function estimateSessionTokens(
   sessionDir: string,
@@ -56,35 +61,51 @@ export async function estimateSessionTokens(
     return undefined;
   }
   try {
-    const { size } = await handle.stat();
+    const st = await handle.stat();
+    if (!st.isFile()) return undefined;
+    const { size } = st;
     const CHUNK = 256 * 1024;
     let offset = size;
     // Tail fragment of a line the chunk boundary cut through; held until the
-    // next (lower) chunk supplies its head.
-    let carry = '';
+    // next (lower) chunk supplies its head. Kept as bytes so a multi-byte
+    // UTF-8 sequence split across the boundary is decoded only when whole.
+    let carry = Buffer.alloc(0);
     while (offset > 0) {
       const start = Math.max(0, offset - CHUNK);
       const len = offset - start;
       const buf = Buffer.allocUnsafe(len);
       await handle.read(buf, 0, len, start);
-      const parts = buf.toString('utf8').split('\n');
-      // Rejoin the line the previous (higher) chunk cut: its tail is in carry.
-      const lastIndex = parts.length - 1;
-      parts[lastIndex] = (parts[lastIndex] ?? '') + carry;
-      // Reading from 0 means the first part is a complete line; otherwise it
-      // is a head fragment — hold it, never parse a fragment.
-      carry = start > 0 ? (parts[0] ?? '') : '';
+      const region = carry.length > 0 ? Buffer.concat([buf, carry]) : buf;
+      const parts = splitOnNewline(region);
+      carry = start > 0 ? Buffer.from(parts[0] ?? Buffer.alloc(0)) : Buffer.alloc(0);
       const complete = start > 0 ? parts.slice(1) : parts;
       for (let i = complete.length - 1; i >= 0; i--) {
-        const tokens = tokensFromLine(complete[i] ?? '');
+        const line = complete[i];
+        if (!line || line.length === 0) continue;
+        const tokens = tokensFromLine(line.toString('utf8'));
         if (tokens > 0) return { tokens, bytes: size };
       }
       offset = start;
     }
     return { tokens: 0, bytes: size };
+  } catch {
+    return undefined;
   } finally {
     await handle.close();
   }
+}
+
+function splitOnNewline(buf: Buffer): Buffer[] {
+  const parts: Buffer[] = [];
+  let start = 0;
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === 0x0a) {
+      parts.push(buf.subarray(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(buf.subarray(start));
+  return parts;
 }
 
 /** Extract the context occupancy from one JSONL line, or 0 when the line

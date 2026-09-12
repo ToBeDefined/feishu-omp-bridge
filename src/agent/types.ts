@@ -114,8 +114,6 @@ export interface AgentRun {
   stop(): Promise<void>;
   respondToUi?(requestId: string, response: AgentUiResponse): boolean;
   submitPrompt?(kind: 'steer' | 'follow_up', message: string, imagePaths?: string[]): Promise<boolean>;
-  /** Ask the agent to compact its session context (OMP `compact` command). */
-  compact?(customInstructions?: string): boolean;
   /**
    * Wait up to `timeoutMs` for the agent process to exit on its own.
    * Resolves true if it exited within the window, false if the timer
@@ -142,5 +140,12 @@ export interface AgentAdapter {
    * process per message, so idle sessions have no live process to compact.
    * Returns the human-readable error on failure, undefined on success.
    */
-  compactSession?(opts: { sessionId: string; cwd?: string; model?: string; customInstructions?: string; timeoutMs?: number }): Promise<string | undefined>;
+  compactSession?(opts: {
+    sessionId: string;
+    cwd?: string;
+    model?: string;
+    customInstructions?: string;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  }): Promise<string | undefined>;
 }

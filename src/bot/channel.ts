@@ -20,7 +20,7 @@ import { intakeMessage } from './intake';
 import { resolveOwner } from './owner';
 import { startKeepalive } from './keepalive';
 import { configureNetwork } from './network-config';
-import { PendingQueue } from './pending-queue';
+import { PendingQueue, requeueIfBusy } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { runAgentBatch, runScheduledPrompt } from './batch';
 import type { Scheduler } from '../scheduler';
@@ -168,6 +168,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   const pending = new PendingQueue(DEBOUNCE_MS, (scope, batch) => {
     const firstMsg = batch[0];
     if (!firstMsg) return;
+    // Oneshot compact occupies the slot without going through this flush.
+    // Re-queue so we don't --resume the same jsonl alongside it. push()
+    // arms a fresh quiet window because we are not blocked.
+    if (requeueIfBusy(pending, scope, batch, activeRuns.has(scope))) return;
     pending.block(scope);
     void withTrace({ chatId: firstMsg.chatId }, async () => {
       log.info('flush', 'start', { scope, batchSize: batch.length });

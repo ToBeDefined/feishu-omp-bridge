@@ -47,6 +47,11 @@
   Node 的 `readline` 永远不会再触发 `close`，`for await` 永久挂起 →
   改为 spawn 当刻就开始 drain stdout 并缓冲成行，消费者什么时候来读都
   不会错过 EOF。升级 OMP 后 turn 结束即退出，这个竞态才被踩到。
+- 失效 session id 让整个 chat 永久失联：OMP 在首轮就分配 session id，
+  但只有首轮成功才落盘 jsonl；首轮失败（模型凭据缺失、被 abort）时
+  bridge 存下的 id 之后 `--resume` 一定报 `Session "..." not found`，
+  该 chat 之后每条消息都死在同一处 → 现在检测到该失败即清掉失效 id，
+  并立刻用新 session 重放本轮，用户无需 `/new` 自救。
 - 自愈看门狗不再把 `omp --version` 的短暂失败当成 bridge 假死；在线状态只由 bridge 进程和 WS 决定，避免无故重启、回退并重复发送上线通知。
 - OMP 原生 UI 卡片超时自动取消：OMP 带 `timeout` 的 confirm/select/input
   等待用户输入时，idle watchdog 是暂停的，用户一直不回会永久挂死 run →

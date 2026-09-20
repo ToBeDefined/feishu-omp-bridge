@@ -55,6 +55,14 @@ export interface AgentStreamHooks {
 }
 
 export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
+  await runBatchOnce(deps, false);
+}
+
+/**
+ * One attempt at a batch. Re-entered once (with `retriedStaleSession`) when
+ * the run died because OMP could not resume the stored session id.
+ */
+async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): Promise<void> {
   const {
     channel,
     agent,
@@ -276,6 +284,17 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     for (const { messageId } of uiCards.values()) forgetManagedCard(messageId);
     uiCards.clear();
     activeRuns.unregister(scope, run);
+  }
+
+  // OMP assigns a session id on the first turn but only persists the session
+  // file once that turn succeeds — a first-turn failure (missing model
+  // credentials, abort) leaves the bridge holding an id that `--resume`
+  // rejects. Without this, that chat is bricked: every later message dies on
+  // the same lookup error. Drop the dead id and replay the batch once.
+  if (resumeFrom && !retriedStaleSession && run.staleSession) {
+    log.warn('session', 'stale-cleared', { sessionId: resumeFrom, cwd });
+    sessions.clear(scope);
+    await runBatchOnce(deps, true);
   }
 }
 

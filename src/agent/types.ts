@@ -115,6 +115,13 @@ export interface AgentRun {
   respondToUi?(requestId: string, response: AgentUiResponse): boolean;
   submitPrompt?(kind: 'steer' | 'follow_up', message: string, imagePaths?: string[]): Promise<boolean>;
   /**
+   * True once the run has ended because the requested `sessionId` could not
+   * be resumed (the agent refused it before doing any work). The caller owns
+   * the id and must drop it — re-running with the same id fails identically.
+   * Undefined/false while the run is live or when no session was requested.
+   */
+  readonly staleSession?: boolean;
+  /**
    * Wait up to `timeoutMs` for the agent process to exit on its own.
    * Resolves true if it exited within the window, false if the timer
    * fired first (caller usually wants to fall back to stop()).

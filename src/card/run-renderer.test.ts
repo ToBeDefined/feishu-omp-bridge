@@ -93,6 +93,16 @@ describe('renderCard', () => {
     });
   });
 
+  it('never puts a streaming run card into CardKit streaming mode', () => {
+    // streaming_mode switches the client to the cardkit typewriter channel;
+    // full-card `im.message.patch` updates are not applied until that mode
+    // ends, so a run card carrying it only ever shows its final state.
+    expect(JSON.stringify(renderCard(longRunState(1)))).not.toContain('streaming_mode');
+    expect(JSON.stringify(renderCard({ ...longRunState(1), terminal: 'done' }))).not.toContain(
+      'streaming_mode',
+    );
+  });
+
   it('expands only the latest tool panel while running', () => {
     const elements = cardElements(renderCard(longRunState(3)));
     const panels = elements.filter(

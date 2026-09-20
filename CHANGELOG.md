@@ -52,6 +52,12 @@
   bridge 存下的 id 之后 `--resume` 一定报 `Session "..." not found`，
   该 chat 之后每条消息都死在同一处 → 现在检测到该失败即清掉失效 id，
   并立刻用新 session 重放本轮，用户无需 `/new` 自救。
+- 运行卡片只在结束时更新一次：`renderCard` 在 `terminal === 'running'` 时把卡片标成
+  `config.streaming_mode = true`，而该标记会把客户端切到 CardKit 流式模式 —— 内容只认
+  `cardkit.cardElement.content` 的打字机推送，整卡 `im.message.patch` 替换在流式模式
+  结束前不会被应用。bridge 走的正是整卡 patch，于是整轮只有最后那次（`streaming_mode`
+  已变 false）可见。去掉该标记后每次 patch 都会即时上屏（patch 频率本身受
+  `im.message.patch` 往返约 0.6s 限制）。
 - 自愈看门狗不再把 `omp --version` 的短暂失败当成 bridge 假死；在线状态只由 bridge 进程和 WS 决定，避免无故重启、回退并重复发送上线通知。
 - OMP 原生 UI 卡片超时自动取消：OMP 带 `timeout` 的 confirm/select/input
   等待用户输入时，idle watchdog 是暂停的，用户一直不回会永久挂死 run →

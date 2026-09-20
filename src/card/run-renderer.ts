@@ -29,7 +29,8 @@ export interface CardPageOptions {
  *  read `body.elements.length` (pagination budget) without casts. */
 export interface RunCard {
   schema: string;
-  config: { streaming_mode: boolean; summary: { content: string } };
+  /** No `streaming_mode` — see the comment in `renderCard`. */
+  config: { summary: { content: string } };
   body: { elements: object[] };
 }
 
@@ -86,10 +87,13 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
 
   return {
     schema: '2.0',
-    config: {
-      streaming_mode: state.terminal === 'running',
-      summary: { content: summaryText(state) },
-    },
+    // Deliberately NOT `streaming_mode: true`: that flag puts the client into
+    // CardKit streaming mode, whose content channel is
+    // `cardkit.cardElement.content` (typewriter pushes). A card in that mode
+    // ignores full-card `im.message.patch` replacements until the mode ends,
+    // so the user only ever sees the final state. This stream updates by
+    // patching the whole card, so it must stay out of streaming mode.
+    config: { summary: { content: summaryText(state) } },
     body: { elements },
   };
 }

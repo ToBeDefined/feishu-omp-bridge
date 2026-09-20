@@ -5,6 +5,7 @@ import {
   getOmpSessionDir,
   getOmpThinking,
   getOmpTools,
+  isOmpThinkingLevel,
   isOwner,
   type AppConfig,
 } from './schema';
@@ -35,6 +36,13 @@ describe('OMP preferences', () => {
     expect(getOmpModel(cfg({ ompModel: '   ' }))).toBeUndefined();
     expect(getOmpThinking(cfg({ ompThinking: '   ' }))).toBeUndefined();
     expect(getOmpTools(cfg({ ompTools: '   ' }))).toBeUndefined();
+  });
+
+  it('accepts the documented thinking levels', () => {
+    expect(isOmpThinkingLevel('high')).toBe(true);
+    expect(isOmpThinkingLevel('auto')).toBe(true);
+    expect(isOmpThinkingLevel('__default')).toBe(false);
+    expect(isOmpThinkingLevel('')).toBe(false);
   });
 
   it('trims OMP thinking, tools, and session dir', () => {

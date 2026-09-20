@@ -225,6 +225,22 @@ export function getOmpModel(cfg: AppConfig): string | undefined {
   return raw.trim();
 }
 
+export const OMP_THINKING_LEVELS = [
+  'auto',
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+] as const;
+export type OmpThinkingLevel = (typeof OMP_THINKING_LEVELS)[number];
+
+export function isOmpThinkingLevel(value: string): value is OmpThinkingLevel {
+  return (OMP_THINKING_LEVELS as readonly string[]).includes(value);
+}
+
 export function getOmpThinking(cfg: AppConfig): string | undefined {
   const raw = cfg.preferences?.ompThinking;
   if (typeof raw !== 'string' || raw.trim() === '') return undefined;

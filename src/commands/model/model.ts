@@ -1,7 +1,8 @@
-import { getOmpModel, getOmpThinking } from '../../config/schema';
+import { getOmpModel, getOmpThinking, isOmpThinkingLevel } from '../../config/schema';
 import { saveConfig } from '../../config/store';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import {
+  THINKING_FOLLOW_DEFAULT,
   modelCancelledCard,
   modelProviderCard,
   modelSavedCard,
@@ -61,7 +62,7 @@ async function refreshModels(ctx: CommandContext, current: string | undefined): 
   await sendManagedCard(
     ctx.channel,
     ctx.msg.chatId,
-    modelProviderCard(current, providers, recents, data.commons),
+    modelProviderCard(current, providers, recents, data.commons, getOmpThinking(ctx.controls.cfg)),
   );
 }
 
@@ -79,7 +80,7 @@ async function showModelProviders(ctx: CommandContext, current: string | undefin
   await sendManagedCard(
     ctx.channel,
     ctx.msg.chatId,
-    modelProviderCard(current, providers, recents, data.commons),
+    modelProviderCard(current, providers, recents, data.commons, getOmpThinking(ctx.controls.cfg)),
   );
 }
 
@@ -95,7 +96,24 @@ async function showModelPicker(
     return;
   }
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, modelSelectCard(provider, current, pick));
+  await sendManagedCard(
+    ctx.channel,
+    ctx.msg.chatId,
+    modelSelectCard(provider, current, pick, getOmpThinking(ctx.controls.cfg)),
+  );
+}
+
+function applyThinkingFromForm(
+  prefs: { ompThinking?: string },
+  raw: unknown,
+): void {
+  if (typeof raw !== 'string') return;
+  const level = raw.trim();
+  if (level === THINKING_FOLLOW_DEFAULT || level === '') {
+    prefs.ompThinking = undefined;
+    return;
+  }
+  if (isOmpThinkingLevel(level)) prefs.ompThinking = level;
 }
 
 async function submitModel(ctx: CommandContext, current: string | undefined): Promise<void> {
@@ -106,18 +124,30 @@ async function submitModel(ctx: CommandContext, current: string | undefined): Pr
   }
   const cfg = ctx.controls.cfg;
   const nextPreferences = { ...(cfg.preferences ?? {}), ompModel: selector };
+  applyThinkingFromForm(nextPreferences, ctx.formValue?.thinking_level);
   await saveConfig({ ...cfg, preferences: nextPreferences }, ctx.controls.configPath);
   cfg.preferences = nextPreferences;
-  log.info('command', 'model-set', { scope: ctx.scope, model: selector, via: 'card' });
+  const thinking = getOmpThinking(cfg);
+  log.info('command', 'model-set', {
+    scope: ctx.scope,
+    model: selector,
+    thinking: thinking ?? null,
+    via: 'card',
+  });
   if (ctx.fromCardAction) {
     const formMsgId = ctx.msg.messageId;
     void (async () => {
       await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, formMsgId, modelSavedCard(selector, getOmpThinking(ctx.controls.cfg))).catch(() => {});
+      await updateManagedCard(ctx.channel, formMsgId, modelSavedCard(selector, thinking)).catch(() => {});
       forgetManagedCard(formMsgId);
     })();
   } else {
-    await reply(ctx, `✅ 模型已设为 \`${selector}\`。下一条消息生效。`);
+    await reply(
+      ctx,
+      `✅ 模型已设为 \`${selector}\`。\n🧠 思考强度:` +
+        (thinking ? `\`${thinking}\`` : '_跟随 OMP 默认_') +
+        `\n\n下一条消息生效。`,
+    );
   }
 }
 

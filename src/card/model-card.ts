@@ -1,6 +1,10 @@
 import { homedir } from 'node:os';
 import { summarizeMd } from '../commands/shared';
+import { isOmpThinkingLevel, OMP_THINKING_LEVELS } from '../config/schema';
 import { escapeMd } from './templates';
+
+/** Form value meaning "clear ompThinking / follow OMP default". */
+export const THINKING_FOLLOW_DEFAULT = '__default';
 
 export interface ModelInfo {
   selector: string;
@@ -37,17 +41,40 @@ function modelCommonButtons(current: string | undefined, commons: string[]): obj
   }));
 }
 
+function formatCurrent(value: string | undefined): string {
+  return value ? `\`${value}\`` : '_跟随 OMP 默认_';
+}
+
+function thinkingSelect(current?: string): object {
+  const initial = current && isOmpThinkingLevel(current) ? current : THINKING_FOLLOW_DEFAULT;
+  return {
+    tag: 'select_static',
+    name: 'thinking_level',
+    placeholder: { tag: 'plain_text', content: '思考强度' },
+    initial_option: initial,
+    options: [
+      { text: { tag: 'plain_text', content: '跟随 OMP 默认' }, value: THINKING_FOLLOW_DEFAULT },
+      ...OMP_THINKING_LEVELS.map((lv) => ({
+        text: { tag: 'plain_text', content: lv },
+        value: lv,
+      })),
+    ],
+  };
+}
+
 /** Provider chooser card for `/model`. */
 export function modelProviderCard(
   current: string | undefined,
   providers: ModelProviderInfo[],
   recents: string[] = [],
   commons: string[] = [],
+  thinking?: string,
 ): object {
   const lines = [
     '🎛️ **切换模型**',
     '',
-    `当前:` + (current ? `\`${current}\`` : '_跟随 OMP 默认_'),
+    `当前模型:` + formatCurrent(current),
+    `思考强度:` + formatCurrent(thinking),
   ];
   const commonButtons = modelCommonButtons(current, commons);
   const commonBlock: object[] =
@@ -97,6 +124,7 @@ export function modelSelectCard(
   provider: string,
   current: string | undefined,
   models: ModelInfo[],
+  thinking?: string,
 ): object {
   const sorted = [...models].sort((a, b) => a.selector.localeCompare(b.selector));
   // options 的 value 是完整 selector（provider/model）。用半段 id 永远匹配
@@ -118,7 +146,8 @@ export function modelSelectCard(
           tag: 'markdown',
           content:
             `🎛️ **${provider} 模型**\n` +
-            `当前:` + (current ? `\`${current}\`` : '_跟随 OMP 默认_'),
+            `当前模型:` + formatCurrent(current) +
+            `\n思考强度:` + formatCurrent(thinking),
         },
         { tag: 'hr' },
         {
@@ -128,9 +157,11 @@ export function modelSelectCard(
             {
               tag: 'select_static',
               name: 'model_selector',
+              placeholder: { tag: 'plain_text', content: '模型' },
               initial_option: initial,
               options,
             },
+            thinkingSelect(thinking),
             {
               tag: 'column_set',
               flex_mode: 'flow',

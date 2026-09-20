@@ -1,4 +1,4 @@
-import { getOmpThinking } from '../../config/schema';
+import { getOmpThinking, isOmpThinkingLevel } from '../../config/schema';
 import { saveConfig } from '../../config/store';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import {
@@ -34,7 +34,7 @@ async function handleThinking(args: string, ctx: CommandContext): Promise<void> 
       return resetThinking(ctx, current);
     default:
       if (trimmed === '') return showThinkingPicker(ctx, current);
-      if (/^(auto|off|minimal|low|medium|high|xhigh|max)$/.test(trimmed)) {
+      if (isOmpThinkingLevel(trimmed)) {
         return setThinking(trimmed, ctx, current);
       }
       await reply(
@@ -50,7 +50,7 @@ async function showThinkingPicker(ctx: CommandContext, current: string | undefin
 }
 
 async function setThinking(level: string, ctx: CommandContext, current: string | undefined): Promise<void> {
-  if (!level || !/^(auto|off|minimal|low|medium|high|xhigh|max)$/.test(level)) {
+  if (!level || !isOmpThinkingLevel(level)) {
     await reply(ctx, '❌ 合法值:`off|minimal|low|medium|high|xhigh|max|auto`');
     return;
   }

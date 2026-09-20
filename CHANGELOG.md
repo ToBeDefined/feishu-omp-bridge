@@ -41,6 +41,12 @@
   （`bash -c`，支持管道/重定向），当前 cwd 执行、30s 超时、输出截断
   1000 字符、禁交互、写审计日志。
 ### Fixed
+- OMP 进程提前退出导致 run 永久挂起、回复石沉大海：OMP 只在自己的 turn
+  结束后（或 `--resume` 失败时）立刻退出，而 bridge 要先把媒体/引用处理
+  完、把首张卡片发出去才去读它的 stdout；等真正开始读时管道已经 EOF，
+  Node 的 `readline` 永远不会再触发 `close`，`for await` 永久挂起 →
+  改为 spawn 当刻就开始 drain stdout 并缓冲成行，消费者什么时候来读都
+  不会错过 EOF。升级 OMP 后 turn 结束即退出，这个竞态才被踩到。
 - 自愈看门狗不再把 `omp --version` 的短暂失败当成 bridge 假死；在线状态只由 bridge 进程和 WS 决定，避免无故重启、回退并重复发送上线通知。
 - OMP 原生 UI 卡片超时自动取消：OMP 带 `timeout` 的 confirm/select/input
   等待用户输入时，idle watchdog 是暂停的，用户一直不回会永久挂死 run →

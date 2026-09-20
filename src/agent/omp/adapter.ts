@@ -89,6 +89,10 @@ export class OmpAdapter implements AgentAdapter {
       imageCount: opts.imagePaths?.length ?? 0,
     });
 
+    // Attach the stdout drain in the same tick as spawn(): the child can exit
+    // (and close its stdout) long before the caller starts iterating events.
+    const reader = startLineReader(child.stdout);
+
     const stderrChunks: Buffer[] = [];
     let stderrBytes = 0;
     // Keep only the tail of stderr for the error detail — a verbose child
@@ -111,9 +115,13 @@ export class OmpAdapter implements AgentAdapter {
     });
 
     const stopGraceMs = opts.stopGraceMs ?? 5000;
+    const outcome: OmpRunOutcome = { staleSession: false };
 
     return {
-      events: createEventStream(child, stderrChunks, () => runtimeError, opts),
+      events: createEventStream(child, reader, stderrChunks, () => runtimeError, opts, outcome),
+      get staleSession() {
+        return outcome.staleSession;
+      },
       async stop() {
         if (child.exitCode !== null || child.signalCode !== null) return;
         log.info('agent', 'stop-abort', { pid: child.pid ?? null, graceMs: stopGraceMs });
@@ -290,11 +298,73 @@ export class OmpAdapter implements AgentAdapter {
   }
 }
 
+/**
+ * Line reader that starts consuming the stream the moment it is created.
+ *
+ * `readline` only observes EOF once someone starts iterating it: a pipe that
+ * already reached EOF before the interface exists never emits 'close', so
+ * `for await` over it hangs forever. OMP exits on its own as soon as the turn
+ * ends — and immediately when `--resume` misses — which routinely lands
+ * before the caller finishes pre-stream work (media download, initial card
+ * send, several seconds). Draining from spawn time makes EOF observable
+ * whenever the consumer shows up, and turns a stdout 'error' (EPIPE on a
+ * killed child) into a rejection instead of an uncaught 'error' event.
+ */
+function startLineReader(stream: Readable): { lines: AsyncIterableIterator<string>; close: () => void } {
+  const buffered: string[] = [];
+  let notify: (() => void) | undefined;
+  let closed = false;
+  let failure: Error | undefined;
+  const wake = (): void => {
+    const resolve = notify;
+    notify = undefined;
+    resolve?.();
+  };
+
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+  rl.on('line', (line: string) => {
+    buffered.push(line);
+    wake();
+  });
+  rl.on('close', () => {
+    closed = true;
+    wake();
+  });
+  stream.on('error', (err: Error) => {
+    failure = err;
+    closed = true;
+    wake();
+  });
+
+  async function* lines(): AsyncGenerator<string> {
+    for (;;) {
+      while (buffered.length > 0) yield buffered.shift() as string;
+      if (failure) throw failure;
+      if (closed) return;
+      await new Promise<void>((resolve) => {
+        notify = resolve;
+      });
+    }
+  }
+
+  return {
+    lines: lines(),
+    close(): void {
+      closed = true;
+      buffered.length = 0;
+      rl.close();
+      wake();
+    },
+  };
+}
+
 async function* createEventStream(
   child: OmpChild,
+  reader: { lines: AsyncIterableIterator<string>; close: () => void },
   stderrChunks: Buffer[],
   getError: () => Error | null,
   opts: AgentRunOptions,
+  outcome: OmpRunOutcome,
 ): AsyncGenerator<AgentEvent> {
   if (!child.pid) {
     const err = getError();
@@ -305,12 +375,11 @@ async function* createEventStream(
     return;
   }
 
-  const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
   let terminal = false;
   let sawReady = false;
   let promptSent = false;
   try {
-    for await (const line of rl) {
+    for await (const line of reader.lines) {
       const parsed = parseOmpJsonLine(line);
       if (parsed === undefined) {
         if (line.trim()) log.warn('agent', 'non-json-stdout', { line });
@@ -376,13 +445,19 @@ async function* createEventStream(
       }
     }
   } finally {
-    rl.close();
+    reader.close();
   }
 
   const exit = await waitForExit(child);
   const runtimeError = getError();
   if (exit.code !== 0 && exit.signal === null) {
     const detail = stderrChunks.length > 0 ? `: ${Buffer.concat(stderrChunks).toString('utf8').trim()}` : '';
+    // OMP rejects an unknown `--resume` id before it ever sends `ready`:
+    // `Error: Session "<id>" not found.` The caller owns the stored id and
+    // has to drop it — retrying the same id fails identically forever.
+    if (!sawReady && opts.sessionId && /session/i.test(detail) && /not\s*found/i.test(detail)) {
+      outcome.staleSession = true;
+    }
     yield { type: 'error', message: `omp exited with code ${exit.code}${detail}` };
   } else if (runtimeError) {
     yield { type: 'error', message: `omp runtime error: ${runtimeError.message}` };
@@ -433,6 +508,12 @@ function waitForExitWithin(child: OmpChild, timeoutMs: number): Promise<boolean>
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Mutable facts about a run that are only known once the child has exited. */
+interface OmpRunOutcome {
+  /** True when OMP refused the requested `--resume` id. */
+  staleSession: boolean;
 }
 interface HostToolCallFrame {
   type: 'host_tool_call';

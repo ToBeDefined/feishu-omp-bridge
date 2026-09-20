@@ -157,4 +157,46 @@ process.exit(7);
       { type: 'error', message: 'omp exited with code 7: auth required' },
     ]);
   });
+
+  it('terminates the stream when the child exits before the consumer starts reading', async () => {
+    const binary = await fakeOmp(`
+console.error('Error: Session "01a0b305-7eae-71a5-9574-ac4e0845f6fb" not found.');
+process.exit(1);
+`);
+
+    const run = new OmpAdapter({ binary }).run({
+      prompt: 'ping',
+      cwd: tmpdir(),
+      sessionId: '01a0b305-7eae-71a5-9574-ac4e0845f6fb',
+    });
+
+    // The bridge spends seconds on media + the initial card send before it
+    // reads a single frame; a child that is already gone by then must still
+    // produce a terminal event instead of leaving the run hanging forever.
+    await expect(run.waitForExit(5_000)).resolves.toBe(true);
+
+    await expect(collect(run.events)).resolves.toEqual([
+      { type: 'error', message: expect.stringContaining('omp exited with code 1: Error: Session') },
+    ]);
+    expect(run.staleSession).toBe(true);
+  });
+
+  it('keeps the session id when OMP failed after a successful resume', async () => {
+    const binary = await fakeOmp(`
+console.log(JSON.stringify({ type: 'ready' }));
+console.error('Error: model "x" not found');
+process.exit(1);
+`);
+
+    const run = new OmpAdapter({ binary }).run({
+      prompt: 'ping',
+      cwd: tmpdir(),
+      sessionId: 'session-1',
+    });
+
+    await expect(collect(run.events)).resolves.toEqual([
+      { type: 'error', message: expect.stringContaining('omp exited with code 1') },
+    ]);
+    expect(run.staleSession).toBe(false);
+  });
 });

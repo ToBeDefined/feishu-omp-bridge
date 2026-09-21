@@ -1,4 +1,5 @@
 import type { ToolEntry } from './run-state';
+import { codeFence, escapeCode, escapeMd } from './templates';
 
 const HEADER_SUMMARY_MAX = 80;
 const BODY_FIELD_MAX = 600;
@@ -14,8 +15,9 @@ const BODY_TOTAL_MAX = 2500;
 
 export function toolHeaderText(tool: ToolEntry): string {
   const icon = tool.status === 'done' ? '✅' : tool.status === 'error' ? '❌' : '⏳';
+  const name = escapeMd(tool.name);
   const summary = summarizeInput(tool.name, tool.input);
-  return summary ? `${icon} **${tool.name}** — ${summary}` : `${icon} **${tool.name}**`;
+  return summary ? `${icon} **${name}** — ${escapeMd(summary)}` : `${icon} **${name}**`;
 }
 
 export function toolBodyMd(tool: ToolEntry): string {
@@ -26,11 +28,11 @@ export function toolBodyMd(tool: ToolEntry): string {
   if (tool.output) {
     const truncated = truncate(tool.output, OUTPUT_MAX);
     if (tool.status === 'error') {
-      parts.push(`**Error**\n\`\`\`\n${truncated}\n\`\`\``);
+      parts.push(`**Error**\n${codeFence(truncated)}`);
     } else if (tool.name === 'Bash') {
       parts.push(renderBashOutput(truncated));
     } else {
-      parts.push(`**Output**\n\`\`\`\n${truncated}\n\`\`\``);
+      parts.push(`**Output**\n${codeFence(truncated)}`);
     }
   } else if (tool.status === 'running') {
     parts.push('_运行中…_');
@@ -86,25 +88,25 @@ function renderInput(tool: ToolEntry): string {
   switch (tool.name) {
     case 'Bash': {
       const cmd = str('command');
-      return cmd ? `**Command**\n\`\`\`bash\n${truncate(cmd, BODY_FIELD_MAX)}\n\`\`\`` : '';
+      return cmd ? `**Command**\n${codeFence(truncate(cmd, BODY_FIELD_MAX), 'bash')}` : '';
     }
     case 'Read':
     case 'Edit':
     case 'Write':
     case 'NotebookEdit': {
       const fp = str('file_path');
-      return fp ? `**File** \`${fp}\`` : '';
+      return fp ? `**File** \`${escapeCode(fp)}\`` : '';
     }
     case 'Grep': {
       const lines: string[] = [];
-      if (str('pattern')) lines.push(`**Pattern** \`${str('pattern')}\``);
-      if (str('path')) lines.push(`**Path** \`${str('path')}\``);
+      if (str('pattern')) lines.push(`**Pattern** \`${escapeCode(str('pattern'))}\``);
+      if (str('path')) lines.push(`**Path** \`${escapeCode(str('path'))}\``);
       return lines.join('\n');
     }
     case 'WebFetch':
-      return str('url') ? `**URL** ${str('url')}` : '';
+      return str('url') ? `**URL** ${escapeMd(str('url'))}` : '';
     case 'WebSearch':
-      return str('query') ? `**Query** \`${truncate(str('query'), BODY_FIELD_MAX)}\`` : '';
+      return str('query') ? `**Query** \`${escapeCode(truncate(str('query'), BODY_FIELD_MAX))}\`` : '';
     default:
       return '';
   }
@@ -112,7 +114,7 @@ function renderInput(tool: ToolEntry): string {
 
 function renderBashOutput(out: string): string {
   // Some agents wrap stdout/stderr in xml-like tags; keep simple and just dump.
-  return `**Output**\n\`\`\`\n${out}\n\`\`\``;
+  return `**Output**\n${codeFence(out)}`;
 }
 
 function shortenPath(p: string): string {

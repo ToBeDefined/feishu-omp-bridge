@@ -96,6 +96,7 @@ const ADMIN_COMMANDS: Record<string, true> = {
   '/doctor': true,
   '/cd': true,
   '/ws': true,
+  '/diff': true,
   '/release': true,
   '/exec': true,
   '/run': true,
@@ -171,7 +172,11 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean | '
   if (!trimmed.startsWith('/')) return false;
   const parts = trimmed.split(/\s+/);
   const cmd = parts[0] ?? '';
-  const args = parts.slice(1).join(' ');
+  // Slice the raw remainder instead of re-joining the whitespace-split
+  // parts: re-joining collapses every run of spaces/tabs to one space,
+  // which corrupts `/exec` shell commands (significant whitespace inside
+  // quotes) and any other command whose argument keeps literal whitespace.
+  const args = trimmed.slice(cmd.length).trim();
   const h = handlers[cmd];
   if (!h) return false;
   // 'denied' is truthy so callers treat the input as consumed, but lets

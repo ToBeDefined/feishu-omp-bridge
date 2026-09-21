@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import { stat } from 'node:fs/promises';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter, AgentEvent, AgentUiRequest } from '../agent/types';
-import type { ActiveRuns, RunHandle } from './active-runs';
+import type { ActiveRuns, RunClaim, RunHandle } from './active-runs';
 import { createFeishuHostIntegration } from './feishu-host';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { renderOmpUiRequestCard, renderOmpUiResultCard } from '../card/omp-ui';
@@ -25,6 +25,7 @@ import {
   getOmpThinking,
   getRunIdleTimeoutMs,
   getShowToolCalls,
+  isChatAllowed,
 } from '../config/schema';
 import { log } from '../core/logger';
 import { attachTextExtracts, type MediaCache } from '../media/cache';
@@ -34,6 +35,7 @@ import type { WorkspaceStore } from '../workspace/store';
 import { recordModelUse } from '../session/model-history';
 import type { ChatMode } from './chat-mode-cache';
 import { buildPrompt } from './prompt';
+import type { ProcessPool } from './process-pool';
 import { fetchQuotedContext, type QuotedContext } from './quote';
 
 export interface RunBatchDeps {
@@ -47,11 +49,91 @@ export interface RunBatchDeps {
   controls: Controls;
   scope: string;
   mode: ChatMode;
+  /** Slot reserved by the caller before its first await. */
+  claim?: RunClaim;
 }
 
 export interface AgentStreamHooks {
   onUiRequest(request: AgentUiRequest): Promise<void>;
   onUiCancel(targetId: string): Promise<void>;
+}
+
+interface UiCardEntry {
+  messageId: string;
+  title: string;
+}
+
+/**
+ * Bridge OMP's extension UI requests to interactive Feishu cards. Shared by
+ * the interactive batch and the scheduled-prompt path, so a scheduled run's
+ * confirm/select is answerable instead of stalling the run forever.
+ *
+ * `replyToMessageId` threads the card under the user's message; a scheduled
+ * run has none and posts at chat level.
+ */
+function createUiHooks(opts: {
+  channel: LarkChannel;
+  chatId: string;
+  scope: string;
+  replyToMessageId: string | undefined;
+  activeRuns: ActiveRuns;
+  cards: Map<string, UiCardEntry>;
+}): AgentStreamHooks {
+  const { channel, chatId, scope, replyToMessageId, activeRuns, cards } = opts;
+  return {
+    async onUiRequest(request) {
+      try {
+        const existing = cards.get(request.id);
+        if (existing) {
+          await updateManagedCard(channel, existing.messageId, renderOmpUiRequestCard(request, scope));
+          existing.title = request.title;
+          return;
+        }
+        const sent = await sendManagedCard(
+          channel,
+          chatId,
+          renderOmpUiRequestCard(request, scope),
+          replyToMessageId,
+        );
+        cards.set(request.id, { messageId: sent.messageId, title: request.title });
+        // Auto-cancel on timeout: while OMP waits for UI input the idle
+        // watchdog is paused, so an unanswered prompt would hang the run
+        // forever. The timer is cancelled in ActiveRuns.respondToUi when the
+        // user answers first.
+        if ('timeout' in request && request.timeout !== undefined && request.timeout > 0) {
+          activeRuns.armUiTimeout(scope, request.id, request.timeout, () => {
+            activeRuns.respondToUi(scope, request.id, { cancelled: true, timedOut: true });
+            updateManagedCard(channel, sent.messageId, renderOmpUiResultCard(request.title, 'timed_out'))
+              .catch(() => {
+                /* card update is best-effort */
+              })
+              .finally(() => forgetManagedCard(sent.messageId));
+            cards.delete(request.id);
+          });
+        }
+      } catch (err) {
+        // The request is already registered as outstanding, and an outstanding
+        // request pauses the idle watchdog. With no card on screen and no timer
+        // armed, the run (and its OMP child) would wait for an answer that can
+        // never arrive — answer it as cancelled so the agent moves on.
+        log.fail('omp-ui', err, { scope, requestId: request.id, method: request.method });
+        activeRuns.respondToUi(scope, request.id, { cancelled: true });
+        activeRuns.dropUiRequest(scope, request.id);
+      }
+    },
+    async onUiCancel(targetId) {
+      const entry = cards.get(targetId);
+      if (!entry) return;
+      cards.delete(targetId);
+      try {
+        await updateManagedCard(channel, entry.messageId, renderOmpUiResultCard(entry.title, 'cancelled'));
+      } catch (err) {
+        log.fail('omp-ui', err, { scope, requestId: targetId, step: 'cancel-update' });
+      } finally {
+        forgetManagedCard(entry.messageId);
+      }
+    },
+  };
 }
 
 export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -74,6 +156,7 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
     controls,
     scope,
     mode,
+    claim,
   } = deps;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
@@ -89,6 +172,23 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
   const attachments = await media.resolve(chatId, resourceItems);
   if (attachments.length > 0) {
     log.info('media', 'resolved', { count: attachments.length });
+  }
+  // Resources that never made it to disk (expired file_key, 403, disk full).
+  // Their `![name](file_key)` marker must NOT be stripped from the user's text
+  // and the agent must be told they exist, or a dropped attachment looks
+  // exactly like the user never sent one. Stickers are skipped on purpose —
+  // reporting those as failures would be noise.
+  const resolvedKeys = new Set(attachments.map((a) => a.fileKey).filter(Boolean));
+  const unresolvedFileKeys = [
+    ...new Set(
+      resourceItems
+        .filter((item) => item.resource.type !== 'sticker')
+        .map((item) => item.resource.fileKey)
+        .filter((key) => !resolvedKeys.has(key)),
+    ),
+  ];
+  if (unresolvedFileKeys.length > 0) {
+    log.warn('media', 'unresolved', { count: unresolvedFileKeys.length });
   }
   // Voice messages: transcribe to text so the agent can read the content.
   await attachTranscripts(channel, attachments);
@@ -116,7 +216,7 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
     log.info('quote', 'fetched', { count: quotes.length });
   }
 
-  const prompt = buildPrompt(batch, attachments, quotes);
+  const prompt = buildPrompt(batch, attachments, quotes, unresolvedFileKeys);
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
   const cwd = await resolveRunCwd(workspaces, scope);
@@ -125,9 +225,12 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
     log.info('session', 'resume', { sessionId: resumeFrom, cwd });
   } else {
     const stale = sessions.getRaw(scope);
-    if (stale && stale.cwd !== cwd) {
+    // Only a real session can be stale. An entry with no cwd (created by
+    // /timeout or /rename before the first run) must survive: `undefined !== cwd`
+    // used to match here and wipe the user's override/title on the next message.
+    if (stale?.sessionId !== undefined && stale.cwd !== cwd) {
       log.info('session', 'stale-cleared', { staleCwd: stale.cwd, newCwd: cwd });
-      sessions.clear(scope);
+      sessions.clearSessionId(scope);
     } else {
       log.info('session', 'fresh', { cwd });
     }
@@ -140,6 +243,9 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
     replyToMessageId: lastMsg.messageId,
     cwd,
     activeRuns,
+    // The tools accept an explicit chatId from the agent; without this the
+    // model can write into (and read) chats the operator excluded.
+    isChatAllowed: (target) => isChatAllowed(controls.cfg, target),
   });
 
   const runModel = getOmpModel(controls.cfg);
@@ -157,7 +263,15 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
     hostTools: feishuHost.tools,
     hostUriSchemes: feishuHost.uriSchemes,
   });
-  const handle = activeRuns.register(scope, run);
+  const handle = activeRuns.register(scope, run, claim);
+  if (!handle) {
+    // Defensive: the slot was taken between claim and register. Never clobber
+    // the live handle — kill this child instead of running two agents against
+    // one session jsonl. The caller releases the claim.
+    log.warn('runs', 'register-failed', { scope, batchSize: batch.length });
+    await run.stop().catch(() => {});
+    return;
+  }
 
   // Resolve idle-timeout for this run: scope override (on SessionEntry) wins
   // over global default (preferences). 0 / undefined = no watchdog.
@@ -187,50 +301,15 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
     ...(mode === 'topic' && threadId ? { replyInThread: true } : {}),
   };
 
-  const uiCards = new Map<string, { messageId: string; title: string }>();
-  const uiHooks: AgentStreamHooks = {
-    async onUiRequest(request) {
-      try {
-        const existing = uiCards.get(request.id);
-        if (existing) {
-          await updateManagedCard(channel, existing.messageId, renderOmpUiRequestCard(request, scope));
-          existing.title = request.title;
-          return;
-        }
-        const sent = await sendManagedCard(channel, chatId, renderOmpUiRequestCard(request, scope), lastMsg.messageId);
-        uiCards.set(request.id, { messageId: sent.messageId, title: request.title });
-        // Auto-cancel on timeout: while OMP waits for UI input the idle
-        // watchdog is paused, so an unanswered prompt would hang the run
-        // forever. The timer is cancelled in ActiveRuns.respondToUi when the
-        // user answers first.
-        if ('timeout' in request && request.timeout !== undefined && request.timeout > 0) {
-          activeRuns.armUiTimeout(scope, request.id, request.timeout, () => {
-            activeRuns.respondToUi(scope, request.id, { cancelled: true, timedOut: true });
-            updateManagedCard(channel, sent.messageId, renderOmpUiResultCard(request.title, 'timed_out'))
-              .catch(() => {
-                /* card update is best-effort */
-              })
-              .finally(() => forgetManagedCard(sent.messageId));
-            uiCards.delete(request.id);
-          });
-        }
-      } catch (err) {
-        log.fail('omp-ui', err, { scope, requestId: request.id, method: request.method });
-      }
-    },
-    async onUiCancel(targetId) {
-      const entry = uiCards.get(targetId);
-      if (!entry) return;
-      uiCards.delete(targetId);
-      try {
-        await updateManagedCard(channel, entry.messageId, renderOmpUiResultCard(entry.title, 'cancelled'));
-      } catch (err) {
-        log.fail('omp-ui', err, { scope, requestId: targetId, step: 'cancel-update' });
-      } finally {
-        forgetManagedCard(entry.messageId);
-      }
-    },
-  };
+  const uiCards = new Map<string, UiCardEntry>();
+  const uiHooks = createUiHooks({
+    channel,
+    chatId,
+    scope,
+    replyToMessageId: lastMsg.messageId,
+    activeRuns,
+    cards: uiCards,
+  });
 
   try {
     if (replyMode === 'card') {
@@ -293,8 +372,23 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
   // the same lookup error. Drop the dead id and replay the batch once.
   if (resumeFrom && !retriedStaleSession && run.staleSession) {
     log.warn('session', 'stale-cleared', { sessionId: resumeFrom, cwd });
-    sessions.clear(scope);
-    await runBatchOnce(deps, true);
+    // Drop only the dead id: title and idle-timeout override are user
+    // preferences that survive a session rollover (see SessionStore.set).
+    sessions.clearSessionId(scope);
+    // The first attempt's claim was consumed by its register, and a /compact
+    // deferred during the run may have taken the slot meanwhile. Reserve again
+    // — if the slot is taken, the replay must not start a second agent on the
+    // session the compactor is already working on.
+    const retryClaim = activeRuns.claim(scope);
+    if (!retryClaim) {
+      log.warn('session', 'retry-skipped-busy', { scope });
+      return;
+    }
+    try {
+      await runBatchOnce({ ...deps, claim: retryClaim }, true);
+    } finally {
+      activeRuns.releaseClaim(retryClaim);
+    }
   }
 }
 
@@ -558,11 +652,18 @@ async function streamCardPages(
     // plain text so the user's turn is never silently swallowed. Rethrow so
     // runAgentBatch still logs the failure.
     const replyTo = sendOpts.replyTo;
-    await sendManagedCard(channel, chatId, fallbackCard(session.state, filter), replyTo).catch(() =>
-      channel.send(chatId, { markdown: fallbackContent(session.state, filter) }, sendOpts).catch(() =>
-        log.fail('card', new Error('fallback send failed')),
-      ),
+    const sent = await sendManagedCard(channel, chatId, fallbackCard(session.state, filter), replyTo).catch(
+      () => undefined,
     );
+    if (sent) {
+      // Nothing updates this card afterwards. Leaving it registered would
+      // accumulate entries until the 200-card cap starts evicting live forms.
+      forgetManagedCard(sent.messageId);
+    } else {
+      await channel.send(chatId, { markdown: fallbackContent(session.state, filter) }, sendOpts).catch(() =>
+        log.fail('card', new Error('fallback send failed')),
+      );
+    }
     throw err;
   } finally {
     // Single reap point: normal end, interrupt, and mid-stream failure all
@@ -667,36 +768,43 @@ export function coalesceLatest<T>(write: (value: T) => Promise<void>): {
   };
 }
 
-function runContentChars(state: RunState): number {
+/** Rough serialized size (UTF-8 bytes) of the content a card will carry. */
+function runContentBytes(state: RunState): number {
   let n = 0;
+  const add = (s: string): void => {
+    n += Buffer.byteLength(s, 'utf8');
+  };
   for (const b of state.blocks) {
     if (b.kind === 'text') {
-      n += b.content.length;
+      add(b.content);
     } else {
-      n += (b.tool.output?.length ?? 0) + 400; // per-tool collapsible_panel chrome (header/icon/border JSON)
+      add(b.tool.output ?? '');
+      n += 400; // per-tool collapsible_panel chrome (header/icon/border JSON)
       const input = b.tool.input;
-      if (typeof input === 'string') n += input.length;
+      if (typeof input === 'string') add(input);
       else if (input && typeof input === 'object') {
         for (const v of Object.values(input as Record<string, unknown>)) {
-          if (typeof v === 'string') n += v.length;
+          if (typeof v === 'string') add(v);
         }
       }
     }
   }
-  n += Math.min(state.reasoning.content.length, 1500);
-  if (state.ui.editorText) n += Math.min(state.ui.editorText.length, 1200);
+  add(state.reasoning.content.slice(0, 1500));
+  if (state.ui.editorText) add(state.ui.editorText.slice(0, 1200));
   for (const w of Object.values(state.ui.widgets)) {
-    n += (w.lines ?? []).reduce((sum, line) => sum + line.length, 0);
+    for (const line of w.lines ?? []) add(line);
   }
   return n;
 }
 
 export function cardExceedsBudget(card: RunCard, state: RunState): boolean {
   if (card.body.elements.length > CARD_ELEMENT_BUDGET) return true;
-  // Envelope covers JSON keys, tool-panel chrome, buttons. Skip stringify
-  // until content is actually near the Feishu 64KB cap.
-  if (runContentChars(state) + 8 * 1024 < CARD_SIZE_BUDGET) return false;
-  return JSON.stringify(card).length > CARD_SIZE_BUDGET;
+  // Feishu caps the serialized card in BYTES, not JS string length. CJK is
+  // ~3 bytes per char, so a char-based budget undercounted a Chinese answer by
+  // 3x — 20k chars is already ~59KB of JSON, at the cap, yet passed as "fine".
+  // Skip the stringify until content is actually near the cap.
+  if (runContentBytes(state) + 8 * 1024 < CARD_SIZE_BUDGET) return false;
+  return Buffer.byteLength(JSON.stringify(card), 'utf8') > CARD_SIZE_BUDGET;
 }
 
 /** Run one card page; returns true if it overflowed (another page follows). */
@@ -785,75 +893,113 @@ export interface ScheduledRunDeps {
   workspaces: WorkspaceStore;
   activeRuns: ActiveRuns;
   controls: Controls;
+  pool: ProcessPool;
   chatId: string;
   prompt: string;
-
+  /** Slot reserved by the scheduler handler before it fired this run. */
+  claim: RunClaim;
 }
 
 export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> {
-  const { channel, agent, sessions, workspaces, activeRuns, controls, chatId, prompt } = deps;
+  const { channel, agent, sessions, workspaces, activeRuns, controls, pool, chatId, prompt, claim } = deps;
   const scope = chatId;
-  const cwd = await resolveRunCwd(workspaces, scope);
-  const replyMode = getMessageReplyMode(controls.cfg);
-  const runModel = getOmpModel(controls.cfg);
-  if (runModel) await recordModelUse(runModel).catch(() => {});
-
-  const feishuHost = createFeishuHostIntegration(channel, {
-    scope,
+  const uiCards = new Map<string, UiCardEntry>();
+  const uiHooks = createUiHooks({
+    channel,
     chatId,
+    scope,
     replyToMessageId: undefined,
-    cwd,
     activeRuns,
+    cards: uiCards,
   });
-
-  const run = agent.run({
-    prompt,
-    sessionId: sessions.resumeFor(scope, cwd),
-    cwd,
-    model: runModel,
-    thinking: getOmpThinking(controls.cfg),
-    stopGraceMs: getAgentStopGraceMs(controls.cfg),
-    hostTools: feishuHost.tools,
-    hostUriSchemes: feishuHost.uriSchemes,
-  });
-  const handle = activeRuns.register(scope, run);
-
+  // Same across-the-bridge cap as an interactive run — a scheduled prompt must
+  // not push the process count past maxConcurrentRuns. Acquired INSIDE the try
+  // so a failure here still releases the caller's claim (a leaked claim leaves
+  // the chat permanently busy).
+  let release: (() => void) | undefined;
   try {
-    if (replyMode === 'card') {
-      await streamCardPages(
-        channel,
-        chatId,
-        {},
-        handle,
-        sessions,
-        scope,
-        cwd,
-        getRunIdleTimeoutMs(controls.cfg),
-        undefined,
-        (state) => filterToolBlocks(state, controls),
-      );
-    } else {
-      let finalState: RunState = initialState;
-      await processAgentStream(handle, sessions, scope, cwd, getRunIdleTimeoutMs(controls.cfg), async (state) => {
-        finalState = state;
-      });
-      const body = renderText(filterToolBlocks(finalState, controls));
-      if (body.trim()) {
-        await channel.send(chatId, { markdown: body }, {});
-      }
+    release = await pool.acquire();
+    const cwd = await resolveRunCwd(workspaces, scope);
+    const replyMode = getMessageReplyMode(controls.cfg);
+    const runModel = getOmpModel(controls.cfg);
+    if (runModel) await recordModelUse(runModel).catch(() => {});
+
+    const feishuHost = createFeishuHostIntegration(channel, {
+      scope,
+      chatId,
+      replyToMessageId: undefined,
+      cwd,
+      activeRuns,
+      isChatAllowed: (target) => isChatAllowed(controls.cfg, target),
+    });
+
+    const run = agent.run({
+      prompt,
+      sessionId: sessions.resumeFor(scope, cwd),
+      cwd,
+      model: runModel,
+      thinking: getOmpThinking(controls.cfg),
+      stopGraceMs: getAgentStopGraceMs(controls.cfg),
+      hostTools: feishuHost.tools,
+      hostUriSchemes: feishuHost.uriSchemes,
+    });
+    const handle = activeRuns.register(scope, run, claim);
+    if (!handle) {
+      log.warn('runs', 'register-failed', { scope, via: 'scheduler' });
+      await run.stop().catch(() => {});
+      return;
     }
-  } catch (err) {
-    log.fail('scheduler', err, { chatId });
-    // Same orphaned-run hazard as runAgentBatch's catch: detached OMP child
-    // with an open stdin hangs forever if the stream dies mid-run.
-    await run.stop().catch(() => {});
+
     try {
-      await channel.send(chatId, { markdown: `⚠️ 定时任务执行失败：${err instanceof Error ? err.message : String(err)}` }, {});
-    } catch {
-      /* delivery failure is non-fatal */
+      if (replyMode === 'card') {
+        await streamCardPages(
+          channel,
+          chatId,
+          {},
+          handle,
+          sessions,
+          scope,
+          cwd,
+          getRunIdleTimeoutMs(controls.cfg),
+          uiHooks,
+          (state) => filterToolBlocks(state, controls),
+        );
+      } else {
+        let finalState: RunState = initialState;
+        await processAgentStream(
+          handle,
+          sessions,
+          scope,
+          cwd,
+          getRunIdleTimeoutMs(controls.cfg),
+          async (state) => {
+            finalState = state;
+          },
+          uiHooks,
+        );
+        const body = renderText(filterToolBlocks(finalState, controls));
+        if (body.trim()) {
+          await channel.send(chatId, { markdown: body }, {});
+        }
+      }
+    } catch (err) {
+      log.fail('scheduler', err, { chatId });
+      // Same orphaned-run hazard as runAgentBatch's catch: detached OMP child
+      // with an open stdin hangs forever if the stream dies mid-run.
+      await run.stop().catch(() => {});
+      try {
+        await channel.send(chatId, { markdown: `⚠️ 定时任务执行失败：${err instanceof Error ? err.message : String(err)}` }, {});
+      } catch {
+        /* delivery failure is non-fatal */
+      }
+    } finally {
+      activeRuns.unregister(scope, run);
     }
   } finally {
-    activeRuns.unregister(scope, run);
+    for (const { messageId } of uiCards.values()) forgetManagedCard(messageId);
+    uiCards.clear();
+    release?.();
+    activeRuns.releaseClaim(claim);
   }
 }
 

@@ -79,6 +79,6 @@ async function handleEvery(args: string, ctx: CommandContext): Promise<void> {
   });
   await reply(
     ctx,
-    `✅ 已添加定时任务 \`${task.id}\`\n每 ${formatInterval(intervalMs)} 执行一次：${prompt}\n\n用 \`/every list\` 查看，\`/every rm ${task.id}\` 删除。`,
+    `✅ 已添加定时任务 \`${task.id}\`\n每 ${formatInterval(task.intervalMs)} 执行一次：${prompt}\n\n用 \`/every list\` 查看，\`/every rm ${task.id}\` 删除。`,
   );
 }

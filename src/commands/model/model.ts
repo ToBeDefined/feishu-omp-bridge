@@ -1,4 +1,5 @@
 import { getOmpModel, getOmpThinking, isOmpThinkingLevel } from '../../config/schema';
+import type { AppPreferences } from '../../config/schema';
 import { saveConfig } from '../../config/store';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import {
@@ -116,6 +117,35 @@ function applyThinkingFromForm(
   if (isOmpThinkingLevel(level)) prefs.ompThinking = level;
 }
 
+/**
+ * Persist a preferences change, surfacing a save failure to the user.
+ * An unguarded `saveConfig` throws into runHandler's catch, which only logs:
+ * the user gets no reply and the card keeps its live buttons, so the change
+ * looks ignored. Returns false when the write failed (live config untouched).
+ */
+async function persistModelPreferences(
+  ctx: CommandContext,
+  nextPreferences: AppPreferences,
+): Promise<boolean> {
+  try {
+    await saveConfig({ ...ctx.controls.cfg, preferences: nextPreferences }, ctx.controls.configPath);
+  } catch (err) {
+    log.fail('command', err, { step: 'model.save' });
+    await reply(ctx, '❌ 保存模型设置失败，配置未改动，请稍后重试。');
+    if (ctx.fromCardAction) {
+      const formMsgId = ctx.msg.messageId;
+      void (async () => {
+        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+        await updateManagedCard(ctx.channel, formMsgId, modelCancelledCard()).catch(() => {});
+        forgetManagedCard(formMsgId);
+      })();
+    }
+    return false;
+  }
+  ctx.controls.cfg.preferences = nextPreferences;
+  return true;
+}
+
 async function submitModel(ctx: CommandContext, current: string | undefined): Promise<void> {
   const selector = String(ctx.formValue?.model_selector ?? '').trim();
   if (!selector) {
@@ -125,8 +155,7 @@ async function submitModel(ctx: CommandContext, current: string | undefined): Pr
   const cfg = ctx.controls.cfg;
   const nextPreferences = { ...(cfg.preferences ?? {}), ompModel: selector };
   applyThinkingFromForm(nextPreferences, ctx.formValue?.thinking_level);
-  await saveConfig({ ...cfg, preferences: nextPreferences }, ctx.controls.configPath);
-  cfg.preferences = nextPreferences;
+  if (!(await persistModelPreferences(ctx, nextPreferences))) return;
   const thinking = getOmpThinking(cfg);
   log.info('command', 'model-set', {
     scope: ctx.scope,
@@ -168,8 +197,7 @@ async function resetModel(ctx: CommandContext, current: string | undefined): Pro
     return;
   }
   const nextPreferences = { ...(cfg.preferences ?? {}), ompModel: undefined };
-  await saveConfig({ ...cfg, preferences: nextPreferences }, ctx.controls.configPath);
-  cfg.preferences = nextPreferences;
+  if (!(await persistModelPreferences(ctx, nextPreferences))) return;
   log.info('command', 'model-reset', { scope: ctx.scope });
   await reply(ctx, '✅ 已清除模型设置,回退 OMP 默认。下一条消息生效。');
 }
@@ -181,8 +209,7 @@ async function setModel(model: string, ctx: CommandContext, current: string | un
   }
   const cfg = ctx.controls.cfg;
   const nextPreferences = { ...(cfg.preferences ?? {}), ompModel: model };
-  await saveConfig({ ...cfg, preferences: nextPreferences }, ctx.controls.configPath);
-  cfg.preferences = nextPreferences;
+  if (!(await persistModelPreferences(ctx, nextPreferences))) return;
   log.info('command', 'model-set', { scope: ctx.scope, model, via: ctx.fromCardAction ? 'card' : 'text' });
   if (ctx.fromCardAction) {
     const formMsgId = ctx.msg.messageId;

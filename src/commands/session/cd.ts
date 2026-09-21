@@ -37,6 +37,9 @@ async function handleCd(args: string, ctx: CommandContext): Promise<void> {
   }
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, absolute);
+  // /cd leaves the workspace behind: a stale /ws undo target would roll the
+  // user back to a directory they already left (and wipe the new session).
+  ctx.workspaces.clearUndo(ctx.scope);
   ctx.sessions.clear(ctx.scope);
   await reply(ctx, `✅ 已切换 cwd 到 \`${absolute}\`\n（session 已重置）`);
 }

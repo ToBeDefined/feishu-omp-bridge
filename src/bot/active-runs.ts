@@ -1,4 +1,5 @@
 import type { AgentRun, AgentUiResponse } from '../agent/types';
+import { log } from '../core/logger';
 
 export interface RunHandle {
   run: AgentRun;
@@ -6,22 +7,71 @@ export interface RunHandle {
   pendingUiRequests: Set<string>;
   onUiSettled?: () => void;
   /** Per-request timeout timers, keyed by UI request id. */
-  uiTimers: Map<string, ReturnType<typeof setTimeout>>;
+  uiTimers: Map<string, NodeJS.Timeout>;
   /** Compact requested mid-run; fired once the run unregisters. */
   deferredCompact?: () => void;
 }
 
+/**
+ * A reserved run slot. `claim()` takes it before the first await so a caller
+ * that still has slow work ahead of it (pool slot, media download, quote
+ * fetch) is not mistaken for an idle scope by the scheduler's busy check or
+ * by the pending queue. `register(scope, run, claim)` consumes it.
+ */
+export interface RunClaim {
+  readonly scope: string;
+  readonly token: symbol;
+}
+
 export class ActiveRuns {
   private readonly handles = new Map<string, RunHandle>();
+  /** Scopes reserved but not yet carrying a run. */
+  private readonly claims = new Map<string, symbol>();
 
-  register(chatId: string, run: AgentRun): RunHandle {
+  /**
+   * Reserve `scope` without a run. Returns undefined when the scope already
+   * has a live run or a pending claim — callers must requeue/skip instead of
+   * starting a second agent against the same session jsonl.
+   */
+  claim(scope: string): RunClaim | undefined {
+    if (this.handles.has(scope) || this.claims.has(scope)) return undefined;
+    const token = Symbol(scope);
+    this.claims.set(scope, token);
+    return { scope, token };
+  }
+
+  /** Drop a claim that never became a run (error path). No-op once consumed. */
+  releaseClaim(claim: RunClaim): void {
+    if (this.claims.get(claim.scope) === claim.token) this.claims.delete(claim.scope);
+  }
+
+  /**
+   * Install a run for `scope`. Returns undefined — never clobbering — when the
+   * scope is already occupied: either a live handle exists, or the scope is
+   * claimed by someone else (a claim is only consumable by its own token).
+   */
+  register(scope: string, run: AgentRun, claim?: RunClaim): RunHandle | undefined {
+    if (this.handles.has(scope)) {
+      log.warn('runs', 'register-busy', { scope });
+      return undefined;
+    }
+    if (claim) {
+      if (this.claims.get(scope) !== claim.token) {
+        log.warn('runs', 'register-claim-lost', { scope });
+        return undefined;
+      }
+      this.claims.delete(scope);
+    } else if (this.claims.has(scope)) {
+      log.warn('runs', 'register-claimed', { scope });
+      return undefined;
+    }
     const handle: RunHandle = {
       run,
       interrupted: false,
       pendingUiRequests: new Set(),
       uiTimers: new Map(),
     };
-    this.handles.set(chatId, handle);
+    this.handles.set(scope, handle);
     return handle;
   }
 
@@ -40,7 +90,7 @@ export class ActiveRuns {
   }
 
   has(chatId: string): boolean {
-    return this.handles.has(chatId);
+    return this.handles.has(chatId) || this.claims.has(chatId);
   }
 
   /**
@@ -52,12 +102,42 @@ export class ActiveRuns {
    * agents against the same OMP session.
    */
   hasAnyForChat(chatId: string): boolean {
-    if (this.handles.has(chatId)) return true;
+    if (this.has(chatId)) return true;
     const prefix = `${chatId}:`;
     for (const key of this.handles.keys()) {
       if (key.startsWith(prefix)) return true;
     }
+    for (const key of this.claims.keys()) {
+      if (key.startsWith(prefix)) return true;
+    }
     return false;
+  }
+
+  /**
+   * Claim the bare chat id unless any scope of that chat is already busy —
+   * the bare id or any topic scope. The scheduler stores tasks by bare chat
+   * id, so its guard must cover topic runs too; otherwise a scheduled prompt
+   * fires while the user's run in a topic of the same chat is still going,
+   * running two agents against the same OMP session.
+   */
+  claimChat(chatId: string): RunClaim | undefined {
+    if (this.hasAnyForChat(chatId)) return undefined;
+    return this.claim(chatId);
+  }
+
+  /**
+   * Wait until `scope` is free (no handle, no claim). Used by commands that
+   * must replace the current run (e.g. /doctor) — registering over a live
+   * handle would orphan its timers and its deferred compact.
+   */
+  async waitForFree(chatId: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (!this.has(chatId)) return true;
+      if (Date.now() >= deadline) return false;
+      // Promise.withResolvers needs Node 22+; this package supports Node >= 20.
+      await new Promise((r) => setTimeout(r, 100));
+    }
   }
 
   /**
@@ -82,17 +162,36 @@ export class ActiveRuns {
 
   respondToUi(chatId: string, requestId: string, response: AgentUiResponse): boolean {
     const h = this.handles.get(chatId);
+    // A response is only valid while its request is still outstanding: a
+    // timeout that already answered, or a double click, must not write a
+    // second extension_ui_response frame for the same id.
+    if (!h || !h.pendingUiRequests.has(requestId)) return false;
     // A user response wins over the timeout — cancel the pending timer so a
     // late timeout can't fire a second response for the same request.
-    const timer = h?.uiTimers.get(requestId);
+    const timer = h.uiTimers.get(requestId);
     if (timer) {
       clearTimeout(timer);
-      h?.uiTimers.delete(requestId);
+      h.uiTimers.delete(requestId);
     }
-    const ok = h?.run.respondToUi?.(requestId, response) === true;
-    if (ok) h?.pendingUiRequests.delete(requestId);
-    if (ok) h?.onUiSettled?.();
+    const ok = h.run.respondToUi?.(requestId, response) === true;
+    if (ok) {
+      h.pendingUiRequests.delete(requestId);
+      h.onUiSettled?.();
+    }
     return ok;
+  }
+
+  /** Forget an outstanding UI request that can no longer be answered. */
+  dropUiRequest(chatId: string, requestId: string): void {
+    const h = this.handles.get(chatId);
+    if (!h) return;
+    const timer = h.uiTimers.get(requestId);
+    if (timer) {
+      clearTimeout(timer);
+      h.uiTimers.delete(requestId);
+    }
+    h.pendingUiRequests.delete(requestId);
+    h.onUiSettled?.();
   }
 
   /**
@@ -133,6 +232,7 @@ export class ActiveRuns {
   async stopAll(): Promise<void> {
     const all = [...this.handles.values()];
     this.handles.clear();
+    this.claims.clear();
     for (const h of all) {
       h.interrupted = true;
       for (const timer of h.uiTimers.values()) clearTimeout(timer);

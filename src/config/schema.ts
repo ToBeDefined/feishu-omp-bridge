@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { paths } from './paths';
 
 export type TenantBrand = 'feishu' | 'lark';
@@ -247,10 +248,20 @@ export function getOmpThinking(cfg: AppConfig): string | undefined {
   return raw.trim();
 }
 
+/** Expand a leading `~` / `~/` to the user's home directory. Local copy —
+ * the commands layer has its own, but config must not depend on it. */
+function expandTilde(p: string): string {
+  if (p === '~') return homedir();
+  if (p.startsWith('~/')) return `${homedir()}${p.slice(1)}`;
+  return p;
+}
+
 export function getOmpSessionDir(cfg: AppConfig): string {
   const raw = cfg.preferences?.ompSessionDir;
   if (typeof raw !== 'string' || raw.trim() === '') return paths.ompSessionsDir;
-  return raw.trim();
+  // A literal `~` in argv would make omp create a directory named "~"
+  // (the README's own sample value is `~/.feishu-omp-bridge/omp-sessions`).
+  return expandTilde(raw.trim());
 }
 
 export function getOmpTools(cfg: AppConfig): string | undefined {

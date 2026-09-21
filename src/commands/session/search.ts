@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { paths } from '../../config/paths';
+import { getOmpSessionDir } from '../../config/schema';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
 import { FORM_SETTLE_MS, codeSpan, recallMessage, reply } from '../shared';
@@ -54,7 +54,7 @@ export async function searchSession(
   const sessionTitles = ctx.sessions?.titlesBySessionId?.() ?? {};
   let names: string[] = [];
   try {
-    names = (await readdir(paths.ompSessionsDir)).filter((n) => n.endsWith('.jsonl'));
+    names = (await readdir(getOmpSessionDir(ctx.controls.cfg))).filter((n) => n.endsWith('.jsonl'));
   } catch {
     return [];
   }
@@ -99,7 +99,7 @@ async function scanSessionHits(
 ): Promise<Array<SearchContext & { groupKey: string }>> {
   let text: string;
   try {
-    text = await readFile(join(paths.ompSessionsDir, name), 'utf8');
+    text = await readFile(join(getOmpSessionDir(ctx.controls.cfg), name), 'utf8');
   } catch {
     return [];
   }

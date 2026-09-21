@@ -1,6 +1,6 @@
 import type { Block, FooterStatus, RunState, SubagentEntry, ToolEntry, UiState } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
-import { escapeMd } from './templates';
+import { codeFence, escapeMd } from './templates';
 
 /** Max chars per reasoning body — reasoning is auxiliary, truncation is fine. */
 const REASONING_MAX = 1500;
@@ -73,7 +73,7 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
     const mins = state.idleTimeoutMinutes ?? 0;
     elements.push(noteMd(`_⏱ ${mins} 分钟无响应,已自动终止_`));
   } else if (state.terminal === 'error' && state.errorMsg) {
-    elements.push(noteMd(`⚠️ agent 失败：${state.errorMsg}`));
+    elements.push(noteMd(`⚠️ agent 失败：${escapeMd(state.errorMsg)}`));
   } else if (state.terminal === 'done' && elements.length === 0) {
     elements.push(noteMd('_（未返回内容）_'));
   }
@@ -216,15 +216,18 @@ function footerStatus(status: Exclude<FooterStatus, null>): object {
 
 function uiContextPanel(ui: UiState): object | undefined {
   const lines: string[] = [];
-  if (ui.title) lines.push(`**标题**：${ui.title}`);
+  if (ui.title) lines.push(`**标题**：${escapeMd(ui.title)}`);
   for (const [key, text] of Object.entries(ui.statuses)) {
-    lines.push(`**${key}**：${text}`);
+    lines.push(`**${escapeMd(key)}**：${escapeMd(text)}`);
   }
   for (const [key, widget] of Object.entries(ui.widgets)) {
-    const placement = widget.placement ? `_${widget.placement}_` : '';
-    lines.push(`**${key}** ${placement}\n${(widget.lines ?? []).join('\n')}`.trim());
+    const placement = widget.placement ? `_${escapeMd(widget.placement)}_` : '';
+    const widgetLines = (widget.lines ?? []).map(escapeMd).join('\n');
+    lines.push(`**${escapeMd(key)}** ${placement}\n${widgetLines}`.trim());
   }
-  if (ui.editorText) lines.push(`**编辑器内容**\n\`\`\`\n${truncate(ui.editorText, 1200)}\n\`\`\``);
+  if (ui.editorText) {
+    lines.push(`**编辑器内容**\n${codeFence(truncate(ui.editorText, 1200))}`);
+  }
   if (lines.length === 0) return undefined;
   return collapsiblePanel({
     title: '🧩 **OMP 状态 / Widget**',

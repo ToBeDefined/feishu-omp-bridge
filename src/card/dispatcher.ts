@@ -250,10 +250,22 @@ async function respondToOmpUi(
   formValue: Record<string, unknown> | undefined,
   scope: string,
 ): Promise<void> {
+  // One click per card, same as the agent-callback path: a double-tap (or an
+  // un-updated card) must not deliver two UI responses to OMP.
+  if (!rememberForwardedClick(deps.evt.messageId)) {
+    log.info('cardAction', 'duplicate-click', { messageId: deps.evt.messageId, path: 'omp-ui' });
+    return;
+  }
+
   const requestId = ompUiRequestId(payload);
   const title = ompUiTitle(payload);
   const response = responseFromOmpUiAction(payload, formValue);
-  const targetScope = typeof payload.scope === 'string' ? payload.scope : scope;
+  // Only trust a payload-supplied scope when it provably belongs to the
+  // clicked chat — the plain chatId, or a topic scope `chatId:threadId`.
+  // A forged value could otherwise answer another chat's pending UI request.
+  const chatId = deps.evt.chatId;
+  const claimed = typeof payload.scope === 'string' ? payload.scope : '';
+  const targetScope = claimed === chatId || claimed.startsWith(`${chatId}:`) ? claimed : scope;
   const submitted = Boolean(requestId && response && deps.activeRuns.respondToUi(targetScope, requestId, response));
   const status = submitted
     ? response && 'cancelled' in response

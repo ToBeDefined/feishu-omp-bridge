@@ -36,6 +36,14 @@ export interface UnitInputs {
  */
 export function buildUnit(inputs: UnitInputs): string {
   const escape = (s: string): string => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  // StandardOutput=/StandardError= are NOT parsed with quote support:
+  // conf-parser passes the value through strstrip() only, and
+  // config_parse_exec_output() takes the raw remainder after the `append:`
+  // prefix. Quoting the path would therefore make the quotes part of it, and
+  // spaces need no escaping at all (the value is never split on whitespace).
+  // The one hazard is specifier expansion — unit_path_printf() runs over this
+  // value, so a literal `%` must be doubled.
+  const escapeLogPath = (s: string): string => s.replace(/\\/g, '\\\\').replace(/%/g, '%%');
   return `[Unit]
 Description=Lark Channel Bridge bot
 After=network-online.target
@@ -46,8 +54,8 @@ Type=simple
 ExecStart="${escape(inputs.nodePath)}" "${escape(inputs.bridgeEntryPath)}" run
 Restart=always
 RestartSec=5
-StandardOutput=append:${daemonStdoutPath()}
-StandardError=append:${daemonStderrPath()}
+StandardOutput=append:${escapeLogPath(daemonStdoutPath())}
+StandardError=append:${escapeLogPath(daemonStderrPath())}
 Environment="PATH=${escape(inputs.envPath)}"
 
 [Install]

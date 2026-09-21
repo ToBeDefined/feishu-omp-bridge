@@ -88,6 +88,15 @@ OMP RPC 的 extension UI request 会被映射为飞书卡片，并把用户响�
 
 这使 OMP 可以通过结构化 host callback 使用飞书**消息面**资源（消息收发、历史、卡片、文件），而不是让模型在 shell 里拼 `lark-cli` 命令。桥接层负责权限、当前上下文、消息解析和结果格式化。
 
+**访问边界**（防止 prompt injection 把 host tools 变成外泄通道）：
+
+- 显式 `chatId` 只在 `preferences.access.allowedChats` 允许时生效（未配置 =
+  不限制）；越界返回明确错误，不会静默发送。
+- `feishu_send_file` / `feishu_view_image` 的 `path` 只允许 session cwd、
+  媒体缓存目录、临时目录（含 symlink 解析后的真实路径），其余一律拒绝 ——
+  `~/.feishu-omp-bridge/`（config.json / keystore）与任意 `$HOME` 路径都
+  发不出去。需要发送别处的文件时，让 agent 先复制到 cwd。
+
 > **能力边界**：bridge 只封装 IM 消息面。飞书生态面（文档 / 表格 / 多维表格 /
 > 日历 / 会议 / 审批等）**不重复实现** —— agent 需要时直接调用 `lark-cli`
 > （或对应的 lark-* skill），bridge 不做第二份封装。
@@ -254,7 +263,7 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 | `ompBinary` | `omp` | OMP 可执行文件名或绝对路径。 |
 | `ompModel` | 未设置 | 传给 `omp --model`；留空由 OMP 自身配置决定。 |
 | `ompThinking` | 未设置 | 传给 `omp --thinking`。 |
-| `ompSessionDir` | `~/.feishu-omp-bridge/omp-sessions` | bridge 专用 OMP session 目录。 |
+| `ompSessionDir` | `~/.feishu-omp-bridge/omp-sessions` | bridge 专用 OMP session 目录（支持 `~` 展开）。运行与 `/resume`、`/ctx`、`/search`、`/rename` 等历史命令都读这里。 |
 | `ompTools` | 未设置 | 传给 `omp --tools` 的逗号分隔工具白名单；留空使用 OMP 默认工具集。 |
 | `messageReply` | `markdown` | `card`、`markdown` 或 `text`。推荐使用 `card` 以获得完整交互。 |
 | `showToolCalls` | `true` | 是否展示工具调用过程。 |
@@ -286,7 +295,7 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 - `allowedChats` 空或未设置：允许所有 chat。
 - `admins` 空或未设置：所有允许用户都可执行管理员命令。
 - `owner` 未设置：回退到 `admins[0]`；两者都未设置时，高危命令对所有人拒绝。
-- 管理员命令（`admins`）：`/account`、`/config`、`/exit`、`/reconnect`、`/doctor`、`/cd`、`/ws`。
+- 管理员命令（`admins`）：`/account`、`/config`、`/model`、`/thinking`、`/restart`、`/context`、`/resume`、`/session`、`/every`、`/search`、`/diff`、`/exit`、`/reconnect`、`/doctor`、`/cd`、`/ws`。
 - 归属者命令（`owner`，比 admins 更严）：`/release`、`/exec`、`/run` —— 只有 owner 能跑，协作者拿 admin 也无法执行 shell。
 
 ## 数据目录

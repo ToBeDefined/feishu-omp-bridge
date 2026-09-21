@@ -222,12 +222,15 @@ describe('/compact command', () => {
     const compactSession = vi.fn(async () => undefined);
     const ctx = makeCtx({ activeRuns, compactSession, sessionId: 's1' });
     const steal = { events: (async function* () {})(), stop: async () => {}, waitForExit: async () => true };
-    const origHas = activeRuns.has.bind(activeRuns);
-    let n = 0;
-    const spy = vi.spyOn(activeRuns, 'has').mockImplementation((id: string) => {
-      n += 1;
-      if (n === 3) activeRuns.register('oc_1', steal);
-      return origHas(id);
+    const origClaim = activeRuns.claim.bind(activeRuns);
+    let stolen = false;
+    const spy = vi.spyOn(activeRuns, 'claim').mockImplementation((id: string) => {
+      // A real run lands in the window between the idle check and the occupy.
+      if (!stolen) {
+        stolen = true;
+        activeRuns.register(id, steal);
+      }
+      return origClaim(id);
     });
 
     await compactHandlers['/compact']!('keep it', ctx);

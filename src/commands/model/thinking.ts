@@ -1,4 +1,5 @@
 import { getOmpThinking, isOmpThinkingLevel } from '../../config/schema';
+import type { AppPreferences } from '../../config/schema';
 import { saveConfig } from '../../config/store';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import {
@@ -49,6 +50,35 @@ async function showThinkingPicker(ctx: CommandContext, current: string | undefin
   await sendManagedCard(ctx.channel, ctx.msg.chatId, thinkingCard(current));
 }
 
+/**
+ * Persist a preferences change, surfacing a save failure to the user.
+ * An unguarded `saveConfig` throws into runHandler's catch, which only logs:
+ * the user gets no reply and the card keeps its live buttons, so the change
+ * looks ignored. Returns false when the write failed (live config untouched).
+ */
+async function persistThinkingPreferences(
+  ctx: CommandContext,
+  nextPreferences: AppPreferences,
+): Promise<boolean> {
+  try {
+    await saveConfig({ ...ctx.controls.cfg, preferences: nextPreferences }, ctx.controls.configPath);
+  } catch (err) {
+    log.fail('command', err, { step: 'thinking.save' });
+    await reply(ctx, '❌ 保存思考强度设置失败，配置未改动，请稍后重试。');
+    if (ctx.fromCardAction) {
+      const formMsgId = ctx.msg.messageId;
+      void (async () => {
+        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+        await updateManagedCard(ctx.channel, formMsgId, thinkingCancelledCard()).catch(() => {});
+        forgetManagedCard(formMsgId);
+      })();
+    }
+    return false;
+  }
+  ctx.controls.cfg.preferences = nextPreferences;
+  return true;
+}
+
 async function setThinking(level: string, ctx: CommandContext, current: string | undefined): Promise<void> {
   if (!level || !isOmpThinkingLevel(level)) {
     await reply(ctx, '❌ 合法值:`off|minimal|low|medium|high|xhigh|max|auto`');
@@ -56,8 +86,7 @@ async function setThinking(level: string, ctx: CommandContext, current: string |
   }
   const cfg = ctx.controls.cfg;
   const nextPreferences = { ...(cfg.preferences ?? {}), ompThinking: level };
-  await saveConfig({ ...cfg, preferences: nextPreferences }, ctx.controls.configPath);
-  cfg.preferences = nextPreferences;
+  if (!(await persistThinkingPreferences(ctx, nextPreferences))) return;
   log.info('command', 'thinking-set', {
     scope: ctx.scope,
     level,
@@ -100,8 +129,8 @@ async function resetThinking(ctx: CommandContext, current: string | undefined): 
     await reply(ctx, '本来就没设置过思考强度,一直跟随 OMP 默认。');
     return;
   }
-  cfg.preferences = { ...(cfg.preferences ?? {}), ompThinking: undefined };
-  await saveConfig(cfg, ctx.controls.configPath);
+  const nextPreferences = { ...(cfg.preferences ?? {}), ompThinking: undefined };
+  if (!(await persistThinkingPreferences(ctx, nextPreferences))) return;
   log.info('command', 'thinking-reset', { scope: ctx.scope });
   await reply(ctx, '✅ 已清除思考强度设置,回退 OMP 默认。下一条消息生效。');
 }

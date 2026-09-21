@@ -56,7 +56,9 @@ async function readStore(): Promise<StoreFile> {
 
 async function writeStore(store: StoreFile): Promise<void> {
   await mkdir(dirname(paths.secretsFile), { recursive: true });
-  const tmp = `${paths.secretsFile}.tmp-${process.pid}`;
+  // Unique per-call temp name: concurrent writers must not clobber each
+  // other's temp before its rename.
+  const tmp = `${paths.secretsFile}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
   await writeFile(tmp, `${JSON.stringify(store, null, 2)}\n`, 'utf8');
   await chmod(tmp, 0o600);
   await rename(tmp, paths.secretsFile);
@@ -76,7 +78,7 @@ async function loadOrCreateSalt(): Promise<Buffer> {
   }
   const salt = randomBytes(KEY_LEN);
   await mkdir(dirname(paths.keystoreSaltFile), { recursive: true });
-  const tmp = `${paths.keystoreSaltFile}.tmp-${process.pid}`;
+  const tmp = `${paths.keystoreSaltFile}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
   await writeFile(tmp, salt);
   await chmod(tmp, 0o600);
   await rename(tmp, paths.keystoreSaltFile);
@@ -124,22 +126,39 @@ export async function getSecret(id: string): Promise<string | undefined> {
   return decrypt(key, env);
 }
 
+/** Serialises keystore mutations so two concurrent read-modify-write
+ * callers can't both read the same baseline and lose one update. */
+let mutationChain: Promise<void> = Promise.resolve();
+
+function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  const result = mutationChain.then(fn, fn);
+  mutationChain = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
 /** Store / overwrite the secret for `id`. */
-export async function setSecret(id: string, plaintext: string): Promise<void> {
-  const key = await deriveKey();
-  const env = encrypt(key, plaintext);
-  const store = await readStore();
-  store.entries[id] = env;
-  await writeStore(store);
+export function setSecret(id: string, plaintext: string): Promise<void> {
+  return enqueue(async () => {
+    const key = await deriveKey();
+    const env = encrypt(key, plaintext);
+    const store = await readStore();
+    store.entries[id] = env;
+    await writeStore(store);
+  });
 }
 
 /** Remove an entry. Returns true if something was removed. */
-export async function removeSecret(id: string): Promise<boolean> {
-  const store = await readStore();
-  if (!(id in store.entries)) return false;
-  delete store.entries[id];
-  await writeStore(store);
-  return true;
+export function removeSecret(id: string): Promise<boolean> {
+  return enqueue(async () => {
+    const store = await readStore();
+    if (!(id in store.entries)) return false;
+    delete store.entries[id];
+    await writeStore(store);
+    return true;
+  });
 }
 
 /** List ids (no secrets in the output, by design). */

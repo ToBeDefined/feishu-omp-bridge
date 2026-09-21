@@ -20,7 +20,9 @@ describe('ActiveRuns OMP UI routing', () => {
       },
     };
 
-    const handle = activeRuns.register('scope-1', run);
+    const claim = activeRuns.claim('scope-1');
+    const handle = activeRuns.register('scope-1', run, claim);
+    if (!handle) throw new Error('register failed');
     handle.pendingUiRequests.add('ui-1');
     let settled = 0;
     handle.onUiSettled = () => {
@@ -99,8 +101,12 @@ describe('ActiveRuns OMP UI routing', () => {
       waitForExit: async () => true,
       respondToUi: () => true,
     };
-    activeRuns.register('scope-1', run);
+    const handle = activeRuns.register('scope-1', run);
+    if (!handle) throw new Error('register failed');
     let fired = false;
+    // Production order: streamEvents records the request as outstanding before
+    // the UI hook arms its timeout.
+    handle.pendingUiRequests.add('ui-1');
     activeRuns.armUiTimeout('scope-1', 'ui-1', 30, () => { fired = true; });
     activeRuns.respondToUi('scope-1', 'ui-1', { confirmed: true });
     vi.advanceTimersByTime(50);
@@ -157,5 +163,116 @@ describe('ActiveRuns OMP UI routing', () => {
     expect(activeRuns.has('scope-1')).toBe(false);
     activeRuns.unregister('scope-1', run);
     expect(fired).toBe(0);
+  });
+});
+
+describe('ActiveRuns slot reservation', () => {
+  const makeRun = (): AgentRun => ({
+    events: emptyEvents(),
+    stop: async () => {},
+    waitForExit: async () => true,
+  });
+
+  it('a claim reserves the slot before any run exists', () => {
+    const activeRuns = new ActiveRuns();
+    const claim = activeRuns.claim('scope-1');
+    expect(claim).toBeDefined();
+    // The scheduler's busy check and the pending queue must see the reservation.
+    expect(activeRuns.has('scope-1')).toBe(true);
+    expect(activeRuns.hasAnyForChat('scope-1')).toBe(true);
+    // A second claim on the same scope is refused rather than queued.
+    expect(activeRuns.claim('scope-1')).toBeUndefined();
+  });
+
+  it('register never clobbers a live handle', () => {
+    const activeRuns = new ActiveRuns();
+    const first = activeRuns.register('scope-1', makeRun());
+    expect(first).toBeDefined();
+    const second = activeRuns.register('scope-1', makeRun());
+    expect(second).toBeUndefined();
+    expect(activeRuns.has('scope-1')).toBe(true);
+  });
+
+  it('register refuses a claim it does not own', () => {
+    const activeRuns = new ActiveRuns();
+    const mine = activeRuns.claim('scope-1');
+    const foreign = activeRuns.claim('scope-2');
+    expect(mine).toBeDefined();
+    expect(foreign).toBeDefined();
+    expect(activeRuns.register('scope-1', makeRun(), foreign)).toBeUndefined();
+    expect(activeRuns.register('scope-1', makeRun(), mine)).toBeDefined();
+  });
+
+  it('releaseClaim frees the slot for a failed run start', () => {
+    const activeRuns = new ActiveRuns();
+    const claim = activeRuns.claim('scope-1');
+    if (!claim) throw new Error('claim failed');
+    activeRuns.releaseClaim(claim);
+    expect(activeRuns.has('scope-1')).toBe(false);
+    expect(activeRuns.claim('scope-1')).toBeDefined();
+  });
+
+  it('claimChat honours a busy topic scope of the same chat', () => {
+    const activeRuns = new ActiveRuns();
+    activeRuns.register('oc_1:tid', makeRun());
+    expect(activeRuns.claimChat('oc_1')).toBeUndefined();
+    expect(activeRuns.claimChat('oc_2')).toBeDefined();
+  });
+
+  it('waitForFree resolves once the run unregisters', async () => {
+    vi.useFakeTimers();
+    const activeRuns = new ActiveRuns();
+    const run = makeRun();
+    activeRuns.register('scope-1', run);
+    const waiting = activeRuns.waitForFree('scope-1', 5000);
+    activeRuns.unregister('scope-1', run);
+    await vi.advanceTimersByTimeAsync(200);
+    await expect(waiting).resolves.toBe(true);
+    vi.useRealTimers();
+  });
+
+  it('waitForFree reports a slot that never frees', async () => {
+    vi.useFakeTimers();
+    const activeRuns = new ActiveRuns();
+    activeRuns.register('scope-1', makeRun());
+    const waiting = activeRuns.waitForFree('scope-1', 300);
+    await vi.advanceTimersByTimeAsync(400);
+    await expect(waiting).resolves.toBe(false);
+    vi.useRealTimers();
+  });
+
+  it('respondToUi ignores a request that is no longer outstanding', () => {
+    const activeRuns = new ActiveRuns();
+    const responses: string[] = [];
+    const run: AgentRun = {
+      events: emptyEvents(),
+      stop: async () => {},
+      waitForExit: async () => true,
+      respondToUi(id) {
+        responses.push(id);
+        return true;
+      },
+    };
+    const handle = activeRuns.register('scope-1', run);
+    if (!handle) throw new Error('register failed');
+    handle.pendingUiRequests.add('ui-1');
+    expect(activeRuns.respondToUi('scope-1', 'ui-1', { confirmed: true })).toBe(true);
+    // The timeout already answered (or the user double-clicked): a second
+    // frame for the same id must not reach the child.
+    expect(activeRuns.respondToUi('scope-1', 'ui-1', { cancelled: true })).toBe(false);
+    expect(responses).toEqual(['ui-1']);
+  });
+
+  it('dropUiRequest unblocks the idle watchdog for an undeliverable request', () => {
+    const activeRuns = new ActiveRuns();
+    const run: AgentRun = { events: emptyEvents(), stop: async () => {}, waitForExit: async () => true };
+    const handle = activeRuns.register('scope-1', run);
+    if (!handle) throw new Error('register failed');
+    let settled = 0;
+    handle.onUiSettled = () => { settled += 1; };
+    handle.pendingUiRequests.add('ui-1');
+    activeRuns.dropUiRequest('scope-1', 'ui-1');
+    expect(handle.pendingUiRequests.size).toBe(0);
+    expect(settled).toBe(1);
   });
 });

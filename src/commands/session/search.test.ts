@@ -14,6 +14,7 @@ function ctxFor(workspaces: Record<string, string> = {}, titles: Record<string, 
   return {
     workspaces: { listNamed: () => workspaces },
     sessions: { titlesBySessionId: () => titles },
+    controls: { cfg: {} },
   } as CommandContext;
 }
 

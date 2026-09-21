@@ -102,6 +102,68 @@
   30 MB 上限；`view_image` 整读改 `stat`。
 - `scheduler.load` 不校验 `enabled`/`nextRunAt`；`migrate` 命令只 import
   未注册。
+- **云文档评论永不回复**：`postCommentReply` 的调用被上一次改动删掉，只剩
+  一个未使用的 `reply` 变量 —— 评论触发 OMP 跑完、烧完 token，答案直接
+  丢弃，用户只看到 Typing 表情消失。已恢复发送，并把同文档串行锁真正
+  `add()` 进去（此前只 has/delete，锁是空操作）。
+- **OMP spawn 失败 → 该 chat 永久卡死**：Node 在 exec 失败时只发 `error`
+  + `close`（永不发 `exit`），`exitCode`/`signalCode` 恒为 null，而
+  `waitForExit` 只等 `exit` → `stop()` 永久挂起 → `runAgentBatch` 不返回 →
+  该 scope 的 pending 队列再也不 flush。改为以 `close` 为准，并把
+  `ENOENT` 等真实原因带进错误消息（原来只说 "spawn returned no pid"）。
+- **`bridge stop` 后 `bridge restart` 在 macOS 上必然失败**：`stop` 会
+  bootout（plist 仍在磁盘），`restart` 只看 `fileExists()` 就 `kickstart`，
+  launchd 报 "Could not find service"。改为未运行时走完整 start 路径。
+- **一个 scope 可能被两个 OMP 进程同时 `--resume`**：`ActiveRuns.register`
+  是裸 `Map.set`，所有"检查后再 await 再注册"的路径都能撞车 —— 定时任务
+  同一 tick 触发两个、进程内 `restart` 前的 flush 与 scheduler 竞争、
+  `/doctor` 覆盖活跃 handle（泄漏 UI 定时器，之后还会往 doctor 的子进程
+  写一条伪造的 `extension_ui_response`）、stale session 重放覆盖
+  `/compact` 的占位。改为 `claim()` 预占 + `register()` 永不覆盖。
+- **定时任务 / UI 卡片投递失败 → run 永久挂起**：`pendingUiRequests` 在
+  调用 hook 之前就登记，而该集合会暂停 idle 看门狗；定时任务路径不传
+  hooks（没有卡片、没有超时定时器），卡片发送失败时也一样 —— 两个出口都
+  没有，run 永不结束。定时任务现在有可交互卡片，投递失败会把请求按
+  cancelled 回填并释放看门狗。
+- **首轮对话前设的 `/timeout`、`/rename` 被静默清掉**：`resumeFor` 因
+  `cwd` 不匹配返回 undefined 后，`stale.cwd !== cwd`（`undefined !== '/x'`）
+  命中，整个条目被 `clear()` 删除。改为只清真的存在会话的条目，并新增
+  `clearSessionId`（保留 title / idle 覆盖）供失效会话回滚使用。
+- **配置 `ompSessionDir` 后 `/resume` `/ctx` `/search` `/rename` 全部读错
+  目录**（历史命令读硬编码 `paths.ompSessionsDir`，运行写配置目录）；
+  同时该字段不展开 `~`，README 的示例值会让 omp 建一个字面量 `~` 目录。
+- **`/resume` 可认领别的 chat 的会话**（两个 scope 同时 `--resume` 同一
+  JSONL），且原目录不存在时会静默改写该会话记录的工作目录 → 现在拒绝并
+  说明原因（跨 scope 占用 / 原目录已删），不再制造假的 (sessionId, cwd)。
+- **prompt 信封可被普通群成员伪造**：`<bridge_context>` / `<quoted_message>`
+  / `<interactive_card>` 的内容未转义，且引用的消息可以来自白名单外的
+  成员 —— 展示名或引用正文里的闭合标签能提前结束 bridge 声明的"这是
+  数据"块。三个信封现在都做标签中和 / 属性转义。
+- **host tools 信任模型给的 `chatId`/`path`**：`allowedChats` 只在入站校验，
+  agent 能往任意会话写、并上传任意本地文件（含 config.json / keystore）；
+  `feishu_send_file` 与 `feishu_view_image` 的 path 现在限制在 session cwd
+  / 媒体缓存 / 临时目录内（含 symlink 解析），越界给出明确错误。
+- **卡片体积预算按字符算，中文长回答必降级**：飞书上限是字节，CJK 约 3
+  字节/字符 —— 2 万中文字符 ≈ 59 KB JSON 已贴上限，分页判定却是 false。
+  改为按 UTF-8 字节。
+- **卡片 markdown 转义缺口**：`escapeMd` 不处理 `[]()`/`!`，工具输出也未
+  中和 ``` —— 任意成员的消息内容或模型读到的文件能渲染成活链接 / 追踪
+  像素。统一走扩展后的 `escapeMd` + 按内容长度决定的反引号围栏。
+- **模型自造卡片可伪造 bridge 内部回调**：按钮 value 被原样 spread，可带
+  `__omp_ui` + `scope`；`/model`、`/thinking` 保存失败被 `runHandler` 吞掉
+  且不回复；`/doctor` 注册覆盖活跃 run。
+- **`/exec` 参数被压平**（连续空白/制表符被合并，命令与输入不一致）、
+  输出无上限缓冲（`yes` 跑满 30s 可 OOM）、`/diff` 未纳入 admin 门控。
+- 配置 / keystore / model-history / registry 的 read-modify-write 未串行化
+  且共用 `${path}.tmp-<pid>` 临时名 → 并发提交丢更新、互相截断。
+- `scheduler` 不校验 `intervalMs`（0/负值每 tick 必触发）；systemd 的
+  `StandardOutput`/`StandardError` 未转义（按 systemd 源码，该指令不支持
+  引号，只需转义 `%` 说明符）；`secret-resolver` 的自定义 exec provider
+  拿到空环境（`spawn` 是替换而非合并）、小写 `${var}` 被当字面量当密钥用。
+- `estimate.findSessionFile` 用子串匹配 session id（`s1` 命中 `s10`）；
+  `registry.resolveTarget` 对非纯数字 id 也做下标兜底（`/exit 3f2` 命中
+  第 3 个）；`self-update.py` 回滚时忽略 `git stash pop` 冲突。
+- 长驻 daemon 只在启动时清理媒体缓存与旧日志 → 改为每 6 小时复扫。
 
 ### Removed
 

@@ -1,9 +1,9 @@
 import { homedir } from 'node:os';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { paths } from '../../config/paths';
 import {
   getOmpModel,
+  getOmpSessionDir,
   getOmpThinking,
   getRunIdleTimeoutMs,
 } from '../../config/schema';
@@ -158,13 +158,15 @@ export function extractUserInput(text: string): string {
   return cleaned;
 }
 export async function loadSessionSummary(
+  ctx: CommandContext,
   sessionId: string,
 ): Promise<{ lastMessage: string; lastReply: string }> {
   try {
-    const entries = await readdir(paths.ompSessionsDir);
+    const dir = getOmpSessionDir(ctx.controls.cfg);
+    const entries = await readdir(dir);
     for (const name of entries) {
       if (!name.endsWith('.jsonl')) continue;
-      const text = await readFile(join(paths.ompSessionsDir, name), 'utf8');
+      const text = await readFile(join(dir, name), 'utf8');
       // Cheap prefilter before the full line-by-line parse: session files can
       // be many MB and this loop scans ALL of them on every /ctx.
       if (!text.includes(`"id":"${sessionId}"`)) continue;
@@ -183,7 +185,7 @@ async function handleContext(_args: string, ctx: CommandContext): Promise<void> 
   const sess = ctx.sessions.getRaw(ctx.scope);
   let summary = { lastMessage: '', lastReply: '' };
   if (sess?.sessionId) {
-    summary = await loadSessionSummary(sess.sessionId);
+    summary = await loadSessionSummary(ctx, sess.sessionId);
   }
   await reply(ctx, renderContext(ctx, summary));
 }

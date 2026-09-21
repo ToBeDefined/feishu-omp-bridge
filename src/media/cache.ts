@@ -9,6 +9,9 @@ export type AttachmentKind = 'image' | 'file' | 'audio' | 'video';
 export interface LocalAttachment {
   path: string;
   kind: AttachmentKind;
+  /** Feishu resource key this attachment came from (lets callers map back to
+   * the message resource and detect ones that never resolved). */
+  fileKey?: string;
   originalName?: string;
   /** Voice message transcript (Feishu ASR); present when transcription succeeded. */
   transcript?: string;
@@ -92,7 +95,7 @@ export class MediaCache {
     try {
       await stat(path);
       log.info('media', 'cache-hit', { path });
-      return { path, kind, originalName: r.fileName };
+      return { path, kind, fileKey: r.fileKey, originalName: r.fileName };
     } catch {
       /* not cached */
     }
@@ -119,9 +122,15 @@ export class MediaCache {
 
     const size = await stat(path).then((s) => s.size).catch(() => 0);
     log.info('media', 'downloaded', { path, size });
-    return { path, kind, originalName: r.fileName };
+    return { path, kind, fileKey: r.fileKey, originalName: r.fileName };
   }
 }
+
+/**
+ * Age at which cached attachments are reclaimed. Shared by the startup sweep
+ * and the daemon's periodic maintenance so both use one policy.
+ */
+export const MEDIA_GC_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** Delete files under the media cache whose mtime is older than maxAgeMs. */
 export async function gcMediaCache(maxAgeMs: number): Promise<void> {

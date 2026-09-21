@@ -110,6 +110,26 @@ describe('PendingQueue', () => {
     expect(started).toEqual([[msg('a')]]);
   });
 
+  it('backs off the busy retry instead of re-arming every window', () => {
+    const flushes: number[] = [];
+    const q = new PendingQueue(600, (_scope, batch) => {
+      flushes.push(batch.length);
+      requeueIfBusy(q, 's', batch, true);
+    });
+
+    q.push('s', msg('a'));
+    vi.advanceTimersByTime(600); // t=600: first attempt finds the slot busy
+    expect(flushes).toHaveLength(1);
+    vi.advanceTimersByTime(600); // t=1200: first retry (same 600ms window)
+    expect(flushes).toHaveLength(2);
+    // The window has doubled, so the next retry is 1200ms out. A fixed window
+    // would spin once per 600ms for the whole duration of a long /compact.
+    vi.advanceTimersByTime(600); // t=1800
+    expect(flushes).toHaveLength(2);
+    vi.advanceTimersByTime(600); // t=2400: second retry
+    expect(flushes).toHaveLength(3);
+  });
+
   it('requeueIfBusy is a no-op when idle or the batch is empty', () => {
     const q = new PendingQueue(600, () => {});
     expect(requeueIfBusy(q, 's', [msg('a')], false)).toBe(false);

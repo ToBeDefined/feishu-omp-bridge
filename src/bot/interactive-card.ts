@@ -1,3 +1,5 @@
+import { neutralizeFraming } from '../agent/omp/args';
+
 /**
  * SDK's `convertInteractive` flattens an interactive card by walking the
  * JSON tree (`walkCard`) and pulling text-bearing nodes. Three failure
@@ -38,18 +40,18 @@ export function expandInteractiveCard(
   // Branch 1: webhook v2 — `user_dsl` nested as a string. Prefer it over
   // `elements` (which would be the upgrade-fallback).
   if (parsed && typeof parsed.user_dsl === 'string' && parsed.user_dsl.trim().length > 0) {
-    return `<interactive_card>\n${parsed.user_dsl}\n</interactive_card>`;
+    return `<interactive_card>\n${neutralizeFraming(parsed.user_dsl)}\n</interactive_card>`;
   }
 
   // Branch 2: API v2 — raw content already IS the schema 2.0 DSL.
   if (parsed && parsed.schema === '2.0') {
-    return `<interactive_card>\n${rawJsonContent}\n</interactive_card>`;
+    return `<interactive_card>\n${neutralizeFraming(rawJsonContent)}\n</interactive_card>`;
   }
 
   // Branch 3: SDK collapsed a v1 card to placeholder (zero text-bearing
   // nodes). Substitute raw JSON so OMP can see the structure.
   if (flattenedContent === INTERACTIVE_CARD_PLACEHOLDER) {
-    return `<interactive_card>\n${rawJsonContent}\n</interactive_card>`;
+    return `<interactive_card>\n${neutralizeFraming(rawJsonContent)}\n</interactive_card>`;
   }
 
   return flattenedContent;

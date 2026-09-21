@@ -106,7 +106,8 @@ function queueIfBusy(ctx: CommandContext, customInstructions?: string): boolean 
  * (/stop, idle watchdog, stopAll).
  */
 function occupyCompact(ctx: CommandContext, abort: AbortController): AgentRun | undefined {
-  if (ctx.activeRuns.has(ctx.scope)) return undefined;
+  const claim = ctx.activeRuns.claim(ctx.scope);
+  if (!claim) return undefined;
   const run: AgentRun = {
     events: (async function* () {})(),
     async stop() {
@@ -114,7 +115,11 @@ function occupyCompact(ctx: CommandContext, abort: AbortController): AgentRun | 
     },
     waitForExit: async () => true,
   };
-  ctx.activeRuns.register(ctx.scope, run);
+  const handle = ctx.activeRuns.register(ctx.scope, run, claim);
+  if (!handle) {
+    ctx.activeRuns.releaseClaim(claim);
+    return undefined;
+  }
   return run;
 }
 

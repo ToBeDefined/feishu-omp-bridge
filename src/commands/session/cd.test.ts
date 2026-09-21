@@ -28,11 +28,13 @@ function makeCtx(cwd: string): {
   setCwd: Mock;
   clear: Mock;
   interrupt: Mock;
+  clearUndo: Mock;
   sent: string[];
 } {
   const setCwd = vi.fn();
   const clear = vi.fn();
   const interrupt = vi.fn();
+  const clearUndo = vi.fn();
   const sent: string[] = [];
   const ctx = {
     channel: {
@@ -49,12 +51,12 @@ function makeCtx(cwd: string): {
     scope: 'oc_1',
     chatMode: 'p2p',
     sessions: { clear } as never,
-    workspaces: { cwdFor: () => cwd, setCwd } as never,
+    workspaces: { cwdFor: () => cwd, setCwd, clearUndo } as never,
     agent: {} as never,
     activeRuns: { interrupt } as never,
     controls: { cfg: { preferences: { access: { admins: [] } } } } as never,
   } as CommandContext;
-  return { ctx, setCwd, clear, interrupt, sent };
+  return { ctx, setCwd, clear, interrupt, clearUndo, sent };
 }
 
 describe('resolveTarget', () => {
@@ -89,12 +91,14 @@ describe('resolveTarget', () => {
 
 describe('/cd', () => {
   it('switches to a relative path under the current cwd', async () => {
-    const { ctx, setCwd, clear, interrupt, sent } = makeCtx(base);
+    const { ctx, setCwd, clear, interrupt, clearUndo, sent } = makeCtx(base);
     ctx.msg.content = '/cd src';
     await expect(tryHandleCommand(ctx)).resolves.toBe(true);
     expect(setCwd).toHaveBeenCalledWith('oc_1', join(base, 'src'));
     expect(clear).toHaveBeenCalledWith('oc_1');
     expect(interrupt).toHaveBeenCalledWith('oc_1');
+    // A stale /ws undo target would roll the user back to the left workspace.
+    expect(clearUndo).toHaveBeenCalledWith('oc_1');
     expect(sent.join('\n')).toContain('已切换');
   });
 

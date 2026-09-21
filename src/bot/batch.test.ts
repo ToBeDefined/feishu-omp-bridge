@@ -9,6 +9,25 @@ const base: RunState = {
   terminal: 'done',
 };
 
+describe('cardExceedsBudget', () => {
+  it('paginates a CJK answer that is over the byte cap but under the char cap', () => {
+    // 20k Chinese chars ≈ 59KB of card JSON: already at Feishu's ~64KB cap,
+    // yet only ~20k "chars" — a char-based budget let it through.
+    let state: RunState = initialState;
+    for (let i = 0; i < 40; i += 1) {
+      state = { ...state, blocks: [...state.blocks, { kind: 'text', content: '中'.repeat(500), streaming: false }] };
+    }
+    const card = renderCard(state);
+    expect(Buffer.byteLength(JSON.stringify(card), 'utf8')).toBeGreaterThan(48 * 1024);
+    expect(cardExceedsBudget(card, state)).toBe(true);
+  });
+
+  it('does not paginate a small card', () => {
+    const card = renderCard(base);
+    expect(cardExceedsBudget(card, base)).toBe(false);
+  });
+});
+
 describe('fallbackCard', () => {
   it('builds a minimal schema-2.0 card carrying the remaining content', () => {
     const card = fallbackCard(base, (s) => s) as {

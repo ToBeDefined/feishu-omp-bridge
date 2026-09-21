@@ -1,11 +1,23 @@
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
+import { codeFence } from '../../card/templates';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
 import { log } from '../../core/logger';
 
 export const EXEC_TIMEOUT_MS = 30_000;
 const OUTPUT_TAIL = 1000;
+/**
+ * Cap on the live output buffer. Only the tail is ever displayed, so a chatty
+ * command (`yes`, `cat /dev/urandom`, `find /`) must not be able to grow the
+ * daemon's heap for the whole timeout — that would OOM the bot for every chat.
+ */
+const OUTPUT_BUFFER_MAX = 64 * 1024;
+
+function appendTail(current: string, chunk: Buffer): string {
+  const next = current + chunk.toString();
+  return next.length > OUTPUT_BUFFER_MAX ? next.slice(-OUTPUT_BUFFER_MAX) : next;
+}
 
 export interface RunResult {
   /** Process exit code, or null when the spawn itself failed (e.g. bad cwd). */
@@ -34,10 +46,10 @@ export function runCommand(cmd: string, cwd: string, timeoutMs: number): Promise
     let timer: NodeJS.Timeout;
 
     child.stdout!.on('data', (chunk: Buffer) => {
-      output += chunk.toString();
+      output = appendTail(output, chunk);
     });
     child.stderr!.on('data', (chunk: Buffer) => {
-      output += chunk.toString();
+      output = appendTail(output, chunk);
     });
 
     const finish = (result: RunResult) => {
@@ -93,7 +105,7 @@ async function handleExec(args: string, ctx: CommandContext): Promise<void> {
     exitCode: result.exitCode,
     timedOut: result.timedOut,
   });
-  const body = result.output.trim() ? `\n\`\`\`\n${result.output}\n\`\`\`` : '';
+  const body = result.output.trim() ? `\n${codeFence(result.output)}` : '';
   if (result.timedOut) {
     await reply(ctx, `⏱ 执行超时（${EXEC_TIMEOUT_MS / 1000}s），已终止。${body}`);
     return;

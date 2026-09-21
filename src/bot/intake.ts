@@ -20,15 +20,23 @@ import { addReaction } from './reaction';
 
 /**
  * Commands that reset the per-scope conversation context (new session /
- * different cwd). Only these discard queued messages — messages queued
- * behind a run belong to the old context. Every other command must not
- * silently drop messages the user sent while a run was processing.
+ * different cwd / re-pointed session). Only these discard queued messages —
+ * messages queued behind a run belong to the old context. Every other
+ * command must not silently drop messages the user sent while a run was
+ * processing.
  */
 export const RESET_CONTEXT_COMMANDS: Record<string, true> = {
   '/new': true,
   '/reset': true,
   '/cd': true,
   '/ws': true,
+  // /resume (/session) interrupts the run and re-points the session at a
+  // historical one; without this the messages queued behind the run would be
+  // flushed into that resumed session. /s and /search are deliberately NOT
+  // here — they only list results, so dropping queued messages would lose
+  // them for a read-only command.
+  '/resume': true,
+  '/session': true,
 };
 
 export interface IntakeDeps {

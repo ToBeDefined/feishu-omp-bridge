@@ -1,5 +1,6 @@
 import type { Block, RunState, ToolEntry, UiState } from './run-state';
 import { toolHeaderText } from './tool-render';
+import { escapeMd } from './templates';
 
 /**
  * Render `RunState` as plain markdown text — used in `messageReply: 'text'`
@@ -27,7 +28,7 @@ export function renderText(state: RunState): string {
     const mins = state.idleTimeoutMinutes ?? 0;
     parts.push(`_⏱ ${mins} 分钟无响应,已自动终止_`);
   } else if (state.terminal === 'error' && state.errorMsg) {
-    parts.push(`⚠️ agent 失败:${state.errorMsg}`);
+    parts.push(`⚠️ agent 失败:${escapeMd(state.errorMsg)}`);
   } else if (state.terminal === 'running' && state.footer) {
     parts.push(footerLine(state.footer));
   }
@@ -61,11 +62,11 @@ function footerLine(status: 'thinking' | 'tool_running' | 'streaming' | 'waiting
 
 function renderUiContext(ui: UiState): string {
   const lines: string[] = [];
-  if (ui.title) lines.push(`- 标题：${ui.title}`);
-  for (const [key, text] of Object.entries(ui.statuses)) lines.push(`- ${key}：${text}`);
+  if (ui.title) lines.push(`- 标题：${escapeMd(ui.title)}`);
+  for (const [key, text] of Object.entries(ui.statuses)) lines.push(`- ${escapeMd(key)}：${escapeMd(text)}`);
   for (const [key, widget] of Object.entries(ui.widgets)) {
-    lines.push(`- ${key}: ${(widget.lines ?? []).join(' / ')}`);
+    lines.push(`- ${escapeMd(key)}: ${(widget.lines ?? []).map(escapeMd).join(' / ')}`);
   }
-  if (ui.editorText) lines.push(`- 编辑器内容：${ui.editorText.slice(0, 300)}`);
+  if (ui.editorText) lines.push(`- 编辑器内容：${escapeMd(ui.editorText.slice(0, 300))}`);
   return lines.length > 0 ? `> 🧩 OMP 状态\n${lines.join('\n')}` : '';
 }

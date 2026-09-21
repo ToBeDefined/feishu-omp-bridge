@@ -132,69 +132,83 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
     log.info('comment', 'skip', { reason: 'in-flight', synthChatId });
     return;
   }
-  const cwd = workspaces.cwdFor(synthChatId) ?? homedir();
-  const resumeFrom = sessions.resumeFor(synthChatId, cwd);
-  log.info('comment', 'session', { synthChatId, resumeFrom: resumeFrom ?? null, cwd });
-
-  // Cloud-doc comments have no streaming UI — the user just sees their
-  // @-mention sit there until our reply lands. Mark the triggering reply
-  // with a "Typing" reaction up-front so they know we got it; clear it in
-  // the finally below regardless of how the run ends.
-  const reactionAdded = ctx.targetReplyId
-    ? await addCommentReaction(channel, target.fileToken, target.fileType, ctx.targetReplyId)
-    : false;
-
+  // Take the per-doc lock synchronously with the check above: everything below
+  // awaits (reaction API, agent spawn), so a later add() would let two
+  // @-mentions in the same doc both pass and resume the same session jsonl.
+  commentInFlight.add(synthChatId);
+  let reactionAdded = false;
   try {
-    const run = agent.run({ prompt, sessionId: resumeFrom, cwd });
-    let answer = '';
-    let errorMsg: string | undefined;
-    let terminal = false;
-    for await (const e of run.events) {
-      switch (e.type) {
-        case 'text':
-          answer += e.delta;
-          break;
-        case 'system':
-          if (e.sessionId) {
-            const effectiveCwd = e.cwd ?? cwd;
-            sessions.set(synthChatId, e.sessionId, effectiveCwd);
-          }
-          break;
-        case 'error':
-          errorMsg = e.message;
-          terminal = true;
-          break;
-        case 'usage':
-          if (e.costUsd !== undefined) {
-            log.info('comment', 'usage', { costUsd: Number(e.costUsd.toFixed(4)) });
-          }
-          break;
-        case 'done':
-          terminal = true;
-          break;
-      }
-      // Don't wait for the subprocess to actually close stdout — break as soon
-      // as we have the final result. Some OMP runs may hang briefly post-
-      // result on telemetry, which would leave the for-await stuck forever.
-      if (terminal) break;
-    }
-    // Reap the subprocess if it didn't exit on its own. No-op if already gone.
-    await run.stop();
+    const cwd = workspaces.cwdFor(synthChatId) ?? homedir();
+    const resumeFrom = sessions.resumeFor(synthChatId, cwd);
+    log.info('comment', 'session', { synthChatId, resumeFrom: resumeFrom ?? null, cwd });
 
-    let reply = stripMarkdown(answer.trim());
-    if (errorMsg) reply = `⚠️ OMP 报错：${errorMsg}`;
-    if (!reply) reply = '（无回复内容）';
-    if (reply.length > REPLY_MAX_CHARS) reply = `${reply.slice(0, REPLY_MAX_CHARS - 1)}…`;
+    // Cloud-doc comments have no streaming UI — the user just sees their
+    // @-mention sit there until our reply lands. Mark the triggering reply
+    // with a "Typing" reaction up-front so they know we got it; clear it in
+    // the finally below regardless of how the run ends.
+    reactionAdded = ctx.targetReplyId
+      ? await addCommentReaction(channel, target.fileToken, target.fileType, ctx.targetReplyId)
+      : false;
+
+    try {
+      const run = agent.run({ prompt, sessionId: resumeFrom, cwd });
+      let answer = '';
+      let errorMsg: string | undefined;
+      let terminal = false;
+      for await (const e of run.events) {
+        switch (e.type) {
+          case 'text':
+            answer += e.delta;
+            break;
+          case 'system':
+            if (e.sessionId) {
+              const effectiveCwd = e.cwd ?? cwd;
+              sessions.set(synthChatId, e.sessionId, effectiveCwd);
+            }
+            break;
+          case 'error':
+            errorMsg = e.message;
+            terminal = true;
+            break;
+          case 'usage':
+            if (e.costUsd !== undefined) {
+              log.info('comment', 'usage', { costUsd: Number(e.costUsd.toFixed(4)) });
+            }
+            break;
+          case 'done':
+            terminal = true;
+            break;
+        }
+        // Don't wait for the subprocess to actually close stdout — break as soon
+        // as we have the final result. Some OMP runs may hang briefly post-
+        // result on telemetry, which would leave the for-await stuck forever.
+        if (terminal) break;
+      }
+      // Reap the subprocess if it didn't exit on its own. No-op if already gone.
+      await run.stop();
+
+      let reply = stripMarkdown(answer.trim());
+      if (errorMsg) reply = `⚠️ OMP 报错：${errorMsg}`;
+      if (!reply) reply = '（无回复内容）';
+      if (reply.length > REPLY_MAX_CHARS) reply = `${reply.slice(0, REPLY_MAX_CHARS - 1)}…`;
+
+      // The answer only reaches the user here — without this the run burns
+      // tokens and the @-mention sits unanswered forever.
+      await postCommentReply(channel, target, evt, reply).catch((err) => {
+        log.fail('comment', err, { step: 'postCommentReply' });
+      });
+    } finally {
+      if (reactionAdded && ctx.targetReplyId) {
+        await removeCommentReaction(
+          channel,
+          target.fileToken,
+          target.fileType,
+          ctx.targetReplyId,
+        );
+      }
+    }
   } finally {
     commentInFlight.delete(synthChatId);
-    if (reactionAdded && ctx.targetReplyId) {
-      await removeCommentReaction(
-        channel,
-        target.fileToken,
-        target.fileType,
-        ctx.targetReplyId,
-      );
-    }
   }
 }
 

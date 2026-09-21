@@ -125,6 +125,20 @@ export class SessionStore {
     this.schedulePersist();
   }
 
+  /**
+   * Drop the resumable session (id + pinned cwd) but keep the scope's
+   * preferences. Used when a stored id can no longer be resumed — that is a
+   * rollover, not the context reset `/new` / `/cd` / `/ws` perform, so the
+   * user's title and idle-timeout override must survive it.
+   */
+  clearSessionId(chatId: string): void {
+    const prev = this.data[chatId];
+    if (!prev || (prev.sessionId === undefined && prev.cwd === undefined)) return;
+    const { sessionId: _id, cwd: _cwd, ...rest } = prev;
+    this.data[chatId] = { ...rest, updatedAt: Date.now() };
+    this.schedulePersist();
+  }
+
   /** Per-scope idle-timeout override. `undefined` means no override set. */
   getIdleTimeoutMinutes(chatId: string): number | undefined {
     return this.data[chatId]?.idleTimeoutMinutes;

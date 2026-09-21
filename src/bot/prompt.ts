@@ -1,4 +1,6 @@
 import type { NormalizedMessage } from '@larksuiteoapi/node-sdk';
+import { flattenFramingLine } from '../agent/omp/args';
+import { codeFence } from '../card/templates';
 import type { LocalAttachment } from '../media/cache';
 import type { QuotedContext } from './quote';
 import { expandInteractiveCard } from './interactive-card';
@@ -23,13 +25,20 @@ export function buildPrompt(
   batch: NormalizedMessage[],
   attachments: LocalAttachment[],
   quotes: QuotedContext[] = [],
+  unresolvedFileKeys: string[] = [],
 ): string {
-  const fileKeys = batch.flatMap((m) => m.resources.map((r) => r.fileKey));
+  // Only strip the `![name](file_key)` marker for resources that actually
+  // resolved — a failed download must leave a visible trace in the prompt, or
+  // the agent sees a message that simply has no attachment.
+  const resolvedKeys = attachments
+    .map((a) => a.fileKey)
+    .filter((key): key is string => typeof key === 'string');
   const texts = batch
-    .map((m) => stripAttachmentRefs(expandedMessageContent(m), fileKeys).trim())
+    .map((m) => stripAttachmentRefs(expandedMessageContent(m), resolvedKeys).trim())
     .filter(Boolean);
   const ctxHeader = buildBridgeContextHeader(batch);
   const quoteBlock = renderQuotedBlock(quotes);
+  const missingLines = unresolvedFileKeys.map((key) => `- ⚠️ 附件未能下载：${key}`);
 
   // Order: <bridge_context> (metadata) → <quoted_message>(s) (what user is
   // pointing at) → user text + attachments (what they're asking).
@@ -37,7 +46,8 @@ export function buildPrompt(
   const prefix = prefixParts.length > 0 ? `${prefixParts.join('\n\n')}\n\n` : '';
 
   if (attachments.length === 0) {
-    return `${prefix}${texts.join('\n\n')}`;
+    const warn = missingLines.length > 0 ? `\n\n附件：\n${missingLines.join('\n')}` : '';
+    return `${prefix}${texts.join('\n\n')}${warn}`;
   }
 
   const attachLines = attachments.map((a) => {
@@ -54,7 +64,7 @@ export function buildPrompt(
     // Text-like files: inline the extracted content directly so the agent
     // reads what the user sent without an extra tool call.
     if (a.kind === 'file' && a.content !== undefined) {
-      return `${line}\n  内容：\n\`\`\`\n${a.content}\n\`\`\``;
+      return `${line}\n  内容：\n${codeFence(a.content)}`;
     }
     // Voice/video messages carry their transcript inline so the agent reads
     // the content without needing to decode the media.
@@ -63,7 +73,8 @@ export function buildPrompt(
       : line;
   });
   const userPart = texts.length > 0 ? texts.join('\n\n') : '请看下面的附件。';
-  return `${prefix}${userPart}\n\n附件（本地路径）：\n${attachLines.join('\n')}`;
+  const allAttachLines = [...attachLines, ...missingLines];
+  return `${prefix}${userPart}\n\n附件（本地路径）：\n${allAttachLines.join('\n')}`;
 }
 
 export function buildBridgeContextHeader(batch: NormalizedMessage[]): string {
@@ -71,12 +82,14 @@ export function buildBridgeContextHeader(batch: NormalizedMessage[]): string {
   if (!m) return '';
   const lines = [
     '<bridge_context>',
-    `chat_id: ${m.chatId}`,
-    `chat_type: ${m.chatType}`,
-    `sender_id: ${m.senderId}`,
+    `chat_id: ${flattenFramingLine(m.chatId)}`,
+    `chat_type: ${flattenFramingLine(m.chatType)}`,
+    `sender_id: ${flattenFramingLine(m.senderId)}`,
   ];
-  if (m.senderName) lines.push(`sender_name: ${m.senderName}`);
-  if (m.threadId) lines.push(`thread_id: ${m.threadId}`);
+  // A display name is chosen by the member themselves; it must not be able to
+  // close the block or inject extra metadata lines.
+  if (m.senderName) lines.push(`sender_name: ${flattenFramingLine(m.senderName)}`);
+  if (m.threadId) lines.push(`thread_id: ${flattenFramingLine(m.threadId)}`);
   lines.push('</bridge_context>');
   return lines.join('\n');
 }

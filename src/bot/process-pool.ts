@@ -14,6 +14,12 @@ import { log } from '../core/logger';
  * The cap is read fresh each `acquire()`, so `/config maxConcurrentRuns`
  * takes effect for the next run that asks for a slot.
  */
+/**
+ * How long a parked acquire() waits before re-checking the cap. Only matters
+ * when the cap is raised while runs are already queued.
+ */
+const CAP_POLL_MS = 1000;
+
 export class ProcessPool {
   private active = 0;
   private readonly waiters: Array<() => void> = [];
@@ -25,16 +31,32 @@ export class ProcessPool {
   }
 
   async acquire(): Promise<() => void> {
-    if (this.active < this.cap()) {
-      this.active++;
-      log.info('pool', 'acquired', { active: this.active, cap: this.cap() });
-      return () => this.release();
+    if (this.active >= this.cap()) {
+      log.info('pool', 'wait', { active: this.active, cap: this.cap(), waiting: this.waiters.length + 1 });
+      // Re-check periodically: release() only wakes the next waiter when
+      // there is headroom at that instant, so a cap raised via /config would
+      // otherwise leave parked runs stuck until an unrelated run finished.
+      while (this.active >= this.cap()) await this.waitForSlot();
     }
-    log.info('pool', 'wait', { active: this.active, cap: this.cap(), waiting: this.waiters.length + 1 });
-    await new Promise<void>((resolve) => this.waiters.push(resolve));
     this.active++;
     log.info('pool', 'acquired', { active: this.active, cap: this.cap() });
     return () => this.release();
+  }
+
+  /** Resolve on the next release, or after a poll interval to re-check the cap. */
+  private waitForSlot(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const waiter = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        const at = this.waiters.indexOf(waiter);
+        if (at >= 0) this.waiters.splice(at, 1);
+        resolve();
+      }, CAP_POLL_MS);
+      this.waiters.push(waiter);
+    });
   }
 
   private release(): void {

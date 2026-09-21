@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { paths } from './paths';
@@ -95,12 +96,26 @@ export async function ensureSecretsGetterWrapper(): Promise<string> {
   return wrapperPath;
 }
 
-export async function saveConfig(cfg: AppConfig, path: string = paths.configFile): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  const tmp = `${path}.tmp-${process.pid}`;
-  await writeFile(tmp, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8');
-  // chmod the temp file before rename, so the destination path is never
-  // visible with default permissions.
-  await chmod(tmp, 0o600);
-  await rename(tmp, path);
+/** Serialises config writes so two concurrent read-modify-write callers
+ * can't both read the same baseline and lose one update (mirrors
+ * session/store.ts). */
+let saveChain: Promise<void> = Promise.resolve();
+
+export function saveConfig(cfg: AppConfig, path: string = paths.configFile): Promise<void> {
+  const write = async (): Promise<void> => {
+    await mkdir(dirname(path), { recursive: true });
+    // Unique per-call temp name: two writers in the same process must not
+    // clobber each other's temp before its rename.
+    const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
+    await writeFile(tmp, `${JSON.stringify(cfg, null, 2)}\n`, 'utf8');
+    // chmod the temp file before rename, so the destination path is never
+    // visible with default permissions.
+    await chmod(tmp, 0o600);
+    await rename(tmp, path);
+  };
+  // Chain after the previous write settles (success or failure) so the chain
+  // never wedges, while still propagating this write's error to the caller.
+  const result = saveChain.then(write, write);
+  saveChain = result.catch(() => {});
+  return result;
 }

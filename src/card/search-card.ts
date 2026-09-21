@@ -1,5 +1,6 @@
-import { codeSpan, summarizeMd } from '../commands/shared';
+import { codeSpan, summarize } from '../commands/shared';
 import type { CommandContext } from '../commands';
+import { escapeMd } from './templates';
 
 /**
  * Search result card rendering (moved out of commands/session/search.ts so
@@ -36,20 +37,31 @@ export function renderSearchContext(
       // Assistant answers get more room than the (usually shorter) question.
       const max =
         mode === 'detail' ? (m.role === 'user' ? 600 : 1000) : m.role === 'user' ? 80 : 120;
-      // Escape markdown header markers (# at line start) so message content
-      // that happens to start with "# Foo" isn't rendered as a huge heading.
-      const escaped = escapeSearchContent(summarizeMd(m.content, max));
+      const escaped = escapeSearchContent(summarize(m.content, max));
       // Markdown: role label on its own line, message content as a block
       // quote so longer snippets wrap nicely and stay visually grouped.
-      return `${marker}${role}\n> ${escaped}`;
+      // Every line gets the quote prefix — a multi-line snippet would
+      // otherwise only quote its first line.
+      const quoted = escaped
+        .split('\n')
+        .map((line) => `> ${line}`)
+        .join('\n');
+      return `${marker}${role}\n${quoted}`;
     })
     .join('\n\n');
 }
 
-/** Escape line-leading `#` (and stray `>` that could nest quotes) in
- * untrusted message content before embedding into card markdown. */
+/**
+ * Neutralise untrusted message content before embedding into card markdown:
+ * `escapeMd` kills inline markdown (incl. `[x](url)` / `![](url)` links and
+ * images), then line-leading `#` / `>` are escaped so the snippet can't turn
+ * into a heading or nest quotes inside its blockquote.
+ *
+ * Expects raw (only whitespace-collapsed/truncated) text — callers must not
+ * pre-escape, or the backslashes would double up.
+ */
 function escapeSearchContent(text: string): string {
-  return text
+  return escapeMd(text)
     .split('\n')
     .map((line) => (line.startsWith('#') || line.startsWith('>') ? `\\${line}` : line))
     .join('\n');

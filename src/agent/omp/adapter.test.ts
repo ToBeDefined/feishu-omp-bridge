@@ -20,6 +20,22 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
 }
 
 describe('OmpAdapter', () => {
+  it('does not hang when the binary cannot be spawned', async () => {
+    const run = new OmpAdapter({ binary: join(tmpdir(), 'omp-missing-binary-xyz') }).run({
+      prompt: 'ping',
+      cwd: tmpdir(),
+    });
+    // Node emits 'error' + 'close' (never 'exit') when exec itself fails, and
+    // exitCode/signalCode stay null — waiting on 'exit' hung the caller (and
+    // its chat's run slot) forever.
+    const events = await collect(run.events);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe('error');
+    expect(events[0]?.type === 'error' ? events[0].message : '').toContain('failed to spawn omp');
+    await expect(run.waitForExit(500)).resolves.toBe(true);
+    await expect(run.stop()).resolves.toBeUndefined();
+  });
+
   it('reports availability from the configured binary', async () => {
     const binary = await fakeOmp(`
 if (process.argv.includes('--version')) {

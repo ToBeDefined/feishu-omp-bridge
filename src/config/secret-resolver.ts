@@ -71,6 +71,14 @@ export function resolvePlainOrTemplate(value: string): string {
     if (!v) throw new Error(`env var ${name} referenced by secret is not set`);
     return v;
   }
+  // A `${...}` that fails the template regex (e.g. lowercase `${my_secret}`)
+  // would otherwise be used literally as the App Secret, and every auth
+  // exchange would fail with no hint.
+  if (value.startsWith('${')) {
+    throw new Error(
+      `无效的 secret 模板 "${value}"：仅支持 \${VAR_NAME} 形式（大写字母、数字、下划线）。`,
+    );
+  }
   return value;
 }
 
@@ -158,7 +166,10 @@ async function spawnExecProvider(pc: ProviderConfig, ref: SecretRef): Promise<st
   const providerName = ref.provider ?? DEFAULT_PROVIDER;
 
   return new Promise<string>((resolve, reject) => {
-    const env: NodeJS.ProcessEnv = {};
+    // Seed from the parent env: `spawn` REPLACES the environment, so a
+    // provider with `#!/usr/bin/env node` (or any bare-name tool call) would
+    // otherwise fail with "not found". passEnv/env then override.
+    const env: NodeJS.ProcessEnv = { ...process.env };
     if (pc.passEnv) {
       for (const k of pc.passEnv) {
         const v = process.env[k];

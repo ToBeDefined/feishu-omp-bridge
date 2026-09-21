@@ -16,6 +16,9 @@ export const doctorHandlers: Record<string, Handler> = {
   '/doctor': handleDoctor,
 };
 
+/** How long /doctor waits for an interrupted run to release its slot. */
+const DOCTOR_SLOT_WAIT_MS = 15_000;
+
 const DOCTOR_INSTRUCTIONS = `你是 feishu-omp-bridge 的诊断助理。下面会给你两段输入:
 1. 用户的故障描述
 2. 最近的运行日志(JSON line 格式,旧→新)
@@ -80,12 +83,39 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
   }
 
   const prompt = buildDoctorPrompt(args, logs);
-  const run = ctx.agent.run({
-    prompt,
-    cwd: homedir(),
-    stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),
-  });
-  const handle = ctx.activeRuns.register(ctx.scope, run);
+  // interrupt() keeps the old handle in place until that run reaps (seconds).
+  // Registering over it would orphan its UI timers and its deferred /compact —
+  // and a leaked timeout would later write a bogus UI response into THIS run's
+  // child. Wait for the slot to actually free instead.
+  if (!(await ctx.activeRuns.waitForFree(ctx.scope, DOCTOR_SLOT_WAIT_MS))) {
+    await reply(ctx, '⏳ 上一个任务还在收尾，请稍后重试 `/doctor`。');
+    return;
+  }
+  const claim = ctx.activeRuns.claim(ctx.scope);
+  if (!claim) {
+    await reply(ctx, '⏳ 上一个任务还在收尾，请稍后重试 `/doctor`。');
+    return;
+  }
+  let run;
+  try {
+    run = ctx.agent.run({
+      prompt,
+      cwd: homedir(),
+      stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),
+    });
+  } catch (err) {
+    // Never leave the slot claimed on a failed spawn — a leaked claim makes
+    // every later message for this scope fail to register.
+    ctx.activeRuns.releaseClaim(claim);
+    throw err;
+  }
+  const handle = ctx.activeRuns.register(ctx.scope, run, claim);
+  if (!handle) {
+    ctx.activeRuns.releaseClaim(claim);
+    await run.stop().catch(() => {});
+    await reply(ctx, '⏳ 上一个任务还在收尾，请稍后重试 `/doctor`。');
+    return;
+  }
 
   try {
     if (isP2p) {

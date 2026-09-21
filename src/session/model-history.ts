@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { paths } from '../config/paths';
@@ -28,7 +29,9 @@ async function readHistory(file: string): Promise<string[]> {
 async function writeHistory(file: string, history: string[]): Promise<void> {
   try {
     await mkdir(dirname(file), { recursive: true });
-    const tmp = `${file}.tmp-${process.pid}`;
+    // Unique per-call temp name: concurrent writers must not clobber each
+    // other's temp before its rename.
+    const tmp = `${file}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
     await writeFile(tmp, `${JSON.stringify(history)}\n`, 'utf8');
     await rename(tmp, file);
   } catch (err) {
@@ -36,15 +39,27 @@ async function writeHistory(file: string, history: string[]): Promise<void> {
   }
 }
 
+/** Serialises history mutations so two concurrent read-modify-write callers
+ * can't both read the same baseline and lose one update. */
+let mutationChain: Promise<void> = Promise.resolve();
+
 /** Record a model use: move it to the front, drop duplicates, cap size. */
-export async function recordModelUse(
+export function recordModelUse(
   model: string,
   file: string = paths.modelHistoryFile,
 ): Promise<void> {
-  if (!model || !model.trim()) return;
-  const history = await readHistory(file);
-  const next = [model, ...history.filter((m) => m !== model)].slice(0, MAX_ENTRIES);
-  await writeHistory(file, next);
+  if (!model || !model.trim()) return Promise.resolve();
+  const run = async (): Promise<void> => {
+    const history = await readHistory(file);
+    const next = [model, ...history.filter((m) => m !== model)].slice(0, MAX_ENTRIES);
+    await writeHistory(file, next);
+  };
+  const result = mutationChain.then(run, run);
+  mutationChain = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
 }
 
 /** Return the most recently used models, newest first, deduped. */

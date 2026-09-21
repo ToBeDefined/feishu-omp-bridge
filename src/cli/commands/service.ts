@@ -354,6 +354,16 @@ export async function runServiceRestart(): Promise<void> {
   // the daemon itself; the restart command only issues the kick and can be
   // torn down safely with the rest of the session.
   await adapter.install();
+  // `stop` unloads the service (launchd bootout) while the definition file
+  // stays on disk, so fileExists() alone does not mean "running" — and
+  // `launchctl kickstart` on a non-bootstrapped service fails with
+  // "Could not find service". Fall back to the full install+start path, which
+  // is what this command's contract promises.
+  if (!adapter.isRunning()) {
+    console.log('bot 当前没在后台运行，正在启动…');
+    await reportConnectAfter('started', adapter.start);
+    return;
+  }
   console.log('正在重启 bot 实例…');
   await reportConnectAfter('restarted', adapter.restart);
 }

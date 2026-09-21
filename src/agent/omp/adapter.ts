@@ -10,6 +10,7 @@ import {
   loadOmpImages,
   parseOmpJsonLine,
   translateOmpFrame,
+  type OmpImageContent,
 } from './rpc';
 
 export interface OmpAdapterOptions {
@@ -110,6 +111,7 @@ export class OmpAdapter implements AgentAdapter {
     child.on('error', (err) => {
       runtimeError = err;
     });
+    const exit = createExitState(child);
     child.on('exit', (code, signal) => {
       log.info('agent', 'exit', { pid: child.pid ?? null, code, signal });
     });
@@ -118,28 +120,31 @@ export class OmpAdapter implements AgentAdapter {
     const outcome: OmpRunOutcome = { staleSession: false };
 
     return {
-      events: createEventStream(child, reader, stderrChunks, () => runtimeError, opts, outcome),
+      events: createEventStream(child, reader, stderrChunks, () => runtimeError, opts, outcome, exit),
       get staleSession() {
         return outcome.staleSession;
       },
       async stop() {
-        if (child.exitCode !== null || child.signalCode !== null) return;
+        // 'close' rather than exitCode/signalCode: when spawn itself failed
+        // (ENOENT) Node emits 'error' + 'close' only, and both stay null — the
+        // graceful path below would then wait on an 'exit' that never comes.
+        if (exit.closed) return;
         log.info('agent', 'stop-abort', { pid: child.pid ?? null, graceMs: stopGraceMs });
         writeFrame(child, { id: 'abort_1', type: 'abort' });
         endInput(child);
-        if (await waitForExitWithin(child, Math.min(1000, stopGraceMs))) return;
+        if (await waitForExitWithin(child, Math.min(1000, stopGraceMs), exit)) return;
 
         log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs });
-        child.kill('SIGTERM');
-        if (await waitForExitWithin(child, stopGraceMs)) return;
+        killTree(child, 'SIGTERM');
+        if (await waitForExitWithin(child, stopGraceMs, exit)) return;
 
         log.warn('agent', 'stop-sigkill', {
           pid: child.pid ?? null,
           graceMs: stopGraceMs,
           reason: 'grace-period-expired',
         });
-        child.kill('SIGKILL');
-        await waitForExit(child);
+        killTree(child, 'SIGKILL');
+        await waitForExit(child, exit);
       },
       respondToUi(requestId: string, response: AgentUiResponse): boolean {
         if (child.exitCode !== null || child.signalCode !== null) return false;
@@ -147,7 +152,15 @@ export class OmpAdapter implements AgentAdapter {
       },
       async submitPrompt(kind: 'steer' | 'follow_up', message: string, imagePaths?: string[]): Promise<boolean> {
         if (child.exitCode !== null || child.signalCode !== null) return false;
-        const images = await loadOmpImages(imagePaths);
+        // Contract is Promise<boolean>: a rejection here would escape to the
+        // intake handler, which only logs — the user's steer would be neither
+        // steered nor queued (silently dropped). Fall back to a text-only steer.
+        let images: OmpImageContent[] = [];
+        try {
+          images = await loadOmpImages(imagePaths);
+        } catch (err) {
+          log.warn('agent', 'steer-image-failed', { error: errorText(err) });
+        }
         return writeFrame(child, {
           id: `${kind}_${Date.now()}`,
           type: kind,
@@ -156,7 +169,7 @@ export class OmpAdapter implements AgentAdapter {
         });
       },
       waitForExit(timeoutMs: number): Promise<boolean> {
-        return waitForExitWithin(child, timeoutMs);
+        return waitForExitWithin(child, timeoutMs, exit);
       },
     };
   }
@@ -196,6 +209,7 @@ export class OmpAdapter implements AgentAdapter {
       detached: true,
     }) as OmpChild;
     child.unref();
+    const exit = createExitState(child);
 
     // Manual withResolvers: Promise.withResolvers requires Node 22+, this
     // package still supports Node >=20.
@@ -262,10 +276,10 @@ export class OmpAdapter implements AgentAdapter {
           clearTimeout(timer);
           endInput(child);
           const remaining = Math.max(1000, timeoutMs - (Date.now() - startedAt));
-          void waitForExitWithin(child, remaining).then(async (exited) => {
+          void waitForExitWithin(child, remaining, exit).then(async (exited) => {
             if (!exited && child.exitCode === null && child.signalCode === null) {
               child.kill('SIGTERM');
-              const dead = await waitForExitWithin(child, 2000);
+              const dead = await waitForExitWithin(child, 2000, exit);
               if (!dead) child.kill('SIGKILL');
             }
             finish(undefined);
@@ -365,9 +379,13 @@ async function* createEventStream(
   getError: () => Error | null,
   opts: AgentRunOptions,
   outcome: OmpRunOutcome,
+  exit: ChildExitState,
 ): AsyncGenerator<AgentEvent> {
   if (!child.pid) {
-    const err = getError();
+    // The 'error' event (ENOENT / EACCES / EMFILE) lands a tick after spawn
+    // returns, so wait for it — "failed to spawn omp: ENOENT" is actionable,
+    // a bare "no pid" is not.
+    const err = getError() ?? (await waitForSpawnError(child, 500));
     yield {
       type: 'error',
       message: err ? `failed to spawn omp: ${err.message}` : 'spawn returned no pid',
@@ -448,9 +466,9 @@ async function* createEventStream(
     reader.close();
   }
 
-  const exit = await waitForExit(child);
+  const status = await waitForExit(child, exit);
   const runtimeError = getError();
-  if (exit.code !== 0 && exit.signal === null) {
+  if (status.code !== 0 && status.signal === null) {
     const detail = stderrChunks.length > 0 ? `: ${Buffer.concat(stderrChunks).toString('utf8').trim()}` : '';
     // OMP rejects an unknown `--resume` id before it ever sends `ready`:
     // `Error: Session "<id>" not found.` The caller owns the stored id and
@@ -458,7 +476,7 @@ async function* createEventStream(
     if (!sawReady && opts.sessionId && /session/i.test(detail) && /not\s*found/i.test(detail)) {
       outcome.staleSession = true;
     }
-    yield { type: 'error', message: `omp exited with code ${exit.code}${detail}` };
+    yield { type: 'error', message: `omp exited with code ${status.code}${detail}` };
   } else if (runtimeError) {
     yield { type: 'error', message: `omp runtime error: ${runtimeError.message}` };
   } else if (!terminal && !sawReady) {
@@ -474,35 +492,99 @@ function writeFrameOrThrow(child: OmpChild, frame: Record<string, unknown>): voi
 
 function writeFrame(child: OmpChild, frame: Record<string, unknown>): boolean {
   if (child.stdin.destroyed || child.stdin.writableEnded) return false;
-  child.stdin.write(`${JSON.stringify(frame)}\n`);
-  return true;
+  // The guard above and the write are not atomic: the child can die in
+  // between (ERR_STREAM_DESTROYED / EPIPE thrown synchronously). Callers treat
+  // this as a boolean, so never let it throw.
+  try {
+    child.stdin.write(`${JSON.stringify(frame)}\n`);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function endInput(child: OmpChild): void {
   if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end();
 }
 
-function waitForExit(child: OmpChild): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+/**
+ * Exit bookkeeping for one child. 'close' (not 'exit') is the reliable
+ * terminal signal: a failed spawn emits 'error' + 'close' and never 'exit',
+ * leaving exitCode/signalCode null forever. Every stdio stream here is piped,
+ * so 'close' always arrives.
+ */
+interface ChildExitState {
+  closed: boolean;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+}
+
+function createExitState(child: OmpChild): ChildExitState {
+  const state: ChildExitState = { closed: false, code: null, signal: null };
+  child.on('close', (code, signal) => {
+    state.closed = true;
+    state.code = code;
+    state.signal = signal;
+  });
+  return state;
+}
+
+/**
+ * Signal the child's whole process group. run() spawns the child detached, so
+ * it leads its own group: killing only its pid would orphan anything it
+ * spawned (a bash tool call, lark-cli mid-OAuth). Falls back to the direct pid
+ * when the group is gone or the pid is unknown.
+ */
+function killTree(child: OmpChild, signal: NodeJS.Signals): void {
+  if (typeof child.pid === 'number') {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      /* group gone — fall through to the direct pid */
+    }
   }
+  child.kill(signal);
+}
+
+/** Resolve with the spawn error, or undefined when none arrives in time. */
+function waitForSpawnError(child: OmpChild, timeoutMs: number): Promise<Error | undefined> {
   return new Promise((resolve) => {
-    child.once('exit', (code, signal) => resolve({ code, signal }));
+    const onError = (err: Error): void => {
+      clearTimeout(timer);
+      resolve(err);
+    };
+    const timer = setTimeout(() => {
+      child.removeListener('error', onError);
+      resolve(undefined);
+    }, timeoutMs);
+    child.once('error', onError);
   });
 }
 
-function waitForExitWithin(child: OmpChild, timeoutMs: number): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+function waitForExit(child: OmpChild, exit: ChildExitState): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  if (exit.closed) return Promise.resolve({ code: exit.code, signal: exit.signal });
+  return new Promise((resolve) => {
+    const done = (code: number | null, signal: NodeJS.Signals | null): void => {
+      child.removeListener('close', done);
+      resolve({ code, signal });
+    };
+    child.once('close', done);
+  });
+}
+
+function waitForExitWithin(child: OmpChild, timeoutMs: number, exit: ChildExitState): Promise<boolean> {
+  if (exit.closed) return Promise.resolve(true);
   return new Promise<boolean>((resolve) => {
-    const onExit = (): void => {
+    const onClose = (): void => {
       clearTimeout(timer);
       resolve(true);
     };
     const timer = setTimeout(() => {
-      child.removeListener('exit', onExit);
+      child.removeListener('close', onClose);
       resolve(false);
     }, timeoutMs);
-    child.once('exit', onExit);
+    child.once('close', onClose);
   });
 }
 

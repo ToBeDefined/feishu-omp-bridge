@@ -26,7 +26,7 @@ import {
 import { gcOldLogs, log } from '../../core/logger';
 import { kickstart } from '../../daemon/launchd';
 import { takeReleaseOnline } from '../../release/notify';
-import { gcMediaCache } from '../../media/cache';
+import { gcMediaCache, MEDIA_GC_MAX_AGE_MS } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
 import {
   cleanupTmpFiles,
@@ -56,8 +56,6 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (err) => {
   log.fail('process', err, { kind: 'uncaughtException' });
 });
-
-const MEDIA_GC_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface StartOptions {
   config?: string;

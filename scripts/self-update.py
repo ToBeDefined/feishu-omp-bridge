@@ -143,7 +143,9 @@ def update() -> int:
             git("checkout", "-q", orig_branch)
         git("reset", "--hard", old_head)
         if dirty:
-            git("stash", "pop")
+            pop = git("stash", "pop")
+            if pop.returncode != 0:
+                log("⚠ stash pop 有冲突，未提交改动保留在 stash 中，请手动 git stash pop 处理。")
         if Path(dist_backup).is_dir():
             shutil.rmtree("dist", ignore_errors=True)
             shutil.move(dist_backup, "dist")

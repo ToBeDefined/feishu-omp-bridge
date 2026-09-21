@@ -50,6 +50,33 @@ describe('createFeishuHostIntegration', () => {
     ]);
   });
 
+  it('refuses a chatId outside the allowlist', async () => {
+    const sent: unknown[] = [];
+    const host = createFeishuHostIntegration(fakeChannel(sent), {
+      scope: 'chat-1',
+      chatId: 'chat-1',
+      cwd: '/repo',
+      isChatAllowed: (id) => id === 'chat-1',
+    });
+    const send = host.tools.find((t) => t.definition.name === 'feishu_send_message')!;
+
+    await expect(send.execute({ content: 'hi', chatId: 'oc_other' })).rejects.toThrow(/不允许操作该会话/);
+    expect(sent).toEqual([]);
+    // The current chat is always allowed.
+    await expect(send.execute({ content: 'hi' })).resolves.toBeDefined();
+  });
+
+  it('refuses a path outside the workspace, media cache and temp dirs', async () => {
+    const host = createFeishuHostIntegration(fakeChannel([]), {
+      scope: 'chat-1',
+      chatId: 'chat-1',
+      cwd: '/repo',
+    });
+    const sendFile = host.tools.find((t) => t.definition.name === 'feishu_send_file')!;
+    // Exists and is readable — but outside every allowed root.
+    await expect(sendFile.execute({ path: '/etc/hosts' })).rejects.toThrow(/拒绝访问工作目录之外的文件/);
+  });
+
   it('serves current context through feishu URI scheme', async () => {    const host = createFeishuHostIntegration(fakeChannel([]), {
       scope: 'chat-1',
       chatId: 'chat-1',

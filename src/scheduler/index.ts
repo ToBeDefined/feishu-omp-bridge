@@ -20,6 +20,15 @@ export interface ScheduledTask {
 /** How often the scheduler scans for due tasks (ms). */
 const TICK_MS = 30_000;
 
+/** The scheduler only ticks every TICK_MS, so a smaller interval would
+ * silently run at tick cadence, and 0/negative would fire on every tick
+ * forever. Clamp up to TICK_MS (also guards NaN/Infinity from a hand-edited
+ * `scheduler.json`). */
+function clampInterval(ms: number): number {
+  if (!Number.isFinite(ms)) return TICK_MS;
+  return Math.max(Math.floor(ms), TICK_MS);
+}
+
 /**
  * Lightweight interval-based task scheduler. Decoupled from Feishu / the
  * agent — it only tracks when tasks are due and invokes `onFire`. The bridge
@@ -51,6 +60,15 @@ export class Scheduler {
         // default to true, and a bogus `nextRunAt` must re-schedule rather
         // than silently never fire again.
         if (typeof t.enabled !== 'boolean') t.enabled = true;
+        const interval = clampInterval(t.intervalMs);
+        if (interval !== t.intervalMs) {
+          log.warn('scheduler', 'task-interval-clamped', {
+            id: t.id,
+            from: t.intervalMs,
+            to: interval,
+          });
+          t.intervalMs = interval;
+        }
         if (typeof t.nextRunAt !== 'number' || !Number.isFinite(t.nextRunAt)) {
           log.warn('scheduler', 'task-rescheduled', { id: t.id, reason: 'bad nextRunAt' });
           t.nextRunAt = Date.now() + t.intervalMs;
@@ -80,12 +98,19 @@ export class Scheduler {
     intervalMs: number;
     delayMs?: number;
   }): Promise<ScheduledTask> {
+    const intervalMs = clampInterval(opts.intervalMs);
+    if (intervalMs !== opts.intervalMs) {
+      log.warn('scheduler', 'interval-clamped', {
+        requested: opts.intervalMs,
+        clamped: intervalMs,
+      });
+    }
     const task: ScheduledTask = {
       id: randomBytes(4).toString('hex'),
       chatId: opts.chatId,
       prompt: opts.prompt,
-      intervalMs: opts.intervalMs,
-      nextRunAt: Date.now() + (opts.delayMs ?? opts.intervalMs),
+      intervalMs,
+      nextRunAt: Date.now() + (opts.delayMs ?? intervalMs),
       createdAt: Date.now(),
       enabled: true,
     };

@@ -9,8 +9,8 @@ import type { Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import { getMaxConcurrentRuns } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
-import { log, withTrace } from '../core/logger';
-import { MediaCache } from '../media/cache';
+import { log, withTrace, gcOldLogs } from '../core/logger';
+import { gcMediaCache, MediaCache, MEDIA_GC_MAX_AGE_MS } from '../media/cache';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns } from './active-runs';
@@ -26,6 +26,9 @@ import { runAgentBatch, runScheduledPrompt } from './batch';
 import type { Scheduler } from '../scheduler';
 
 const DEBOUNCE_MS = 600;
+
+/** How often the daemon repeats its disk-cleanup sweeps. */
+const MAINTENANCE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 // Lark SDK logs API errors at error level even when the caller catches them.
 // These specific codes are EXPECTED in our flow (wiki-node lookup that
@@ -169,15 +172,27 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     const firstMsg = batch[0];
     if (!firstMsg) return;
     // Oneshot compact occupies the slot without going through this flush.
-    // Re-queue so we don't --resume the same jsonl alongside it. push()
-    // arms a fresh quiet window because we are not blocked.
+    // Re-queue so we don't --resume the same jsonl alongside it.
     if (requeueIfBusy(pending, scope, batch, activeRuns.has(scope))) return;
+    // Reserve the slot before the first await. pool.acquire(), the chat-mode
+    // lookup and the media downloads can take seconds; the scheduler's busy
+    // check (activeRuns.hasAnyForChat) and the next flush must not see the
+    // scope as idle inside that window, or two agents end up resuming the
+    // same session jsonl.
+    const claim = activeRuns.claim(scope);
+    if (!claim) {
+      requeueIfBusy(pending, scope, batch, true);
+      return;
+    }
     pending.block(scope);
     void withTrace({ chatId: firstMsg.chatId }, async () => {
       log.info('flush', 'start', { scope, batchSize: batch.length });
       // Pool slot acquired here, released in finally. Across-the-bridge cap.
-      const release = await pool.acquire();
+      // Acquired inside the try so a failure here still releases the claim —
+      // a leaked claim would leave this scope permanently busy.
+      let release: (() => void) | undefined;
       try {
+        release = await pool.acquire();
         const mode = await chatModeCache.resolve(channel, firstMsg.chatId);
         await runAgentBatch({
           channel,
@@ -190,11 +205,13 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           controls,
           scope,
           mode,
+          claim,
         });
       } catch (err) {
         log.fail('flush', err);
       } finally {
-        release();
+        release?.();
+        activeRuns.releaseClaim(claim);
         pending.unblock(scope);
         log.info('flush', 'end');
       }
@@ -282,6 +299,19 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   await channel.connect();
 
+  // Startup sweeps run once per boot, so a daemon that stays up for weeks
+  // never reclaims media-cache space or prunes old log files. Repeat them on a
+  // timer; unref'd so it can't hold the process open.
+  const maintenance = setInterval(() => {
+    void gcMediaCache(MEDIA_GC_MAX_AGE_MS).catch((err) => {
+      log.warn('media', 'gc-failed', { err: String(err) });
+    });
+    void gcOldLogs().catch((err) => {
+      log.warn('log', 'gc-failed', { err: String(err) });
+    });
+  }, MAINTENANCE_INTERVAL_MS);
+  maintenance.unref?.();
+
   const identity = channel.botIdentity;
   log.info('ws', 'connected', {
     bot: identity?.name ?? 'unknown',
@@ -310,11 +340,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   // /every can add/list/remove tasks from inside a command handler.
   if (scheduler) {
     scheduler.setHandler((task) => {
-      // Don't clobber an in-flight run in this chat: firing a scheduled
-      // prompt while the user is mid-conversation would overwrite the run's
-      // handle (breaking /stop) and run two agents against the same session.
-      // Skip this tick; the next interval will try again.
-      if (activeRuns.hasAnyForChat(task.chatId)) {
+      // Reserve the slot synchronously. runScheduledPrompt only registers
+      // after its own awaits (cwd resolution, model bookkeeping), so without
+      // this two tasks due in the same tick would both pass the busy check
+      // and run two agents against the same session jsonl.
+      const claim = activeRuns.claimChat(task.chatId);
+      if (!claim) {
         log.info('scheduler', 'skip-busy', { chatId: task.chatId, id: task.id });
         return;
       }
@@ -325,9 +356,14 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         workspaces,
         activeRuns,
         controls,
+        pool,
         chatId: task.chatId,
         prompt: task.prompt,
-      }).catch((err) => log.fail('scheduler', err, { id: task.id }));
+        claim,
+      }).catch((err) => {
+        activeRuns.releaseClaim(claim);
+        log.fail('scheduler', err, { id: task.id });
+      });
     });
     scheduler.start();
   }
@@ -336,6 +372,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     channel,
     disconnect: async (killRuns = true) => {
       keepalive.stop();
+      clearInterval(maintenance);
       // Scheduler 是进程级资源（runStart 创建一次），不属于单次连接：
       // 进程内 restart（先 startChannel 新桥再 disconnect 旧桥）若在此 stop，
       // 共享 scheduler 的 timer 会被旧桥拆掉且新桥的 start() 因幂等不重建，

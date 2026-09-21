@@ -1,5 +1,7 @@
 // Card builder for agent-authored Feishu interactive cards.
 
+import { OMP_UI_MARKER } from './omp-ui';
+
 /**
  * Marker key on a button's `value` object that flags the cardAction as a
  * callback that should be forwarded back to the agent instead of dispatched
@@ -7,6 +9,14 @@
  * checks in `card/dispatcher.ts`.
  */
 export const AGENT_CALLBACK_MARKER = '__codex_cb';
+
+/**
+ * Keys the bridge injects into a button's `value` for its own routing. The
+ * model supplies `value` verbatim, so any of these appearing there would let
+ * a model-authored button forge a bridge-internal callback (agent callback
+ * or OMP-UI response) — rejected below.
+ */
+const RESERVED_VALUE_KEYS = [OMP_UI_MARKER, AGENT_CALLBACK_MARKER] as const;
 
 export interface AgentCardButton {
   label: string;
@@ -40,6 +50,11 @@ export function buildAgentCard(title: string, text: string, buttons: unknown): o
     const value = b?.value && typeof b.value === 'object' && !Array.isArray(b.value) ? b.value : undefined;
     if (!label || !value) {
       throw new Error('each button requires label (string) and value (object)');
+    }
+    for (const key of RESERVED_VALUE_KEYS) {
+      if (key in value) {
+        throw new Error(`按钮 value 不允许包含保留字段 ${key}（由 bridge 注入，模型不可覆盖）`);
+      }
     }
     return { label, value };
   });

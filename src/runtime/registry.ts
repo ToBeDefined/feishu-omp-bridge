@@ -87,7 +87,9 @@ export function readAndPrune(path: string = paths.processesFile): ProcessEntry[]
 }
 
 async function writeAtomic(entries: ProcessEntry[], path: string): Promise<void> {
-  const tmp = `${path}.tmp-${process.pid}`;
+  // Unique per-call temp name: two concurrent writers must not clobber each
+  // other's temp before its rename.
+  const tmp = `${path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
   const body = `${JSON.stringify({ entries } satisfies RegistryFile, null, 2)}\n`;
   await mkdir(dirname(path), { recursive: true });
   await writeFile(tmp, body, 'utf8');
@@ -116,6 +118,19 @@ export interface RegisterArgs {
   version: string;
 }
 
+/** Serialises registry mutations so two concurrent read-modify-write callers
+ * can't both read the same baseline and lose one update. */
+let mutationChain: Promise<void> = Promise.resolve();
+
+function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  const result = mutationChain.then(fn, fn);
+  mutationChain = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
 /**
  * Atomically prune + add this process to the registry. Returns the entry
  * representing this process (so callers can stash the id for later use, e.g.
@@ -123,27 +138,31 @@ export interface RegisterArgs {
  *
  * Caller is responsible for installing cleanup that calls `unregister`.
  */
-export async function register(args: RegisterArgs): Promise<ProcessEntry> {
-  const live = readAndPrune();
-  const entry: ProcessEntry = {
-    id: generateShortId(),
-    pid: process.pid,
-    appId: args.appId,
-    tenant: args.tenant,
-    configPath: args.configPath,
-    startedAt: new Date().toISOString(),
-    version: args.version,
-  };
-  await writeAtomic([...live, entry], paths.processesFile);
-  return entry;
+export function register(args: RegisterArgs): Promise<ProcessEntry> {
+  return enqueue(async () => {
+    const live = readAndPrune();
+    const entry: ProcessEntry = {
+      id: generateShortId(),
+      pid: process.pid,
+      appId: args.appId,
+      tenant: args.tenant,
+      configPath: args.configPath,
+      startedAt: new Date().toISOString(),
+      version: args.version,
+    };
+    await writeAtomic([...live, entry], paths.processesFile);
+    return entry;
+  });
 }
 
 /** Remove an entry by id. Atomic + prunes dead in same write. Async. */
-export async function unregister(id: string): Promise<void> {
-  const live = readAndPrune();
-  const next = live.filter((e) => e.id !== id);
-  if (next.length === live.length) return;
-  await writeAtomic(next, paths.processesFile);
+export function unregister(id: string): Promise<void> {
+  return enqueue(async () => {
+    const live = readAndPrune();
+    const next = live.filter((e) => e.id !== id);
+    if (next.length === live.length) return;
+    await writeAtomic(next, paths.processesFile);
+  });
 }
 
 /**
@@ -151,19 +170,21 @@ export async function unregister(id: string): Promise<void> {
  * /account change so `ps` reflects the current credentials. No-op when the
  * entry has already been pruned out.
  */
-export async function updateEntry(
+export function updateEntry(
   id: string,
   patch: Partial<Pick<ProcessEntry, 'appId' | 'tenant' | 'configPath' | 'botName'>>,
 ): Promise<void> {
-  const live = readAndPrune();
-  let changed = false;
-  const next = live.map((e) => {
-    if (e.id !== id) return e;
-    changed = true;
-    return { ...e, ...patch };
+  return enqueue(async () => {
+    const live = readAndPrune();
+    let changed = false;
+    const next = live.map((e) => {
+      if (e.id !== id) return e;
+      changed = true;
+      return { ...e, ...patch };
+    });
+    if (!changed) return;
+    await writeAtomic(next, paths.processesFile);
   });
-  if (!changed) return;
-  await writeAtomic(next, paths.processesFile);
 }
 
 /**
@@ -214,9 +235,11 @@ export function resolveTarget(
   const live = readAndPrune(path);
   const byId = live.find((e) => e.id === target);
   if (byId) return byId;
-  const n = Number.parseInt(target, 10);
-  if (Number.isFinite(n) && n >= 1 && n <= live.length) {
-    return live[n - 1];
+  // Only a pure-digit target is an index; otherwise a typo like `3f2` would
+  // silently resolve to entry 3 and stop the wrong process.
+  if (/^\d+$/.test(target)) {
+    const n = Number.parseInt(target, 10);
+    if (n >= 1 && n <= live.length) return live[n - 1];
   }
   return undefined;
 }

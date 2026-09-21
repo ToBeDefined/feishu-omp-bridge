@@ -20,6 +20,37 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+describe('SessionStore clearSessionId', () => {
+  it('drops the session but keeps the title and idle override', async () => {
+    const store = new SessionStore(file);
+    stores.push(store);
+    store.set('oc_1', 'sess-1', '/repo');
+    store.setTitle('oc_1', '修 search bug');
+    store.setIdleTimeoutMinutes('oc_1', 30);
+
+    store.clearSessionId('oc_1');
+
+    // A stale-session rollover is not a context reset: /new /cd /ws own that.
+    expect(store.getRaw('oc_1')?.sessionId).toBeUndefined();
+    expect(store.getRaw('oc_1')?.cwd).toBeUndefined();
+    expect(store.getRaw('oc_1')?.title).toBe('修 search bug');
+    expect(store.getIdleTimeoutMinutes('oc_1')).toBe(30);
+    expect(store.resumeFor('oc_1', '/repo')).toBeUndefined();
+    await store.flush();
+  });
+
+  it('keeps a bare override entry created before the first run', async () => {
+    const store = new SessionStore(file);
+    stores.push(store);
+    store.setIdleTimeoutMinutes('oc_1', 15);
+
+    store.clearSessionId('oc_1');
+
+    expect(store.getIdleTimeoutMinutes('oc_1')).toBe(15);
+    await store.flush();
+  });
+});
+
 describe('SessionStore title', () => {
   it('sets and clears a title', async () => {
     const store = new SessionStore(file);

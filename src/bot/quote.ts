@@ -4,6 +4,7 @@ import type {
   RawMessageEvent,
 } from '@larksuiteoapi/node-sdk';
 import { normalize } from '@larksuiteoapi/node-sdk';
+import { escapeFramingAttr, neutralizeFraming } from '../agent/omp/args';
 import { log } from '../core/logger';
 import { expandInteractiveCard } from './interactive-card';
 
@@ -161,11 +162,11 @@ export function renderQuotedBlock(quotes: QuotedContext[]): string {
   if (quotes.length === 0) return '';
   const parts = quotes.map((q) => {
     const attrs = [
-      `id="${q.messageId}"`,
-      q.senderId ? `sender_id="${q.senderId}"` : '',
-      q.senderName ? `sender_name="${q.senderName}"` : '',
-      q.createdAt ? `created_at="${q.createdAt}"` : '',
-      `type="${q.rawContentType}"`,
+      `id="${escapeFramingAttr(q.messageId)}"`,
+      q.senderId ? `sender_id="${escapeFramingAttr(q.senderId)}"` : '',
+      q.senderName ? `sender_name="${escapeFramingAttr(q.senderName)}"` : '',
+      q.createdAt ? `created_at="${escapeFramingAttr(q.createdAt)}"` : '',
+      `type="${escapeFramingAttr(q.rawContentType)}"`,
     ]
       .filter(Boolean)
       .join(' ');
@@ -173,7 +174,9 @@ export function renderQuotedBlock(quotes: QuotedContext[]): string {
       q.content.length > QUOTE_CONTENT_CAP
         ? `${q.content.slice(0, QUOTE_CONTENT_CAP)}\n…（引用内容已截断）`
         : q.content;
-    return `<quoted_message ${attrs}>\n${body}\n</quoted_message>`;
+    // The body is any chat member's message text (including members the
+    // access list does not cover) — it must not be able to close the block.
+    return `<quoted_message ${attrs}>\n${neutralizeFraming(body)}\n</quoted_message>`;
   });
   return parts.join('\n');
 }

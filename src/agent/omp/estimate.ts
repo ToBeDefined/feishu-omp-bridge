@@ -29,10 +29,16 @@ export async function findSessionFile(
   } catch {
     return undefined;
   }
-  // The session-id frame is line 1 and omp names the file after it, but the
-  // file can be resumed under a copied name — match on content like /ctx does.
+  // omp names the file `<timestamp>_<id>.jsonl` (or `<id>.jsonl`), but a
+  // session can be resumed under a copied name. Match on an exact id
+  // boundary: strip `.jsonl` and accept when the base equals the id or ends
+  // with `_` + id. A substring match would let id `s1` also match `s10`.
   const candidate = entries
-    .filter((n) => n.endsWith('.jsonl') && n.includes(sessionId))
+    .filter((n) => {
+      if (!n.endsWith('.jsonl')) return false;
+      const base = n.slice(0, -'.jsonl'.length);
+      return base === sessionId || base.endsWith(`_${sessionId}`);
+    })
     .sort()
     .at(-1);
   return candidate ? join(sessionDir, candidate) : undefined;

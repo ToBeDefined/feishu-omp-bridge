@@ -1,9 +1,11 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
-import { readFile, stat } from 'node:fs/promises';
-import { basename, extname } from 'node:path';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, extname, resolve, sep } from 'node:path';
 import type { AgentHostTool, AgentHostUriScheme } from '../agent/types';
 import { buildAgentCard } from '../card/agent-card';
 import { sendManagedCard } from '../card/managed';
+import { paths } from '../config/paths';
 import { fetchQuotedContext, parseMessageContent } from './quote';
 import { addReaction } from './reaction';
 import type { ActiveRuns } from './active-runs';
@@ -16,6 +18,54 @@ export interface FeishuHostContext {
   cwd: string;
   /** Needed by feishu_view_image to inject a local image into the active run. */
   activeRuns?: ActiveRuns;
+  /**
+   * Access guard for a model-supplied `chatId`. The tools below accept an
+   * explicit target chat, so without this the agent can write into chats the
+   * operator excluded from `access.allowedChats` (and read their history).
+   * Omitted = unrestricted, matching an empty allowlist.
+   */
+  isChatAllowed?: (chatId: string) => boolean;
+}
+
+/**
+ * Roots a model-supplied path may live in. The agent works in the session cwd,
+ * user-sent files land in the media cache, and generated artifacts often go to
+ * the OS temp dir. Everything else — notably the app dir holding config.json
+ * and secrets.enc, and arbitrary $HOME paths — is refused: a prompt injection
+ * must not be able to turn feishu_send_file into an exfiltration channel.
+ */
+function sendableRoots(ctx: FeishuHostContext): string[] {
+  // os.tmpdir() is not /tmp on macOS (/var/folders/…), and both are legitimate
+  // scratch space for generated artifacts.
+  return [ctx.cwd, paths.mediaDir, tmpdir(), '/tmp'];
+}
+
+/** Resolve + contain a model-supplied path (symlinks included). */
+async function resolveSendablePath(raw: string, ctx: FeishuHostContext): Promise<string> {
+  const abs = resolve(raw);
+  // Validate the symlink-resolved target, but hand back the path the caller
+  // named (a symlinked /tmp would otherwise be rewritten to /private/tmp).
+  const real = await realpath(abs);
+  const roots = (
+    await Promise.all(sendableRoots(ctx).map((root) => realpath(root).catch(() => undefined)))
+  ).filter((root): root is string => root !== undefined);
+  const inside = roots.some((root) =>
+    real === root || real.startsWith(root.endsWith(sep) ? root : `${root}${sep}`),
+  );
+  if (!inside) {
+    throw new Error(`拒绝访问工作目录之外的文件：${real}（仅允许 ${roots.join(' / ')}）`);
+  }
+  return abs;
+}
+
+/** Resolve a model-supplied chat target, honouring the configured allowlist. */
+function resolveTargetChat(args: Record<string, unknown>, ctx: FeishuHostContext): string {
+  const requested = optionalString(args, 'chatId');
+  if (!requested || requested === ctx.chatId) return ctx.chatId;
+  if (ctx.isChatAllowed && !ctx.isChatAllowed(requested)) {
+    throw new Error(`不允许操作该会话：${requested}（不在 access.allowedChats 内）`);
+  }
+  return requested;
 }
 
 export interface FeishuHostIntegration {
@@ -71,7 +121,7 @@ function sendMessageTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHos
     },
     async execute(args) {
       const content = requiredString(args, 'content');
-      const chatId = optionalString(args, 'chatId') ?? ctx.chatId;
+      const chatId = resolveTargetChat(args, ctx);
       await channel.send(chatId, { markdown: content }, ctx.threadId && chatId === ctx.chatId ? { replyInThread: true } : undefined);
       return { result: textResult(`sent message to ${chatId}`) };
     },
@@ -135,7 +185,7 @@ function listMessagesTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHo
       }),
     },
     async execute(args) {
-      const explicitChat = optionalString(args, 'chatId');
+      const explicitChat = optionalString(args, 'chatId') ? resolveTargetChat(args, ctx) : undefined;
       // Topic scope: list the thread's messages, not the whole chat. Only
       // when the caller didn't pass an explicit chatId (that wins).
       const threadId = ctx.threadId;
@@ -245,9 +295,9 @@ function sendFileTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTo
       }, ['path']),
     },
     async execute(args) {
-      const path = requiredString(args, 'path');
+      const path = await resolveSendablePath(requiredString(args, 'path'), ctx);
       const fileName = optionalString(args, 'fileName') ?? basename(path);
-      const chatId = optionalString(args, 'chatId') ?? ctx.chatId;
+      const chatId = resolveTargetChat(args, ctx);
       // Feishu's upload ceiling is ~30MB; refuse earlier than OOM-ing on a
       // GB-sized path an agent could be tricked into sending.
       const st = await stat(path);
@@ -339,12 +389,15 @@ function viewImageTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostT
       }, ['path']),
     },
     async execute(args) {
-      const path = requiredString(args, 'path');
+      const raw = requiredString(args, 'path');
       const note = optionalString(args, 'note');
-      const ext = extname(path).toLowerCase();
+      // Extension first: a non-image path should say so rather than fail the
+      // containment check (or a stat) for an unrelated reason.
+      const ext = extname(raw).toLowerCase();
       if (!IMAGE_MIME[ext]) {
-        throw new Error(`not an image file (supported: png/jpg/gif/webp/bmp/tiff/ico): ${path}`);
+        throw new Error(`not an image file (supported: png/jpg/gif/webp/bmp/tiff/ico): ${raw}`);
       }
+      const path = await resolveSendablePath(raw, ctx);
       await stat(path); // verify readable without reading the whole image
       const activeRuns = ctx.activeRuns;
       if (!activeRuns || !activeRuns.has(ctx.scope)) {

@@ -91,7 +91,7 @@ export function statusCard(info: StatusInfo): object {
     `🧭 **scope**: ${scopeLine}`,
     `📁 **cwd**: \`${escapeCode(info.cwd)}\``,
     `🔗 **session**: ${sessionLine}`,
-    info.sessionTitle ? `🏷 **标题**: \`${escapeMd(info.sessionTitle)}\`` : '',
+    info.sessionTitle ? `🏷 **标题**: \`${escapeCode(info.sessionTitle)}\`` : '',
     `🤖 **agent**: ${escapeMd(info.agentName)}`,
   ].filter(Boolean);
   return shell('📊 当前状态', [
@@ -147,9 +147,28 @@ export function helpCard(): object {
 }
 
 export function escapeMd(s: string): string {
-  return s.replace(/([*_`\\])/g, '\\$1');
+  // `[ ] ( ) !` are included so untrusted text cannot forge a link or image
+  // (`[x](url)` / `![](url)`) inside card markdown.
+  return s.replace(/([*_`\\[\]()!])/g, '\\$1');
 }
 
-function escapeCode(s: string): string {
+/**
+ * Wrap `content` in a backtick fence longer than the longest backtick run it
+ * contains (min 3), so untrusted content cannot close the fence early and
+ * spill into the surrounding markdown.
+ */
+export function codeFence(content: string, lang?: string): string {
+  const longest = (content.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}${lang ?? ''}\n${content}\n${fence}`;
+}
+
+/**
+ * Neutralise content that goes INSIDE an inline code span. Backslash escapes
+ * are not processed inside a code span, so `escapeMd` there renders visible
+ * backslashes (`src/a\(b\).ts`); the span itself already suppresses markdown,
+ * only the delimiter needs handling.
+ */
+export function escapeCode(s: string): string {
   return s.replace(/`/g, "'");
 }

@@ -1,8 +1,7 @@
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { paths } from '../../config/paths';
-import { getAgentStopGraceMs, getOmpModel } from '../../config/schema';
+import { getAgentStopGraceMs, getOmpModel, getOmpSessionDir } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
 import { codeSpan, reply } from '../shared';
 import { extractUserInput } from './context';
@@ -73,7 +72,7 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
   const sess = ctx.sessions.getRaw(ctx.scope);
   if (!sess?.sessionId) return null;
 
-  const messages = await loadRecentUserMessages(sess.sessionId);
+  const messages = await loadRecentUserMessages(ctx, sess.sessionId);
   if (messages.length === 0) return null;
   const list = messages.map((m, i) => `${i + 1}. ${summarize(m, 200)}`).join('\n');
 
@@ -125,15 +124,17 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
 /** Collect the most recent real user messages for a session (newest last),
  * skipping bridge-wrapper / system-prompt frames. Capped at `maxCount`. */
 async function loadRecentUserMessages(
+  ctx: CommandContext,
   sessionId: string,
   maxCount = 10,
 ): Promise<string[]> {
   const all: string[] = [];
   try {
-    const entries = await readdir(paths.ompSessionsDir);
+    const dir = getOmpSessionDir(ctx.controls.cfg);
+    const entries = await readdir(dir);
     for (const name of entries) {
       if (!name.endsWith('.jsonl')) continue;
-      const text = await readFile(join(paths.ompSessionsDir, name), 'utf8');
+      const text = await readFile(join(dir, name), 'utf8');
       if (!text.includes(`"id":"${sessionId}"`)) continue;
       for (const line of text.split('\n')) {
         if (!line.includes('"type":"message"')) continue;

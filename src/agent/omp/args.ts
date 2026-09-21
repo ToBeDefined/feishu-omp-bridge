@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import type { AgentRunOptions } from '../types';
 
 export const OMP_BRIDGE_PROMPT = `# feishu-omp-bridge 运行约定
@@ -40,6 +41,41 @@ export interface BuildOmpArgsOptions extends AgentRunOptions {
   tools?: string;
 }
 
+/**
+ * Tags the bridge frames prompt metadata in. The model is told these blocks
+ * are bridge-authored, but their bodies are not: message text, display names
+ * and card JSON all come from chat members (including members the access
+ * list does not cover, via a quoted message). A body containing a closing tag
+ * would end the bridge's block early and let arbitrary text impersonate
+ * bridge metadata. Break the tag syntax inside interpolated content instead of
+ * escaping every angle bracket — the text stays readable for the model.
+ */
+export const PROMPT_FRAME_TAGS = ['bridge_context', 'quoted_message', 'interactive_card'] as const;
+
+/** Neutralise framing-tag syntax inside a block body. */
+export function neutralizeFraming(text: string, tags: readonly string[] = PROMPT_FRAME_TAGS): string {
+  let out = text;
+  for (const tag of tags) {
+    out = out.replaceAll(`<${tag}`, `&lt;${tag}`).replaceAll(`</${tag}`, `&lt;/${tag}`);
+  }
+  return out;
+}
+
+/** Escape a value interpolated into a quoted attribute of a framing tag. */
+export function escapeFramingAttr(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replace(/[\r\n]+/g, ' ');
+}
+
+/** Neutralise a value interpolated on its own `key: value` line inside a block. */
+export function flattenFramingLine(value: string): string {
+  return neutralizeFraming(value).replace(/[\r\n]+/g, ' ');
+}
+
 export function buildOmpPrompt(prompt: string): string {
   return `${OMP_BRIDGE_PROMPT}\n---\n\n${prompt}`;
 }
@@ -68,5 +104,10 @@ export function buildOmpArgs(opts: BuildOmpArgsOptions): string[] {
 function clean(value: string | undefined): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+  if (trimmed.length === 0) return undefined;
+  // Defense in depth: a `~`-prefixed flag value (session dir, cwd-derived
+  // path, …) must never reach argv as a literal `~` directory.
+  if (trimmed === '~') return homedir();
+  if (trimmed.startsWith('~/')) return `${homedir()}${trimmed.slice(1)}`;
+  return trimmed;
 }

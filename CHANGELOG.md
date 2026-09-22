@@ -41,6 +41,12 @@
   （`bash -c`，支持管道/重定向），当前 cwd 执行、30s 超时、输出截断
   1000 字符、禁交互、写审计日志。
 ### Fixed
+- `/model` 快捷模型按钮会把非 chat 角色当 chat 模型：OMP 18.2.7 新增
+  `image`/`web`/`speech`/`dictation`/`judge` 角色，并把历史的
+  `providers.webSearch`/`tts`/`stt` 设置自动迁移进 `modelRoles`；bridge 原来把
+  `modelRoles` 里所有含 `/` 的取值都当"常用模型"按钮，点一下就会把
+  `omp --model` 指到 TTS/搜索/出图模型上，该 chat 之后每轮都失败 → 现在按
+  OMP 的角色语义过滤掉这些非 chat 角色（`memory` 等仍保留）。
 - `/restart` 静默重启、请求方收不到回音：launchd kickstart 杀掉进程后无法再
   ack，而启动通知只发给 sessions.json 里有 session 的 chat，`/new`、`/cd`、
   `/ws` 又都会清掉 session —— 刚 `/ws` 完再 `/restart` 就完全没有回应，

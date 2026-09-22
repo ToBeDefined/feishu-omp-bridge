@@ -15,8 +15,18 @@ export interface OmpModelEntry {
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * OMP roles that hold non-chat models. OMP 18.2.7 added them (plus automatic
+ * migration of legacy web-search / tts / stt settings into `modelRoles`), and
+ * its own role pickers filter candidates by model kind — a `speech` selector
+ * is a TTS model, `web` a search model, `image` an image generator. Offering
+ * one as a quick-set would point `omp --model` at a model that cannot answer a
+ * prompt, so every run in that chat would fail.
+ */
+const NON_CHAT_ROLES = new Set(['image', 'web', 'speech', 'dictation', 'judge']);
+
 /** Read the configured modelRoles (per-role models in ~/.omp config) and
- * return the distinct model selectors, newest-first as authored. The
+ * return the distinct chat-model selectors, newest-first as authored. The
  * `default` role often carries a `:thinking` suffix, which is stripped. */
 export async function commonOmpModels(cfg: AppConfig): Promise<string[]> {
   const omp = getOmpBinary(cfg);
@@ -29,6 +39,7 @@ export async function commonOmpModels(cfg: AppConfig): Promise<string[]> {
     const seen = new Set<string>();
     const out: string[] = [];
     for (const role of Object.keys(parsed.value ?? {})) {
+      if (NON_CHAT_ROLES.has(role)) continue;
       const raw = parsed.value?.[role] ?? '';
       const sel = raw.split(':')[0] ?? '';
       if (!sel || !sel.includes('/')) continue;

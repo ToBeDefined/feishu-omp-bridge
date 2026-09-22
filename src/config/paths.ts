@@ -18,7 +18,11 @@ export const paths = {
   modelsCacheFile: join(appDir, 'models-cache.json'),
   modelHistoryFile: join(appDir, 'model-history.json'),
   schedulerFile: join(appDir, 'scheduler.json'),
-  releaseNotifyFile: join(appDir, 'release-notify.json'),
+  onlineNotifyFile: join(appDir, 'online-notify.json'),
+  /** Previous name of {@link onlineNotifyFile}. Kept readable because the
+   *  bounce that installs this rename is performed by the build being
+   *  replaced, which still writes the old filename. */
+  legacyOnlineNotifyFile: join(appDir, 'release-notify.json'),
 };
 
 export const legacyPaths = {

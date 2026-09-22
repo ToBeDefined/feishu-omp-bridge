@@ -41,6 +41,14 @@
   （`bash -c`，支持管道/重定向），当前 cwd 执行、30s 超时、输出截断
   1000 字符、禁交互、写审计日志。
 ### Fixed
+- `/restart` 静默重启、请求方收不到回音：launchd kickstart 杀掉进程后无法再
+  ack，而启动通知只发给 sessions.json 里有 session 的 chat，`/new`、`/cd`、
+  `/ws` 又都会清掉 session —— 刚 `/ws` 完再 `/restart` 就完全没有回应，
+  看着像没重启成功（实际进程已换新）→ 现在 `/restart` 与 `/release` 一样在
+  bounce 前记下请求方 chat，新进程把它加进「已上线」通知目标；标记文件
+  `release-notify.json` → `online-notify.json`（旧名读一次，兼容由旧构建
+  执行的那次安装 bounce）；非 launchd 的进程内重连与 `restartProcess` 抛错
+  时清掉标记，避免之后某次启动冒出一条过期的「已上线」。
 - OMP 进程提前退出导致 run 永久挂起、回复石沉大海：OMP 只在自己的 turn
   结束后（或 `--resume` 失败时）立刻退出，而 bridge 要先把媒体/引用处理
   完、把首张卡片发出去才去读它的 stdout；等真正开始读时管道已经 EOF，

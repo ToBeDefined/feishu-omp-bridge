@@ -4,10 +4,14 @@
 功能等价于原 self-heal.sh（Python 重写，接口一致）：
 
   探测维度（每 60s，连续 FAIL_THRESHOLD 次异常才算"假死"）：
-    1. 进程存活  —— 有 feishu-omp-bridge.mjs run 进程
-    2. WS 连通    —— bridge status 显示正在后台运行
-  OMP 是 bridge 的外部依赖；它不可用时由具体 agent 请求报告错误，不能
-  反过来把在线 bridge 判成假死并触发破坏性重启或回滚。
+    1. 进程存活  —— launchd 给的 pid / processes.json 里进程自写的 pid
+                    (kill -0) / pgrep 命中，三路独立信号取 OR；只有三路都
+                    判死才算死，探针超时/异常一律算"判不出"，绝不当成死。
+    2. 服务连通  —— bridge status 显示正在后台运行
+  探测结果是三态：True 健康 / False 确认假死 / None 判不出。只有 False 才
+  会触发修复动作 —— 对"可能是健康的"daemon 做破坏性 restart/回退，代价远
+  高于多等一轮。OMP 是 bridge 的外部依赖；它不可用时由具体 agent 请求报告
+  错误，不能反过来把在线 bridge 判成假死并触发破坏性重启或回滚。
 
   修复策略（由轻到重）：
     A. bridge restart（每轮阈值都试，轻量）
@@ -24,11 +28,16 @@
   HEAL_STATE_DIR / HEAL_LOCK_FILE / HEAL_RESTART_CMD / HEAL_OMP_BIN /
   HEAL_PGREP_PATTERN / HEAL_RECOVER_WAIT_S / HEAL_INTERVAL_S /
   HEAL_FAIL_THRESHOLD / HEAL_OMP_TIMEOUT_S / HEAL_MODEL /
-  HEAL_BACKOFF_BASE_S / HEAL_BACKOFF_MAX_S / HEAL_MAX_ATTEMPTS
+  HEAL_BACKOFF_BASE_S / HEAL_BACKOFF_MAX_S / HEAL_MAX_ATTEMPTS /
+  HEAL_PROC_TIMEOUT_S / HEAL_WS_TIMEOUT_S / HEAL_BUILD_TIMEOUT_S /
+  HEAL_ROLLBACK
 """
+
+from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,6 +55,14 @@ RESTART_CMD = os.environ.get("HEAL_RESTART_CMD", f"node {REPO}/bin/feishu-omp-br
 OMP_BIN = os.environ.get("HEAL_OMP_BIN", "omp")
 PGREP_PATTERN = os.environ.get("HEAL_PGREP_PATTERN", "feishu-omp-bridge.mjs run")
 RECOVER_WAIT_S = int(os.environ.get("HEAL_RECOVER_WAIT_S", "5"))
+
+# 探针超时：旧值 pgrep 5s / status 15s 太紧 —— 系统忙时探针自己会超时，
+# 而超时被当成"进程不存在"，就会对健康的 daemon 动手（2026-09-24 重启风暴）。
+PROC_TIMEOUT_S = int(os.environ.get("HEAL_PROC_TIMEOUT_S", "15"))
+WS_TIMEOUT_S = int(os.environ.get("HEAL_WS_TIMEOUT_S", "30"))
+# pnpm build 超时：旧值 120s 会在机器忙时超时，把回退留在半途（dist 与
+# 回退后的 src 漂移）。超时按"环境问题"处理，不作为"代码坏"的证据。
+BUILD_TIMEOUT_S = int(os.environ.get("HEAL_BUILD_TIMEOUT_S", "300"))
 
 INTERVAL_S = int(os.environ.get("HEAL_INTERVAL_S", "60"))
 FAIL_THRESHOLD = int(os.environ.get("HEAL_FAIL_THRESHOLD", "3"))
@@ -130,53 +147,131 @@ def state_get(key: str) -> int:
     return int(_read_state().get(key, 0))
 
 
+def _now_iso() -> str:
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
 def write_fails(fails: int) -> None:
-    _write_state({"fails": fails, "lastCheck": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")})
+    _write_state({"fails": fails, "lastCheck": _now_iso()})
 
 
 # --- 健康探测 ---
-def _proc_alive() -> bool:
+def _registered_pid() -> int | None:
+    """processes.json 里登记的 daemon pid（取第一个可解析的条目）。
+
+    这是 bridge 进程自己写的"我在跑，pid=N"，与 pgrep 的 argv 模式匹配
+    完全独立：pgrep 会因为入口路径不同（argv 不含 feishu-omp-bridge.mjs）
+    或超时假阴性，而 pid + kill -0 不会。"""
+    try:
+        with open(os.path.join(STATE_DIR, "processes.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    entries = data.get("entries") if isinstance(data, dict) else None
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            pid = int(entry.get("pid"))
+        except (TypeError, ValueError):
+            continue
+        if pid > 0:
+            return pid
+    return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """kill(pid, 0)：能发信号即活着。PermissionError 说明进程存在（只是不
+    归我们管），同样算活着。"""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _pgrep_alive() -> bool | None:
+    """pgrep 模式匹配。True/False 是明确结论，None = 判不出（超时 / pgrep
+    缺失）—— "慢"不等于"死"。"""
     try:
         out = subprocess.run(
-            ["pgrep", "-f", PGREP_PATTERN], capture_output=True, text=True, timeout=5
+            ["pgrep", "-f", PGREP_PATTERN],
+            capture_output=True, text=True, timeout=PROC_TIMEOUT_S,
         )
-        return out.returncode == 0
     except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+    if out.returncode == 0:
+        return True
+    if out.returncode == 1:
         return False
+    return None
 
 
-def _ws_connected() -> bool:
-    """WS 活跃探测。优先用 `bridge status`（检查 launchd 服务加载 + 进程
-    注册），比只看 processes.json 的 botName 静态标记更能捕获'进程活着但
-    WS 假死/服务未加载'。status 非零退出 = 不在后台运行。"""
+def _service_status() -> tuple[bool | None, int | None]:
+    """跑一次 `bridge status`，返回 (是否在后台运行, launchd 记录的 pid)。
+
+    进程 pid 由 launchd 自己给出（`bridge status` 里的「进程 ID: N」），
+    与 argv 形态无关，是比 pgrep 更权威的存活证据。命令跑不起来/超时 →
+    (None, None)：状态未知，不能当成"没在跑"。"""
     try:
         r = subprocess.run(
             [*RESTART_CMD.split(), "status"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True, timeout=WS_TIMEOUT_S,
         )
-        if r.returncode == 0 and "正在后台运行" in r.stdout:
-            return True
-        return False
     except (subprocess.SubprocessError, FileNotFoundError, IndexError):
-        # 兜底：回退到 botName 静态标记
-        try:
-            with open(os.path.join(STATE_DIR, "processes.json"), encoding="utf-8") as f:
-                return '"botName"' in f.read()
-        except OSError:
-            return False
+        return None, None
+    stdout = r.stdout or ""
+    pid: int | None = None
+    m = re.search(r"进程 ID:\s*(\d+)", stdout)
+    if m:
+        pid = int(m.group(1))
+    return (r.returncode == 0 and "正在后台运行" in stdout), pid
 
 
+def _proc_alive(launchd_pid: int | None = None) -> bool | None:
+    """进程存活：三路独立信号取 OR，只有全部判死才返回 False。
+
+    1. launchd 自己的 pid（最权威，与 argv 无关）
+    2. processes.json 里进程自写的 pid
+    3. pgrep -f 模式匹配（受入口路径与超时影响，最弱）
+    任一确认活着 → True；判死必须是 pgrep 明确无匹配（rc=1）；pgrep 判不出
+    且两处 pid 都不可用/已死 → None（判不出，交给下一轮）。"""
+    for pid in (launchd_pid, _registered_pid()):
+        if pid is not None and _pid_alive(pid):
+            return True
+    pg = _pgrep_alive()
+    if pg is None and launchd_pid is None:
+        return None
+    return pg
 
 
-def probe() -> bool:
-    healthy = True
-    if not _proc_alive():
-        log("✗ 进程不存在")
-        healthy = False
-    if not _ws_connected():
-        log("✗ 未检测到 WS 连接(processes.json 无 botName)")
-        healthy = False
-    return healthy
+def probe() -> bool | None:
+    """True=健康；False=确认假死（可以动手修）；None=判不出（不动手）。
+
+    判死门槛：进程存活检查确认无进程（三路信号一致判死），或 `bridge
+    status` 明确报"没在后台运行"。任一探针超时/无法执行 → None：宁可多等
+    一轮，也不对可能是健康的 daemon 做破坏性 restart / git 回退。"""
+    running, launchd_pid = _service_status()
+    alive = _proc_alive(launchd_pid)
+    if alive is None:
+        log("✗ 进程探针判不出（pgrep 超时/异常，且无可用 pid），本轮不动手")
+        return None
+    if alive:
+        if running:
+            return True
+        if running is None:
+            log("✗ 服务探针判不出（bridge status 超时/异常），本轮不动手")
+            return None
+        log("✗ 未检测到 WS 连接(bridge status 报告未在后台运行)")
+        return False
+    log("✗ 进程不存在(launchd pid / 注册表 pid / pgrep 均未发现进程)")
+    return False
 
 
 # --- 修复 ---
@@ -191,7 +286,8 @@ def repair_restart() -> bool:
     if r is not None and r.returncode == 0:
         log("✓ restart 成功，等待探测恢复...")
         time.sleep(RECOVER_WAIT_S)
-        if probe():
+        # 只有明确健康才算修复成功；probe() 返回 None（判不出）不算。
+        if probe() is True:
             write_fails(0)
             log("✓ 自愈完成（restart）")
             return True
@@ -241,7 +337,7 @@ def repair_with_omp() -> bool:
     if ok:
         log("✓ omp 修复会话已执行")
         time.sleep(RECOVER_WAIT_S)
-        if probe():
+        if probe() is True:
             write_fails(0)
             _write_state({"ompAttempts": 0, "nextOmpAt": 0})
             log("✓ 自愈完成（omp 修复）")
@@ -300,6 +396,63 @@ def _dist_matches_head(head: str) -> bool:
         return False
 
 
+def _git_dirty() -> bool:
+    """工作区是否有未提交改动。git 异常时保守返回 True（照旧 stash 保底）。"""
+    try:
+        r = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=REPO, capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return True
+    return bool((r.stdout or "").strip())
+
+
+def _run_build() -> str:
+    """跑 `pnpm build`，返回 'ok' / 'fail'（非零退出）/ 'env'（超时或跑不起来）。
+
+    超时与失败必须分开：build 超时是"机器忙"，不是"这个提交的代码坏"；
+    旧实现把 TimeoutExpired 抛给外层 except，于是回退停在中途 —— HEAD 已
+    回退、dist 却是半成品，用户的提交也被静默换掉。"""
+    try:
+        b = subprocess.run(
+            ["pnpm", "build"], cwd=REPO, capture_output=True, text=True, timeout=BUILD_TIMEOUT_S
+        )
+    except subprocess.TimeoutExpired:
+        return "env"
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return "env"
+    return "ok" if b.returncode == 0 else "fail"
+
+
+def _restore_head(pre_head: str, stashed: bool) -> None:
+    """把仓库恢复到回退前的 HEAD，并尽力让 dist 与它一致。
+
+    回退中途失败时的兜底：宁可留在原状态（下一轮/人工继续），也不要留下
+    「HEAD 回退了、dist 是半成品」的漂移状态。"""
+    try:
+        r = subprocess.run(
+            ["git", "reset", "--hard", pre_head], cwd=REPO, capture_output=True, text=True, timeout=30
+        )
+    except (subprocess.SubprocessError, FileNotFoundError) as err:
+        log(f"✗ 恢复原 HEAD 失败: {err}")
+        return
+    if r.returncode != 0:
+        log(f"✗ 恢复原 HEAD 失败: {(r.stderr or '').strip() or 'unknown'}")
+        return
+    log(f"✓ 已恢复原 HEAD {pre_head[:12]}")
+    if stashed:
+        # 回退前 stash 的用户改动要还回去，不留悬空 stash。
+        try:
+            p = subprocess.run(["git", "stash", "pop"], cwd=REPO, capture_output=True, text=True, timeout=30)
+            if p.returncode != 0:
+                log(f"⚠ stash pop 失败，改动仍在 stash 中: {(p.stderr or '').strip()}")
+        except (subprocess.SubprocessError, FileNotFoundError) as err:
+            log(f"⚠ stash pop 异常，改动仍在 stash 中: {err}")
+    if _run_build() != "ok":
+        log("⚠ 恢复后重建 dist 未成功，dist 可能与 HEAD 不一致（下一轮自愈会重试）")
+
+
 def repair_rollback() -> bool:
     """代码坏了时按优先级恢复：
     1) 优先回退到 lastGoodSha（最近验证过健康、且 dist 匹配的提交）；
@@ -347,9 +500,12 @@ def repair_rollback() -> bool:
 
     log(f"→ 尝试回退到 {target}（第 {steps + 1}/{MAX_ROLLBACK_STEPS} 步）...")
     try:
-        # 每次 reset 前 stash：幂等（clean 工作区时 git stash 无操作），
-        # 但能保底任何未提交改动 —— 包括回退期间用户/其他进程的手动修改。
-        subprocess.run(["git", "stash", "-q"], cwd=REPO, capture_output=True, timeout=30)
+        # 只在真有未提交改动时 stash：clean 工作区 stash 是空操作，但会
+        # 留下一个需要人工清理的悬空 stash 记录。
+        stashed = False
+        if _git_dirty():
+            subprocess.run(["git", "stash", "-q"], cwd=REPO, capture_output=True, timeout=30)
+            stashed = True
         # reset --hard 而非 checkout：留在当前分支上（checkout detached HEAD
         # 会让后续 self-update 的 ff-only pull 语义彻底混乱）。
         r = subprocess.run(
@@ -363,8 +519,14 @@ def repair_rollback() -> bool:
             return False
         log(f"✓ 已回退到 {new_head[:12] or '?'}")
         # 重建 dist
-        b = subprocess.run(["pnpm", "build"], cwd=REPO, capture_output=True, text=True, timeout=120)
-        if b.returncode != 0:
+        build = _run_build()
+        if build == "env":
+            # 超时/命令跑不起来 = 环境问题，不构成"这个提交坏"的证据：
+            # 恢复原 HEAD（用户的提交不能被静默换掉），也不推进游标。
+            log("✗ rollback 后 build 超时或无法执行（环境问题，非代码问题），恢复原 HEAD")
+            _restore_head(head, stashed)
+            return False
+        if build == "fail":
             log("✗ rollback 后 build 失败，推进游标退更早节点")
             backoff = min((2 ** steps) * ROLLBACK_BASE_S, ROLLBACK_MAX_S)
             _write_state({
@@ -436,7 +598,8 @@ def repair_with_omp_guarded() -> bool:
 
 
 def heal_once() -> None:
-    if probe():
+    verdict = probe()
+    if verdict is True:
         write_fails(0)
         # 健康时记录当前提交为"已知好版本"，供 rollback 精确回退。只有
         # dist 确实由当前 HEAD build 出才记 —— 否则 HEAD 已前进但 dist 还
@@ -448,11 +611,22 @@ def heal_once() -> None:
                 "rollbackSteps": 0, "rollbackBackoffUntil": 0,
             })
         return
+    if verdict is None:
+        # 判不出（探针超时/无法执行）不动手，也不计入连续异常：把"慢"
+        # 当成"死"正是 2026-09-24 对健康 daemon 做破坏性 restart 的起点。
+        # 只更新 lastCheck，让 heal-state 仍能反映"看门狗活着，只是判不出"。
+        _write_state({"lastCheck": _now_iso()})
+        return
     fails = state_get("fails") + 1
     write_fails(fails)
     log(f"连续异常 {fails}/{FAIL_THRESHOLD}")
     if fails >= FAIL_THRESHOLD:
         write_fails(0)  # 重置，避免阈值耗尽后每轮都打 omp
+        # 动手前复检：阈值是几轮前攒下的，期间 daemon 可能已经自己恢复，
+        # 或者只是探针慢。只有复检仍明确判死才做破坏性动作。
+        if probe() is not False:
+            log("✗ 复检未确认假死（探针判不出或已恢复），放弃本轮修复")
+            return
         if repair_restart():
             return
         repair_with_omp_guarded()

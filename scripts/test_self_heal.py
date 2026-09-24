@@ -49,28 +49,30 @@ def heal(tmp_path, monkeypatch):
     # 可控假命令：记录调用，退出码由模块变量决定
     calls = {"restart": 0, "omp_run": 0, "ctx": None, "git_reset": 0, "git_checkout": 0, "build": 0}
 
+    # 探测状态：进程一路、服务一路，可分别置为 True / False / None(判不出)
+    probe_state = {"alive": True, "running": True}
+
+    def _revive():
+        """模拟修复生效：进程复活 + 服务恢复。"""
+        probe_state["alive"] = True
+        probe_state["running"] = True
+
     def fake_run(cmd, **kw):
         argv = cmd if isinstance(cmd, list) else str(cmd).split()
         # restart: RESTART_CMD.split() → ["fake-restart"]
         # omp run:  ["fake-omp", "run", ...]
         if argv and argv[0] == "fake-restart":
             calls["restart"] += 1
-            # restart 动作让进程复活 + 写回 botName（模拟修复 WS）
+            # restart 动作让进程复活 + 服务恢复
             if getattr(mod, "RESTART_FIX", False):
-                probe_state["alive"] = True
-                (tmp_path / "processes.json").write_text(
-                    '{"entries":[{"botName":"Agent","pid":123}]}'
-                )
+                _revive()
             rc = 0 if getattr(mod, "RESTART_OK", True) else 1
         elif len(argv) >= 2 and argv[0] == "fake-omp" and argv[1] == "run":
             calls["omp_run"] += 1
             calls["ctx"] = argv[-1]
             rc = 0 if getattr(mod, "OMP_RUN_OK", False) else 1
             if rc == 0 and getattr(mod, "OMP_RUN_FIX", False):
-                probe_state["alive"] = True
-                (tmp_path / "processes.json").write_text(
-                    '{"entries":[{"botName":"Agent","pid":123}]}'
-                )
+                _revive()
         else:
             # rollback 流程: git stash / git rev-parse / git reset / pnpm build
             if argv and argv[0] == "git":
@@ -89,24 +91,32 @@ def heal(tmp_path, monkeypatch):
                 rc = 0
         return subprocess.CompletedProcess(argv, rc)
 
-    # 探测：进程用可控 state；WS 读真实 processes.json（restart 修复后
-    # RESTART_FIX 会写回 botName，需真实读取才能验证闭环）。
-    probe_state = {"alive": True}
+    # 探测：进程/服务各一路可控 state。只桩掉探针的输入（注册表 pid /
+    # pgrep / bridge status），三态判定逻辑本身走真实实现。
+    def _registered_pid():
+        # 进程活着时给一个必然存在的 pid（本测试进程自己）
+        return os.getpid() if probe_state["alive"] else None
 
-    def _proc_alive():
+    def _pgrep_alive():
         return probe_state["alive"]
 
-    def _ws_connected():
-        try:
-            return '"botName"' in (tmp_path / "processes.json").read_text()
-        except OSError:
-            return False
+    def _service_status():
+        return probe_state["running"], None
 
-    monkeypatch.setattr(mod, "subprocess", type("SP", (), {"run": staticmethod(fake_run)})())
+    monkeypatch.setattr(
+        mod,
+        "subprocess",
+        type("SP", (), {
+            "run": staticmethod(fake_run),
+            "TimeoutExpired": subprocess.TimeoutExpired,
+            "SubprocessError": subprocess.SubprocessError,
+        })(),
+    )
     monkeypatch.setattr(mod, "RESTART_CMD", "fake-restart")
     monkeypatch.setattr(mod, "OMP_BIN", "fake-omp")
-    monkeypatch.setattr(mod, "_proc_alive", _proc_alive)
-    monkeypatch.setattr(mod, "_ws_connected", _ws_connected)
+    monkeypatch.setattr(mod, "_registered_pid", _registered_pid)
+    monkeypatch.setattr(mod, "_pgrep_alive", _pgrep_alive)
+    monkeypatch.setattr(mod, "_service_status", _service_status)
 
     # 默认参数
     mod.RECOVER_WAIT_S = 0
@@ -119,8 +129,6 @@ def heal(tmp_path, monkeypatch):
 
     mod.calls = calls
     mod.probe_state = probe_state
-    # 默认健康：有 botName（RESTART_FIX/断连测试会改）
-    (tmp_path / "processes.json").write_text('{"entries":[{"botName":"Agent","pid":123}]}')
     return mod
 
 
@@ -158,10 +166,80 @@ def test_proc_dead_triggers_restart(heal):
     assert heal.state_get("fails") == 0
 
 
-# --- 3. WS 断连(无 botName) → restart ---
+# --- 3. 服务断连(bridge status 报未在后台运行) → restart ---
 def test_ws_disconnect_triggers_restart(heal):
-    (heal.STATE_DIR and Path(heal.STATE_DIR) / "processes.json").unlink(missing_ok=True)
+    heal.probe_state["running"] = False   # 进程还在，但服务未在后台运行
     heal.heal_once()
+    heal.heal_once()
+    assert heal.calls["restart"] == 1
+
+
+# --- 3b. 探针判不出 / 假阴性：绝不动手（2026-09-24 重启风暴回归） ---
+def test_pgrep_false_negative_does_not_trigger_repair(heal, monkeypatch):
+    """pgrep 假阴性（argv 不匹配或超时）时，注册表/launchd 的 pid 仍活着
+    → 判健康。旧实现只看 pgrep，会把健康 daemon 判死并做破坏性 restart。"""
+    monkeypatch.setattr(heal, "_pgrep_alive", lambda: False)
+    monkeypatch.setattr(heal, "_registered_pid", lambda: os.getpid())
+    monkeypatch.setattr(heal, "_service_status", lambda: (True, os.getpid()))
+
+    assert heal._proc_alive() is True
+    heal.heal_once()
+    assert heal.calls["restart"] == 0
+    assert heal.state_get("fails") == 0
+
+
+def test_probe_unknown_when_pgrep_times_out(heal, monkeypatch):
+    """pgrep 超时且没有可核对的 pid → 判不出：不计异常、不动手。"""
+    monkeypatch.setattr(heal, "_pgrep_alive", lambda: None)
+    monkeypatch.setattr(heal, "_registered_pid", lambda: None)
+    monkeypatch.setattr(heal, "_service_status", lambda: (True, None))
+
+    assert heal._proc_alive() is None
+    assert heal.probe() is None
+    for _ in range(heal.FAIL_THRESHOLD + 1):
+        heal.heal_once()
+    assert heal.calls["restart"] == 0
+    assert heal.state_get("fails") == 0
+    # 判不出的轮次也要留下探测时间戳：看门狗活着，只是判不出
+    assert heal._read_state().get("lastCheck")
+
+
+def test_status_timeout_is_not_healthy(heal, monkeypatch):
+    """bridge status 超时（旧实现回退读静态 botName 标记）不再算健康，
+    但也绝不能因此判死：结果是"判不出"。"""
+    monkeypatch.setattr(heal, "_proc_alive", lambda launchd_pid=None: True)
+    monkeypatch.setattr(heal, "_service_status", lambda: (None, None))
+
+    assert heal.probe() is None
+    heal.heal_once()
+    assert heal.calls["restart"] == 0
+
+
+def test_service_pid_counts_as_alive(heal, monkeypatch):
+    """launchd 给的 pid 存活即可判定进程活着（与 argv 形态无关）。"""
+    monkeypatch.setattr(heal, "_registered_pid", lambda: None)
+    monkeypatch.setattr(heal, "_pgrep_alive", lambda: False)
+
+    assert heal._proc_alive(os.getpid()) is True
+    assert heal._proc_alive(999_999_999) is False   # 三路全死 → 判死
+
+
+# --- 3c. 动手前复检 ---
+def test_recheck_before_repair_aborts_when_recovered(heal, monkeypatch):
+    """阈值攒够后动手前复检：探针已恢复/判不出 → 放弃本轮修复。"""
+    heal._write_state({"fails": heal.FAIL_THRESHOLD - 1})
+    seq = [False, True]           # 第一次判死，复检时已恢复
+    monkeypatch.setattr(heal, "probe", lambda: seq.pop(0))
+
+    heal.heal_once()
+    assert heal.calls["restart"] == 0
+
+
+def test_recheck_confirming_death_repairs(heal, monkeypatch):
+    """复检仍明确判死 → 正常执行 restart 修复。"""
+    heal._write_state({"fails": heal.FAIL_THRESHOLD - 1})
+    monkeypatch.setattr(heal, "probe", lambda: False)
+
     heal.heal_once()
     assert heal.calls["restart"] == 1
 
@@ -177,7 +255,6 @@ def test_online_bridge_does_not_depend_on_omp_cli(heal):
 # --- 5. restart 失败 → 唤起 omp ---
 def test_restart_fail_invokes_omp(heal):
     heal.probe_state["alive"] = False
-    (heal.STATE_DIR and Path(heal.STATE_DIR) / "processes.json").unlink(missing_ok=True)
     heal.RESTART_OK = False
     heal.RESTART_FIX = False  # restart 失败,持续断连
     heal.OMP_RUN_OK = True
@@ -206,7 +283,6 @@ def test_main_lock_conflict_skips(heal, tmp_path):
 # --- 7. 阶梯退避 ---
 def test_omp_backoff(heal):
     heal.probe_state["alive"] = False
-    (heal.STATE_DIR and Path(heal.STATE_DIR) / "processes.json").unlink(missing_ok=True)
     heal.RESTART_OK = False
     heal.RESTART_FIX = False  # restart 失败,持续断连
     heal.OMP_RUN_OK = False
@@ -224,7 +300,6 @@ def test_omp_backoff(heal):
 # --- 8. omp 并发锁 ---
 def test_omp_concurrency_lock(heal, tmp_path):
     heal.probe_state["alive"] = False
-    (heal.STATE_DIR and Path(heal.STATE_DIR) / "processes.json").unlink(missing_ok=True)
     heal.RESTART_OK = False
     heal.RESTART_FIX = False  # restart 失败,持续断连
     heal.OMP_RUN_OK = True
@@ -241,7 +316,6 @@ def test_omp_concurrency_lock(heal, tmp_path):
 # --- 9. 修复成功闭环 ---
 def test_omp_success_closes_loop(heal):
     heal.probe_state["alive"] = False
-    (Path(heal.STATE_DIR) / "processes.json").unlink(missing_ok=True)
     heal.RESTART_OK = False
     heal.RESTART_FIX = False  # restart 失败,持续断连
     heal.OMP_RUN_OK = True
@@ -255,7 +329,6 @@ def test_omp_success_closes_loop(heal):
 # --- 10. 最大次数上限 ---
 def test_max_attempts_stops(heal):
     heal.probe_state["alive"] = False
-    (Path(heal.STATE_DIR) / "processes.json").unlink(missing_ok=True)
     heal.RESTART_OK = False   # restart 一直失败
     heal.RESTART_FIX = False  # 不复活 → 持续断连
     heal.OMP_RUN_OK = False
@@ -289,7 +362,6 @@ def test_rollback_runs_before_omp_when_enabled(heal, tmp_path, monkeypatch):
     monkeypatch.setenv("HEAL_ROLLBACK", "1")
     heal._write_state({"lastGoodSha": "abc123def456"})
     heal.probe_state["alive"] = False
-    (tmp_path / "processes.json").unlink(missing_ok=True)
     heal.RESTART_OK = False      # restart 失败
     heal.RESTART_FIX = False
     heal.OMP_RUN_OK = True       # omp 修复成功兜底
@@ -378,10 +450,85 @@ def test_rollback_step_limit(heal, monkeypatch):
     assert resets == []               # 步数上限，不再 reset
 
 
+def _mock_git_build_timeout(heal, monkeypatch, reset_targets):
+    """git 操作成功并记录 reset target；`pnpm build` 抛 TimeoutExpired。"""
+    def fake_subprocess(cmd, **kw):
+        argv = cmd if isinstance(cmd, list) else str(cmd).split()
+        if argv and argv[0] == "git":
+            if len(argv) >= 4 and argv[1] == "reset":
+                reset_targets.append(argv[3])
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        if argv and argv[0] == "pnpm":
+            raise subprocess.TimeoutExpired(argv, 1)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        heal,
+        "subprocess",
+        type("SP", (), {
+            "run": staticmethod(fake_subprocess),
+            "TimeoutExpired": subprocess.TimeoutExpired,
+            "SubprocessError": subprocess.SubprocessError,
+        })(),
+    )
+
+
+def test_rollback_build_timeout_restores_head(heal, monkeypatch):
+    """build 超时是环境问题、不是"这个提交坏"：恢复原 HEAD，不推进游标，
+    也不把用户的提交留在被回退的状态（旧实现会留 dist/src 漂移）。"""
+    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    monkeypatch.setattr(heal, "_git_head", lambda: "HEAD0")
+    monkeypatch.setattr(heal, "_git_rev", lambda ref: "older1")
+    monkeypatch.setattr(heal, "repair_restart", lambda: False)
+    heal._write_state({"lastGoodSha": "", "rollbackSteps": 0, "rollbackBackoffUntil": 0})
+    resets = []
+    _mock_git_build_timeout(heal, monkeypatch, resets)
+
+    assert heal.repair_rollback() is False
+    assert resets[0] == "HEAD~1"          # 先回退尝试
+    assert resets[-1] == "HEAD0"          # 超时后恢复原 HEAD
+    state = heal._read_state()
+    assert state.get("rollbackSteps", 0) == 0     # 不推进游标
+    assert state.get("rollbackCursor", "") == ""
+
+
+def test_rollback_build_failure_still_advances_cursor(heal, monkeypatch):
+    """build 非零退出才是"此节点坏"：保持回退并推进游标（原行为）。"""
+    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    monkeypatch.setattr(heal, "_git_head", lambda: "bad")
+    monkeypatch.setattr(heal, "_git_rev", lambda ref: "bad~1")
+    monkeypatch.setattr(heal, "repair_restart", lambda: False)
+    heal._write_state({"lastGoodSha": "", "rollbackSteps": 0, "rollbackBackoffUntil": 0})
+    resets = []
+
+    def fake_subprocess(cmd, **kw):
+        argv = cmd if isinstance(cmd, list) else str(cmd).split()
+        if argv and argv[0] == "git":
+            if len(argv) >= 4 and argv[1] == "reset":
+                resets.append(argv[3])
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        if argv and argv[0] == "pnpm":
+            return subprocess.CompletedProcess(argv, 1, stdout="", stderr="build failed")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        heal,
+        "subprocess",
+        type("SP", (), {
+            "run": staticmethod(fake_subprocess),
+            "TimeoutExpired": subprocess.TimeoutExpired,
+            "SubprocessError": subprocess.SubprocessError,
+        })(),
+    )
+
+    assert heal.repair_rollback() is False
+    assert resets == ["HEAD~1"]           # 保持回退，不恢复
+    assert heal._read_state().get("rollbackSteps") == 1
+
+
 def test_rollback_skipped_when_disabled(heal, tmp_path, monkeypatch):
     # 默认 HEAL_ROLLBACK=0（fixture）：restart 失败直接 omp，无 git 操作
     heal.probe_state["alive"] = False
-    (tmp_path / "processes.json").unlink(missing_ok=True)
     heal.RESTART_OK = False
     heal.OMP_RUN_OK = True
     heal.BACKOFF_BASE_S = 0

@@ -442,17 +442,21 @@ feishu://message/<message_id>
   `test` → `build` 全部通过才 `restart`；任一步失败自动回滚到旧 HEAD +
   恢复备份的 `dist/`，daemon 保持旧版本运行。原子锁防并发。
 - **`scripts/self-heal.py`** — 自愈看门狗（launchd 常驻
-  `ai.feishu-omp-bridge.heal`）：每 60s 探测「进程存活 + WS 连通
-  (processes.json 有 botName) + omp 可用」，连续 3 次异常先 `restart`，
-  仍失败则唤起一个 omp 会话带日志上下文诊断修复（并发锁 + 阶梯退避 +
-  最大 10 次上限 + 提示词退出契约）。
+  `ai.feishu-omp-bridge.heal`）：每 60s 探测「进程存活 + 服务在后台运行」。
+  进程存活由三路独立信号取 OR（launchd 给的 pid / `processes.json` 里进程
+  自写的 pid / `pgrep -f`），只有三路全部判死才算死；探针超时或信号矛盾一律
+  算「判不出」，不计异常、不动手。连续 3 次**确认**异常后先复检一次，仍判死
+  才 `restart`，仍失败则唤起一个 omp 会话带日志上下文诊断修复（并发锁 +
+  阶梯退避 + 最大 10 次上限 + 提示词退出契约）。
   - 安装：`scripts/self-heal.py install`；卸载：`uninstall`
   - 手动一轮：`scripts/self-heal.py --once`
 
 自更新 / 自愈均有 pytest 测试（隔离环境，不影响生产）：
-  - `scripts/test_self_heal.py` — 12 场景：健康不误报 / 进程死自愈 /
-    断连自愈 / omp 不可用判异常 / restart 失败唤起 omp / 锁互斥 / 退避 /
-    omp 并发锁 / 修复闭环 / 最大次数上限 / 提示词契约 / SIGKILL 锁释放
+  - `scripts/test_self_heal.py` — 27 场景：健康不误报 / 进程死自愈 /
+    断连自愈 / pgrep 假阴性不动手 / 探针超时判不出不动手 / status 超时不算
+    健康 / 动手前复检 / omp 不可用判异常 / restart 失败唤起 omp / 锁互斥 /
+    退避 / omp 并发锁 / 修复闭环 / 最大次数上限 / 提示词契约 / rollback
+    （含 build 超时恢复原 HEAD）/ SIGKILL 锁释放
   - `scripts/test_self_update.py` — 6 场景：更新成功 / typecheck / test /
     build / restart 任一失败回滚 / 锁互斥
   运行：`pnpm test:self-heal`（或 `python3 -m pytest scripts/test_self_heal.py scripts/test_self_update.py`）。

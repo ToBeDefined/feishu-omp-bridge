@@ -41,6 +41,23 @@
   （`bash -c`，支持管道/重定向），当前 cwd 执行、30s 超时、输出截断
   1000 字符、禁交互、写审计日志。
 ### Fixed
+- **自愈看门狗把"探针慢"当成"进程死"，对健康 daemon 做了破坏性修复**：
+  `scripts/self-heal.py` 原来只用 `pgrep -f "feishu-omp-bridge.mjs run"`
+  （5s 超时）判进程存活，超时/argv 形态不符都会返回"没进程"；一旦连续 3 次
+  误判就 `bridge restart` 杀掉一个已连续运行 52 小时的健康进程，接着
+  `git reset` 回退（静默换掉用户刚提交的 commit）、`pnpm build` 120s 超时中断
+  留下 dist/src 漂移，再唤起 omp 修复会话 —— 9 分钟内 5 次重启。现在：
+  - 进程存活改为三路独立信号取 OR（launchd 给的 pid / `processes.json` 中进程
+    自写的 pid + `kill -0` / `pgrep -f`），只有三路全部判死才算死；
+  - 探针改三态（True 健康 / False 确认假死 / None 判不出），超时与信号矛盾
+    一律算"判不出"：不计连续异常、不触发任何修复动作；
+  - 删除 `bridge status` 超时时回退读 `processes.json` 静态 `botName` 的兜底
+    （它会把"status 超时"粉饰成"健康"）；
+  - 探针超时放宽（pgrep 5s→15s、status 15s→30s）；
+  - 达阈值动手前**复检一次**，复检未明确判死即放弃本轮；
+  - 回退路径加闸：`pnpm build` 超时/无法执行按"环境问题"处理（超时 120s→300s），
+    恢复原 HEAD 并尽力重建 dist，不推进回退游标、不留 dist/src 漂移；只在
+    工作区确实脏时才 stash，并在恢复时 pop 回去。
 - `/model` 快捷模型按钮会把非 chat 角色当 chat 模型：OMP 18.2.7 新增
   `image`/`web`/`speech`/`dictation`/`judge` 角色，并把历史的
   `providers.webSearch`/`tts`/`stt` 设置自动迁移进 `modelRoles`；bridge 原来把

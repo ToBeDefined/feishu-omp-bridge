@@ -41,6 +41,15 @@
   （`bash -c`，支持管道/重定向），当前 cwd 执行、30s 超时、输出截断
   1000 字符、禁交互、写审计日志。
 ### Fixed
+- **表格多的回答必触发「卡片渲染中断」**：飞书把 markdown 表格渲染成卡片
+  table 组件，单卡上限 5 个，超出即整卡 400（ErrCode 11310
+  `card table number over limit`）→ 卡片流中断、run 被杀，用户只拿到
+  「⚠️ 卡片渲染中断」的降级文本。表格数量对字节/元素预算完全不可见（6 个
+  三行表格约 1 KB JSON），新增表格预算：渲染前按 table 数量切页
+  （`splitByTableBudget`，切点落在表头、内容零丢失），超出的表格顺延到
+  下一条消息继续以真表格渲染；渲染层再兜一层 `createTableBudget`（同一张
+  卡片内第 6 个及以后的表格降级为代码块，文本不丢），保证任何卡片都不会
+  超过 5 个 table 组件，降级卡片（`fallbackCard`）同样受此约束。
 - **自愈看门狗把"探针慢"当成"进程死"，对健康 daemon 做了破坏性修复**：
   `scripts/self-heal.py` 原来只用 `pgrep -f "feishu-omp-bridge.mjs run"`
   （5s 超时）判进程存活，超时/argv 形态不符都会返回"没进程"；一旦连续 3 次

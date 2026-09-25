@@ -7,6 +7,7 @@ import { createFeishuHostIntegration } from './feishu-host';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { renderOmpUiRequestCard, renderOmpUiResultCard } from '../card/omp-ui';
 import { renderCard, type RunCard } from '../card/run-renderer';
+import { createTableBudget, splitByTableBudget } from '../card/tables';
 import {
   finalizeIfRunning,
   initialState,
@@ -407,6 +408,9 @@ interface StreamSession {
   armOrPauseIdle: () => void;
   /** True once events are exhausted or a terminal state was reached. */
   done: boolean;
+  /** Content a closed page could not carry: it overflowed the table budget
+   *  (see `splitByTableBudget`) and is prepended to the next page. */
+  carry: Block[];
 }
 
 function createStreamSession(handle: RunHandle, idleTimeoutMs: number | undefined): StreamSession {
@@ -418,6 +422,7 @@ function createStreamSession(handle: RunHandle, idleTimeoutMs: number | undefine
     inFlightTools: new Set(),
     armOrPauseIdle: () => {},
     done: false,
+    carry: [],
   };
   // Idle watchdog: OMP going silent for `idleTimeoutMs` is treated as
   // "presumed hung", we stop() and surface a timeout marker on the card.
@@ -610,10 +615,14 @@ type SendOpts = { replyTo?: string; replyInThread?: boolean };
  * A single card can't hold an unbounded number of tool panels (Feishu
  * rejects cards over ~64KB, ErrCode 11310), so when a page's card JSON
  * approaches CARD_SIZE_BUDGET we finalize it with a "continues" note and
- * start the next page in a fresh message. The event iterator, accumulated
- * RunState, and idle watchdog all survive across pages.
+ * start the next page in a fresh message. Tables paginate the same way and
+ * for the same error code — a card may hold at most five of them, however
+ * small — except that the tables past the budget are *carried* to the next
+ * page instead of being rendered on this one (see `splitByTableBudget`).
+ * The event iterator, accumulated RunState, and idle watchdog all survive
+ * across pages.
  */
-async function streamCardPages(
+export async function streamCardPages(
   channel: LarkChannel,
   chatId: string,
   sendOpts: SendOpts,
@@ -628,21 +637,28 @@ async function streamCardPages(
   const session = createStreamSession(handle, idleTimeoutMs);
   let pageIndex = 0;
   try {
-    while (!session.done) {
+    for (;;) {
       // Each page starts from a clean slate: text/tool blocks and reasoning
       // are reset so later pages render only NEW content — re-rendering the
-      // accumulated state would immediately overflow again. Running tools
-      // survive: their tool_result can land on the next page, and clearing
-      // them would drop the result (reduce can't find the block by id).
-      session.state = { ...session.state, blocks: carryOverBlocks(session.state.blocks), reasoning: { content: '', active: false } };
+      // accumulated state would immediately overflow again. Two exceptions
+      // survive: tools still running (their tool_result can land on the next
+      // page, and clearing them would drop the result — reduce can't find the
+      // block by id) and content a table-budget cut pushed past this page.
+      session.state = {
+        ...session.state,
+        blocks: [...carryOverBlocks(session.state.blocks), ...session.carry],
+        reasoning: { content: '', active: false },
+      };
+      session.carry = [];
       const overflow = await runCardPage(
         channel, chatId, sendOpts, session, handle, sessions, scope, cwd,
         idleTimeoutMs, hooks, filter, pageIndex,
       );
-      if (!overflow) break;
-      // A terminal event that ALSO overflowed means the content is complete;
+      // Another page is needed while content is still owed to the user: either
+      // the page cut at the table budget (carry) or the run is still streaming.
+      // A terminal event that also overflowed means the content is complete;
       // opening another page would just emit an empty "continues" card.
-      if (session.state.terminal !== 'running') break;
+      if (session.carry.length === 0 && (!overflow || session.done)) break;
       pageIndex += 1;
     }
   } catch (err) {
@@ -688,13 +704,18 @@ export function fallbackContent(state: RunState, filter: (s: RunState) => RunSta
 
 /**
  * Minimal schema-2.0 card for the fallback: a single markdown element, no
- * panels/buttons/notes — the smallest surface Feishu can reject.
+ * panels/buttons/notes — the smallest surface Feishu can reject. It is also
+ * table-capped: the content that killed the run is often table-heavy, and a
+ * fallback rejected by the same ErrCode 11310 would strand the user on the
+ * plain-text path.
  */
 export function fallbackCard(state: RunState, filter: (s: RunState) => RunState): object {
   return {
     schema: '2.0',
     config: { summary: { content: '回复（降级）' } },
-    body: { elements: [{ tag: 'markdown', content: fallbackContent(state, filter) }] },
+    body: {
+      elements: [{ tag: 'markdown', content: createTableBudget()(fallbackContent(state, filter)) }],
+    },
   };
 }
 
@@ -834,6 +855,22 @@ async function runCardPage(
         producer: async (ctrl) => {
           const q = coalesceLatest((card: object) => ctrl.update(card));
           await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
+            // Tables first: Feishu rejects a card past five table components
+            // (ErrCode 11310 "card table number over limit") no matter how
+            // small it is, so a page must be cut at the table budget rather
+            // than rendered and bounced. The carry renders on the next page.
+            const split = splitByTableBudget(state);
+            if (split.carry.length > 0) {
+              overflow = true;
+              session.carry = split.carry;
+              q.push(
+                renderCard(filter({ ...split.page, terminal: 'done' }), {
+                  bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
+                }),
+              );
+              await q.flush();
+              return false;
+            }
             const filtered = filter(state);
             const card = renderCard(filtered);
             if (cardExceedsBudget(card, filtered)) {

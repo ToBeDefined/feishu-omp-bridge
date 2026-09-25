@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { carryOverBlocks, coalesceLatest, fallbackCard, fallbackContent, cardExceedsBudget } from './batch';
+import type { LarkChannel } from '@larksuiteoapi/node-sdk';
+import { carryOverBlocks, coalesceLatest, fallbackCard, fallbackContent, cardExceedsBudget, streamCardPages } from './batch';
+import type { AgentEvent } from '../agent/types';
+import type { RunHandle } from './active-runs';
+import type { SessionStore } from '../session/store';
 import { initialState, type Block, type RunState } from '../card/run-state';
 import { renderCard } from '../card/run-renderer';
+import { countTables } from '../card/tables';
+
+/** A 2-column GFM table tagged so tests can tell tables apart. */
+function tableMd(n: number): string {
+  return `| h${n} | v${n} |\n| --- | --- |\n| ${n} | ${n} |`;
+}
 
 const base: RunState = {
   ...initialState,
@@ -46,6 +56,25 @@ describe('fallbackCard', () => {
     expect(json).not.toContain('"note"');
     expect(json).not.toContain('"button"');
     expect(json).not.toContain('collapsible_panel');
+  });
+
+  it('caps tables at the Feishu limit so the fallback is not rejected too', () => {
+    // The content that killed the run is often table-heavy; a fallback card
+    // rejected by the same ErrCode 11310 would strand the user on plain text.
+    const table = (n: number): string => `| h${n} |\n| --- |\n| ${n} |`;
+    const state: RunState = {
+      ...base,
+      blocks: [
+        { kind: 'text', content: Array.from({ length: 7 }, (_, i) => table(i)).join('\n\n'), streaming: false },
+      ],
+    };
+    const card = fallbackCard(state, (s) => s) as {
+      body: { elements: Array<{ content: string }> };
+    };
+    const content = card.body.elements[0]?.content ?? '';
+    expect(countTables(content)).toBeLessThanOrEqual(5);
+    expect(content).toContain('| h6 |'); // demoted, not dropped
+    expect(content).toContain('⚠️ 卡片渲染中断');
   });
 });
 
@@ -187,5 +216,75 @@ describe('cardExceedsBudget', () => {
     // terminal: 'done' — a running card also carries footer + stop button.
     const state: RunState = { ...initialState, blocks, terminal: 'done', footer: null };
     expect(cardExceedsBudget(renderCard(state), state)).toBe(false);
+  });
+});
+
+/** Markdown of every element of a rendered card, panels included. */
+function cardMarkdown(card: object): string[] {
+  const elements = (card as { body?: { elements?: unknown[] } }).body?.elements ?? [];
+  return elements.flatMap((e) => {
+    if (typeof e !== 'object' || e === null) return [];
+    const nested = 'elements' in e && Array.isArray(e.elements) ? e.elements : [];
+    return [e, ...nested].flatMap((el) =>
+      typeof el === 'object' && el !== null && 'content' in el && typeof el.content === 'string'
+        ? [el.content]
+        : [],
+    );
+  });
+}
+
+describe('streamCardPages', () => {
+  it('paginates a table-heavy reply instead of letting Feishu reject it', async () => {
+    // Production failure (2026-09-25): one answer with six markdown tables was
+    // rejected with ErrCode 11310 "card table number over limit", which killed
+    // the run and stranded the user on the "⚠️ 卡片渲染中断" fallback.
+    const cards: object[] = [];
+    const channel = {
+      stream: async (
+        _chatId: string,
+        spec: { card: { initial: object; producer: (ctrl: { update(card: object): Promise<void> }) => Promise<void> } },
+      ) => {
+        cards.push(spec.card.initial);
+        await spec.card.producer({ update: async (card) => void cards.push(card) });
+      },
+      send: async () => {},
+    } as unknown as LarkChannel;
+    const events: AgentEvent[] = [
+      { type: 'text', delta: Array.from({ length: 12 }, (_, i) => tableMd(i)).join('\n\n') },
+      { type: 'done' },
+    ];
+    const handle = {
+      run: {
+        events: (async function* () {
+          yield* events;
+        })(),
+        stop: async () => {},
+        waitForExit: async () => true,
+      },
+      interrupted: false,
+      pendingUiRequests: new Set<string>(),
+      uiTimers: new Map<string, NodeJS.Timeout>(),
+    } as unknown as RunHandle;
+
+    await streamCardPages(
+      channel, 'oc_x', {}, handle, {} as unknown as SessionStore, 'oc_x', '/tmp',
+      undefined, undefined, (s) => s,
+    );
+
+    expect(cards.length).toBeGreaterThan(1);
+    for (const card of cards) {
+      const tables = cardMarkdown(card).reduce((n, md) => n + countTables(md), 0);
+      expect(tables).toBeLessThanOrEqual(5);
+    }
+    // Nothing is dropped AND nothing is demoted: every table reaches the user
+    // as a real table component, on whichever page it landed.
+    const realTables = new Set<string>();
+    for (const md of cards.flatMap(cardMarkdown)) {
+      const unfenced = md.replace(/```[\s\S]*?```/g, '');
+      for (let i = 0; i < 12; i += 1) {
+        if (unfenced.includes(`| h${i} | v${i} |`)) realTables.add(`h${i}`);
+      }
+    }
+    expect(realTables.size).toBe(12);
   });
 });

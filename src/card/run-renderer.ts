@@ -1,5 +1,6 @@
 import type { Block, FooterStatus, RunState, SubagentEntry, ToolEntry, UiState } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
+import { createTableBudget, type TableBudget } from './tables';
 import { codeFence, escapeMd } from './templates';
 
 /** Max chars per reasoning body — reasoning is auxiliary, truncation is fine. */
@@ -36,36 +37,42 @@ export interface RunCard {
 
 export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   const elements: object[] = [];
-
-  if (opts?.topNote) elements.push(noteMd(opts.topNote));
-
-  if (hasReasoningSubstance(state.reasoning.content)) {
-    elements.push(reasoningPanel(state.reasoning.content, state.reasoning.active));
-  }
-
-  const ui = uiContextPanel(state.ui);
-  if (ui) elements.push(ui);
-
-  for (const line of subagentLines(state.subagents)) elements.push(noteMd(line));
+  // Tables are budgeted per card, and the reply's own tables are charged
+  // first: auxiliary panels (reasoning, OMP UI) only spend what is left, so a
+  // chatty thinking block can never push the answer's tables into code blocks.
+  const tables = createTableBudget();
 
   // Every tool gets its own expandable panel — body (input+output) visible.
   // The caller (batch.ts) paginates the card stream by size budget, so the
   // element count is bounded per page and no collapse is needed here.
   const totalTools = state.blocks.filter((b) => b.kind === 'tool').length;
+  const bodyElements: object[] = [];
   let toolIdx = 0;
   for (const group of groupBlocks(state.blocks)) {
     if (group.kind === 'text') {
       if (group.content.trim()) {
-        elements.push(markdown(group.content));
+        bodyElements.push(markdown(tables(group.content)));
       }
     } else {
       for (const tool of group.tools) {
         const isLatest = state.terminal === 'running' && toolIdx === totalTools - 1;
-        elements.push(toolPanel(tool, isLatest));
+        bodyElements.push(toolPanel(tool, isLatest));
         toolIdx += 1;
       }
     }
   }
+
+  if (opts?.topNote) elements.push(noteMd(opts.topNote));
+
+  if (hasReasoningSubstance(state.reasoning.content)) {
+    elements.push(reasoningPanel(state.reasoning.content, state.reasoning.active, tables));
+  }
+
+  const ui = uiContextPanel(state.ui, tables);
+  if (ui) elements.push(ui);
+
+  for (const line of subagentLines(state.subagents)) elements.push(noteMd(line));
+  for (const element of bodyElements) elements.push(element);
 
   if (state.terminal === 'interrupted') {
     elements.push(noteMd('_⏹ 已被中断_'));
@@ -137,13 +144,13 @@ function subagentLines(entries: SubagentEntry[]): string[] {
   });
 }
 
-function reasoningPanel(content: string, active: boolean): object {
+function reasoningPanel(content: string, active: boolean, tables: TableBudget): object {
   const title = active ? '🧠 **思考中**' : '🧠 **思考完成，点击查看**';
   return collapsiblePanel({
     title,
     expanded: active,
     border: 'grey',
-    body: truncate(content, REASONING_MAX),
+    body: tables(truncate(content, REASONING_MAX)),
   });
 }
 
@@ -214,7 +221,7 @@ function footerStatus(status: Exclude<FooterStatus, null>): object {
   return noteMd(text);
 }
 
-function uiContextPanel(ui: UiState): object | undefined {
+function uiContextPanel(ui: UiState, tables: TableBudget): object | undefined {
   const lines: string[] = [];
   if (ui.title) lines.push(`**标题**：${escapeMd(ui.title)}`);
   for (const [key, text] of Object.entries(ui.statuses)) {
@@ -233,7 +240,7 @@ function uiContextPanel(ui: UiState): object | undefined {
     title: '🧩 **OMP 状态 / Widget**',
     expanded: true,
     border: 'blue',
-    body: truncate(lines.join('\n\n'), UI_PANEL_MAX),
+    body: tables(truncate(lines.join('\n\n'), UI_PANEL_MAX)),
   });
 }
 

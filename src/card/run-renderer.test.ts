@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderCard } from './run-renderer';
+import { countTables } from './tables';
 import type { RunState, ToolEntry } from './run-state';
 
 function tool(id: number): ToolEntry {
@@ -138,5 +139,35 @@ describe('renderCard', () => {
     const elements = cardElements(renderCard({ ...state, terminal: 'done' }));
     expect(longMarkdown(elements, '🤖 子代理 `reviewer` — review auth flow _工作中_')).toBeDefined();
     expect(longMarkdown(elements, '❌ 子代理 `scout` _失败_')).toBeDefined();
+  });
+
+  it('caps table components per card at the Feishu limit (ErrCode 11310)', () => {
+    // A production answer with six markdown tables was rejected wholesale:
+    // "card table number over limit". Table count is invisible to the
+    // byte/element budgets — six tables are ~1KB of card JSON.
+    const table = (n: number): string => `| h${n} |\n| --- |\n| ${n} |`;
+    const state = longRunState(0);
+    state.blocks.push({
+      kind: 'text',
+      content: Array.from({ length: 8 }, (_, i) => table(i)).join('\n\n'),
+      streaming: false,
+    });
+    state.reasoning = { content: `thinking\n\n${table(9)}`, active: false };
+    const elements = cardElements(renderCard({ ...state, terminal: 'done' }));
+    // Every markdown source of the card, panels included: Feishu counts the
+    // table components of the whole card.
+    const sources = elements.flatMap((e) => {
+      if (typeof e !== 'object' || e === null) return [];
+      const nested = 'elements' in e && Array.isArray(e.elements) ? e.elements : [];
+      return [e, ...nested].flatMap((el) =>
+        typeof el === 'object' && el !== null && 'content' in el && typeof el.content === 'string'
+          ? [el.content]
+          : [],
+      );
+    });
+    expect(sources.reduce((n, md) => n + countTables(md), 0)).toBe(5);
+    // The demoted tables keep their text — only the component count drops.
+    const demoted = sources.find((md) => md.includes('| h7 |')) ?? '';
+    expect(demoted).toContain('```');
   });
 });

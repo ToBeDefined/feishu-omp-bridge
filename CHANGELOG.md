@@ -204,6 +204,25 @@
   `registry.resolveTarget` 对非纯数字 id 也做下标兜底（`/exit 3f2` 命中
   第 3 个）；`self-update.py` 回滚时忽略 `git stash pop` 冲突。
 - 长驻 daemon 只在启动时清理媒体缓存与旧日志 → 改为每 6 小时复扫。
+- **macOS 上 bridge 里执行的内网命令连不上本地网络（`No route to host`）**：
+  macOS 15+ 的「本地网络」隐私按**进程身份**放行，且只会给「用户可见的 app」
+  弹授权框；由 launchd 直接拉起的 `node` 既弹不出授权框、也不会出现在
+  设置 → 隐私与安全性 → 本地网络 列表里，于是整棵进程树（node → omp(bun) →
+  bash → 工具进程）访问**同网段**地址一律被内核拒绝：node 报
+  `EHOSTUNREACH`，Python/ftplib 报 `[Errno 65] No route to host`，而路由网段
+  （如内网 GitLab）和公网不受影响 —— 表现就是「bridge 里跑 `ftc pod install`
+  永远连不上 FTP，本地终端却没问题」。现在 macOS 的 launchd plist 改为拉起一个
+  编译+签名出来的 supervisor app（`~/.feishu-omp-bridge/macos/FeishuOmpBridge.app`，
+  `ai.feishu-omp-bridge.supervisor`，带 `NSLocalNetworkUsageDescription`），
+  由它作为父进程运行 `node <bridge> run`：整棵树都归到这个 app 身份，macOS
+  首次会弹一次授权框（`start` 时出现的那个窗口即为此，授权成功后自动关闭并
+  在 `~/.feishu-omp-bridge/macos/local-network-granted` 留标记），之后 bridge
+  及其所有工具子进程都能访问本地网络。签名身份不写死：`FOB_MACOS_SIGN_IDENTITY`
+  优先，其次复用固化文件 `~/.feishu-omp-bridge/macos/sign-identity`，最后按
+  「Developer ID Application > Apple Development > Mac Developer」从钥匙串里挑一个
+  并固化（避免钥匙串顺序变化导致重签、丢授权）；都没有才退回 ad-hoc 并给出提示。
+  缺少 `swiftc`（Xcode CLT）或签名身份时自动回退到原来的直启方式，只回落到旧行为、
+  不影响其它功能。
 
 ### Removed
 

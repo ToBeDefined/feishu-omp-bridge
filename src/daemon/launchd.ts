@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { dirname } from 'node:path';
+import { ensureSupervisorApp, supervisorGrantMarkerPath } from './macos-supervisor';
 import {
   LAUNCH_AGENT_LABEL,
   daemonLogDir,
@@ -20,6 +21,12 @@ export interface PlistInputs {
    * tools (lark-cli, OMP) can be resolved by name. launchd defaults
    * to a very minimal PATH otherwise. */
   envPath: string;
+  /**
+   * macOS only: supervisor app executable that runs the bridge as its child.
+   * Without it the daemon's process identity is `node`, which macOS Local
+   * Network Privacy refuses to prompt for — see macos-supervisor.ts.
+   */
+  supervisorPath?: string;
 }
 
 export function buildPlist(inputs: PlistInputs): string {
@@ -29,6 +36,17 @@ export function buildPlist(inputs: PlistInputs): string {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  const program = inputs.supervisorPath
+    ? [
+        escape(inputs.supervisorPath),
+        '--marker',
+        escape(supervisorGrantMarkerPath()),
+        '--',
+        escape(inputs.nodePath),
+        escape(inputs.bridgeEntryPath),
+        'run',
+      ]
+    : [escape(inputs.nodePath), escape(inputs.bridgeEntryPath), 'run'];
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -37,9 +55,7 @@ export function buildPlist(inputs: PlistInputs): string {
     <string>${LAUNCH_AGENT_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${escape(inputs.nodePath)}</string>
-        <string>${escape(inputs.bridgeEntryPath)}</string>
-        <string>run</string>
+${program.map((arg) => `        <string>${arg}</string>`).join('\n')}
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -70,6 +86,7 @@ export async function writePlist(): Promise<void> {
     nodePath: process.execPath,
     bridgeEntryPath,
     envPath: process.env.PATH ?? '',
+    supervisorPath: await ensureSupervisorApp(),
   });
   const plistPath = launchAgentPlistPath();
   await mkdir(dirname(plistPath), { recursive: true });

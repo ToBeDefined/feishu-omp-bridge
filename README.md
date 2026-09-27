@@ -206,6 +206,43 @@ node bin/feishu-omp-bridge.mjs unregister # 删除 daemon 注册文件
 | Linux | systemd user unit | `feishu-omp-bridge.bot.service` |
 | Windows | Task Scheduler | `FeishuOmpBridge.Bot` |
 
+macOS 额外说明：macOS 15+ 的**本地网络**隐私按进程身份放行，由 launchd 直接
+拉起的 `node` 属于后台 CLI，既弹不出授权框、也不会出现在
+设置 → 隐私与安全性 → 本地网络 列表里，导致 bridge 里执行的命令访问**同网段**
+地址（例如公司内网 FTP / 局域网服务）被内核拒绝，报 `No route to host`
+（Python 侧 `[Errno 65]`），而路由网段与公网正常 —— 同一个命令在终端里跑却没问题，
+因为终端 app 早已获得该权限。因此 macOS 的 plist 不直接跑 `node`，而是先运行一个
+supervisor app：
+
+```bash
+~/.feishu-omp-bridge/macos/FeishuOmpBridge.app/Contents/MacOS/FeishuOmpBridgeSupervisor \
+    --marker ~/.feishu-omp-bridge/macos/local-network-granted -- \
+    <node> <bridge entry> run
+```
+
+它由 `src/daemon/macos-supervisor.ts` 在 `start`/`restart` 时按需用 `xcrun swiftc`
+编译并 `codesign`，把 `node` 作为子进程运行 —— 整棵进程树
+（含 OMP 及其工具子进程）都归到 `ai.feishu-omp-bridge.supervisor` 这个 app 身份，
+于是 macOS 只会弹**一次**「允许访问本地网络」（点允许后窗口自动关闭并写 marker），
+之后内网访问长期有效。缺 `swiftc` 或签名身份时自动回退到直接跑 `node`（旧行为）。
+若权限被系统收回（或用户手动关掉），删除
+`~/.feishu-omp-bridge/macos/local-network-granted` 再 `restart` 即可重新触发授权。
+
+签名身份**不写死**，按以下顺序决定，选定后写入
+`~/.feishu-omp-bridge/macos/sign-identity` 固化（否则钥匙串顺序变化会导致重签、
+进而丢失授权）：
+
+1. 环境变量 `FOB_MACOS_SIGN_IDENTITY`（显式指定，值就是 `security find-identity
+   -v -p codesigning` 里的名字，例如 `"Apple Development: you@example.com (XXXXXXXXXX)"`；
+   设成 `-` / `ad-hoc` / `none` 表示不签名）；
+2. 上面那个固化文件里记着的身份（仍存在于钥匙串时复用）；
+3. 钥匙串里现有的 codesigning 身份，按「有效期长 → 短」优先：
+   `Developer ID Application` > `Apple Development` > `Mac Developer`（同级保持钥匙串顺序）。
+
+ad-hoc 签名（没有任何可用证书时）没有稳定身份：macOS 可能既不给弹窗也不给授权，
+而且每次重编译都会变，需要重新授权 —— 此时用 `FOB_MACOS_SIGN_IDENTITY` 显式指定一个
+证书即可（任意开发者证书都行，包括个人团队）。
+
 进程级命令：
 
 ```bash

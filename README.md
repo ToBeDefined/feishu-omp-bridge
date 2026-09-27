@@ -573,6 +573,16 @@ pnpm build
 | 飞书 API 工具不可用 | 按启动提示安装并绑定 `lark-cli`；或者优先使用已注册的 Feishu host tools。 |
 | `/new chat` 失败 | 确认 bot 具备创建群相关权限，代码中该能力依赖 `im:chat`。 |
 | 后台 daemon 不工作 | 运行 `node bin/feishu-omp-bridge.mjs status` 查看服务状态和日志路径。 |
+| **`cmux ping` 报「访问被拒绝 / Access denied」** | cmux 默认 `socketControlMode=cmuxOnly`，只允许 **cmux 内启动**的进程；改成 **`Automation`**（Settings → Automation）。详见 [`docs/CMUX-PI-INTERACTION.md`](docs/CMUX-PI-INTERACTION.md) §1。 |
+| **往 cmux 里的 pi 发消息没反应** | 目标忙时消息会进 `Steering:` 队列（等当前 turn 结束才消费），不是失败；验证请看 pi 的 session JSONL。同上 §5。 |
+| **`cmux send-key` 超时 / 无效** | 锁屏场景下 `send-key` 不可靠（键名支持不全 + 间歇超时）；**一律改用 `cmux send`**（Enter 用 `'\r'`）。同上 §3。 |
+
+## 相关文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 本仓库架构、数据流、目录结构、命令组织约定 |
+| [`docs/CMUX-PI-INTERACTION.md`](docs/CMUX-PI-INTERACTION.md) | **从 bridge 远程驱动 cmux / pi 的实测手册**：cmux 权限开启（`socketControlMode`）、锁屏能力矩阵与踩坑、`send` vs `send-key`、pi/omp 差异、消息投递语义（idle 直投 vs busy 排队）、不依赖读屏的 session 验证法 |
 
 ## 当前限制
 

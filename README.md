@@ -573,16 +573,22 @@ pnpm build
 | 飞书 API 工具不可用 | 按启动提示安装并绑定 `lark-cli`；或者优先使用已注册的 Feishu host tools。 |
 | `/new chat` 失败 | 确认 bot 具备创建群相关权限，代码中该能力依赖 `im:chat`。 |
 | 后台 daemon 不工作 | 运行 `node bin/feishu-omp-bridge.mjs status` 查看服务状态和日志路径。 |
-| **`cmux ping` 报「访问被拒绝 / Access denied」** | cmux 默认 `socketControlMode=cmuxOnly`，只允许 **cmux 内启动**的进程；改成 **`Automation`**（Settings → Automation）。详见 [`docs/CMUX-PI-INTERACTION.md`](docs/CMUX-PI-INTERACTION.md) §1。 |
+| **`cmux ping` 报「访问被拒绝 / Access denied」** | cmux 默认 `socketControlMode=cmuxOnly`，只允许 **cmux 内启动**的进程；改成 **`Automation`**（Settings → Automation）。详见 [`docs/CMUX-AGENT-INTERACTION.md`](docs/CMUX-AGENT-INTERACTION.md) §1。 |
 | **往 cmux 里的 pi 发消息没反应** | 目标忙时消息会进 `Steering:` 队列（等当前 turn 结束才消费），不是失败；验证请看 pi 的 session JSONL。同上 §5。 |
 | **`cmux send-key` 超时 / 无效** | 锁屏场景下 `send-key` 不可靠（键名支持不全 + 间歇超时）；**一律改用 `cmux send`**（Enter 用 `'\r'`）。同上 §3。 |
+| **往 kimi 面板投递多行消息后指令被重复执行** | `cmux paste-buffer` 会把消息最后 1–2 行**留在输入框**，回合结束时会**再投一次**。投递后必做：`send-key <ws> Up`（取回残留）→ `send-key <ws> backspace` ×N → `read-screen` 确认输入框为空。同上 §11.5。 |
+| **以为 cmux 里的 agent「没在动」** | cmux 面板标题取自**会话最初标题**、不随当前动作变化；判断活跃度要看 session 落盘文件（kimi：`state.json` + `agents/main/wire.jsonl` 的 mtime）。同上 §12.3 / §12.7-1。 |
+| **`cmux send-key` 用 `C-u` 报 `Unknown key`** | 组合键要写成 `control-u` / `ctrl-u`（不接受 `C-`/`M-` 缩写）；键名清单与副作用（`shift-tab` 疑似 kimi Plan mode 开关）见同上 §11.3 / §11.4。 |
+| **想一次看所有 cmux 窗口的状态** | 读 `~/Library/Application Support/cmux/session-com.cmuxterm.app.json`（含每个面板的最新通知，agent 完成通知也在里面），比逐个 `read-screen` 快且不受锁屏影响。同上 §11.6。 |
+| **面板从不出 agent 通知**（`Cursor is waiting for you` 等） | 通知由 cmux 的 agent hook 产生（`~/.orca/agent-hooks/<agent>-hook.sh` → POST `127.0.0.1:$ORCA_AGENT_HOOK_PORT`）：**只有从 cmux 面板内启动的 agent 才有 `ORCA_*` 环境变量**，外部（launchd/bridge）启动的不会有通知；另检查 hook 文件可执行、agent 配置里有 hook 条目（`~/.cursor/hooks.json`、`~/.kimi-code/config.toml`）。同上 §14。 |
+| **要驱动 Cursor Agent** | 优先用**非交互通道**：`cursor-agent -p "<prompt>" --output-format json`（`-p` 默认带写/shell 权限，无人值守请配 `--mode plan` 或 `--sandbox enabled`）；会话在 `~/.cursor/chats/<hash>/<chatId>/store.db`（SQLite，判活看 mtime/size）。同上 §13。 |
 
 ## 相关文档
 
 | 文档 | 内容 |
 | --- | --- |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 本仓库架构、数据流、目录结构、命令组织约定 |
-| [`docs/CMUX-PI-INTERACTION.md`](docs/CMUX-PI-INTERACTION.md) | **从 bridge 远程驱动 cmux / pi 的实测手册**：cmux 权限开启（`socketControlMode`）、锁屏能力矩阵与踩坑、`send` vs `send-key`、pi/omp 差异、消息投递语义（idle 直投 vs busy 排队）、不依赖读屏的 session 验证法 |
+| [`docs/CMUX-AGENT-INTERACTION.md`](docs/CMUX-AGENT-INTERACTION.md) | **从 bridge 远程驱动 cmux / pi / kimi / Cursor 的实测手册**：cmux 权限开启（`socketControlMode`）、锁屏能力矩阵与踩坑、`send` vs `send-key`、pi/omp 差异、消息投递语义（idle 直投 vs busy 排队）、不依赖读屏的 session 验证法；**§11 cmux CLI 通用补充**（workspace/panel 定位、键名清单与副作用、`paste-buffer` 残留排队行的清理）；**§12 kimi（Kimi Code）**；**§13 Cursor（cursor-agent）**（多版本 CLI、SQLite 会话库、`-p` 非交互通道）；**§14 agent 通知机制**（`~/.orca/agent-hooks` ⇄ cmux 通知） |
 
 ## 当前限制
 

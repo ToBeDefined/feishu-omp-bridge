@@ -50,6 +50,7 @@
 | 判活 | `stat -f '%Sm %z'` 该 `store.db`（只读打开：`sqlite3 'file:…?mode=ro'`） | — |
 | 读最近对话 | `select id, substr(cast(data as text),1,200) from blobs where substr(data,1,1)=X'7B' order by rowid desc limit 20`（`X'7B'` = `{`；**只有 JSON 类 blob 可读**） | ❌ `substr(data,1,1)='{'`（BLOB 与 TEXT 比较**恒不相等**，会返回 0 行）；❌ 把 `blobs` 全当文本读 |
 | 看它是不是「在等你」 | cmux 通知：面板 `notifications[]` 里的 **`Cursor is waiting for you`**（§11.6 一次读全） | — |
+| 切模型 / Context / Effort（TUI） | `send '/model\r'` → **`send-key` 方向键**（`send` 文本进不了 Filter）→ `send '\r'`；Tab 进 Edit Parameters 调 Context(300K/1M)/Effort(Low~Max) | ❌ 选择器内用 `send` 打字过滤（进不了框，`\r` 只会空手关闭） |
 
 ---
 
@@ -784,7 +785,64 @@ cursor-agent ls | resume | status|whoami | models | update | persist
 - ⇒ **投递消息同 §11.5**：`set-buffer` → `paste-buffer` → `send-key Enter`；**投递后照样要清残留行**
 - "在等你"的状态靠**通知**体现（`Cursor is waiting for you`），机制见 §14
 
-### 13.5 与 pi / kimi 的对比
+### 13.5 TUI 内切换模型 / Context / Effort（2026-09-30 实测）
+
+适用对象：**cmux 里跑着的 cursor-agent TUI**（`cursor-agent -p` 非交互通道没有这个问题，直接用 `--model 'claude-opus-4-8[context=1m,effort=high]'`）。
+
+**打开模型选择器**
+
+```bash
+cmux send --surface surface:1 '/model\r'
+```
+
+选择器列出 42 个模型（页脚 `1-10 of 42`），每行右侧标注 context/effort 组合（如 `1M Medium`），选中行提示 `(Tab to modify)`。
+
+**★ 坑：`send` 文本进不了选择器的 Filter 框**
+
+- 在选择器打开时 `cmux send --surface X 'gpt-5.6'` → 文本**没有落进 Filter 输入框**（读屏确认 `Filter:` 后为空）；
+- 此时 `send '\r'` 只会**空手关闭选择器，模型不变**；
+- ⇒ 选择器内**不能走文本通道，必须用 `send-key` 方向键**（与 §0 三条铁律在 cursor 场景的例外：选择器里 `send` 无用）。
+
+**正确步骤（方向键 + `\r`）**
+
+```bash
+cmux send-key --surface surface:1 down|up     # 移动高亮（键名小写即可，§11.3）
+cmux read-screen --surface surface:1          # grep '→' 确认高亮位置（必做，别盲数）
+cmux send --surface surface:1 '\r'            # Enter 选中生效
+cmux read-screen --surface surface:1          # 页脚应变为 <模型> <context> <effort> · MAX
+```
+
+实测：`Claude Opus 5.5 1M Medium` →（down×3 + Enter）→ `GPT-5.6 Sol 1M Max` →（`/model` + up×3 + Enter）→ 还原成功。
+
+**调整 Context / Effort（Tab 进参数面板）**
+
+在选择器内对高亮模型按 **Tab**（即行尾提示 `Tab to modify` / `Tab to edit`），进入 `<模型名> — Edit Parameters` 面板：
+
+```
+Context: ○ 300K / ● 1M
+Effort:  ○ Low / ○ Medium / ○ High / ○ Extra High / ○ Max
+另有 ◯ Fast（疑似独立开关，未实测）
+↑/↓ to navigate • Enter to select • Esc to go back
+```
+
+```bash
+cmux send --surface surface:1 '/model\r'; sleep 2
+cmux send-key --surface surface:1 tab         # 进 Edit Parameters
+cmux send-key --surface surface:1 down        # 移动单选（光标每次进入默认停在 Context 的 300K 行）
+cmux send --surface surface:1 '\r'            # Enter 确认
+cmux send-key --surface surface:1 escape      # Esc ×2 退回主界面
+cmux read-screen --surface surface:1          # 页脚验证，如 1M High
+```
+
+实测：Effort Medium → `down`×3 + Enter → 页脚变 `Claude Opus 5.5 1M High · MAX`；同法还原 `Medium` 成功。
+
+**注意**：
+
+1. 页脚有两行（输出区底部一行 + 输入框下一行），还原验证时两行都应一致。
+2. **Tab 进面板后光标总是重置到 Context 300K 行**，导航前先读屏定位，不要复用上次的步数。
+3. `/model` 与参数修改都是**立即生效**的会话级设置，改完直接留在页脚；误改按同路径改回即可。
+
+### 13.6 与 pi / kimi 的对比
 
 | 项 | pi | kimi | **Cursor（cursor-agent）** |
 |---|---|---|---|

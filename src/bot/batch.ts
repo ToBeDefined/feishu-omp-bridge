@@ -650,6 +650,15 @@ export async function streamCardPages(
         reasoning: { content: '', active: false },
       };
       session.carry = [];
+      // The page's initial card is sent before any onState budget check
+      // runs, so a carry past the byte budget would open the page with a
+      // card Feishu rejects (>30KB cap). Trim this page's opening state to
+      // fit; the trimmed remainder rides the next page via carry again.
+      const initialSplit = splitByByteBudget(session.state, filter);
+      if (initialSplit.carry.length > 0) {
+        session.state = initialSplit.page;
+        session.carry = initialSplit.carry;
+      }
       const overflow = await runCardPage(
         channel, chatId, sendOpts, session, handle, sessions, scope, cwd,
         idleTimeoutMs, hooks, filter, pageIndex,
@@ -736,12 +745,14 @@ export function carryOverBlocks(blocks: Block[]): Block[] {
  * the last value always lands. Errors surface on the next `push`/`flush`.
  */
 /**
- * Card JSON size budget per page. Feishu rejects cards over ~64KB (ErrCode
- * 11310 "element exceeds the limit"); we paginate at 48KB to leave headroom
- * for text/button/footer and JSON key overhead that a simple
- * JSON.stringify-length check undercounts.
+ * Card JSON size budget per page. Feishu caps a card at 30KB — documented as
+ * ErrCode 200860 "Card content exceeds limit", and observed in production on
+ * 2026-09-29 as 230099 + ErrCode 200800 rejecting a 36,291-byte card. We
+ * paginate at 26KB: the wire payload re-serializes the card inside
+ * `{"content":"…"}` with every quote escaped (~5% inflation), and pages
+ * already carry footer/note chrome a bare content tally undercounts.
  */
-const CARD_SIZE_BUDGET = 48 * 1024;
+const CARD_SIZE_BUDGET = 26 * 1024;
 /**
  * Element-count budget per page. Feishu also rejects a streaming card whose
  * body grows past ~50 elements — same ErrCode 11310, observed in production
@@ -828,6 +839,76 @@ export function cardExceedsBudget(card: RunCard, state: RunState): boolean {
   return Buffer.byteLength(JSON.stringify(card), 'utf8') > CARD_SIZE_BUDGET;
 }
 
+/**
+ * Split a state so the page's rendered card fits CARD_SIZE_BUDGET. The
+ * byte-exceed path used to close the page by re-pushing the FULL state —
+ * the very card that had just measured over budget — so Feishu rejected it
+ * (30KB cap) and the run died on the "卡片渲染中断" fallback. Mirrors
+ * splitByTableBudget: the page keeps the longest fitting prefix of blocks,
+ * the carry rides the next page. Only a text block can overflow alone
+ * (tool bodies are capped at ~2.5KB by tool-render); it is split at a line
+ * boundary, with a hard cut for a pathological single line.
+ */
+export function splitByByteBudget(
+  state: RunState,
+  filter: (s: RunState) => RunState,
+): { page: RunState; carry: Block[] } {
+  // 1KB slack inside the budget for the bottomNote/footer chrome the closing
+  // render adds on top of what a plain renderCard produced.
+  const limit = CARD_SIZE_BUDGET - 1024;
+  const fits = (blocks: Block[]): boolean =>
+    Buffer.byteLength(JSON.stringify(renderCard(filter({ ...state, blocks }))), 'utf8') <= limit;
+
+  if (fits(state.blocks)) return { page: state, carry: [] };
+
+  // Longest fitting prefix: shrink from the tail.
+  const blocks = [...state.blocks];
+  while (blocks.length > 1 && !fits(blocks)) blocks.pop();
+  if (fits(blocks)) {
+    return { page: { ...state, blocks }, carry: state.blocks.slice(blocks.length) };
+  }
+
+  // Solo block still over budget — only text can be (tool bodies are capped
+  // at ~2.5KB by tool-render). Split at a line boundary.
+  const solo = blocks[0];
+  if (!solo || solo.kind !== 'text') {
+    return { page: { ...state, blocks }, carry: [] };
+  }
+  const lines = solo.content.split('\n');
+  const head: string[] = [];
+  for (const line of lines) {
+    const next = [...head, line];
+    if (!fits([{ kind: 'text', content: next.join('\n'), streaming: false }])) break;
+    head.push(line);
+  }
+  if (head.length === 0) {
+    // Pathological single line larger than the whole page: hard-cut at the
+    // largest prefix that fits (UTF-8 safe — JS slices by codepoint).
+    let cut = solo.content.length;
+    while (cut > 1 && !fits([{ kind: 'text', content: solo.content.slice(0, cut), streaming: false }])) {
+      cut = Math.floor(cut / 2);
+    }
+    return {
+      page: {
+        ...state,
+        blocks: [{ kind: 'text', content: solo.content.slice(0, cut), streaming: false }],
+      },
+      carry: [
+        { kind: 'text', content: solo.content.slice(cut), streaming: false },
+        ...state.blocks.slice(1),
+      ],
+    };
+  }
+  const headText = head.join('\n');
+  return {
+    page: { ...state, blocks: [{ kind: 'text', content: headText, streaming: false }] },
+    carry: [
+      { kind: 'text', content: solo.content.slice(headText.length), streaming: false },
+      ...state.blocks.slice(1),
+    ],
+  };
+}
+
 /** Run one card page; returns true if it overflowed (another page follows). */
 async function runCardPage(
   channel: LarkChannel,
@@ -844,6 +925,16 @@ async function runCardPage(
   pageIndex: number,
 ): Promise<boolean> {
   let overflow = false;
+  // Whether any agent event was reduced into this page. A page that only
+  // drains carry after the stream ended has already shown its content in
+  // the initial card (rendered in terminal state) — a finalize push would
+  // repeat that content verbatim on a second card.
+  let sawEvent = false;
+  // Whether the last pushed card already rendered the terminal state. The
+  // finalize push exists to add terminal marks (idle/interrupt/done) to a
+  // still-running card; re-pushing an already-terminal card just duplicates
+  // the user-visible content.
+  let sawTerminalPush = false;
   await channel.stream(
     chatId,
     {
@@ -855,6 +946,7 @@ async function runCardPage(
         producer: async (ctrl) => {
           const q = coalesceLatest((card: object) => ctrl.update(card));
           await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
+            sawEvent = true;
             // Tables first: Feishu rejects a card past five table components
             // (ErrCode 11310 "card table number over limit") no matter how
             // small it is, so a page must be cut at the table budget rather
@@ -874,28 +966,54 @@ async function runCardPage(
             const filtered = filter(state);
             const card = renderCard(filtered);
             if (cardExceedsBudget(card, filtered)) {
-              overflow = true;
-              // Finalize this page as a terminal card with a "continues"
-              // note; the run itself is still going (next page picks it up).
-              q.push(
-                renderCard(filter({ ...state, terminal: 'done' }), {
-                  bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
-                }),
-              );
-              await q.flush();
-              return false;
+              // Close this page with only the content that FITS: the closing
+              // card used to carry the full overflowing state, so Feishu
+              // rejected it and the run died on the markdown fallback.
+              // Overflow blocks ride the next page via session.carry.
+              const byteSplit = splitByByteBudget(state, filter);
+              if (byteSplit.carry.length > 0) {
+                overflow = true;
+                session.carry = byteSplit.carry;
+                q.push(
+                  renderCard(filter({ ...byteSplit.page, terminal: 'done' }), {
+                    bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
+                  }),
+                );
+                await q.flush();
+                return false;
+              }
+              // Un-splittable (carry empty): fall through and push the
+              // measured card — the stream may still survive if the closing
+              // render is leaner than the running one.
             }
             q.push(card);
+            // A terminal event's own update already carries the final card
+            // (done/error marks); the finalize push would repeat it.
+            if (state.terminal !== 'running') sawTerminalPush = true;
             return true;
           });
-          if (!overflow) {
+          if (!overflow && sawEvent && !sawTerminalPush) {
             // Natural end of the whole stream: finalize + reap on this page.
+            // The finalize push goes through the same byte split as a
+            // mid-stream overflow — the drained carry can still be past the
+            // 30KB Feishu cap, and an unchecked push here re-killed runs
+            // that had paginated correctly all along.
             const final = finalizeSessionState(session, handle, idleTimeoutMs);
             log.info('card', 'final', {
               terminal: final.terminal,
               interrupted: handle.interrupted,
             });
-            q.push(renderCard(filter(final)));
+            const byteSplit = splitByByteBudget(final, filter);
+            if (byteSplit.carry.length > 0) {
+              session.carry = byteSplit.carry;
+              q.push(
+                renderCard(filter(byteSplit.page), {
+                  bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
+                }),
+              );
+            } else {
+              q.push(renderCard(filter(final)));
+            }
             await q.flush();
             // (reap happens once in streamCardPages' finally, after all pages)
           }

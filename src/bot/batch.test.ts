@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
-import { carryOverBlocks, coalesceLatest, fallbackCard, fallbackContent, cardExceedsBudget, streamCardPages } from './batch';
+import { carryOverBlocks, coalesceLatest, fallbackCard, fallbackContent, cardExceedsBudget, splitByByteBudget, streamCardPages } from './batch';
 import type { AgentEvent } from '../agent/types';
 import type { RunHandle } from './active-runs';
 import type { SessionStore } from '../session/store';
@@ -21,14 +21,34 @@ const base: RunState = {
 
 describe('cardExceedsBudget', () => {
   it('paginates a CJK answer that is over the byte cap but under the char cap', () => {
-    // 20k Chinese chars ≈ 59KB of card JSON: already at Feishu's ~64KB cap,
+    // 20k Chinese chars ≈ 59KB of card JSON: far past Feishu's 30KB card cap,
     // yet only ~20k "chars" — a char-based budget let it through.
     let state: RunState = initialState;
     for (let i = 0; i < 40; i += 1) {
       state = { ...state, blocks: [...state.blocks, { kind: 'text', content: '中'.repeat(500), streaming: false }] };
     }
     const card = renderCard(state);
-    expect(Buffer.byteLength(JSON.stringify(card), 'utf8')).toBeGreaterThan(48 * 1024);
+    expect(Buffer.byteLength(JSON.stringify(card), 'utf8')).toBeGreaterThan(26 * 1024);
+    expect(cardExceedsBudget(card, state)).toBe(true);
+  });
+  it('paginates at the observed production failure size: a 36KB card is over the 30KB Feishu cap', () => {
+    // 2026-09-29 incident: a 20-element, 36,291-byte card passed the old 48KB
+    // budget and Feishu rejected it (230099 + ErrCode 200800), stranding the
+    // run on the "卡片渲染中断" fallback. The budget must trip below that.
+    let state: RunState = initialState;
+    for (let i = 0; i < 18; i += 1) {
+      state = {
+        ...state,
+        blocks: [
+          ...state.blocks,
+          { kind: 'tool', tool: { id: `t${i}`, name: 'bash', input: { command: 'x'.repeat(80) }, status: 'done', output: 'y'.repeat(1700) } },
+        ],
+      };
+    }
+    const card = renderCard(state);
+    const bytes = Buffer.byteLength(JSON.stringify(card), 'utf8');
+    expect(bytes).toBeGreaterThan(26 * 1024);
+    expect(bytes).toBeLessThan(48 * 1024); // would have passed the old budget
     expect(cardExceedsBudget(card, state)).toBe(true);
   });
 
@@ -38,6 +58,51 @@ describe('cardExceedsBudget', () => {
   });
 });
 
+
+describe('splitByByteBudget', () => {
+  /** Narrowing accessor for the text variant of Block (used at 5 call sites). */
+  const textOf = (block: Block | undefined): string => (block?.kind === 'text' ? block.content : '');
+
+  it('closes the page with fitting content and carries the rest', () => {
+    const blocks: Block[] = Array.from({ length: 30 }, (_, i) => ({
+      kind: 'text',
+      content: `block ${i} ` + 'a'.repeat(1200),
+      streaming: false,
+    }));
+    const state: RunState = { ...initialState, blocks };
+    const split = splitByByteBudget(state, (s) => s);
+    expect(split.carry.length).toBeGreaterThan(0);
+    expect(Buffer.byteLength(JSON.stringify(renderCard(split.page)), 'utf8')).toBeLessThanOrEqual(26 * 1024);
+    expect(split.page.blocks.length + split.carry.length).toBe(blocks.length);
+  });
+
+  it('splits a single oversized multi-line text block at a line boundary', () => {
+    const content = Array.from({ length: 300 }, (_, i) => `line ${i} ` + '中'.repeat(200)).join('\n');
+    const state: RunState = { ...initialState, blocks: [{ kind: 'text', content, streaming: false }] };
+    const split = splitByByteBudget(state, (s) => s);
+    expect(split.carry.length).toBeGreaterThan(0);
+    expect(textOf(split.page.blocks[0]) + textOf(split.carry[0])).toBe(content);
+    expect(Buffer.byteLength(JSON.stringify(renderCard(split.page)), 'utf8')).toBeLessThanOrEqual(26 * 1024);
+  });
+
+  it('hard-cuts a pathological single line', () => {
+    const content = '中'.repeat(30 * 1024); // one line, ~90KB of UTF-8
+    const state: RunState = { ...initialState, blocks: [{ kind: 'text', content, streaming: false }] };
+    const split = splitByByteBudget(state, (s) => s);
+    expect(split.carry.length).toBeGreaterThan(0);
+    expect(textOf(split.page.blocks[0]).length).toBeGreaterThan(0);
+    expect(textOf(split.carry[0]).length).toBeGreaterThan(0);
+    expect(textOf(split.page.blocks[0]) + textOf(split.carry[0])).toBe(content);
+    expect(Buffer.byteLength(JSON.stringify(renderCard(split.page)), 'utf8')).toBeLessThanOrEqual(26 * 1024);
+  });
+
+  it('is a no-op for a fitting state', () => {
+    const state: RunState = { ...initialState, blocks: [{ kind: 'text', content: 'small', streaming: false }] };
+    const split = splitByByteBudget(state, (s) => s);
+    expect(split.carry).toEqual([]);
+    expect(split.page).toBe(state);
+  });
+});
 describe('fallbackCard', () => {
   it('builds a minimal schema-2.0 card carrying the remaining content', () => {
     const card = fallbackCard(base, (s) => s) as {
@@ -239,13 +304,18 @@ describe('streamCardPages', () => {
     // rejected with ErrCode 11310 "card table number over limit", which killed
     // the run and stranded the user on the "⚠️ 卡片渲染中断" fallback.
     const cards: object[] = [];
+    // Per-message card sequences (initial + updates patch one message); the
+    // user-visible content is the last card of each call.
+    const pages: object[][] = [];
     const channel = {
       stream: async (
         _chatId: string,
         spec: { card: { initial: object; producer: (ctrl: { update(card: object): Promise<void> }) => Promise<void> } },
       ) => {
+        const page: object[] = [spec.card.initial];
+        pages.push(page);
         cards.push(spec.card.initial);
-        await spec.card.producer({ update: async (card) => void cards.push(card) });
+        await spec.card.producer({ update: async (card) => { cards.push(card); page.push(card); } });
       },
       send: async () => {},
     } as unknown as LarkChannel;
@@ -285,6 +355,78 @@ describe('streamCardPages', () => {
         if (unfenced.includes(`| h${i} | v${i} |`)) realTables.add(`h${i}`);
       }
     }
+    // And nothing is repeated across messages: each table appears in exactly
+    // one message's final card (drain pages must not re-render their carry).
+    const finals = pages.map((page) => page.at(-1)!);
+    const finalText = finals.flatMap(cardMarkdown).join('\n').replace(/```[\s\S]*?```/g, '');
+    for (let i = 0; i < 12; i += 1) {
+      expect(finalText.split(`| h${i} | v${i} |`).length - 1).toBe(1);
+    }
     expect(realTables.size).toBe(12);
+  });
+
+  it('paginates a byte-heavy reply so no card crosses the 30KB Feishu cap', async () => {
+    // Production failure (2026-09-29): a 36KB card was rejected with ErrCode
+    // 200800 (Feishu caps cards at 30KB), killing the run on the fallback.
+    // The page-closing push must carry only fitting content — it used to
+    // re-send the full overflowing state.
+    const cards: object[] = [];
+    // Each channel.stream call is one Feishu message; its initial + updates
+    // patch THAT message, so the user-visible content is the LAST card per
+    // call — repeated paragraphs across those finals are real duplicates.
+    const pages: object[][] = [];
+    const channel = {
+      stream: async (
+        _chatId: string,
+        spec: { card: { initial: object; producer: (ctrl: { update(card: object): Promise<void> }) => Promise<void> } },
+      ) => {
+        const page: object[] = [spec.card.initial];
+        pages.push(page);
+        cards.push(spec.card.initial);
+        await spec.card.producer({ update: async (card) => { cards.push(card); page.push(card); } });
+      },
+      send: async () => {},
+    } as unknown as LarkChannel;
+    const events: AgentEvent[] = [
+      { type: 'text', delta: Array.from({ length: 40 }, (_, i) => `段落 ${i}\n` + '中'.repeat(700)).join('\n\n') },
+      { type: 'done' },
+    ];
+    const handle = {
+      run: {
+        events: (async function* () {
+          yield* events;
+        })(),
+        stop: async () => {},
+        waitForExit: async () => true,
+      },
+      interrupted: false,
+      pendingUiRequests: new Set<string>(),
+      uiTimers: new Map<string, NodeJS.Timeout>(),
+    } as unknown as RunHandle;
+
+    await streamCardPages(
+      channel, 'oc_x', {}, handle, {} as unknown as SessionStore, 'oc_x', '/tmp',
+      undefined, undefined, (s) => s,
+    );
+
+    expect(pages.length).toBeGreaterThan(1);
+    for (const card of cards) {
+      // 30KB is Feishu's hard cap; every card the channel saw must fit —
+      // page initials, streaming updates, and closing cards alike.
+      expect(Buffer.byteLength(JSON.stringify(card), 'utf8')).toBeLessThanOrEqual(30 * 1024);
+    }
+    // Nothing is dropped: all 40 paragraphs reach the user across messages.
+    const finals = pages.map((page) => page.at(-1)!);
+    const all = finals.flatMap(cardMarkdown).join('\n');
+    for (let i = 0; i < 40; i += 1) {
+      expect(all).toContain(`段落 ${i}`);
+    }
+    // …and nothing is repeated: each paragraph lands in exactly one message.
+    // (A drain page must not re-render its carry as both the initial and the
+    // final card, and a terminal event's own update must not be re-pushed by
+    // the finalize path.)
+    for (let i = 0; i < 40; i += 1) {
+      expect(all.split(`段落 ${i}\n`).length - 1).toBe(1);
+    }
   });
 });

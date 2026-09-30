@@ -67,6 +67,42 @@
   - 回退路径加闸：`pnpm build` 超时/无法执行按"环境问题"处理（超时 120s→300s），
     恢复原 HEAD 并尽力重建 dist，不推进回退游标、不留 dist/src 漂移；只在
     工作区确实脏时才 stash，并在恢复时 pop 回去。
+- **「⚠️ 卡片渲染中断」高频复发的三个根因**（近一周 7 次流中断的完整归因）：
+  - **卡片字节预算虚高**：飞书卡片上限实为 **30KB**（ErrCode 200860
+    "Card content exceeds limit"；2026-09-29 实测 36,291 字节卡片被
+    230099 + ErrCode 200800 拒绝），而 bridge 按"~64KB"分页在 48KB →
+    30–48KB 区间的卡片全部被拒、整轮降级。分页预算下调至 26KB（留出
+    `{"content":"…"}` 转义膨胀与页脚开销），新增按事故尺寸构造的回归
+    测试（18 个工具面板 ≈ 36KB 必须触发分页）。
+  - **卡片更新频控失效（ErrCode 230020）**：SDK Throttle 的字符阈值
+    （默认 50 字符）对整卡替换永远成立——一次卡片更新就是几千字符，
+    `fireSoon(0)` 把配置的 400ms 间隔彻底旁路，文本突发时每次更新都
+    立即 patch（实测旧代码连发间隔 0/60/121/182/243ms）。补丁后字符
+    阈值触发也尊重 ms 下限（实测冷启动 1 次 + 401ms 节拍）。
+  - **瞬时错误一击致命**：`im.message.patch` 遇 230020 频控或 5xx 内部
+    错误（2026-09-26/27 各一次）直接杀死整条卡片流。现在对 230020 /
+    HTTP 429 / 5xx 以 600ms 线性退避重试至多 3 次；内容/尺寸类 400
+    （230099）仍快速失败。三项均在 node-sdk 补丁层实现（沿用既有
+    Throttle 补丁的模式，`pnpm patch-commit` 重新生成）。
+- **分页闭环的三个缺口**（上述预算下调后由新的端到端测试逐一暴露）：
+  - 字节超限分支收页时把**未裁剪的全量 state** 再推一遍——正是刚测超限的
+    那张卡，飞书必拒。新增 `splitByByteBudget`：按块取最长可放下的前缀，
+    放不下的整体进 carry 翻页；单块超限只可能是文本块（工具卡体有 2.5KB
+    上限），按行边界切，病态单行二分硬切。
+  - **每页首卡无预算检查**：第 2 页起 initial 直接渲染 carry 状态，超限时
+    开页即被拒。分页循环在重置后先过一次 `splitByByteBudget` 再渲染首卡。
+  - **done 后的排空页把同一内容发两遍**（initial 一遍、finalize 再一遍，
+    表格分页同样存在）：无事件的排空页跳过 finalize；终态事件自己的更新
+    卡不再被 finalize 重复推送（`sawEvent` / `sawTerminalPush` 双守卫）。
+    端到端测试改为「每条消息取终态卡」模型，40 段落/12 表格断言不丢、
+    不重。
+- `/restart` 误报 `kickstart-failed`（一周 4 次、stderr 为空）：`launchctl
+  kickstart -k` 让 launchd 反杀 daemon 进程组，daemon 自己 spawn 的
+  launchctl 子进程一并被杀，`spawnSync` 拿到 `status=null` 被当成失败，
+  白跑一次进程内重连后才被挂起的 SIGTERM 收走。现在按三态处理：子进程
+  被信号杀死（`signal` 置位）视为「结果不明」，记 `kickstart-ambiguous`
+  并挂 3s 兜底重连（带 `stopping` 守卫）；真正的 spawn 失败（`error`）
+  与带 stderr 的失败才立即走进程内重连。
 - `/model` 快捷模型按钮会把非 chat 角色当 chat 模型：OMP 18.2.7 新增
   `image`/`web`/`speech`/`dictation`/`judge` 角色，并把历史的
   `providers.webSearch`/`tts`/`stt` 设置自动迁移进 `modelRoles`；bridge 原来把

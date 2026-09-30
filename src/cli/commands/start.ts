@@ -224,7 +224,26 @@ export async function runStart(opts: StartOptions): Promise<void> {
       // back to the in-process reconnect so /restart still does something.
       const result = kickstart();
       if (!result.ok) {
-        log.warn('restart', 'kickstart-failed', { stderr: result.stderr.slice(0, 200) });
+        if (result.signal) {
+          // launchctl died mid-report — almost certainly launchd's kickstart
+          // group-kill took our own child down as it SIGTERMed us (observed
+          // 4× in production as kickstart-failed with empty stderr, each
+          // followed by a healthy relaunch 2s later). The pending SIGTERM
+          // will stop this process; only reconnect in-process if it never
+          // arrives.
+          log.warn('restart', 'kickstart-ambiguous', { signal: result.signal });
+          const fallback = setTimeout(() => {
+            if (stopping) return; // SIGTERM landed; graceful stop is in flight
+            log.warn('restart', 'kickstart-ambiguous-survived');
+            void restartInProcess();
+          }, 3000);
+          fallback.unref();
+          return false;
+        }
+        log.warn('restart', 'kickstart-failed', {
+          stderr: result.stderr.slice(0, 200),
+          ...(result.error ? { error: result.error.slice(0, 200) } : {}),
+        });
         await restartInProcess();
         return false;
       }

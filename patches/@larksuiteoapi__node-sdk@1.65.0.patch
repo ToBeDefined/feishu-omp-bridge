@@ -1,8 +1,8 @@
 diff --git a/es/index.js b/es/index.js
-index 8d6e87e616d8a2a8fece170433d8ea906e2edaed..2b0e6edba0a714b6e4fca9b63aa15f5350349705 100644
+index 8d6e87e616d8a2a8fece170433d8ea906e2edaed..04e0a060df62bdaad7c010cd7ea7927cb00fd67b 100644
 --- a/es/index.js
 +++ b/es/index.js
-@@ -89921,6 +89921,12 @@ class Throttle {
+@@ -89921,9 +89921,22 @@ class Throttle {
       * or do nothing (a fire is already scheduled).
       */
      note(deltaChars) {
@@ -14,8 +14,19 @@ index 8d6e87e616d8a2a8fece170433d8ea906e2edaed..2b0e6edba0a714b6e4fca9b63aa15f53
 +            throw this.lastError;
          this.pendingChars += deltaChars;
          if (this.pendingChars >= this.opts.chars) {
-             this.fireSoon(0);
-@@ -89937,7 +89943,9 @@ class Throttle {
+-            this.fireSoon(0);
++            // feishu-omp-bridge patch: honor the ms floor even when the chars
++            // threshold trips. A full-card update is always far past `chars`
++            // (card JSON is thousands of chars vs the 50-char default), so
++            // fireSoon(0) effectively disabled throttling for card streams —
++            // back-to-back patches tripped ErrCode 230020 "Update the single
++            // messages too frequently" and killed the run.
++            const elapsed = Date.now() - this.lastFireAt;
++            this.fireSoon(Math.max(0, this.opts.ms - elapsed));
+             return;
+         }
+         if (!this.timer) {
+@@ -89937,7 +89950,9 @@ class Throttle {
              clearTimeout(this.timer);
          this.timer = setTimeout(() => {
              this.timer = undefined;
@@ -26,7 +37,7 @@ index 8d6e87e616d8a2a8fece170433d8ea906e2edaed..2b0e6edba0a714b6e4fca9b63aa15f53
          }, delay);
      }
      /**
-@@ -89949,6 +89957,8 @@ class Throttle {
+@@ -89949,6 +89964,8 @@ class Throttle {
       */
      flushNow() {
          return __awaiter(this, void 0, void 0, function* () {
@@ -35,7 +46,7 @@ index 8d6e87e616d8a2a8fece170433d8ea906e2edaed..2b0e6edba0a714b6e4fca9b63aa15f53
              if (this.timer) {
                  clearTimeout(this.timer);
                  this.timer = undefined;
-@@ -89971,6 +89981,7 @@ class Throttle {
+@@ -89971,6 +89988,7 @@ class Throttle {
                  this.pendingChars = 0;
                  this.lastFireAt = Date.now();
                  yield this.fire();
@@ -43,11 +54,62 @@ index 8d6e87e616d8a2a8fece170433d8ea906e2edaed..2b0e6edba0a714b6e4fca9b63aa15f53
              }))();
              this.inFlight = p;
              try {
+@@ -90089,6 +90107,18 @@ function splitWithCodeFences(text, limit) {
+     return out;
+ }
+ 
++// feishu-omp-bridge patch: classify a message-patch error as transient
++// (retryable): update-frequency limit 230020, HTTP 429, or any 5xx.
++function isTransientCardPatchError(e) {
++    if (!e || typeof e !== 'object')
++        return false;
++    var resp = e.response;
++    var status = resp && typeof resp === 'object' ? resp.status : e.status;
++    if (status === 429 || (typeof status === 'number' && status >= 500))
++        return true;
++    var data = resp && typeof resp === 'object' ? resp.data : e.data;
++    return !!(data && typeof data === 'object' && data.code === 230020);
++}
+ const DEFAULT_THROTTLE_MS$1 = 100;
+ const DEFAULT_THROTTLE_CHARS$1 = 50;
+ const DEFAULT_INITIAL = 'Thinking...';
+@@ -91591,10 +91621,27 @@ class OutboundSender {
+      */
+     patchCard(messageId, card) {
+         return __awaiter(this, void 0, void 0, function* () {
+-            yield this.client.im.v1.message.patch({
+-                path: { message_id: messageId },
+-                data: { content: JSON.stringify(card) },
+-            });
++            // feishu-omp-bridge patch: transient failures (ErrCode 230020
++            // update-frequency limit, 5xx internal errors) used to kill the
++            // whole card stream and strand the run on the markdown fallback.
++            // Retry those with linear backoff; content/size 400s (230099)
++            // still fail fast.
++            const content = JSON.stringify(card);
++            const maxAttempts = 3;
++            for (let attempt = 1;; attempt += 1) {
++                try {
++                    yield this.client.im.v1.message.patch({
++                        path: { message_id: messageId },
++                        data: { content },
++                    });
++                    return;
++                }
++                catch (e) {
++                    if (attempt >= maxAttempts || !isTransientCardPatchError(e))
++                        throw e;
++                    yield new Promise((resolve) => setTimeout(resolve, 600 * attempt));
++                }
++            }
+         });
+     }
+     /**
 diff --git a/lib/index.js b/lib/index.js
-index 9bceeb22a63f774a26c22857f9be66599186f8e8..0ef1413eb25a591e37b8b887ec58ca054feb5c2c 100644
+index 9bceeb22a63f774a26c22857f9be66599186f8e8..e54a439cb6c1fdcdc835cf704559069faaa653c6 100644
 --- a/lib/index.js
 +++ b/lib/index.js
-@@ -89939,6 +89939,12 @@ class Throttle {
+@@ -89939,9 +89939,22 @@ class Throttle {
       * or do nothing (a fire is already scheduled).
       */
      note(deltaChars) {
@@ -59,8 +121,19 @@ index 9bceeb22a63f774a26c22857f9be66599186f8e8..0ef1413eb25a591e37b8b887ec58ca05
 +            throw this.lastError;
          this.pendingChars += deltaChars;
          if (this.pendingChars >= this.opts.chars) {
-             this.fireSoon(0);
-@@ -89955,7 +89961,9 @@ class Throttle {
+-            this.fireSoon(0);
++            // feishu-omp-bridge patch: honor the ms floor even when the chars
++            // threshold trips. A full-card update is always far past `chars`
++            // (card JSON is thousands of chars vs the 50-char default), so
++            // fireSoon(0) effectively disabled throttling for card streams —
++            // back-to-back patches tripped ErrCode 230020 "Update the single
++            // messages too frequently" and killed the run.
++            const elapsed = Date.now() - this.lastFireAt;
++            this.fireSoon(Math.max(0, this.opts.ms - elapsed));
+             return;
+         }
+         if (!this.timer) {
+@@ -89955,7 +89968,9 @@ class Throttle {
              clearTimeout(this.timer);
          this.timer = setTimeout(() => {
              this.timer = undefined;
@@ -71,7 +144,7 @@ index 9bceeb22a63f774a26c22857f9be66599186f8e8..0ef1413eb25a591e37b8b887ec58ca05
          }, delay);
      }
      /**
-@@ -89967,6 +89975,8 @@ class Throttle {
+@@ -89967,6 +89982,8 @@ class Throttle {
       */
      flushNow() {
          return __awaiter(this, void 0, void 0, function* () {
@@ -80,7 +153,7 @@ index 9bceeb22a63f774a26c22857f9be66599186f8e8..0ef1413eb25a591e37b8b887ec58ca05
              if (this.timer) {
                  clearTimeout(this.timer);
                  this.timer = undefined;
-@@ -89989,6 +89999,7 @@ class Throttle {
+@@ -89989,6 +90006,7 @@ class Throttle {
                  this.pendingChars = 0;
                  this.lastFireAt = Date.now();
                  yield this.fire();
@@ -88,3 +161,54 @@ index 9bceeb22a63f774a26c22857f9be66599186f8e8..0ef1413eb25a591e37b8b887ec58ca05
              }))();
              this.inFlight = p;
              try {
+@@ -90107,6 +90125,18 @@ function splitWithCodeFences(text, limit) {
+     return out;
+ }
+ 
++// feishu-omp-bridge patch: classify a message-patch error as transient
++// (retryable): update-frequency limit 230020, HTTP 429, or any 5xx.
++function isTransientCardPatchError(e) {
++    if (!e || typeof e !== 'object')
++        return false;
++    var resp = e.response;
++    var status = resp && typeof resp === 'object' ? resp.status : e.status;
++    if (status === 429 || (typeof status === 'number' && status >= 500))
++        return true;
++    var data = resp && typeof resp === 'object' ? resp.data : e.data;
++    return !!(data && typeof data === 'object' && data.code === 230020);
++}
+ const DEFAULT_THROTTLE_MS$1 = 100;
+ const DEFAULT_THROTTLE_CHARS$1 = 50;
+ const DEFAULT_INITIAL = 'Thinking...';
+@@ -91609,10 +91639,27 @@ class OutboundSender {
+      */
+     patchCard(messageId, card) {
+         return __awaiter(this, void 0, void 0, function* () {
+-            yield this.client.im.v1.message.patch({
+-                path: { message_id: messageId },
+-                data: { content: JSON.stringify(card) },
+-            });
++            // feishu-omp-bridge patch: transient failures (ErrCode 230020
++            // update-frequency limit, 5xx internal errors) used to kill the
++            // whole card stream and strand the run on the markdown fallback.
++            // Retry those with linear backoff; content/size 400s (230099)
++            // still fail fast.
++            const content = JSON.stringify(card);
++            const maxAttempts = 3;
++            for (let attempt = 1;; attempt += 1) {
++                try {
++                    yield this.client.im.v1.message.patch({
++                        path: { message_id: messageId },
++                        data: { content },
++                    });
++                    return;
++                }
++                catch (e) {
++                    if (attempt >= maxAttempts || !isTransientCardPatchError(e))
++                        throw e;
++                    yield new Promise((resolve) => setTimeout(resolve, 600 * attempt));
++                }
++            }
+         });
+     }
+     /**

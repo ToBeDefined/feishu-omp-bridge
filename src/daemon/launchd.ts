@@ -110,6 +110,10 @@ interface LaunchctlResult {
   ok: boolean;
   stderr: string;
   stdout: string;
+  /** Set when launchctl itself was killed by a signal before reporting. */
+  signal?: string;
+  /** Set when launchctl could not be spawned at all (ENOENT, …). */
+  error?: string;
 }
 
 function runLaunchctl(args: string[]): LaunchctlResult {
@@ -118,6 +122,8 @@ function runLaunchctl(args: string[]): LaunchctlResult {
     ok: r.status === 0,
     stderr: r.stderr ?? '',
     stdout: r.stdout ?? '',
+    ...(r.signal ? { signal: r.signal } : {}),
+    ...(r.error ? { error: r.error.message } : {}),
   };
 }
 

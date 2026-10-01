@@ -753,6 +753,17 @@ sqlite3 "file:$DB?mode=ro" \
   "select id, substr(cast(data as text),1,200) from blobs where substr(data,1,1)=X'7B' order by rowid desc limit 20;"
 ```
 
+**内部 TODO 列表**（2026-10-01 实测）：agent 的 TodoWrite 结果也落在本库 `blobs`（`role:"tool"` 的 tool-result blob）。取最新一份：
+
+```bash
+sqlite3 "file:$DB?mode=ro" "
+  select substr(cast(data as text), instr(cast(data as text),'todos'), 4000)
+  from blobs where cast(data as text) like '%\"todos\"%'
+  order by rowid desc limit 1;"
+```
+
+解析出的数组含 `id / content / status`，status 为 `TODO_STATUS_COMPLETED / _IN_PROGRESS / _PENDING`。**屏幕上 To-do 面板被收起时，这是唯一可靠的状态来源**（转录 jsonl 在 /summarize 后不再记录工具调用）。
+
 实测：`blobs` 共 13184 行，其中 **JSON 类 3468 行**（其余为二进制哈希节点/附块）；取尾部可读到
 `{"role":"assistant","content":[{"type":"reasoning",…}]}`、`{"role":"tool","content":[{"type":"tool-result",…}]}` 等真实条目。
 

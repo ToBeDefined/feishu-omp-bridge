@@ -51,6 +51,7 @@
 | 读最近对话 | `select id, substr(cast(data as text),1,200) from blobs where substr(data,1,1)=X'7B' order by rowid desc limit 20`（`X'7B'` = `{`；**只有 JSON 类 blob 可读**） | ❌ `substr(data,1,1)='{'`（BLOB 与 TEXT 比较**恒不相等**，会返回 0 行）；❌ 把 `blobs` 全当文本读 |
 | 看它是不是「在等你」 | cmux 通知：面板 `notifications[]` 里的 **`Cursor is waiting for you`**（§11.6 一次读全） | — |
 | 切模型 / Context / Effort（TUI） | `send '/model\r'` → **`send-key` 方向键**（`send` 文本进不了 Filter）→ `send '\r'`；Tab 进 Edit Parameters 调 Context(300K/1M)/Effort(Low~Max) | ❌ 选择器内用 `send` 打字过滤（进不了框，`\r` 只会空手关闭） |
+| 投递消息 / 清残留行 | `send '文本\r'`（idle 一步送达）；残留时 **`send-key end` → backspace×N**，验收=输入框回 `Add a follow-up` | ❌ `Up`（cursor 里是**历史召回**，不是 kimi 的 edit）；❌ 光标在行首时盲按 backspace（no-op） |
 
 ---
 
@@ -841,6 +842,32 @@ cmux read-screen --surface surface:1          # 页脚验证，如 1M High
 1. 页脚有两行（输出区底部一行 + 输入框下一行），还原验证时两行都应一致。
 2. **Tab 进面板后光标总是重置到 Context 300K 行**，导航前先读屏定位，不要复用上次的步数。
 3. `/model` 与参数修改都是**立即生效**的会话级设置，改完直接留在页脚；误改按同路径改回即可。
+
+### 13.5.1 向空闲面板投递消息与残留行清理（2026-09-30 实测）
+
+**投递**（idle 时一步到位）：
+
+```bash
+cmux send --surface <ref> '继续\r'      # 文本 + '\r' 一次送达，立即被消费，状态转 Working
+```
+
+**★ 残留行：`'\r'` 提交后输入框会残留消息文本**（表现为输入框行显示 `→ <消息>`，而正常空闲是 `→ Add a follow-up` 占位符）。
+不清掉的话，**回合结束会被再次提交**，变成重复指令（同 §11.5 kimi 的坑）。
+
+**清理步骤（cursor 专属，与 kimi 不同）**：
+
+```bash
+cmux send-key --surface <ref> end        # ① 光标先到行尾 —— 必做！
+cmux send-key --surface <ref> backspace  # ② 按 消息长度×2 次退格（CJK 宽字符多按几次）
+cmux read-screen --surface <ref>         # ③ 验收：输入框回到「→ Add a follow-up」占位符
+```
+
+两个实测踩坑：
+
+1. **不要按 `Up`**：cursor 输入框里 `Up` 是**历史召回**（会把已提交的消息取回输入框），与 kimi 的「↑ to edit」语义不同；误按后照样用 `end` + backspace 清。
+2. **backspace 无效先查光标位置**：光标在行首时 backspace 是 no-op（实测连按 6 次无变化，用 `end` 后立刻生效）。可用「打一个探测字符（如 `x`）看它落在哪」来确认输入框可编辑性与光标位置（探完记得删）。
+
+**验收标准**：输入框回到 `→ Add a follow-up`；agent 侧不受影响（footer 的任务/token 计数继续走，`ctrl+c to stop` 提示仍在 = 仍在运行）。
 
 ### 13.6 与 pi / kimi 的对比
 

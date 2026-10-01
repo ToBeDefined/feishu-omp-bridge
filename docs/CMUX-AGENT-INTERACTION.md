@@ -880,6 +880,24 @@ cmux send --surface <ref> '\r'
 
 判断是否已提交：读屏看输入框——**文本还在输入框（`→ <文本>`）= 未提交**，补发 `'\r'` 即可；已提交则输入框回占位符且状态转 `Working`。
 
+**busy 时补充指令：排队 + Enter steer 立即注入**（2026-10-01 实测）：
+
+- 目标 busy 时 `send` 的消息会进入 follow-up 排队区（屏幕下方 `○ <文本>` 框，提示 `enter steer · ↑ select/edit · esc cancel`），**回合结束才消费**；
+- 要**立即注入当前回合**：对 surface 发 `'\r'` 触发 steer。多条排队时逐条出队；若提示变为 **`enter interrupt and send`**，再按一次 Enter 会**中断当前工具调用并打包发送全部排队消息**；
+- steer 后 agent 会先回应补充内容再继续原任务，工作不中断（实测整理任务中被正确消化）。
+
+**★ 停止回合：`Esc` 和 `send-key control-c` 都不可靠，用 `\x03` 字节**（2026-10-01 实测）：
+
+```bash
+cmux send-key --surface <ref> escape       # ❌ 连按两次也无法停止运行中的回合
+cmux send-key --surface <ref> control-c    # ❌ 返回 OK 但无效果
+cmux send --surface <ref> "$(printf '\x03')"   # ✅ 真正停止（footer 的 ctrl+c to stop 消失）
+```
+
+注意：`\x03` 停止后 agent 可能立刻弹出 AskQuestion 提问框；若选项勾选失效（space 无效果、Enter 空提交被记为 "Questions skipped by user"），**用普通 follow-up 消息把答案喂回去**即可，agent 会正常消化。
+
+**★ `/summarize` 的副作用**：压缩会丢掉近期的操作记忆，导致 agent 把**自己的改动**当成"别的会话/入侵"（实测把 16:59 自己编辑的文件、自己拉起的后台构建认成外来操作，还弹出工作区并发确认）。处置：向它确认"系统里只有一个 agent 进程（`ps` 查 `agent --resume=<chatId>` 的父子链即可实证）"，指明那些改动是它 summarize 前的工作。判断当前活着的会话数用进程树，不要信 agent 的猜测。
+
 **验收标准**：输入框回到 `→ Add a follow-up`；agent 侧不受影响（footer 的任务/token 计数继续走，`ctrl+c to stop` 提示仍在 = 仍在运行）。
 
 ### 13.6 与 pi / kimi 的对比

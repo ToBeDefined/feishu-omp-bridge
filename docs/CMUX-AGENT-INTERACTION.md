@@ -867,6 +867,19 @@ cmux read-screen --surface <ref>         # ③ 验收：输入框回到「→ Ad
 1. **不要按 `Up`**：cursor 输入框里 `Up` 是**历史召回**（会把已提交的消息取回输入框），与 kimi 的「↑ to edit」语义不同；误按后照样用 `end` + backspace 清。
 2. **backspace 无效先查光标位置**：光标在行首时 backspace 是 no-op（实测连按 6 次无变化，用 `end` 后立刻生效）。可用「打一个探测字符（如 `x`）看它落在哪」来确认输入框可编辑性与光标位置（探完记得删）。
 
+**★ 长文本投递：尾部 `'\r'` 会被吞掉**（2026-09-30 实测）：
+
+```bash
+# ❌ 长文本一次发：走括号粘贴路径，尾部的 \r 被吃掉 → 文本留在输入框但不提交
+cmux send --surface <ref> '很长的一段话……\r'
+
+# ✅ 分两步：先送文本，再单独发提交键
+cmux send --surface <ref> '很长的一段话……'
+cmux send --surface <ref> '\r'
+```
+
+判断是否已提交：读屏看输入框——**文本还在输入框（`→ <文本>`）= 未提交**，补发 `'\r'` 即可；已提交则输入框回占位符且状态转 `Working`。
+
 **验收标准**：输入框回到 `→ Add a follow-up`；agent 侧不受影响（footer 的任务/token 计数继续走，`ctrl+c to stop` 提示仍在 = 仍在运行）。
 
 ### 13.6 与 pi / kimi 的对比

@@ -369,8 +369,10 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
   // OMP assigns a session id on the first turn but only persists the session
   // file once that turn succeeds — a first-turn failure (missing model
   // credentials, abort) leaves the bridge holding an id that `--resume`
-  // rejects. Without this, that chat is bricked: every later message dies on
-  // the same lookup error. Drop the dead id and replay the batch once.
+  // rejects. Since OMP 18.6.3, a persisted session whose saved model is gone
+  // also fails every resume ("Could not restore model"). Either way the chat
+  // is bricked: every later message dies on the same startup error. Drop the
+  // dead id and replay the batch once.
   if (resumeFrom && !retriedStaleSession && run.staleSession) {
     log.warn('session', 'stale-cleared', { sessionId: resumeFrom, cwd });
     // Drop only the dead id: title and idle-timeout override are user

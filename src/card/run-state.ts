@@ -8,6 +8,14 @@ import type { AgentEvent, AgentUiWidget } from '../agent/types';
  */
 export const TEXT_BLOCK_SPLIT = 4000;
 
+/**
+ * Max characters kept of an agent error message. OMP startup failures embed
+ * the whole stderr tail — with Bun source-frame noise that runs to tens of
+ * KB, enough to blow the card past Feishu's limits. Keep the tail: OMP
+ * prints the actionable line (`error: Could not restore model …`) last.
+ */
+export const ERROR_MSG_MAX = 2000;
+
 export type ToolStatus = 'running' | 'done' | 'error';
 
 export interface ToolEntry {
@@ -229,7 +237,9 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
       return { ...state, subagents };
     }
     case 'error': {
-      return { ...state, terminal: 'error', errorMsg: evt.message, footer: null };
+      const raw = evt.message;
+      const msg = raw.length > ERROR_MSG_MAX ? `…${raw.slice(-ERROR_MSG_MAX)}` : raw;
+      return { ...state, terminal: 'error', errorMsg: msg, footer: null };
     }
 
     case 'done': {

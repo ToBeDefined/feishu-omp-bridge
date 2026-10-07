@@ -407,6 +407,17 @@ async function* createEventStream(
       if (isReadyFrame(parsed)) {
         sawReady = true;
         try {
+          // 18.4.11 gated subagent frames behind set_subagent_subscription
+          // (default level 'off'): without re-subscribing, the run card's
+          // subagent section never populates. 'progress' forwards lifecycle
+          // plus progress frames; the bridge only renders lifecycle. OMP
+          // versions without the command answer {success:false} — intercepted
+          // by isSubagentSubscriptionResponse below, never terminal.
+          writeFrameOrThrow(child, {
+            id: 'subagent_sub_1',
+            type: 'set_subagent_subscription',
+            level: 'progress',
+          });
           if (opts.hostTools && opts.hostTools.length > 0) {
             writeFrameOrThrow(child, {
               id: 'host_tools_1',
@@ -452,6 +463,18 @@ async function* createEventStream(
         log.info('agent', 'host-cancel', { frame: JSON.stringify(parsed).slice(0, 300) });
         continue;
       }
+      // Response to the best-effort set_subagent_subscription handshake.
+      // translateResponse turns every failed response into a terminal error
+      // event, but a refusal here (OMP < 18.4.11: "Unknown command") must
+      // only degrade the run card's subagent section — consume and log.
+      if (isRecord(parsed) && parsed.type === 'response' && parsed.id === 'subagent_sub_1') {
+        if (parsed.success === false) {
+          log.warn('agent', 'subagent-subscription-unsupported', {
+            error: typeof parsed.error === 'string' ? parsed.error : 'unknown error',
+          });
+        }
+        continue;
+      }
       for (const event of translateOmpFrame(parsed)) {
         yield event;
         if (event.type === 'done' || event.type === 'error') terminal = true;
@@ -470,10 +493,18 @@ async function* createEventStream(
   const runtimeError = getError();
   if (status.code !== 0 && status.signal === null) {
     const detail = stderrChunks.length > 0 ? `: ${Buffer.concat(stderrChunks).toString('utf8').trim()}` : '';
-    // OMP rejects an unknown `--resume` id before it ever sends `ready`:
-    // `Error: Session "<id>" not found.` The caller owns the stored id and
-    // has to drop it — retrying the same id fails identically forever.
-    if (!sawReady && opts.sessionId && /session/i.test(detail) && /not\s*found/i.test(detail)) {
+    // Resume can fail before `ready` in two permanent ways, and retrying the
+    // stored id fails identically forever, bricking the chat:
+    // - unknown id: `Error: Session "<id>" not found.`
+    // - saved model unrestorable: since 18.6.3 RPC refuses to silently
+    //   substitute another model (`hasUI=false` disables the fallback), so
+    //   `error: Could not restore model <provider/id>` exits at startup. The
+    //   session file survives on disk; only the chat's id mapping is dropped.
+    if (
+      !sawReady &&
+      opts.sessionId &&
+      ((/session/i.test(detail) && /not\s*found/i.test(detail)) || /could not restore model/i.test(detail))
+    ) {
       outcome.staleSession = true;
     }
     yield { type: 'error', message: `omp exited with code ${status.code}${detail}` };

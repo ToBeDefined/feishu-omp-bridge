@@ -259,6 +259,20 @@
   并固化（避免钥匙串顺序变化导致重签、丢授权）；都没有才退回 ad-hoc 并给出提示。
   缺少 `swiftc`（Xcode CLT）或签名身份时自动回退到原来的直启方式，只回落到旧行为、
   不影响其它功能。
+- **适配 OMP 18.8.2（RPC 模式两处行为变化）**：
+  - **子代理生命周期帧默认停发**（OMP 18.4.11）：RPC 客户端不显式
+    `set_subagent_subscription` 就收不到任何 `subagent_lifecycle` / progress
+    帧（默认级别 `off`），18.4.4 升级后运行卡片的子代理状态行静默失效。
+    现在 ready 后即发送 `set_subagent_subscription level=progress` 恢复；
+    旧版 OMP 对未知命令回 `success:false` 响应，仅记 warn、不再当终止错误。
+  - **resume 时保存的模型不可恢复从静默回退改为启动即退出**（OMP 18.6.3）：
+    RPC 模式无 UI、不允许模型回退，`error: Could not restore model …`
+    会让每条消息都死在 ready 之前，chat 被永久卡死。现在与 `Session not
+    found` 同样判定为 stale resume：丢弃该 chat 的 session id 并原样重放
+    一次（会话文件仍留在磁盘上，可用 `omp --resume` 在 TUI 继续）；
+    `/model` 固定了模型的 chat 不受此变化影响。首次尝试的错误卡片对
+    stderr 尾部做截断（保留末尾 2000 字符，具体错误行在最后），
+    避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Removed
 

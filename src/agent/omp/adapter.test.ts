@@ -215,4 +215,56 @@ process.exit(1);
     ]);
     expect(run.staleSession).toBe(false);
   });
+
+  it('re-subscribes subagent frames after ready and tolerates refusal', async () => {
+    const binary = await fakeOmp(`
+import { createInterface } from 'node:readline';
+console.log(JSON.stringify({ type: 'ready' }));
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+let subscribed = null;
+for await (const line of rl) {
+  const frame = JSON.parse(line);
+  if (frame.type === 'set_subagent_subscription') {
+    subscribed = frame.level;
+    // OMP < 18.4.11 shape: unknown command answered with a failed response.
+    console.log(JSON.stringify({ id: frame.id, type: 'response', command: frame.type, success: false, error: 'Unknown command: set_subagent_subscription' }));
+  }
+  if (frame.type === 'get_state') {
+    console.log(JSON.stringify({ id: frame.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'session-1' } }));
+  }
+  if (frame.type === 'prompt') {
+    if (subscribed !== 'progress') process.exit(9);
+    console.log(JSON.stringify({ id: frame.id, type: 'response', command: 'prompt', success: true }));
+    console.log(JSON.stringify({ type: 'agent_end' }));
+  }
+}
+`);
+
+    const run = new OmpAdapter({ binary }).run({ prompt: 'ping', cwd: tmpdir() });
+
+    // The refusal must not surface as a terminal error; the run completes.
+    await expect(collect(run.events)).resolves.toEqual([
+      { type: 'system', sessionId: 'session-1', model: undefined },
+      { type: 'done' },
+    ]);
+    await expect(run.waitForExit(100)).resolves.toBe(true);
+  });
+
+  it('marks a resume dead when the saved model cannot be restored', async () => {
+    const binary = await fakeOmp(`
+console.error('error: Could not restore model ghost-provider/ghost-model');
+process.exit(1);
+`);
+
+    const run = new OmpAdapter({ binary }).run({
+      prompt: 'ping',
+      cwd: tmpdir(),
+      sessionId: '01a0b305-7eae-71a5-9574-ac4e0845f6fb',
+    });
+
+    await expect(collect(run.events)).resolves.toEqual([
+      { type: 'error', message: expect.stringContaining('Could not restore model') },
+    ]);
+    expect(run.staleSession).toBe(true);
+  });
 });

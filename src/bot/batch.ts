@@ -648,8 +648,9 @@ export async function streamCardPages(
       // block by id) and content a table-budget cut pushed past this page.
       session.state = {
         ...session.state,
+        // Thinking blocks rendered on previous pages are dropped with the
+        // rest — only running tools and carried-over content survive.
         blocks: [...carryOverBlocks(session.state.blocks), ...session.carry],
-        reasoning: { content: '', active: false },
       };
       session.carry = [];
       // The page's initial card is sent before any onState budget check
@@ -843,6 +844,8 @@ function runContentBytes(state: RunState): number {
   for (const b of state.blocks) {
     if (b.kind === 'text') {
       add(b.content);
+    } else if (b.kind === 'thinking') {
+      add(b.content.slice(0, 1500));
     } else {
       add(b.tool.output ?? '');
       n += 400; // per-tool collapsible_panel chrome (header/icon/border JSON)
@@ -855,7 +858,6 @@ function runContentBytes(state: RunState): number {
       }
     }
   }
-  add(state.reasoning.content.slice(0, 1500));
   if (state.ui.editorText) add(state.ui.editorText.slice(0, 1200));
   for (const w of Object.values(state.ui.widgets)) {
     for (const line of w.lines ?? []) add(line);

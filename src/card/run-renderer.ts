@@ -16,7 +16,12 @@ interface TextGroup {
   kind: 'text';
   content: string;
 }
-type Group = ToolGroup | TextGroup;
+interface ThinkingGroup {
+  kind: 'thinking';
+  content: string;
+  active: boolean;
+}
+type Group = ToolGroup | TextGroup | ThinkingGroup;
 
 /** Per-page markers for the card pagination flow (see batch.ts streamCardPages). */
 export interface CardPageOptions {
@@ -51,16 +56,19 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
       if (group.content.trim()) {
         bodyElements.push(markdown(tables(group.content)));
       }
+    } else if (group.kind === 'thinking') {
+      // Thinking segments render collapsed at their chronological position.
+      if (hasReasoningSubstance(group.content)) {
+        bodyElements.push(
+          reasoningPanel(group.content, group.active, tables),
+        );
+      }
     } else {
       bodyElements.push(toolGroupPanel(group.tools));
     }
   }
 
   if (opts?.topNote) elements.push(noteMd(opts.topNote));
-
-  if (hasReasoningSubstance(state.reasoning.content)) {
-    elements.push(reasoningPanel(state.reasoning.content, state.reasoning.active, tables));
-  }
 
   const ui = uiContextPanel(state.ui, tables);
   if (ui) elements.push(ui);
@@ -112,7 +120,11 @@ function* groupBlocks(blocks: Block[]): Generator<Group> {
         yield { kind: 'tools', tools: toolBuf };
         toolBuf = [];
       }
-      yield { kind: 'text', content: b.content };
+      if (b.kind === 'thinking') {
+        yield { kind: 'thinking', content: b.content, active: b.active };
+      } else {
+        yield { kind: 'text', content: b.content };
+      }
     }
   }
   if (toolBuf.length > 0) yield { kind: 'tools', tools: toolBuf };

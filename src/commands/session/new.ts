@@ -1,8 +1,10 @@
+import { homedir } from 'node:os';
 import type { CommandContext, Handler } from '../index';
-import { reply } from '../shared';
-import { escapeMd } from '../../card/templates';
+import { formatIdleLine, reply } from '../shared';
+import { escapeMd, newSessionCard } from '../../card/templates';
 import { createBoundChat, defaultChatName } from './group';
-import { renderContext } from './context';
+import { getOmpModel, getOmpThinking, getRunIdleTimeoutMs } from '../../config/schema';
+import { log } from '../../core/logger';
 
 export const newHandlers: Record<string, Handler> = {
   '/new': handleNew,
@@ -23,8 +25,23 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   // A new session invalidates any pending /ws undo: rolling back would also
   // clear the session the user just started.
   ctx.workspaces.clearUndo(ctx.scope);
-  const ack = wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。';
-  await reply(ctx, `${ack}\n\n${renderContext(ctx)}`);
+  const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
+  const card = newSessionCard({
+    cwd: ctx.workspaces.cwdFor(ctx.scope) ?? homedir(),
+    model: getOmpModel(ctx.controls.cfg),
+    thinking: getOmpThinking(ctx.controls.cfg),
+    idleLine: formatIdleLine(
+      ctx.sessions.getIdleTimeoutMinutes(ctx.scope),
+      globalMs ? Math.round(globalMs / 60_000) : 0,
+    ),
+    wasRunning,
+  });
+  try {
+    await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+  } catch (err) {
+    log.fail('command', err, { step: 'new-card' });
+    await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+  }
 }
 
 async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {

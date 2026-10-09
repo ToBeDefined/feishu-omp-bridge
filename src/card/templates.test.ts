@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { actions, helpCard, md, panel, shell, statusCard, workspacesCard } from './templates';
+import {
+  actions,
+  helpCard,
+  md,
+  newSessionCard,
+  panel,
+  shell,
+  statusCard,
+  workspacesCard,
+} from './templates';
 import { resumeCard, type ResumeOption } from './model-card';
 
 describe('shared card kit', () => {
@@ -182,5 +191,39 @@ describe('resumeCard', () => {
     expect(out).toContain('第 6-10 条 / 共 12 条');
     expect(out).toContain('"cmd":"resume.back","arg":"0"');
     expect(out).toContain('"cmd":"resume.more","arg":"10"');
+  });
+});
+
+describe('newSessionCard', () => {
+  it('renders a compact confirmation without the full context dump', () => {
+    const card = newSessionCard({
+      cwd: '/repo',
+      model: 'p/m',
+      thinking: 'high',
+      idleLine: '全局 30 分钟',
+      wasRunning: true,
+    });
+    const out = JSON.stringify(card);
+    expect(card).toMatchObject({ schema: '2.0' });
+    expect(out).toContain('已中断当前任务并开始新会话');
+    expect(out).toContain('/repo');
+    expect(out).toContain('p/m');
+    expect(out).toContain('high');
+    expect(out).toContain('全局 30 分钟');
+    // 不再整段渲染 /context：不应出现占位字段
+    expect(out).not.toContain('开始对话');
+    expect(out).not.toContain('最后对话');
+  });
+
+  it('marks a clean start when nothing was running', () => {
+    const out = JSON.stringify(
+      newSessionCard({
+        cwd: '/repo',
+        idleLine: '未启用（不自动中断任务）',
+        wasRunning: false,
+      }),
+    );
+    expect(out).not.toContain('已中断');
+    expect(out).toContain('已开始新会话');
   });
 });

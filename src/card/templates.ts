@@ -262,6 +262,45 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   },
 ];
 
+export interface NewSessionInfo {
+  cwd: string;
+  model?: string;
+  thinking?: string;
+  idleLine: string;
+  wasRunning: boolean;
+}
+
+/** Compact /new confirmation — deliberately NOT the full /context dump:
+ * a fresh session has nothing to show for 「开始/最后对话」 yet. */
+export function newSessionCard(info: NewSessionInfo): object {
+  return shell('✅ 新会话已开始', [
+    md(
+      info.wasRunning
+        ? '✅ **已中断当前任务并开始新会话**'
+        : '✅ **已开始新会话**',
+      'heading',
+    ),
+    {
+      tag: 'column_set',
+      flex_mode: 'stretch',
+      horizontal_spacing: 'small',
+      columns: [
+        panel([
+          md('**🧩 环境**'),
+          md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
+          md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
+          md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
+        ]),
+        panel([
+          md('**⏱ 探活**'),
+          md(escapeMd(info.idleLine)),
+          md('_直接发消息即可开始，无需其他操作。_', 'notation'),
+        ]),
+      ],
+    },
+  ]);
+}
+
 export function helpCard(): object {
   const elements: object[] = [md('💡 **命令速查**', 'heading')];
   HELP_GROUPS.forEach((group, gi) => {

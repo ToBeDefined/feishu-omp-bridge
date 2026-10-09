@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   actions,
+  contextCard,
   cwdChangedCard,
   helpCard,
   md,
@@ -138,6 +139,57 @@ describe('workspacesCard', () => {
     const out = JSON.stringify(workspacesCard(undefined, {}));
     expect(out).toContain('暂无命名工作空间');
     expect(out).toContain('/ws save');
+  });
+});
+
+describe('contextCard', () => {
+  const base = {
+    scope: 'oc_1',
+    chatMode: 'p2p' as const,
+    cwd: '/repo',
+    sessionId: '019f3a2b-7c8d-73e1-9f2a-4b5c6d7e8f90',
+    sessionTitle: '修搜索',
+    createdAt: Date.now() - 86_400_000,
+    updatedAt: Date.now() - 120_000,
+    running: false,
+    model: 'p/m',
+    thinking: 'high',
+    idleLine: '全局 30 分钟',
+    wsNames: ['bridge'],
+    summary: { lastMessage: '你好  abc', lastReply: '答完了' },
+  };
+
+  it('renders the three panels with digested recent content', () => {
+    const out = JSON.stringify(contextCard(base));
+    expect(out).toContain('会话');
+    expect(out).toContain('环境');
+    expect(out).toContain('最近内容');
+    expect(out).toContain('修搜索');
+    expect(out).toContain('019f3a2b…');
+    expect(out).toContain('你好 abc');
+    expect(out).toContain('答完了');
+    expect(out).toContain('bridge');
+    expect(out).toContain('全局 30 分钟');
+  });
+
+  it('drops the recent panel and placeholders when nothing to show', () => {
+    const out = JSON.stringify(
+      contextCard({
+        ...base,
+        sessionId: undefined,
+        sessionTitle: undefined,
+        createdAt: undefined,
+        updatedAt: undefined,
+        model: undefined,
+        thinking: undefined,
+        wsNames: [],
+        summary: {},
+      }),
+    );
+    expect(out).not.toContain('最近内容');
+    expect(out).toContain('未命名');
+    expect(out).toContain('跟随默认');
+    expect(out).toContain('（当前目录无快捷方式）');
   });
 });
 

@@ -8,7 +8,8 @@ import {
   getRunIdleTimeoutMs,
 } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
-import { formatIdleLine, reply, summarizeMd } from '../shared';
+import { formatIdleLine, summarizeMd } from '../shared';
+import { contextCard } from '../../card/templates';
 import { formatAgoOr, formatClockOr } from '../../utils/time';
 
 export const contextHandlers: Record<string, Handler> = {
@@ -16,26 +17,69 @@ export const contextHandlers: Record<string, Handler> = {
   '/ctx': handleContext,
 };
 
+/** Data for /context renders — shared by the text renderer and the card so
+ * the two cannot drift apart. */
+export interface ContextInfo {
+  scope: string;
+  chatMode: 'p2p' | 'group' | 'topic';
+  cwd: string;
+  sessionId?: string;
+  sessionTitle?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  running: boolean;
+  model?: string;
+  thinking?: string;
+  idleLine: string;
+  /** Named workspaces pointing at the current cwd. */
+  wsNames: string[];
+  summary: { lastMessage?: string; lastReply?: string };
+}
+
+export function collectContextInfo(
+  ctx: CommandContext,
+  summary: { lastMessage?: string; lastReply?: string } = {},
+): ContextInfo {
+  const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+  const sess = ctx.sessions.getRaw(ctx.scope);
+  const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
+  return {
+    scope: ctx.scope,
+    chatMode: ctx.chatMode,
+    cwd,
+    sessionId: sess?.sessionId,
+    sessionTitle: sess?.title,
+    createdAt: sess?.createdAt,
+    updatedAt: sess?.updatedAt,
+    running: ctx.activeRuns.has(ctx.scope),
+    model: getOmpModel(ctx.controls.cfg),
+    thinking: getOmpThinking(ctx.controls.cfg),
+    idleLine: formatIdleLine(
+      ctx.sessions.getIdleTimeoutMinutes(ctx.scope),
+      globalMs ? Math.round(globalMs / 60_000) : 0,
+    ),
+    wsNames: Object.entries(ctx.workspaces.listNamed())
+      .filter(([, path]) => path === cwd)
+      .map(([name]) => name),
+    summary,
+  };
+}
+
 export function renderContext(
   ctx: CommandContext,
   summary: { lastMessage?: string; lastReply?: string } = {},
 ): string {
-  const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+  const info = collectContextInfo(ctx, summary);
+  const cwd = info.cwd;
   const sess = ctx.sessions.getRaw(ctx.scope);
-  const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
-  const model = getOmpModel(ctx.controls.cfg);
-  const thinking = getOmpThinking(ctx.controls.cfg);
-  const running = ctx.activeRuns.has(ctx.scope);
+  const running = info.running;
   const scopeLine =
     ctx.chatMode === 'topic' ? `\`${ctx.scope}\`（话题独立会话）` : `\`${ctx.scope}\``;
   const sessionLine = sess?.sessionId ? `\`${sess.sessionId}\`` : '（无，下条消息新建）';
   const runningLine = running ? '有任务正在执行' : '空闲，等待指令';
-  const modelLine = model ? `\`${model}\`` : '跟随 OMP 默认';
-  const thinkingLine = thinking ? `\`${thinking}\`` : '跟随 OMP 默认';
-  const idleLine = formatIdleLine(
-    ctx.sessions.getIdleTimeoutMinutes(ctx.scope),
-    globalMs ? Math.round(globalMs / 60_000) : 0,
-  );
+  const modelLine = info.model ? `\`${info.model}\`` : '跟随 OMP 默认';
+  const thinkingLine = info.thinking ? `\`${info.thinking}\`` : '跟随 OMP 默认';
+  const idleLine = info.idleLine;
   // Only surface a quick-dir when one of the named workspaces points at the
   // current cwd; otherwise say none exists.
   const matchingNames = Object.entries(ctx.workspaces.listNamed())
@@ -163,5 +207,6 @@ async function handleContext(_args: string, ctx: CommandContext): Promise<void> 
   if (sess?.sessionId) {
     summary = await loadSessionSummary(ctx, sess.sessionId);
   }
-  await reply(ctx, renderContext(ctx, summary));
+  const card = contextCard(collectContextInfo(ctx, summary));
+  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
 }

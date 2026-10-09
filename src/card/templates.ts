@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import type { ContextInfo } from '../commands/session/context';
 import { formatAgoOr, formatClockOr } from '../utils/time';
 
 interface ButtonSpec {
@@ -39,6 +40,12 @@ export function actions(buttons: ButtonSpec[]): object {
 }
 
 const HR: object = { tag: 'hr' };
+
+/** Collapsed, markdown-safe one-line digest of user/assistant content. */
+function digest(text: string, max = 80): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return escapeMd(flat.length > max ? `${flat.slice(0, max)}…` : flat);
+}
 
 /** Schema 2.0 card shell: `summary` is the notification/condensed preview. */
 export function shell(summary: string, elements: object[]): object {
@@ -222,6 +229,73 @@ export function cwdChangedCard(cwd: string): object {
     actions([
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
       { text: '📊 状态', value: { cmd: 'status' } },
+    ]),
+  ]);
+}
+
+/** /context card — same data as the /status panels plus the recent
+ * message/reply digest, from the shared ContextInfo gatherer
+ * (commands/session/context.ts). Type-only import: no runtime cycle. */
+export function contextCard(
+  info: ContextInfo,
+): object {
+  const hasRecent = Boolean(info.summary.lastMessage || info.summary.lastReply);
+  const recentPanel = hasRecent
+    ? [
+        panel([
+          md('**💬 最近内容**'),
+          ...(info.summary.lastMessage
+            ? [md(`💬 ${digest(info.summary.lastMessage, 80)}`)]
+            : []),
+          ...(info.summary.lastReply
+            ? [md(`📝 ${digest(info.summary.lastReply, 80)}`)]
+            : []),
+        ]),
+      ]
+    : [];
+  const scopeLine =
+    info.chatMode === 'topic'
+      ? `窗口 \`${escapeCode(info.scope)}\` _（话题独立会话）_`
+      : `窗口 \`${escapeCode(info.scope)}\``;
+  const wsLine =
+    info.wsNames.length > 0
+      ? info.wsNames.map((n) => `\`${escapeCode(n)}\``).join(' ')
+      : '_（当前目录无快捷方式）_';
+  return shell('🧾 会话上下文', [
+    md('🧾 **会话上下文**', 'heading'),
+    md(scopeLine, 'notation'),
+    {
+      tag: 'column_set',
+      flex_mode: 'stretch',
+      horizontal_spacing: 'small',
+      columns: [
+        panel([
+          md('**🗂 会话**'),
+          md(info.sessionTitle ? `🏷 ${escapeMd(info.sessionTitle)}` : '🏷 _未命名_'),
+          md(
+            info.sessionId
+              ? `🔗 \`${escapeCode(shortId(info.sessionId))}\``
+              : '🔗 _无，下条消息新建_',
+          ),
+          md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
+          md(`🕘 ${formatAgoOr(info.updatedAt, '新会话')}`),
+          md(info.running ? '🔄 任务执行中' : '✅ 空闲'),
+        ]),
+        panel([
+          md('**🧩 环境**'),
+          md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
+          md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
+          md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
+          md(`⏱ ${escapeMd(info.idleLine)}`),
+          md(`📂 ${wsLine}`),
+        ]),
+        ...recentPanel,
+      ],
+    },
+    { tag: 'hr' },
+    actions([
+      { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
+      { text: '🕘 恢复会话', value: { cmd: 'resume' } },
     ]),
   ]);
 }

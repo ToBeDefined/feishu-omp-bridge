@@ -1,5 +1,5 @@
 import { readAndPrune, resolveTarget, isAlive } from '../../runtime/registry';
-import { formatAgo } from '../../commands/shared';
+import { formatAgo } from '../../utils/time';
 
 /**
  * Pretty-print the list of running feishu-omp-bridge processes.

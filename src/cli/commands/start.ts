@@ -5,7 +5,7 @@ import { startChannel, type BridgeChannel } from '../../bot/channel';
 import { runRegistrationWizard } from '../../bot/wizard';
 import { Scheduler } from '../../scheduler';
 import type { Controls } from '../../commands';
-import { formatAgo } from '../../commands/shared';
+import { formatAgo } from '../../utils/time';
 import { setSecret } from '../../config/keystore';
 import { paths } from '../../config/paths';
 import type { AppConfig } from '../../config/schema';

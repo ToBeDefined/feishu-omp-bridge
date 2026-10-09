@@ -1,3 +1,6 @@
+import { homedir } from 'node:os';
+import { formatAgoOr, formatClockOr } from '../utils/time';
+
 interface ButtonSpec {
   text: string;
   value: Record<string, unknown>;
@@ -13,47 +16,108 @@ function button(spec: ButtonSpec): object {
   };
 }
 
-function divMd(content: string): object {
-  return { tag: 'div', text: { tag: 'lark_md', content } };
+/** JSON 2.0 markdown element; `size` shrinks ('notation') or enlarges ('heading'). */
+function md(content: string, size?: 'heading' | 'notation'): object {
+  return size === undefined
+    ? { tag: 'markdown', content }
+    : { tag: 'markdown', content, text_size: size };
 }
 
 function actions(buttons: ButtonSpec[]): object {
-  return { tag: 'action', actions: buttons.map(button) };
+  // Schema 2.0 has no `action` container — buttons ride in a column_set row.
+  return {
+    tag: 'column_set',
+    flex_mode: 'none',
+    horizontal_spacing: 'small',
+    columns: buttons.map((spec) => ({
+      tag: 'column',
+      width: 'auto',
+      vertical_align: 'center',
+      elements: [button(spec)],
+    })),
+  };
 }
 
 const HR: object = { tag: 'hr' };
 
-function shell(title: string, elements: object[]): object {
+/** Schema 2.0 card shell: `summary` is the notification/condensed preview. */
+function shell(summary: string, elements: object[]): object {
   return {
-    config: { wide_screen_mode: true, update_multi: true },
-    header: { title: { tag: 'plain_text', content: title } },
+    schema: '2.0',
+    config: { summary: { content: summary } },
+    body: { elements },
+  };
+}
+
+/** Grey info panel column (the rounded stat-card look). */
+function panel(elements: object[]): object {
+  return {
+    tag: 'column',
+    width: 'weighted',
+    weight: 1,
+    background_style: 'grey',
+    padding: '8px',
+    vertical_align: 'top',
     elements,
   };
+}
+
+/** Collapse $HOME to `~` so cwd/session paths stay readable in cards. */
+export function tildePath(p: string): string {
+  const home = homedir();
+  return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+}
+
+/** `tildePath` + keep only the last 24 chars — for tight meta lines. */
+export function shortPath(p: string): string {
+  const rel = tildePath(p);
+  return rel.length > 24 ? `…${rel.slice(-24)}` : rel;
 }
 
 export function workspacesCard(current: string | undefined, named: Record<string, string>): object {
   const entries = Object.entries(named);
   const elements: object[] = [];
 
-  elements.push(divMd(`当前 cwd：\`${escapeCode(current ?? '(未设置，使用 $HOME)')}\``));
+  elements.push(md(`📂 **工作空间**`, 'heading'));
+  elements.push(md(`当前 cwd：\`${escapeCode(tildePath(current ?? '(未设置，使用 $HOME)'))}\``));
 
   if (entries.length === 0) {
     elements.push(HR);
-    elements.push(divMd('暂无命名工作空间。'));
-    elements.push(
-      divMd('💡 发送 `/ws save <name>` 把当前 cwd 存为命名工作空间'),
-    );
+    elements.push(md('暂无命名工作空间。'));
+    elements.push(md('_💡 发送 `/ws save <name>` 把当前 cwd 存为命名工作空间_', 'notation'));
   } else {
     elements.push(HR);
     entries.forEach(([name, path], i) => {
-      const marker = path === current ? '  ← 当前' : '';
-      elements.push(divMd(`**${escapeMd(name)}** → \`${escapeCode(path)}\`${marker}`));
-      elements.push(
-        actions([
-          { text: '切换到此处', value: { cmd: 'ws.use', name }, style: 'primary' },
-          { text: '删除', value: { cmd: 'ws.remove', name }, style: 'danger' },
-        ]),
-      );
+      const isCurrent = path === current;
+      elements.push({
+        tag: 'column_set',
+        flex_mode: 'none',
+        horizontal_spacing: 'small',
+        columns: [
+          {
+            tag: 'column',
+            width: 'weighted',
+            weight: 1,
+            vertical_align: 'center',
+            elements: [
+              md(`**${escapeMd(name)}**${isCurrent ? ' ⭐' : ''}`),
+              md(`_${escapeCode(tildePath(path))}_`, 'notation'),
+            ],
+          },
+          {
+            tag: 'column',
+            width: 'auto',
+            vertical_align: 'center',
+            elements: [button({ text: '切换', value: { cmd: 'ws.use', name }, style: 'primary' })],
+          },
+          {
+            tag: 'column',
+            width: 'auto',
+            vertical_align: 'center',
+            elements: [button({ text: '删除', value: { cmd: 'ws.remove', name }, style: 'danger' })],
+          },
+        ],
+      });
       if (i < entries.length - 1) elements.push(HR);
     });
   }
@@ -75,79 +139,152 @@ export interface StatusInfo {
   scope: string;
   /** Chat mode — used to label scope. */
   chatMode: 'p2p' | 'group' | 'topic';
+  /** Active model selector; absent = following OMP default. */
+  model?: string;
+  /** Thinking level; absent = following OMP default. */
+  thinking?: string;
+  /** Rendered idle-timeout line (scope override vs global default). */
+  idleLine: string;
+  createdAt?: number;
+  lastActive?: number;
+  /** Whether a run is executing in this scope right now. */
+  running: boolean;
+}
+
+/** First 8 chars of a session id — enough for `/resume <prefix>` matching. */
+function shortId(id: string): string {
+  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
 }
 
 export function statusCard(info: StatusInfo): object {
-  const sessionLine = info.sessionId
-    ? `\`${info.sessionId}\`${info.sessionStale ? ' ⚠️ 旧 cwd，下一条会新建' : ''}`
-    : '(无)';
-  // For topic groups, surface that the scope is per-topic so the user
-  // knows /cd / /new only affect this topic.
   const scopeLine =
     info.chatMode === 'topic'
-      ? `\`${escapeCode(info.scope)}\` _（话题独立 session）_`
-      : `\`${escapeCode(info.scope)}\``;
-  const lines = [
-    `🧭 **scope**: ${scopeLine}`,
-    `📁 **cwd**: \`${escapeCode(info.cwd)}\``,
-    `🔗 **session**: ${sessionLine}`,
-    info.sessionTitle ? `🏷 **标题**: \`${escapeCode(info.sessionTitle)}\`` : '',
-    `🤖 **agent**: ${escapeMd(info.agentName)}`,
-  ].filter(Boolean);
-  return shell('📊 当前状态', [
-    divMd(lines.join('\n')),
+      ? `窗口 \`${escapeCode(info.scope)}\` _（话题独立会话）_`
+      : `窗口 \`${escapeCode(info.scope)}\``;
+
+  const sessionPanel = [
+    md('**🗂 会话**'),
+    md(
+      info.sessionTitle
+        ? `🏷 ${escapeMd(info.sessionTitle)}`
+        : '🏷 _未命名_',
+    ),
+    md(
+      info.sessionId
+        ? `🔗 \`${escapeCode(shortId(info.sessionId))}\``
+        : '🔗 _无，下条消息新建_',
+    ),
+    md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
+    md(`🕘 ${formatAgoOr(info.lastActive, '新会话')}`),
+    md(info.running ? '🔄 任务执行中' : '✅ 空闲'),
+  ];
+  const envPanel = [
+    md('**🧩 环境**'),
+    md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
+    md(`🤖 ${escapeMd(info.agentName)}`),
+    md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
+    md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
+    md(`⏱ ${escapeMd(info.idleLine)}`),
+  ];
+
+  return shell('📊 会话状态', [
+    md('📊 **会话状态**', 'heading'),
+    md(scopeLine, 'notation'),
+    {
+      tag: 'column_set',
+      // stretch: panels stack vertically on narrow (mobile) screens instead
+      // of squeezing side by side.
+      flex_mode: 'stretch',
+      horizontal_spacing: 'small',
+      columns: [panel(sessionPanel), panel(envPanel)],
+    },
+    ...(info.sessionStale
+      ? [md('⚠️ _session 来自旧 cwd，下一条消息将新建会话_', 'notation')]
+      : []),
     HR,
     actions([
       { text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' },
+      { text: '🕘 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
       { text: '💡 帮助', value: { cmd: 'help' } },
     ]),
   ]);
 }
 
+/** Help groups follow the article's cheat-sheet categories. */
+const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
+  {
+    title: '🗂 会话管理',
+    items: [
+      ['/new · /reset', '清空当前会话，从零开始'],
+      ['/new chat [名字]', '新建群 + 新会话，自动拉你进群'],
+      ['/resume', '历史会话列表，一键恢复'],
+      ['/rename <标题>', '会话命名；`auto` LLM 生成，`clear` 清除'],
+      ['/status', '当前会话 / 环境状态卡片'],
+      ['/context · /ctx', '会话上下文详情'],
+      ['/search <关键词> · /s', '跨会话历史检索'],
+    ],
+  },
+  {
+    title: '🎛 偏好设置',
+    items: [
+      ['/config', '回复方式、工具调用显示等偏好'],
+      ['/timeout [N|off|default]', '当前会话探活分钟数'],
+      ['/model [id|reset]', '查看 / 切换模型'],
+      ['/thinking [level|reset]', '思考强度（off~max）'],
+      ['/account', '查看 / 更换应用凭据并重连'],
+    ],
+  },
+  {
+    title: '📂 工作空间',
+    items: [
+      ['/cd <路径>', '切换工作目录（会重置 session）'],
+      ['/ws list|save|use|remove', '命名工作空间管理'],
+    ],
+  },
+  {
+    title: '⏯ 运行控制',
+    items: [
+      ['/stop', '终止当前任务（等同卡片 ⏹ 按钮）'],
+      ['/reconnect', '强制重连 WebSocket'],
+      ['/restart', '重启当前 bot（launchd 拉起新实例）'],
+    ],
+  },
+  {
+    title: '🩺 进程与诊断',
+    items: [
+      ['/ps', '列出本机 bot，标识当前回复者'],
+      ['/exit <id|#>', '关闭指定 bot'],
+      ['/doctor [描述]', '日志 + 描述交给 OMP 自助诊断'],
+      ['/exec <命令> · /run', '在当前 cwd 执行 shell（admin）'],
+      ['/release', '自发布：typecheck→test→build→重启'],
+    ],
+  },
+];
+
 export function helpCard(): object {
-  return shell('💡 使用帮助', [
-    divMd(
-      [
-        '**命令列表**',
-        '',
-        '- `/new` `/reset` — 清空当前 chat 的会话',
-        '- `/new chat [name]` — 新建群+新会话，自动拉你进群',
-        '- `/cd <path>` — 切换工作目录（会重置 session）',
-        '- `/ws list|save <name>|use <name>|remove <name>` — 工作空间',
-        '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',
-        '- `/config` — 调整偏好（消息回复方式、工具调用显示）',
-        '- `/status` — 当前状态',
-        '- `/stop` — 结束当前正在跑的任务（也可点卡片底部 ⏹ 终止 按钮）',
-        '- `/timeout [N|off|default]` — 当前 session 的探活分钟数,`/config` 改全局默认',
-        '- `/model [id|reset]` — 查看 / 切换 OMP 模型,`/model reset` 回退默认',
-        '- `/thinking [level|reset]` — 切换思考强度(off~max/auto),仅作用于当前模型',
-        '- `/context` — 查看当前会话上下文(scope/cwd/模型/探活等)；别名 `/ctx`',
-        '- `/search <关键词>` — 跨会话历史检索；别名 `/s`',
-        '- `/rename <标题>` — 给当前会话起名;`/rename auto` 用 LLM 生成,`/rename clear` 清除',
-        '- `/restart` — 重启当前 bot(launchd 自动拉起新实例)',
-        '- `/release` — 自发布:typecheck→test→build→重启加载新代码',
-        '- `/exec <命令>` `/run` — 在当前 cwd 执行 shell 命令(admin)',
-        '- `/ps` — 列出本机所有 bot,标识当前正在回复的那个',
-        '- `/exit <id|#>` — 关掉指定 bot(用 `/ps` 看 id/序号)',
-        '- `/reconnect` — 强制重连 WebSocket(网络抖动后 bot 没反应时用)',
-        '- `/doctor [描述]` — 把日志和描述交给 OMP 自助诊断',
-        '- `/help` — 本帮助',
-        '',
-        '其他内容直接交给 OMP。',
-      ].join('\n'),
-    ),
-    HR,
+  const elements: object[] = [md('💡 **命令速查**', 'heading')];
+  HELP_GROUPS.forEach((group, gi) => {
+    if (gi > 0) elements.push(HR);
+    elements.push(md(`**${group.title}**`));
+    for (const [cmd, desc] of group.items) {
+      elements.push(md(`\`${cmd}\` — ${desc}`));
+    }
+  });
+  elements.push(HR);
+  elements.push(md('_发送 `/help` 随时查看；其他内容直接交给 OMP。_', 'notation'));
+  elements.push(
     actions([
       { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
+      { text: '🕘 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
-      { text: '🆕 新会话', value: { cmd: 'new' } },
     ]),
-  ]);
+  );
+  return shell('💡 命令速查', elements);
 }
 
 export function escapeMd(s: string): string {
-  // `[ ] ( ) !` are included so untrusted text cannot forge a link or image
+  // `[ ] ( ) !` are included so untrusted content cannot forge a link or image
   // (`[x](url)` / `![](url)`) inside card markdown.
   return s.replace(/([*_`\\[\]()!])/g, '\\$1');
 }

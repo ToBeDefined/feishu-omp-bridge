@@ -259,12 +259,15 @@ describe('cardExceedsBudget', () => {
     expect(cardExceedsBudget(renderCard(state), state)).toBe(true);
   });
   it('flags a card past the element budget even when bytes stay small', () => {
-    // Production failure shape: many tiny tool calls → 55 elements / 44KB,
-    // Feishu 400 ErrCode 11310 "element exceeds the limit". Bytes never
-    // approach 48KB, so only an element-count check paginates this.
-    const blocks: Block[] = Array.from({ length: 41 }, (_, i) => ({
-      kind: 'tool',
-      tool: { id: `t${i}`, name: 'Bash', input: { command: 'x' }, status: 'done' as const, output: 'ok' },
+    // Element-count pagination guards cheap elements: many tiny text blocks
+    // stay far under the byte cap while blowing past the element budget.
+    // (Tiny tool calls — the original production shape — now carry enough
+    // nested-panel chrome that the byte budget trips first, which is the
+    // same conservative outcome.)
+    const blocks: Block[] = Array.from({ length: 45 }, (_, i) => ({
+      kind: 'text' as const,
+      content: `hi ${i}`,
+      streaming: false,
     }));
     const state: RunState = { ...initialState, blocks };
     const card = renderCard(state);

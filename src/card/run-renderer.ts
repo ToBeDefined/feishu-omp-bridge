@@ -42,23 +42,17 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   // chatty thinking block can never push the answer's tables into code blocks.
   const tables = createTableBudget();
 
-  // Every tool gets its own expandable panel — body (input+output) visible.
-  // The caller (batch.ts) paginates the card stream by size budget, so the
-  // element count is bounded per page and no collapse is needed here.
-  const totalTools = state.blocks.filter((b) => b.kind === 'tool').length;
+  // Consecutive tool calls share ONE collapsible「🛠 工具调用」group row —
+  // the run's body stays mostly answer text; open the group to see each call
+  // (each call keeps its own header + merged body, as before).
   const bodyElements: object[] = [];
-  let toolIdx = 0;
   for (const group of groupBlocks(state.blocks)) {
     if (group.kind === 'text') {
       if (group.content.trim()) {
         bodyElements.push(markdown(tables(group.content)));
       }
     } else {
-      for (const tool of group.tools) {
-        const isLatest = state.terminal === 'running' && toolIdx === totalTools - 1;
-        bodyElements.push(toolPanel(tool, isLatest));
-        toolIdx += 1;
-      }
+      bodyElements.push(toolGroupPanel(group.tools));
     }
   }
 
@@ -86,8 +80,11 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   }
 
   if (state.terminal === 'running') {
-    if (state.footer) elements.push(footerStatus(state.footer));
-    elements.push(stopButton());
+    if (state.footer) {
+      elements.push(runningFooter(state.footer));
+    } else {
+      elements.push(stopButton());
+    }
   }
 
   if (opts?.bottomNote) elements.push(noteMd(opts.bottomNote));
@@ -145,19 +142,34 @@ function subagentLines(entries: SubagentEntry[]): string[] {
 }
 
 function reasoningPanel(content: string, active: boolean, tables: TableBudget): object {
-  const title = active ? '🧠 **思考中**' : '🧠 **思考完成，点击查看**';
+  const title = active ? '🧠 **思考中…**' : '🧠 **思考过程**';
   return collapsiblePanel({
     title,
-    expanded: active,
+    expanded: false,
     border: 'grey',
     body: tables(truncate(content, REASONING_MAX)),
   });
 }
 
-function toolPanel(tool: ToolEntry, expanded: boolean): object {
+/** Outer「🧰 工具调用」group: one collapsed row for a burst of consecutive
+ * tool calls. Red border when any call failed; the count shows in the title. */
+function toolGroupPanel(tools: ToolEntry[]): object {
+  const failed = tools.filter((t) => t.status === 'error').length;
+  const suffix = failed > 0 ? `（${failed} 失败）` : '';
+  return collapsiblePanel({
+    title: `🛠 **工具调用** ×${tools.length}${suffix}`,
+    expanded: false,
+    border: failed > 0 ? 'red' : 'grey',
+    elements: tools.map((t) => toolPanel(t)),
+  });
+}
+
+/** One tool call inside the group: header = status + summary, body = the
+ * merged input + output markdown (single layer, as before). */
+function toolPanel(tool: ToolEntry): object {
   return collapsiblePanel({
     title: toolHeaderText(tool),
-    expanded,
+    expanded: false,
     border: tool.status === 'error' ? 'red' : 'grey',
     body: toolBodyMd(tool) || '_无输出_',
   });
@@ -167,7 +179,10 @@ interface PanelOpts {
   title: string;
   expanded: boolean;
   border: 'grey' | 'red' | 'blue';
-  body: string;
+  /** Markdown body — ignored when `elements` is provided. */
+  body?: string;
+  /** Prebuilt panel elements — overrides `body` (used for nested panels). */
+  elements?: object[];
 }
 
 function collapsiblePanel(opts: PanelOpts): object {
@@ -178,7 +193,8 @@ function collapsiblePanel(opts: PanelOpts): object {
     border: { color: opts.border, corner_radius: '5px' },
     vertical_spacing: '8px',
     padding: '8px 8px 8px 8px',
-    elements: [{ tag: 'markdown', content: opts.body, text_size: 'notation' }],
+    elements:
+      opts.elements ?? [{ tag: 'markdown', content: opts.body, text_size: 'notation' }],
   };
 }
 
@@ -186,9 +202,10 @@ function panelHeader(titleMd: string): object {
   return {
     title: { tag: 'markdown', content: titleMd },
     vertical_align: 'center',
-    icon: { tag: 'standard_icon', token: 'down-small-ccm_outlined', size: '16px 16px' },
+    // Collapsed = ▸ (points right); rotates 90° clockwise to ▾ when expanded.
+    icon: { tag: 'standard_icon', token: 'right-small-ccm_outlined', size: '16px 16px' },
     icon_position: 'follow_text',
-    icon_expanded_angle: -180,
+    icon_expanded_angle: 90,
   };
 }
 
@@ -209,7 +226,8 @@ function stopButton(): object {
   };
 }
 
-function footerStatus(status: Exclude<FooterStatus, null>): object {
+/** Status note on the left + ⏹ stop button on the right, one aligned row. */
+function runningFooter(status: Exclude<FooterStatus, null>): object {
   const text =
     status === 'thinking'
       ? '🧠 正在思考'
@@ -218,7 +236,26 @@ function footerStatus(status: Exclude<FooterStatus, null>): object {
         : status === 'waiting_input'
           ? '🧩 等待用户交互'
           : '✍️ 正在输出';
-  return noteMd(text);
+  return {
+    tag: 'column_set',
+    flex_mode: 'none',
+    horizontal_spacing: 'small',
+    columns: [
+      {
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        vertical_align: 'center',
+        elements: [noteMd(text)],
+      },
+      {
+        tag: 'column',
+        width: 'auto',
+        vertical_align: 'center',
+        elements: [stopButton()],
+      },
+    ],
+  };
 }
 
 function uiContextPanel(ui: UiState, tables: TableBudget): object | undefined {

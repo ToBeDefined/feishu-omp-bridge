@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderCard } from './run-renderer';
 import { countTables } from './tables';
-import type { RunState, ToolEntry } from './run-state';
+import { initialState, type RunState, type ToolEntry } from './run-state';
 
 function tool(id: number): ToolEntry {
   return { id: `t${id}`, name: 'Bash', input: { command: `cmd ${id}` }, status: 'done', output: 'ok' };
@@ -14,6 +14,7 @@ function longRunState(count: number, terminal: RunState['terminal'] = 'running')
     blocks.push({ kind: 'tool', tool: tool(i) });
   }
   return {
+    ...initialState,
     subagents: [],
     blocks,
     reasoning: { content: '', active: false },
@@ -53,10 +54,109 @@ function longMarkdown(elements: unknown[], prefix: string): string | undefined {
 }
 
 describe('renderCard', () => {
-  it('renders every tool as its own expandable panel (no collapse — pagination bounds the count)', () => {
+  it('renders each consecutive tool burst as one collapsible group row', () => {
+    // longRunState interleaves text/tool → each tool is its own ×1 group.
     const card = renderCard(longRunState(8));
     const elements = cardElements(card);
+    // 8 group rows at the top level; each group nests its tool panel(s).
     expect(countByTag(elements, 'collapsible_panel')).toBe(8);
+  });
+
+  it('keeps interleaved tool groups at their chronological positions', () => {
+    const state: RunState = { ...longRunState(0), terminal: 'done', footer: null };
+    state.blocks.push({ kind: 'text', content: '段落一', streaming: false });
+    state.blocks.push({ kind: 'tool', tool: tool(1) });
+    state.blocks.push({ kind: 'text', content: '段落二', streaming: false });
+    state.blocks.push({ kind: 'tool', tool: tool(2) });
+    state.blocks.push({ kind: 'tool', tool: tool(3) });
+    state.blocks.push({ kind: 'text', content: '段落三', streaming: false });
+    const elements = cardElements(renderCard(state));
+    // Top-level shape: 段落一 · group ×1 · 段落二 · group ×2 · 段落三.
+    const shape = elements
+      .filter((e) => typeof e === 'object' && e !== null && 'tag' in e)
+      .map((e) => String(e.tag))
+      .join(',');
+    expect(shape).toBe('markdown,collapsible_panel,markdown,collapsible_panel,markdown');
+    const titles = elements
+      .flatMap((e) =>
+        typeof e === 'object' && e !== null && 'header' in e
+          ? [JSON.stringify((e as { header: { title: { content: string } } }).header)]
+          : [],
+      )
+      .filter((t) => t.includes('工具调用'));
+    expect(titles).toHaveLength(2);
+    expect(titles[0]).toContain('×1');
+    expect(titles[1]).toContain('×2');
+  });
+
+  it('keeps the group row grey and suffix-free when every call succeeded', () => {
+    const state = longRunState(0);
+    state.blocks.push({ kind: 'tool', tool: tool(1) });
+    state.blocks.push({ kind: 'tool', tool: tool(2) });
+    const panels = cardElements(renderCard(state)).filter(
+      (e): e is Record<string, unknown> =>
+        typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'collapsible_panel',
+    );
+    expect(panels).toHaveLength(1);
+    expect(panels[0]).toMatchObject({
+      expanded: false,
+      border: { color: 'grey' },
+      header: { title: { content: expect.stringContaining('×2') } },
+    });
+    expect(JSON.stringify(panels[0])).not.toContain('失败');
+  });
+
+  it('collapses thinking and tool groups by default, with a right-arrow expand icon', () => {
+    const state = longRunState(3);
+    state.reasoning = { content: '先看调用链', active: true };
+    const elements = cardElements(renderCard(state));
+    const panels = elements.filter(
+      (e): e is Record<string, unknown> =>
+        typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'collapsible_panel',
+    );
+    // 3 single-tool groups + 1 reasoning panel — all start collapsed.
+    expect(panels).toHaveLength(4);
+    for (const panel of panels) {
+      expect(panel).toMatchObject({ expanded: false });
+    }
+    // Collapsed state points right; expanding rotates it 90° to point down.
+    expect(panels[0]).toMatchObject({
+      header: {
+        icon: { token: 'right-small-ccm_outlined' },
+        icon_expanded_angle: 90,
+      },
+    });
+  });
+
+  it('groups consecutive tool calls under one 工具调用 row with failure count', () => {
+    const state = longRunState(0);
+    state.reasoning = { content: '有实质内容', active: false };
+    state.blocks.push({ kind: 'tool', tool: tool(1) });
+    state.blocks.push({ kind: 'tool', tool: { ...tool(2), status: 'error', output: 'boom' } });
+    state.blocks.push({ kind: 'tool', tool: { ...tool(3), status: 'running' } });
+    const elements = cardElements(renderCard(state));
+    const panels = elements.filter(
+      (e): e is Record<string, unknown> =>
+        typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'collapsible_panel',
+    );
+    // One group for the 3-call burst + 1 reasoning panel (reasoning renders
+    // first in the card body, so the group is panels[1]).
+    expect(panels).toHaveLength(2);
+    expect(panels[1]).toMatchObject({
+      expanded: false,
+      border: { color: 'red' },
+      header: { title: { content: expect.stringContaining('×3（1 失败）') } },
+      elements: [
+        { tag: 'collapsible_panel', header: { title: { content: expect.stringContaining('✅ **Bash**') } } },
+        { tag: 'collapsible_panel', border: { color: 'red' }, header: { title: { content: expect.stringContaining('❌ **Bash**') } } },
+        { tag: 'collapsible_panel', header: { title: { content: expect.stringContaining('⏳ **Bash**') } } },
+      ],
+    });
+    // Inner calls keep their merged single-layer body (input + output together;
+    // the failed call renders its **Error** fence).
+    const groupJson = JSON.stringify(panels[1]);
+    expect(groupJson).toContain('Command');
+    expect(groupJson).toContain('**Error**');
   });
 
   it('renders a long text block in full (no silent truncation — reduce splits it first)', () => {
@@ -104,14 +204,17 @@ describe('renderCard', () => {
     );
   });
 
-  it('expands only the latest tool panel while running', () => {
-    const elements = cardElements(renderCard(longRunState(3)));
-    const panels = elements.filter(
-      (e) => typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'collapsible_panel',
+  it('aligns the running status and stop button in one footer row', () => {
+    const elements = cardElements(renderCard(longRunState(1)));
+    const rows = elements.filter(
+      (e): e is Record<string, unknown> =>
+        typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'column_set',
     );
-    expect(panels[2]).toMatchObject({ expanded: true });
-    expect(panels[0]).toMatchObject({ expanded: false });
-    expect(panels[1]).toMatchObject({ expanded: false });
+    const footerRow = rows.find((r) =>
+      JSON.stringify(r).includes('⏹ 终止'),
+    );
+    expect(footerRow).toBeDefined();
+    expect(JSON.stringify(footerRow)).toContain('正在输出');
   });
 
   it('skips the reasoning panel when thinking is a bare placeholder (e.g. ".")', () => {

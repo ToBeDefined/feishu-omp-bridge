@@ -1,7 +1,7 @@
-import { homedir } from 'node:os';
 import { summarizeMd } from '../commands/shared';
 import { isOmpThinkingLevel, OMP_THINKING_LEVELS } from '../config/schema';
-import { escapeMd } from './templates';
+import { escapeCode, escapeMd, shortPath } from './templates';
+import { formatAgo } from '../utils/time';
 
 /** Form value meaning "clear ompThinking / follow OMP default". */
 export const THINKING_FOLLOW_DEFAULT = '__default';
@@ -326,7 +326,14 @@ export interface ResumeOption {
   lastMessage?: string;
 }
 
-/** Session picker card for `/resume`. */
+/** First 8 chars of a session id — the `/resume <prefix>` handle. */
+function shortId(id: string): string {
+  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+}
+
+/** Session picker card for `/resume`. One compact row per session:
+ * title/summary + time · cwd · id on the left, a one-click 恢复 button
+ * on the right. */
 export function resumeCard(
   current: string | undefined,
   sessions: ResumeOption[],
@@ -334,51 +341,90 @@ export function resumeCard(
 ): object {
   const offset = opts.offset ?? 0;
   const total = opts.total ?? sessions.length;
-  const lines = [
-    '🕘 **恢复会话**',
-    '',
-    `当前会话:` + (current ? `\`${current}\`` : '（无）'),
-    '',
-    '选择要恢复的历史会话。',
+  const elements: object[] = [
+    { tag: 'markdown', content: '🕘 **恢复会话**', text_size: 'heading' },
+    {
+      tag: 'markdown',
+      content:
+        '当前：' +
+        (current ? `\`${escapeCode(shortId(current))}\`` : '_无_') +
+        ' · 点击右侧按钮一键恢复',
+      text_size: 'notation',
+    },
+    { tag: 'hr' },
   ];
-  // Each session renders as a structured description block (folder, last
-  // message, last reply, id) followed by a single switch button. The current
-  // session gets a marker and a disabled-looking state (it's already active).
-  const blocks: object[] = [];
-  for (const s of sessions) {
+
+  sessions.forEach((s, i) => {
     const isCurrent = current !== undefined && s.sessionId === current;
-    const desc = s.summary ? summarizeMd(s.summary, 32) : '';
-    const md = [
-      isCurrent ? '⭐ **当前会话**' : '',
-      s.title ? `🏷 **${escapeMd(s.title)}**` : '',
-      `📁 ${shortCwd(s.cwd)}`,
-      s.lastMessage ? `💬 最后消息: ${summarizeMd(s.lastMessage, 32)}` : '',
-      desc ? `📝 最后回复: ${desc}` : '',
-      `🆔 \`${s.sessionId}\``,
-    ]
-      .filter(Boolean)
-      .join('\n');
-    blocks.push(
-      { tag: 'markdown', content: md },
+    const num = `#${offset + i + 1}`;
+    // Named session → title leads, summary becomes a detail line; unnamed →
+    // the summary IS the identity; neither → placeholder.
+    const heading = s.title
+      ? `${num} 🏷 **${escapeMd(s.title)}**`
+      : s.summary
+        ? `${num} **${summarizeMd(s.summary, 24)}**`
+        : `${num} _未命名会话_`;
+    const tsMs = Date.parse(s.timestamp);
+    const metaParts = [
+      Number.isFinite(tsMs) ? formatAgo(Date.now() - tsMs) : '',
+      `\`${escapeCode(shortPath(s.cwd))}\``,
+      escapeMd(shortId(s.sessionId)),
+    ].filter(Boolean);
+    const details: object[] = [
+      { tag: 'markdown', content: heading },
       {
-        tag: 'button',
-        text: { tag: 'plain_text', content: isCurrent ? '已在当前' : '切换到该会话' },
-        type: isCurrent ? 'primary' : 'default',
-        // Keep the value so the click still resolves to this session, but a
-        // current-session switch is a no-op in applyResume.
-        value: { cmd: 'resume.use', arg: s.sessionId },
+        tag: 'markdown',
+        content: metaParts.join(' · '),
+        text_size: 'notation',
       },
-      { tag: 'hr' },
-    );
-  }
+    ];
+    if (s.title && s.summary) {
+      details.push({
+        tag: 'markdown',
+        content: `📝 ${summarizeMd(s.summary, 48)}`,
+        text_size: 'notation',
+      });
+    }
+    if (s.lastMessage) {
+      details.push({
+        tag: 'markdown',
+        content: `💬 ${summarizeMd(s.lastMessage, 48)}`,
+        text_size: 'notation',
+      });
+    }
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: 'small',
+      columns: [
+        { tag: 'column', width: 'weighted', weight: 1, vertical_align: 'center', elements: details },
+        {
+          tag: 'column',
+          width: 'auto',
+          vertical_align: 'center',
+          elements: [
+            {
+              tag: 'button',
+              text: { tag: 'plain_text', content: isCurrent ? '✓ 当前' : '恢复' },
+              type: isCurrent ? 'default' : 'primary',
+              // Keep the value so the click still resolves to this session, but a
+              // current-session switch is a no-op in applyResume.
+              value: { cmd: 'resume.use', arg: s.sessionId },
+            },
+          ],
+        },
+      ],
+    });
+    if (i < sessions.length - 1) elements.push({ tag: 'hr' });
+  });
+
   const remaining = Math.max(0, total - (offset + sessions.length));
   const pageSize = sessions.length;
   const footer: object[] = [];
-  const rangeInfo = `第 ${offset + 1}-${offset + pageSize} 条 / 共 ${total} 条`;
   if (offset > 0) {
     footer.push({
       tag: 'button',
-      text: { tag: 'plain_text', content: '较新的会话' },
+      text: { tag: 'plain_text', content: '↑ 较新的会话' },
       type: 'default',
       value: { cmd: 'resume.back', arg: String(Math.max(0, offset - pageSize)) },
     });
@@ -386,7 +432,7 @@ export function resumeCard(
   if (remaining > 0) {
     footer.push({
       tag: 'button',
-      text: { tag: 'plain_text', content: `加载更早 (剩余 ${remaining})` },
+      text: { tag: 'plain_text', content: `↓ 更早（剩 ${remaining}）` },
       type: 'default',
       value: { cmd: 'resume.more', arg: String(offset + sessions.length) },
     });
@@ -397,19 +443,30 @@ export function resumeCard(
     type: 'default',
     value: { cmd: 'resume.cancel', arg: '' },
   });
+  elements.push(
+    { tag: 'hr' },
+    {
+      tag: 'markdown',
+      content: `第 ${offset + 1}-${offset + pageSize} 条 / 共 ${total} 条`,
+      text_size: 'notation',
+    },
+    // Schema 2.0 has no `action` container — buttons ride in a column_set row.
+    {
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: 'small',
+      columns: footer.map((b) => ({
+        tag: 'column',
+        width: 'auto',
+        vertical_align: 'center',
+        elements: [b],
+      })),
+    },
+  );
   return {
     schema: '2.0',
     config: { summary: { content: '恢复会话' } },
-    body: {
-      elements: [
-        { tag: 'markdown', content: lines.join('\n') },
-        { tag: 'hr' },
-        ...blocks,
-        ...(footer.length > 0
-          ? [{ tag: 'markdown', content: `_${rangeInfo}_` }, ...footer]
-          : []),
-      ],
-    },
+    body: { elements },
   };
 }
 
@@ -426,28 +483,22 @@ export function resumeSavedCard(
   cwd: string,
   context?: string,
 ): object {
-  const content = [
-    `✅ **已恢复会话** \`${sessionId}\``,
-    `📁 cwd: \`${cwd}\``,
-    '',
-    '下一条消息从该会话继续。',
+  const elements: object[] = [
+    { tag: 'markdown', content: '✅ **会话已恢复**', text_size: 'heading' },
+    {
+      tag: 'markdown',
+      content: `🔗 \`${escapeCode(shortId(sessionId))}\` · 📁 \`${escapeCode(shortPath(cwd))}\``,
+    },
+    { tag: 'markdown', content: '_下一条消息从该会话继续。_', text_size: 'notation' },
   ];
   if (context) {
-    content.push('', '---', '', context);
+    elements.push({ tag: 'hr' }, { tag: 'markdown', content: context });
   }
   return {
     schema: '2.0',
     config: { summary: { content: '会话已恢复' } },
-    body: {
-      elements: [{ tag: 'markdown', content: content.join('\n') }],
-    },
+    body: { elements },
   };
-}
-
-function shortCwd(cwd: string): string {
-  const home = homedir();
-  const rel = cwd.startsWith(home) ? `~${cwd.slice(home.length)}` : cwd;
-  return rel.length > 24 ? `…${rel.slice(-24)}` : rel;
 }
 
 

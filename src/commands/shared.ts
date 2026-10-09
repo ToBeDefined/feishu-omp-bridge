@@ -33,6 +33,17 @@ export function codeSpan(s: string): string {
   return s.replace(/`/g, "'");
 }
 
+/** Rendered idle-timeout line: scope override wins over the global default. */
+export function formatIdleLine(
+  scopeMinutes: number | undefined,
+  globalMinutes: number,
+): string {
+  if (scopeMinutes !== undefined) {
+    return scopeMinutes > 0 ? `本会话 ${scopeMinutes} 分钟` : '本会话已关闭';
+  }
+  return globalMinutes > 0 ? `全局 ${globalMinutes} 分钟` : '未启用（不自动中断任务）';
+}
+
 /** Delay before in-place card updates, letting the Feishu client settle. */
 export const FORM_SETTLE_MS = 1000;
 
@@ -82,10 +93,3 @@ export async function recallMessage(ctx: CommandContext, messageId: string): Pro
   }
 }
 
-/** Compact relative-time label (Chinese, matching CLI output style). */
-export function formatAgo(ms: number): string {
-  if (ms < 60_000) return `${Math.floor(ms / 1000)} 秒前`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)} 分钟前`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)} 小时前`;
-  return `${Math.floor(ms / 86_400_000)} 天前`;
-}

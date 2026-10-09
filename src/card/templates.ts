@@ -351,7 +351,7 @@ export function diffCard(cwd: string, stat: string, diff: string): object {
     }),
   );
   if (diff.length > DIFF_MAX) {
-    elements.push(noteMd('_⚠️ diff 已截断_'));
+    elements.push(md('_⚠️ diff 已截断_', 'notation'));
   }
   return shell('📦 git diff', elements);
 }

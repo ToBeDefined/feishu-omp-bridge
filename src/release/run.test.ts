@@ -23,6 +23,36 @@ describe('runRelease', () => {
     expect(calls).toEqual(['typecheck', 'test', 'build']);
   });
 
+  it('reports step lifecycle via onStep', async () => {
+    const { exec } = recordingExec();
+    const events: Array<[string, string]> = [];
+    await runRelease(exec, undefined, (step, status) => {
+      events.push([step, status]);
+    });
+    expect(events).toEqual([
+      ['typecheck', 'running'],
+      ['typecheck', 'ok'],
+      ['test', 'running'],
+      ['test', 'ok'],
+      ['build', 'running'],
+      ['build', 'ok'],
+    ]);
+  });
+
+  it('marks the failing step failed and stops the sequence', async () => {
+    const exec = throwingExec(
+      Object.assign(new Error('tsc failed'), { code: 2, stderr: 'x' }),
+    );
+    const events: Array<[string, string]> = [];
+    await runRelease(exec, undefined, (step, status) => {
+      events.push([step, status]);
+    });
+    expect(events).toEqual([
+      ['typecheck', 'running'],
+      ['typecheck', 'failed'],
+    ]);
+  });
+
   it('stops at a typecheck failure and reports exit code + output', async () => {
     const exec = throwingExec(
       Object.assign(new Error('tsc failed'), { code: 2, stderr: 'error TS1234: x' }),

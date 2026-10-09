@@ -12,10 +12,59 @@ import {
   newSessionCard,
   panel,
   psCard,
+  releaseCard,
   shell,
   statusCard,
   workspacesCard,
 } from './templates';
+
+describe('releaseCard', () => {
+  it('shows per-step states while running', () => {
+    const out = JSON.stringify(
+      releaseCard({
+        phase: 'running',
+        steps: [
+          { name: 'typecheck', status: 'ok' },
+          { name: 'test', status: 'running' },
+          { name: 'build', status: 'pending' },
+        ],
+      }),
+    );
+    expect(out).toContain('正在发布');
+    expect(out).toContain('✅ 类型检查');
+    expect(out).toContain('⏳ 测试');
+    expect(out).toContain('○ 构建');
+  });
+
+  it('renders the failure tail when a step fails', () => {
+    const out = JSON.stringify(
+      releaseCard({
+        phase: 'failed',
+        steps: [{ name: 'typecheck', status: 'failed' }],
+        failStep: 'typecheck',
+        failNote: '退出码 2',
+        output: 'error TS1234: x',
+      }),
+    );
+    expect(out).toContain('发布失败于 类型检查');
+    expect(out).toContain('退出码 2');
+    expect(out).toContain('error TS1234: x');
+  });
+
+  it('renders the success phase', () => {
+    const out = JSON.stringify(
+      releaseCard({
+        phase: 'success',
+        steps: [
+          { name: 'typecheck', status: 'ok' },
+          { name: 'test', status: 'ok' },
+          { name: 'build', status: 'ok' },
+        ],
+      }),
+    );
+    expect(out).toContain('正在重启加载新代码');
+  });
+});
 
 describe('compactCard', () => {
   it('shows the size estimate while running', () => {

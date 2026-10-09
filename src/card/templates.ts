@@ -516,6 +516,59 @@ export function compactCard(info: CompactInfo): object {
   ]);
 }
 
+/** /release progress card: per-step ✅/⏳/○ states with a failure tail. */
+export type ReleaseStepName = 'typecheck' | 'test' | 'build';
+export type ReleaseStepState = 'pending' | 'running' | 'ok' | 'failed';
+const RELEASE_STEP_LABEL: Record<ReleaseStepName, string> = {
+  typecheck: '类型检查',
+  test: '测试',
+  build: '构建',
+};
+
+export interface ReleaseProgress {
+  steps: Array<{ name: ReleaseStepName; status: ReleaseStepState }>;
+  phase: 'running' | 'success' | 'failed';
+  /** Failure details from the failing step. */
+  failStep?: ReleaseStepName;
+  failNote?: string;
+  output?: string;
+}
+
+const STEP_MARK: Record<ReleaseStepState, string> = {
+  pending: '○',
+  running: '⏳',
+  ok: '✅',
+  failed: '❌',
+};
+
+export function releaseCard(progress: ReleaseProgress): object {
+  const icon = progress.phase === 'failed' ? '❌' : progress.phase === 'success' ? '✅' : '🔄';
+  const title =
+    progress.phase === 'failed'
+      ? `❌ **发布失败于 ${RELEASE_STEP_LABEL[progress.failStep ?? 'typecheck']}**`
+      : progress.phase === 'success'
+        ? '✅ **构建成功，正在重启加载新代码…**'
+        : '🔄 **正在发布**';
+  const steps = progress.steps.map((s) =>
+    md(`${STEP_MARK[s.status]} ${RELEASE_STEP_LABEL[s.name]}`),
+  );
+  const elements: object[] = [
+    md(`${icon} ${title}`, 'heading'),
+    { tag: 'hr' },
+    ...steps,
+    { tag: 'hr' },
+  ];
+  if (progress.phase === 'failed') {
+    if (progress.failNote) elements.push(md(escapeMd(progress.failNote)));
+    if (progress.output) elements.push(md(codeFence(progress.output)));
+  } else if (progress.phase === 'success') {
+    elements.push(md('_完成后会发送上线通知。_', 'notation'));
+  } else {
+    elements.push(md('_typecheck → test → build → 自动重启_', 'notation'));
+  }
+  return shell(`${icon} 发布`, elements);
+}
+
 const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',

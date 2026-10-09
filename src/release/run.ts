@@ -73,14 +73,25 @@ export function repoRoot(): string {
   return fileURLToPath(new URL('..', import.meta.url));
 }
 
+export type ReleaseStepName = ReleaseStep['name'];
+export type ReleaseStepStatus = 'running' | 'ok' | 'failed';
+export type ReleaseOnStep = (
+  step: ReleaseStepName,
+  status: ReleaseStepStatus,
+) => void | Promise<void>;
+
 export async function runRelease(
   exec: ReleaseExec = execFileAsync,
   cwd?: string,
+  onStep?: ReleaseOnStep,
 ): Promise<ReleaseResult> {
   for (const step of RELEASE_STEPS) {
+    await onStep?.(step.name, 'running');
     try {
       await exec('pnpm', step.args, { timeout: step.timeoutMs, cwd });
+      await onStep?.(step.name, 'ok');
     } catch (err) {
+      await onStep?.(step.name, 'failed');
       const e = err as ExecError;
       if (e.code === 'ENOENT') {
         return { ok: false, step: step.name, pnpmMissing: true };

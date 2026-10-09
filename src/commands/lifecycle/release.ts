@@ -1,8 +1,16 @@
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
 import { log } from '../../core/logger';
-import { repoRoot, runRelease, type ReleaseResult } from '../../release/run';
+import {
+  repoRoot,
+  runRelease,
+  RELEASE_STEPS,
+  type ReleaseResult,
+  type ReleaseStepName,
+} from '../../release/run';
 import { clearOnlineNotify, markOnlineNotify } from '../../bot/online-notify';
+import { releaseCard, type ReleaseStepState } from '../../card/templates';
+import { sendManagedCard, updateManagedCard } from '../../card/managed';
 
 let inFlight = false;
 
@@ -10,16 +18,10 @@ export const releaseHandlers: Record<string, Handler> = {
   '/release': handleRelease,
 };
 
-function renderFailure(result: ReleaseResult): string {
-  if (result.pnpmMissing) {
-    return `❌ 发布失败于 \`pnpm ${result.step}\`：找不到 \`pnpm\`，请确认 PATH 里可用。`;
-  }
-  if (result.timedOut) {
-    return `❌ 发布失败于 \`pnpm ${result.step}\`：执行超时。`;
-  }
-  const exit = result.exitCode !== undefined ? `（退出码 ${result.exitCode}）` : '';
-  const out = result.output ? `\n\`\`\`\n${result.output}\n\`\`\`` : '';
-  return `❌ 发布失败于 \`pnpm ${result.step}\`${exit}${out}`;
+function failureNote(result: ReleaseResult): string {
+  if (result.pnpmMissing) return '找不到 pnpm，请确认 PATH 里可用。';
+  if (result.timedOut) return '执行超时。';
+  return result.exitCode !== undefined ? `退出码 ${result.exitCode}` : '未知错误';
 }
 
 async function handleRelease(_args: string, ctx: CommandContext): Promise<void> {
@@ -28,14 +30,48 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
     return;
   }
   inFlight = true;
+  const steps = RELEASE_STEPS.map((s) => ({ name: s.name, status: 'pending' as ReleaseStepState }));
+  let messageId: string | undefined;
+  const push = async (): Promise<void> => {
+    const card = releaseCard({ steps, phase: 'running' });
+    if (!messageId) {
+      const sent = await sendManagedCard(ctx.channel, ctx.msg.chatId, card, ctx.msg.messageId);
+      messageId = sent.messageId;
+    } else {
+      await updateManagedCard(ctx.channel, messageId, card);
+    }
+  };
+  const close = async (phase: 'success' | 'failed', failNote?: string, output?: string): Promise<void> => {
+    if (!messageId) return;
+    await updateManagedCard(
+      ctx.channel,
+      messageId,
+      releaseCard({
+        steps,
+        phase,
+        ...(phase === 'failed'
+          ? { failStep: failingStep, failNote, output }
+          : {}),
+      }),
+    );
+  };
+  let failingStep: ReleaseStepName | undefined;
   try {
-    await reply(ctx, '🔄 开始发布：`pnpm typecheck` → `pnpm test` → `pnpm build` → 重启…');
-    const result = await runRelease(undefined, repoRoot());
+    const onStep = async (step: ReleaseStepName, status: ReleaseStepState): Promise<void> => {
+      const found = steps.find((s) => s.name === step);
+      if (found) found.status = status;
+      if (status === 'failed') failingStep = step;
+      await push().catch((err) => log.fail('command', err, { step: 'release-card' }));
+    };
+    await push().catch(() => {});
+    const result = await runRelease(undefined, repoRoot(), onStep);
     if (!result.ok) {
-      await reply(ctx, renderFailure(result));
+      await close('failed', failureNote(result), result.output).catch(
+        (err) => log.fail('command', err, { step: 'release-card' }),
+      );
       return;
     }
-    await reply(ctx, '✅ 构建成功，正在重启加载新代码…');
+    await close('success').catch((err) => log.fail('command', err, { step: 'release-card' }));
     // Persist which chat asked, so the post-boot "已上线" reaches it even
     // when its session entry was cleared (/new, /cd, /ws) before /release.
     await markOnlineNotify(ctx.msg.chatId);

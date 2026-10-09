@@ -356,6 +356,44 @@ export function diffCard(cwd: string, stat: string, diff: string): object {
   return shell('📦 git diff', elements);
 }
 
+export interface ExecResultInfo {
+  cmd: string;
+  exitCode: number | null;
+  output: string;
+  timedOut: boolean;
+  /** For the timeout title, e.g. 30. */
+  timeoutSeconds: number;
+}
+
+/** /exec result: outcome heading + the command + collapsed output panel. */
+export function execResultCard(info: ExecResultInfo): object {
+  const ok = !info.timedOut && info.exitCode === 0;
+  const title = info.timedOut
+    ? `⏱ **执行超时**（${info.timeoutSeconds}s），已终止`
+    : info.exitCode === null
+      ? '❌ **无法执行**'
+      : ok
+        ? '✅ **命令执行完成**'
+        : `❌ **命令失败**（退出码 ${info.exitCode}）`;
+  const elements: object[] = [
+    md(title, 'heading'),
+    md(`\`$ ${escapeCode(info.cmd)}\``, 'notation'),
+  ];
+  if (info.output.trim()) {
+    elements.push(
+      collapsiblePanel({
+        title: '📄 **输出**',
+        expanded: !ok,
+        border: ok ? 'grey' : 'red',
+        body: codeFence(info.output),
+      }),
+    );
+  } else {
+    elements.push(md('_（无输出）_', 'notation'));
+  }
+  return shell('🖥 命令执行', elements);
+}
+
 const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',

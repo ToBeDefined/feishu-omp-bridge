@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { resumeCard, type ResumeOption } from './model-card';
 import {
   actions,
   contextCard,
   cwdChangedCard,
+  execResultCard,
   helpCard,
   md,
   newSessionCard,
@@ -11,7 +13,35 @@ import {
   statusCard,
   workspacesCard,
 } from './templates';
-import { resumeCard, type ResumeOption } from './model-card';
+
+describe('execResultCard', () => {
+  it('renders success with collapsed output and the command line', () => {
+    const out = JSON.stringify(
+      execResultCard({ cmd: 'pnpm test', exitCode: 0, output: 'all green', timedOut: false, timeoutSeconds: 30 }),
+    );
+    expect(out).toContain('命令执行完成');
+    expect(out).toContain('$ pnpm test');
+    expect(out).toContain('"expanded":false');
+    expect(out).toContain('all green');
+  });
+
+  it('expands output and marks failure on non-zero exit', () => {
+    const out = JSON.stringify(
+      execResultCard({ cmd: 'boom', exitCode: 2, output: 'err', timedOut: false, timeoutSeconds: 30 }),
+    );
+    expect(out).toContain('命令失败**（退出码 2）');
+    expect(out).toContain('"expanded":true');
+    expect(out).toContain('"color":"red"');
+  });
+
+  it('marks timeouts and empty output', () => {
+    const out = JSON.stringify(
+      execResultCard({ cmd: 'sleep 100', exitCode: null, output: '', timedOut: true, timeoutSeconds: 30 }),
+    );
+    expect(out).toContain('执行超时**（30s）');
+    expect(out).toContain('无输出');
+  });
+});
 
 describe('shared card kit', () => {
   it('exports the 2.0 kit pieces for other card modules', () => {

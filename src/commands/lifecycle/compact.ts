@@ -4,6 +4,7 @@ import type { CommandContext, Handler } from '../index';
 import { getOmpModel, getOmpSessionDir } from '../../config/schema';
 import { compactTimeoutMs, estimateCompactSeconds, estimateSessionTokens } from '../../agent/omp/estimate';
 import { reply } from '../shared';
+import { compactCard } from '../../card/templates';
 
 export const compactHandlers: Record<string, Handler> = {
   '/compact': handleCompact,
@@ -68,10 +69,19 @@ async function compactIdle(
     const estimate = await estimateSessionTokens(getOmpSessionDir(ctx.controls.cfg), sessionId);
     const tokens = estimate?.tokens ?? 0;
     const etaSeconds = Math.round(estimateCompactSeconds(tokens));
-    const sizeLine = estimate
-      ? `📏 会话 ≈${(tokens / 1000).toFixed(0)}k token / ${(estimate.bytes / 1024 / 1024).toFixed(1)} MB，预计 ≈${fmtDuration(etaSeconds)}（上限 ${fmtDuration(compactTimeoutMs(tokens) / 1000)}）`
-      : '';
-    await reply(ctx, `🫧 正在压缩会话上下文，完成后通知你…${sizeLine ? `\n${sizeLine}` : ''}`);
+    const sendCard = (info: Parameters<typeof compactCard>[0]) =>
+      ctx.channel.send(ctx.msg.chatId, { card: compactCard(info) }, { replyTo: ctx.msg.messageId });
+    await sendCard({
+      phase: 'started',
+      ...(estimate
+        ? {
+            tokensK: (tokens / 1000).toFixed(0),
+            mb: (estimate.bytes / 1024 / 1024).toFixed(1),
+            eta: fmtDuration(etaSeconds),
+            cap: fmtDuration(compactTimeoutMs(tokens) / 1000),
+          }
+        : {}),
+    });
     const error = await ctx.agent.compactSession({
       sessionId,
       cwd,
@@ -81,9 +91,9 @@ async function compactIdle(
       signal: abort.signal,
     });
     if (error) {
-      await reply(ctx, `❌ 压缩失败：${error}`);
+      await sendCard({ phase: 'failed', error });
     } else {
-      await reply(ctx, '✅ 会话上下文已压缩，下条消息生效。');
+      await sendCard({ phase: 'done' });
     }
   } finally {
     ctx.activeRuns.unregister(ctx.scope, occupy);

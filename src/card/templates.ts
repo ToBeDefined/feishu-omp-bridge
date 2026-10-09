@@ -479,6 +479,43 @@ export function everyCard(rows: EveryRow[]): object {
   return shell('📅 定时任务', elements);
 }
 
+/** /compact progress card. `tokensK`/`mb`/`eta`/`cap` are preformatted by the
+ * caller (they own the estimation math); omit them when no estimate exists. */
+export interface CompactInfo {
+  phase: 'started' | 'done' | 'failed';
+  tokensK?: string;
+  mb?: string;
+  eta?: string;
+  cap?: string;
+  error?: string;
+}
+
+export function compactCard(info: CompactInfo): object {
+  if (info.phase === 'started') {
+    const sizeLine =
+      info.tokensK !== undefined
+        ? md(
+            `📏 会话 ≈${info.tokensK}k token / ${info.mb} MB\n⏳ 预计 ≈${info.eta}（上限 ${info.cap}）`,
+          )
+        : md('_（无法估算会话大小，耐心等待…）_', 'notation');
+    return shell('🫧 压缩会话', [
+      md('🫧 **正在压缩会话上下文**', 'heading'),
+      md('_完成后会在这里通知你。_', 'notation'),
+      sizeLine,
+    ]);
+  }
+  if (info.phase === 'failed') {
+    return shell('❌ 压缩失败', [
+      md('❌ **压缩失败**', 'heading'),
+      ...(info.error ? [md(codeFence(info.error))] : []),
+    ]);
+  }
+  return shell('✅ 压缩完成', [
+    md('✅ **会话上下文已压缩**', 'heading'),
+    md('_下条消息生效。_', 'notation'),
+  ]);
+}
+
 const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',

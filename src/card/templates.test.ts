@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { resumeCard, type ResumeOption } from './model-card';
 import {
   actions,
+  compactCard,
   contextCard,
   cwdChangedCard,
   everyCard,
@@ -15,6 +16,33 @@ import {
   statusCard,
   workspacesCard,
 } from './templates';
+
+describe('compactCard', () => {
+  it('shows the size estimate while running', () => {
+    const out = JSON.stringify(
+      compactCard({ phase: 'started', tokensK: '690', mb: '10.0', eta: '15分30秒', cap: '46分' }),
+    );
+    expect(out).toContain('正在压缩会话上下文');
+    expect(out).toContain('690k token');
+    expect(out).toContain('10.0 MB');
+    expect(out).toContain('15分30秒');
+    expect(out).toContain('46分');
+  });
+
+  it('omits the size line without an estimate', () => {
+    const out = JSON.stringify(compactCard({ phase: 'started' }));
+    expect(out).not.toContain('k token');
+    expect(out).toContain('无法估算');
+  });
+
+  it('renders done and failed phases', () => {
+    const done = JSON.stringify(compactCard({ phase: 'done' }));
+    expect(done).toContain('会话上下文已压缩');
+    const failed = JSON.stringify(compactCard({ phase: 'failed', error: 'killed' }));
+    expect(failed).toContain('压缩失败');
+    expect(failed).toContain('killed');
+  });
+});
 
 describe('everyCard', () => {
   it('lists tasks with delete buttons and the full prompt', () => {

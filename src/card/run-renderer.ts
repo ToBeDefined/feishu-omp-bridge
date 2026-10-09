@@ -151,7 +151,7 @@ function reasoningPanel(content: string, active: boolean, tables: TableBudget): 
   });
 }
 
-/** Outer「🧰 工具调用」group: one collapsed row for a burst of consecutive
+/** Outer「🛠 工具调用」group: one collapsed row for a burst of consecutive
  * tool calls. Red border when any call failed; the count shows in the title. */
 function toolGroupPanel(tools: ToolEntry[]): object {
   const failed = tools.filter((t) => t.status === 'error').length;
@@ -232,7 +232,7 @@ function runningFooter(status: Exclude<FooterStatus, null>): object {
     status === 'thinking'
       ? '🧠 正在思考'
       : status === 'tool_running'
-        ? '🧰 正在调用工具'
+        ? '🛠 正在调用工具'
         : status === 'waiting_input'
           ? '🧩 等待用户交互'
           : '✍️ 正在输出';

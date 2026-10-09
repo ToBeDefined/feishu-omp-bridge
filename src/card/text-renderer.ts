@@ -55,7 +55,7 @@ function toolLine(tool: ToolEntry): string {
 
 function footerLine(status: 'thinking' | 'tool_running' | 'streaming' | 'waiting_input'): string {
   if (status === 'thinking') return '_🧠 正在思考…_';
-  if (status === 'tool_running') return '_🧰 正在调用工具…_';
+  if (status === 'tool_running') return '_🛠 正在调用工具…_';
   if (status === 'waiting_input') return '_🧩 等待用户交互…_';
   return '_✍️ 正在输出…_';
 }

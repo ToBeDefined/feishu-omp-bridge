@@ -745,28 +745,33 @@ export function carryOverBlocks(blocks: Block[]): Block[] {
  * Latest-wins write coalescer. At most one write in flight; newer values
  * overwrite the pending slot. `flush()` waits for in-flight + pending so
  * the last value always lands. Errors surface on the next `push`/`flush`.
+ *
+ * `minIntervalMs` paces write STARTS at least that far apart (the first
+ * write is immediate). Feishu rate-limits updates to a single message —
+ * 230020 "Update the single messages too frequently" — and back-to-back
+ * card patches during fast streaming trip it, killing the run on the
+ * 渲染中断 fallback. The pending slot still collapses bursts, so only
+ * latency grows, never lost content.
  */
-/**
- * Card JSON size budget per page. Feishu caps a card at 30KB — documented as
- * ErrCode 200860 "Card content exceeds limit", and observed in production on
- * 2026-09-29 as 230099 + ErrCode 200800 rejecting a 36,291-byte card. We
- * paginate at 26KB: the wire payload re-serializes the card inside
- * `{"content":"…"}` with every quote escaped (~5% inflation), and pages
- * already carry footer/note chrome a bare content tally undercounts.
- */
-const CARD_SIZE_BUDGET = 26 * 1024;
-/**
- * Element-count budget per page. Feishu also rejects a streaming card whose
- * body grows past ~50 elements — same ErrCode 11310, observed in production
- * at 55 elements / 44KB (well under the byte budget). Runs with many small
- * tool calls hit this first, so paginate on count too.
- */
-const CARD_ELEMENT_BUDGET = 40;
-
-export function coalesceLatest<T>(write: (value: T) => Promise<void>): {
+export function coalesceLatest<T>(
+  write: (value: T) => Promise<void>,
+  opts: { minIntervalMs?: number } = {},
+): {
   push(value: T): void;
   flush(): Promise<void>;
 } {
+  const minIntervalMs = opts.minIntervalMs ?? 0;
+  let lastWriteAt = -Infinity;
+  const paced = async (value: T): Promise<void> => {
+    const wait = lastWriteAt + minIntervalMs - Date.now();
+    if (wait > 0) {
+      // Executor form: tsconfig lib is ES2022 (Promise.withResolvers needs ES2024,
+      // and the published package still supports Node 20).
+      await new Promise<void>((resolve) => setTimeout(resolve, wait));
+    }
+    lastWriteAt = Date.now();
+    await write(value);
+  };
   let pending: T | undefined;
   let inFlight: Promise<void> | undefined;
   let failed: unknown;
@@ -775,7 +780,7 @@ export function coalesceLatest<T>(write: (value: T) => Promise<void>): {
       while (pending !== undefined) {
         const value = pending;
         pending = undefined;
-        await write(value);
+        await paced(value);
       }
     } catch (err) {
       failed = err;
@@ -796,11 +801,38 @@ export function coalesceLatest<T>(write: (value: T) => Promise<void>): {
       if (pending !== undefined) {
         const value = pending;
         pending = undefined;
-        await write(value);
+        await paced(value);
       }
     },
   };
 }
+
+/**
+ * Card JSON size budget per page. Feishu caps a card at 30KB — documented as
+ * ErrCode 200860 "Card content exceeds limit", and observed in production on
+ * 2026-09-29 as 230099 + ErrCode 200800 rejecting a 36,291-byte card. We
+ * paginate at 26KB: the wire payload re-serializes the card inside
+ * `{"content":"…"}` with every quote escaped (~5% inflation), and pages
+ * already carry footer/note chrome a bare content tally undercounts.
+ */
+const CARD_SIZE_BUDGET = 26 * 1024;
+/**
+ * Element-count budget per page. Feishu also rejects a streaming card whose
+ * body grows past ~50 elements — same ErrCode 11310, observed in production
+ * at 55 elements / 44KB (well under the byte budget). Runs with many small
+ * tool calls hit this first, so paginate on count too.
+ */
+const CARD_ELEMENT_BUDGET = 40;
+
+/**
+ * Minimum gap between card patches on the same message. Feishu rate-limits
+ * per-message updates (230020 "Update the single messages too frequently");
+ * un-paced patches during fast streaming tripped it and killed runs on the
+ * 渲染中断 fallback (observed 2026-10-05 / 10-09). 1/s leaves ~5x headroom
+ * under the documented 5/s limit; latest-wins keeps the final state intact,
+ * only the intermediate refresh rate drops.
+ */
+const CARD_UPDATE_MIN_INTERVAL_MS = 1000;
 
 /** Rough serialized size (UTF-8 bytes) of the content a card will carry. */
 function runContentBytes(state: RunState): number {
@@ -946,7 +978,9 @@ async function runCardPage(
           pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
         ),
         producer: async (ctrl) => {
-          const q = coalesceLatest((card: object) => ctrl.update(card));
+          const q = coalesceLatest((card: object) => ctrl.update(card), {
+            minIntervalMs: CARD_UPDATE_MIN_INTERVAL_MS,
+          });
           await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
             sawEvent = true;
             // Tables first: Feishu rejects a card past five table components

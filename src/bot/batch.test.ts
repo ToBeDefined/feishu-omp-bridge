@@ -232,6 +232,45 @@ describe('coalesceLatest', () => {
     await expect(q.flush()).rejects.toThrow('nope');
     expect(() => q.push(2)).toThrow('nope');
   });
+
+  it('paces writes at least minIntervalMs apart without losing the latest', async () => {
+    const seen: number[] = [];
+    const stamps: number[] = [];
+    const q = coalesceLatest(
+      async (v: number) => {
+        seen.push(v);
+        stamps.push(Date.now());
+      },
+      { minIntervalMs: 60 },
+    );
+    for (let i = 0; i < 5; i++) q.push(i);
+    await q.flush();
+    // Latest-wins coalescing still holds under throttle.
+    expect(seen.at(-1)).toBe(4);
+    expect(seen.length).toBeLessThan(5);
+    // Every write starts at least minIntervalMs after the previous one —
+    // this is what keeps Feishu's per-message update rate limit (230020)
+    // from tripping during fast streaming.
+    for (let i = 1; i < stamps.length; i++) {
+      expect(stamps[i]! - stamps[i - 1]!).toBeGreaterThanOrEqual(55);
+    }
+  });
+
+  it('paces flush-driven writes too', async () => {
+    const stamps: number[] = [];
+    const q = coalesceLatest(
+      async () => {
+        stamps.push(Date.now());
+      },
+      { minIntervalMs: 60 },
+    );
+    q.push(1);
+    await q.flush();
+    q.push(2);
+    await q.flush();
+    expect(stamps).toHaveLength(2);
+    expect(stamps[1]! - stamps[0]!).toBeGreaterThanOrEqual(55);
+  });
 });
 describe('cardExceedsBudget', () => {
   it('stays under budget for a small card', () => {

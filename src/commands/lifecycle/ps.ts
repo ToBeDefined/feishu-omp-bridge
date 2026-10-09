@@ -1,6 +1,7 @@
 import { readAndPrune } from '../../runtime/registry';
 import type { CommandContext, Handler } from '../index';
-import { formatAgo, reply } from '../shared';
+import { reply } from '../shared';
+import { formatAgo } from '../../utils/time';
 import { log } from '../../core/logger';
 
 export const psHandlers: Record<string, Handler> = {

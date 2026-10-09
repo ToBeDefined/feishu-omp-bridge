@@ -113,7 +113,7 @@ describe('renderContext', () => {
         } as never,
       }),
     );
-    expect(fresh).toContain('刚刚');
+    expect(fresh).toContain('0 秒前');
     // No session → new conversation
     const none = renderContext(
       makeCtx({ sessions: { getRaw: () => undefined, getIdleTimeoutMinutes: () => undefined } as never }),

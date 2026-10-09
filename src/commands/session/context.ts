@@ -8,31 +8,13 @@ import {
   getRunIdleTimeoutMs,
 } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
-import { reply } from '../shared';
-import { summarizeMd } from '../shared';
+import { formatIdleLine, reply, summarizeMd } from '../shared';
+import { formatAgoOr, formatClockOr } from '../../utils/time';
 
 export const contextHandlers: Record<string, Handler> = {
   '/context': handleContext,
   '/ctx': handleContext,
 };
-
-function formatLastSeen(ts: number | undefined): string {
-  if (!ts) return '（无，新会话）';
-  const ms = Date.now() - ts;
-  if (ms < 60_000) return '刚刚';
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)} 分钟前`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)} 小时前`;
-  return `${Math.floor(ms / 86_400_000)} 天前`;
-}
-
-function formatClock(ts: number | undefined): string {
-  if (!ts) return '（无，新会话）';
-  const d = new Date(ts);
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-  return sameDay ? `今天 ${hhmm}` : `${d.getMonth() + 1}月${d.getDate()}日 ${hhmm}`;
-}
 
 export function renderContext(
   ctx: CommandContext,
@@ -40,9 +22,7 @@ export function renderContext(
 ): string {
   const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
   const sess = ctx.sessions.getRaw(ctx.scope);
-  const scopeMinutes = ctx.sessions.getIdleTimeoutMinutes(ctx.scope);
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
-  const globalMinutes = globalMs ? Math.round(globalMs / 60_000) : 0;
   const model = getOmpModel(ctx.controls.cfg);
   const thinking = getOmpThinking(ctx.controls.cfg);
   const running = ctx.activeRuns.has(ctx.scope);
@@ -52,14 +32,10 @@ export function renderContext(
   const runningLine = running ? '有任务正在执行' : '空闲，等待指令';
   const modelLine = model ? `\`${model}\`` : '跟随 OMP 默认';
   const thinkingLine = thinking ? `\`${thinking}\`` : '跟随 OMP 默认';
-  const idleLine =
-    scopeMinutes !== undefined
-      ? scopeMinutes > 0
-        ? `本会话 ${scopeMinutes} 分钟`
-        : '本会话已关闭'
-      : globalMinutes > 0
-        ? `全局 ${globalMinutes} 分钟`
-        : '未启用（不自动中断任务）';
+  const idleLine = formatIdleLine(
+    ctx.sessions.getIdleTimeoutMinutes(ctx.scope),
+    globalMs ? Math.round(globalMs / 60_000) : 0,
+  );
   // Only surface a quick-dir when one of the named workspaces points at the
   // current cwd; otherwise say none exists.
   const matchingNames = Object.entries(ctx.workspaces.listNamed())
@@ -78,8 +54,8 @@ export function renderContext(
     `📁 **工作目录**: \`${cwd}\``,
     `🧠 **会话 ID**: ${sessionLine}`,
     sess?.title ? `🏷 **标题**: \`${sess.title}\`` : '',
-    `🕒 **开始对话**: ${formatClock(sess?.createdAt)}`,
-    `🕘 **最后对话**: ${formatLastSeen(sess?.updatedAt)}`,
+    `🕒 **开始对话**: ${formatClockOr(sess?.createdAt, '（无，新会话）')}`,
+    `🕘 **最后对话**: ${formatAgoOr(sess?.updatedAt, '（无，新会话）')}`,
     lastMsgLine,
     lastReplyLine,
     `⚙️ **任务状态**: ${runningLine}`,

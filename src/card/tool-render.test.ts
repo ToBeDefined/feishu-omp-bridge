@@ -25,6 +25,16 @@ describe('toolBodyMd fence safety', () => {
     expect(body).toContain('```\nok\n```');
   });
 
+  it('renders failing output under an Error header', () => {
+    const body = toolBodyMd(tool({ status: 'error', output: 'boom' }));
+    expect(body).toContain('**Error**');
+    expect(body).toContain('boom');
+  });
+
+  it('marks a running tool without output', () => {
+    expect(toolBodyMd(tool({ status: 'running' }))).toBe('_运行中…_');
+  });
+
   it('does not escape backslashes into inline code spans', () => {
     // Backslash escapes are inert inside a code span, so escaping a path there
     // renders literal backslashes: `src/a\(b\).ts`.

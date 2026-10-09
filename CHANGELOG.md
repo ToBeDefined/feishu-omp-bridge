@@ -282,6 +282,9 @@
 
 ### Changed
 
+- **追加批次**：`/release` 进度卡（三步 ✅/⏳/○ 实时状态 + 失败详情，
+  `runRelease` 新增 `onStep` 回调）；删除定时任务后自动刷新任务列表卡；
+  `/new` `/cd` 卡片在话题群标注「话题独立会话」。
 - **全量 UI 卡片化（UI 优化计划 11 项）**：共享卡片套件（shell/md/panel/
   actions/collapsiblePanel）从 templates.ts 导出复用；`/new` `/cd` 紧凑
   确认卡；`/context` 卡片化（会话/环境/最近内容三面板，与文本版共用

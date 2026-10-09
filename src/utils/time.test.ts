@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatAgo, formatClock } from './time';
+import { formatAgo, formatAgoOr, formatClock, formatClockOr } from './time';
 
 describe('formatAgo', () => {
   it('renders seconds for sub-minute', () => {
@@ -57,5 +57,25 @@ describe('formatClock', () => {
     expect(formatClock(yest.getTime())).toBe(
       `${yest.getMonth() + 1}月${yest.getDate()}日 14:30`,
     );
+  });
+});
+
+describe('formatAgoOr / formatClockOr', () => {
+  it('returns the fallback for an undefined timestamp', () => {
+    expect(formatAgoOr(undefined, '新会话')).toBe('新会话');
+    expect(formatClockOr(undefined, '—')).toBe('—');
+  });
+
+  it('formats a real timestamp via the underlying formatter', () => {
+    expect(formatAgoOr(Date.now() - 5 * 60_000, '新会话')).toBe('5 分钟前');
+    const today = new Date();
+    const ts = new Date(
+      today.getFullYear(),
+      today.getMonth(),
+      today.getDate(),
+      8,
+      1,
+    ).getTime();
+    expect(formatClockOr(ts, '—')).toBe('今天 08:01');
   });
 });

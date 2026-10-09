@@ -62,6 +62,50 @@ describe('renderCard', () => {
     expect(countByTag(elements, 'collapsible_panel')).toBe(8);
   });
 
+  it('keeps interleaved tool groups at their chronological positions', () => {
+    const state: RunState = { ...longRunState(0), terminal: 'done', footer: null };
+    state.blocks.push({ kind: 'text', content: '段落一', streaming: false });
+    state.blocks.push({ kind: 'tool', tool: tool(1) });
+    state.blocks.push({ kind: 'text', content: '段落二', streaming: false });
+    state.blocks.push({ kind: 'tool', tool: tool(2) });
+    state.blocks.push({ kind: 'tool', tool: tool(3) });
+    state.blocks.push({ kind: 'text', content: '段落三', streaming: false });
+    const elements = cardElements(renderCard(state));
+    // Top-level shape: 段落一 · group ×1 · 段落二 · group ×2 · 段落三.
+    const shape = elements
+      .filter((e) => typeof e === 'object' && e !== null && 'tag' in e)
+      .map((e) => String(e.tag))
+      .join(',');
+    expect(shape).toBe('markdown,collapsible_panel,markdown,collapsible_panel,markdown');
+    const titles = elements
+      .flatMap((e) =>
+        typeof e === 'object' && e !== null && 'header' in e
+          ? [JSON.stringify((e as { header: { title: { content: string } } }).header)]
+          : [],
+      )
+      .filter((t) => t.includes('工具调用'));
+    expect(titles).toHaveLength(2);
+    expect(titles[0]).toContain('×1');
+    expect(titles[1]).toContain('×2');
+  });
+
+  it('keeps the group row grey and suffix-free when every call succeeded', () => {
+    const state = longRunState(0);
+    state.blocks.push({ kind: 'tool', tool: tool(1) });
+    state.blocks.push({ kind: 'tool', tool: tool(2) });
+    const panels = cardElements(renderCard(state)).filter(
+      (e): e is Record<string, unknown> =>
+        typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'collapsible_panel',
+    );
+    expect(panels).toHaveLength(1);
+    expect(panels[0]).toMatchObject({
+      expanded: false,
+      border: { color: 'grey' },
+      header: { title: { content: expect.stringContaining('×2') } },
+    });
+    expect(JSON.stringify(panels[0])).not.toContain('失败');
+  });
+
   it('collapses thinking and tool groups by default, with a right-arrow expand icon', () => {
     const state = longRunState(3);
     state.reasoning = { content: '先看调用链', active: true };

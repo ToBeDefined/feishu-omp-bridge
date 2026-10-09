@@ -443,6 +443,42 @@ export function psCard(rows: PsRow[]): object {
   return shell('🖥 Bot 进程', blocks);
 }
 
+/** /every list card: one collapsible per scheduled task with an inline
+ * 删除 button. */
+export interface EveryRow {
+  id: string;
+  interval: string;
+  nextRun: string;
+  prompt: string;
+}
+
+export function everyCard(rows: EveryRow[]): object {
+  if (rows.length === 0) {
+    return shell('📅 定时任务', [
+      md('📅 **定时任务**', 'heading'),
+      md('暂无定时任务。'),
+      md('_发 `/every <间隔> <指令>` 添加，间隔如 `30m`/`2h`/`1d`。_', 'notation'),
+    ]);
+  }
+  const elements: object[] = [md(`📅 **定时任务** ×${rows.length}`, 'heading')];
+  rows.forEach((row, i) => {
+    elements.push(
+      collapsiblePanel({
+        title: `⏱ **每 ${escapeMd(row.interval)}** · ${escapeMd(row.nextRun)} — ${escapeMd(row.prompt.slice(0, 40))}`,
+        expanded: false,
+        border: 'grey',
+        elements: [
+          md(codeFence(row.prompt)),
+          button({ text: '🗑 删除', value: { cmd: 'every.rm', arg: row.id }, style: 'danger' }),
+        ],
+      }),
+    );
+    if (i < rows.length - 1) elements.push({ tag: 'hr' });
+  });
+  elements.push(md('_发 `/every rm <id>` 也可以删除任务。_', 'notation'));
+  return shell('📅 定时任务', elements);
+}
+
 const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',

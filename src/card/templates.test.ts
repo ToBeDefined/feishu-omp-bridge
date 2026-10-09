@@ -4,6 +4,7 @@ import {
   actions,
   contextCard,
   cwdChangedCard,
+  everyCard,
   execResultCard,
   helpCard,
   md,
@@ -14,6 +15,29 @@ import {
   statusCard,
   workspacesCard,
 } from './templates';
+
+describe('everyCard', () => {
+  it('lists tasks with delete buttons and the full prompt', () => {
+    const out = JSON.stringify(
+      everyCard([
+        { id: 't1', interval: '30 分钟', nextRun: '14:00', prompt: '检查 CI 状态并汇报' },
+        { id: 't2', interval: '1 天', nextRun: '09:00', prompt: 'daily standup 摘要' },
+      ]),
+    );
+    expect(out).toContain('×2');
+    expect(out).toContain('30 分钟');
+    expect(out).toContain('14:00');
+    expect(out).toContain('检查 CI 状态并汇报');
+    expect(out).toContain('"arg":"t1"');
+    expect(out).toContain('"arg":"t2"');
+  });
+
+  it('renders the empty state hint when no tasks', () => {
+    const out = JSON.stringify(everyCard([]));
+    expect(out).not.toContain('×');
+    expect(out).toContain('暂无定时任务');
+  });
+});
 
 describe('psCard', () => {
   it('marks the current process and wires exit buttons per row', () => {

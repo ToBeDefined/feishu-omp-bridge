@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   actions,
+  cwdChangedCard,
   helpCard,
   md,
   newSessionCard,
@@ -191,6 +192,17 @@ describe('resumeCard', () => {
     expect(out).toContain('第 6-10 条 / 共 12 条');
     expect(out).toContain('"cmd":"resume.back","arg":"0"');
     expect(out).toContain('"cmd":"resume.more","arg":"10"');
+  });
+});
+
+describe('cwdChangedCard', () => {
+  it('renders the new cwd with workspace and status shortcuts', () => {
+    const out = JSON.stringify(cwdChangedCard('/repo/src'));
+    expect(out).toContain('已切换工作目录');
+    expect(out).toContain('/repo/src');
+    expect(out).toContain('session 已重置');
+    expect(out).toContain('"cmd":"ws.list"');
+    expect(out).toContain('"cmd":"status"');
   });
 });
 

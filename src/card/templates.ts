@@ -211,7 +211,21 @@ export function statusCard(info: StatusInfo): object {
   ]);
 }
 
-/** Help groups follow the article's cheat-sheet categories. */
+/** /cd success card: the new cwd, the session-reset consequence, and the
+ * two most likely follow-ups (workspace list, status). */
+export function cwdChangedCard(cwd: string): object {
+  return shell('📁 已切换工作目录', [
+    md('📁 **已切换工作目录**', 'heading'),
+    md(`新的 cwd：\`${escapeCode(tildePath(cwd))}\``),
+    md('_session 已重置，下一条消息在新目录开始。_', 'notation'),
+    { tag: 'hr' },
+    actions([
+      { text: '📂 工作空间', value: { cmd: 'ws.list' } },
+      { text: '📊 状态', value: { cmd: 'status' } },
+    ]),
+  ]);
+}
+
 const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',

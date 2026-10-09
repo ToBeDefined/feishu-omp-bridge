@@ -1,6 +1,7 @@
 import { codeSpan, summarize } from '../commands/shared';
 import type { CommandContext } from '../commands';
 import { escapeMd } from './templates';
+import { formatAgoOr } from '../utils/time';
 
 /**
  * Search result card rendering (moved out of commands/session/search.ts so
@@ -28,6 +29,7 @@ export interface SearchContext {
 export function renderSearchContext(
   context: SearchContext,
   mode: 'compact' | 'detail' = 'compact',
+  keyword?: string,
 ): string {
   return context.messages
     .map((m, i) => {
@@ -37,7 +39,10 @@ export function renderSearchContext(
       // Assistant answers get more room than the (usually shorter) question.
       const max =
         mode === 'detail' ? (m.role === 'user' ? 600 : 1000) : m.role === 'user' ? 80 : 120;
-      const escaped = escapeSearchContent(summarize(m.content, max));
+      const escaped = highlightKeyword(
+        escapeSearchContent(summarize(m.content, max)),
+        keyword,
+      );
       // Markdown: role label on its own line, message content as a block
       // quote so longer snippets wrap nicely and stay visually grouped.
       // Every line gets the quote prefix — a multi-line snippet would
@@ -49,6 +54,32 @@ export function renderSearchContext(
       return `${marker}${role}\n${quoted}`;
     })
     .join('\n\n');
+}
+
+/**
+ * Wrap keyword occurrences (case-insensitive) in bold — applied AFTER
+ * markdown escaping so both sides share the same escaped form and the
+ * regex stays injection-safe.
+ */
+function highlightKeyword(escapedText: string, keyword: string | undefined): string {
+  if (!keyword) return escapedText;
+  let regex: RegExp;
+  try {
+    regex = new RegExp(escapeMd(keyword), 'gi');
+  } catch {
+    return escapedText;
+  }
+  return escapedText.replace(regex, (m) => `**${m}**`);
+}
+
+/** Newest message timestamp of a hit, for the relative-time meta line. */
+function lastHitTime(context: SearchContext): number | undefined {
+  const stamps = context.messages
+    .map((m) => m.timestamp)
+    .filter((t): t is string => Boolean(t))
+    .map((t) => Date.parse(t))
+    .filter((n) => Number.isFinite(n));
+  return stamps.length > 0 ? Math.max(...stamps) : undefined;
 }
 
 /**
@@ -74,36 +105,46 @@ export function workspaceLabel(ctx: CommandContext, cwd: string): string {
   return cwd;
 }
 
+const SEARCH_PAGE_SIZE = 6;
+
 export function searchResultsCard(
   keyword: string,
   contexts: SearchContext[],
   queryId: string,
   showButtons = true,
+  offset = 0,
 ): object {
   const done = !showButtons;
+  const shown = done ? contexts : contexts.slice(offset, offset + SEARCH_PAGE_SIZE);
+  const remaining = contexts.length - (offset + shown.length);
+  const range =
+    offset > 0 || remaining > 0
+      ? ` · 第 ${offset + 1}-${offset + shown.length} 个`
+      : '';
   const header = done
     ? `✅ 搜索完成 · ${contexts.length} 个会话`
-    : `🔍 搜索 \`${codeSpan(keyword)}\`：找到 ${contexts.length} 个会话`;
-  const more = !done && contexts.length >= 6 ? '\n\n_（仅显示最近 6 个会话）_' : '';
-  // Active list caps at 6 rendered items (header already notes this); the
-  // done (settled) view renders everything for review.
-  const shown = done ? contexts : contexts.slice(0, 6);
+    : `🔍 搜索 \`${codeSpan(keyword)}\`：找到 ${contexts.length} 个会话${range}`;
+  // Active list pages 6 per card; the done (settled) view renders everything
+  // for review.
   const blocks: object[] = [];
   shown.forEach((c, i) => {
+    const globalIdx = offset + i;
+    const ago = formatAgoOr(lastHitTime(c), '');
     const metaLine = [
       c.title ? `🏷 ${c.title}` : '',
       c.workspace ? `📁 ${c.workspace}` : '',
       c.sessionId ? `🆔 ${c.sessionId}` : '',
+      ago ? `🕘 ${ago}` : '',
       c.matchCount && c.matchCount > 1 ? `🔎 ${c.matchCount} 处匹配` : '',
     ]
       .filter(Boolean)
       .join(' · ');
-    const title = `#${i + 1}${metaLine ? ` · ${metaLine}` : ''}`;
+    const title = `#${globalIdx + 1}${metaLine ? ` · ${metaLine}` : ''}`;
     blocks.push(
       // Heading-size title so the item number / workspace / session stands
       // out; the conversation snippet below it stays at normal size.
       { tag: 'markdown', content: title, text_size: 'heading' },
-      { tag: 'markdown', content: renderSearchContext(c) },
+      { tag: 'markdown', content: renderSearchContext(c, 'compact', keyword) },
     );
     if (showButtons) {
       blocks.push(
@@ -120,7 +161,7 @@ export function searchResultsCard(
                   tag: 'button',
                   text: { tag: 'plain_text', content: '查看详情' },
                   type: 'default',
-                  value: { cmd: 'search.show', arg: `${queryId} ${i + 1}` },
+                  value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` },
                 },
               ],
             },
@@ -140,27 +181,66 @@ export function searchResultsCard(
         },
       );
     }
-    if (i < contexts.length - 1) blocks.push({ tag: 'hr' });
+    const lastOfPage = i === shown.length - 1;
+    if (!lastOfPage || (showButtons && (remaining > 0 || offset > 0))) {
+      blocks.push({ tag: 'hr' });
+    }
   });
   if (showButtons) {
-    blocks.push(
-      { tag: 'hr' },
-      {
+    const pageButtons: object[] = [];
+    if (offset > 0) {
+      pageButtons.push({
         tag: 'button',
-        text: { tag: 'plain_text', content: '完成' },
+        text: { tag: 'plain_text', content: '↑ 上一页' },
         type: 'default',
-        value: { cmd: 'search.done', arg: queryId },
-      },
-    );
+        value: { cmd: 'search.page', arg: `${queryId} ${Math.max(0, offset - SEARCH_PAGE_SIZE)}` },
+      });
+    }
+    if (remaining > 0) {
+      pageButtons.push({
+        tag: 'button',
+        text: { tag: 'plain_text', content: `↓ 下一页（剩 ${remaining}）` },
+        type: 'default',
+        value: { cmd: 'search.page', arg: `${queryId} ${offset + SEARCH_PAGE_SIZE}` },
+      });
+    }
+    pageButtons.push({
+      tag: 'button',
+      text: { tag: 'plain_text', content: '完成' },
+      type: 'default',
+      value: { cmd: 'search.done', arg: queryId },
+    });
+    blocks.push({
+      tag: 'column_set',
+      flex_mode: 'flow',
+      horizontal_spacing: 'small',
+      columns: pageButtons.map((b) => ({
+        tag: 'column',
+        width: 'auto',
+        elements: [b],
+      })),
+    });
   }
   return {
     schema: '2.0',
     config: { summary: { content: '搜索结果' } },
     body: {
+      elements: [{ tag: 'markdown', content: header }, { tag: 'hr' }, ...blocks],
+    },
+  };
+}
+
+/** Empty-hit card: friendlier than a bare text reply. */
+export function searchEmptyCard(keyword: string): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '未找到匹配消息' } },
+    body: {
       elements: [
-        { tag: 'markdown', content: header + more },
-        { tag: 'hr' },
-        ...blocks,
+        {
+          tag: 'markdown',
+          content: `🔍 没有找到包含 \`${codeSpan(keyword)}\` 的消息。\n\n_换个关键词，或缩短关键词再试。_`,
+        },
       ],
     },
   };

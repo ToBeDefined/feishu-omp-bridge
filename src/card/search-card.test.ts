@@ -3,6 +3,7 @@ import type { CommandContext } from '../commands';
 import {
   renderSearchContext,
   searchDetailCard,
+  searchEmptyCard,
   searchResultsCard,
   workspaceLabel,
   type SearchContext,
@@ -24,6 +25,59 @@ function sampleContext(over: Partial<SearchContext> = {}): SearchContext {
     ...over,
   };
 }
+
+describe('search-card T10 additions', () => {
+  it('highlights the keyword in rendered context (case-insensitive)', () => {
+    const out = renderSearchContext(
+      { messages: [{ role: 'user', content: 'KW 出现在句首，句中也有 kw。' }], hitIndex: 0 },
+      'compact',
+      'kw',
+    );
+    expect(out).toContain('**KW**');
+    expect(out).toContain('**kw**');
+  });
+
+  it('leaves text untouched without a keyword', () => {
+    const out = renderSearchContext(
+      { messages: [{ role: 'user', content: '普通一句话' }], hitIndex: 0 },
+      'compact',
+    );
+    expect(out).toContain('普通一句话');
+    expect(out).not.toContain('**普通');
+  });
+
+  it('shows relative time and pagination in the results card', () => {
+    const contexts = Array.from({ length: 8 }, (_, i) => ({
+      ...sampleContext({ sessionId: `s${i}` }),
+      messages: [
+        {
+          role: 'user' as const,
+          content: `问题 ${i}`,
+          timestamp: new Date(Date.now() - (i + 1) * 3_600_000).toISOString(),
+        },
+      ],
+    }));
+    const page1 = JSON.stringify(searchResultsCard('kw', contexts, 'q9', true, 0));
+    expect(page1).toContain('第 1-6 个');
+    expect(page1).toContain('下一页（剩 2）');
+    expect(page1).not.toContain('上一页');
+    expect(page1).toContain('"arg":"q9 6"');
+    expect(page1).toContain('小时前');
+
+    const page2 = JSON.stringify(searchResultsCard('kw', contexts, 'q9', true, 6));
+    expect(page2).toContain('第 7-8 个');
+    expect(page2).toContain('上一页');
+    expect(page2).toContain('"arg":"q9 0"');
+    expect(page2).toContain('#7');
+    expect(page2).toContain('#8');
+  });
+
+  it('renders the empty-hit card', () => {
+    const out = JSON.stringify(searchEmptyCard('foo'));
+    expect(out).toContain('没有找到包含');
+    expect(out).toContain('foo');
+  });
+});
 
 describe('renderSearchContext', () => {
   it('marks the hit with 📍', () => {
@@ -89,14 +143,14 @@ describe('searchResultsCard', () => {
     expect(done).toContain('✅ 搜索完成');
   });
 
-  it('caps list at 6 with a hint line', () => {
+  it('pages results past the per-card cap', () => {
     const many = Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
     const card = searchResultsCard('foo', many, 'q1', true);
     const body = JSON.stringify(card);
-    expect(body).toContain('仅显示最近 6 个会话');
-    // 8 items → 6 rendered headings (#1..#6); #7 not a heading
+    // 8 items → first page renders #1..#6 headings; #7 rides page 2.
     expect(body).toContain('"content":"#6 ·');
     expect(body).not.toContain('"content":"#7 ·');
+    expect(body).toContain('下一页（剩 2）');
   });
 
   it('shows a match count when a session has multiple hits', () => {

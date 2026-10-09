@@ -1,7 +1,7 @@
 import type { Block, FooterStatus, RunState, SubagentEntry, ToolEntry, UiState } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 import { createTableBudget, type TableBudget } from './tables';
-import { codeFence, escapeMd } from './templates';
+import { codeFence, collapsiblePanel, escapeMd } from './templates';
 
 /** Max chars per reasoning body — reasoning is auxiliary, truncation is fine. */
 const REASONING_MAX = 1500;
@@ -185,40 +185,6 @@ function toolPanel(tool: ToolEntry): object {
     border: tool.status === 'error' ? 'red' : 'grey',
     body: toolBodyMd(tool) || '_无输出_',
   });
-}
-
-interface PanelOpts {
-  title: string;
-  expanded: boolean;
-  border: 'grey' | 'red' | 'blue';
-  /** Markdown body — ignored when `elements` is provided. */
-  body?: string;
-  /** Prebuilt panel elements — overrides `body` (used for nested panels). */
-  elements?: object[];
-}
-
-function collapsiblePanel(opts: PanelOpts): object {
-  return {
-    tag: 'collapsible_panel',
-    expanded: opts.expanded,
-    header: panelHeader(opts.title),
-    border: { color: opts.border, corner_radius: '5px' },
-    vertical_spacing: '8px',
-    padding: '8px 8px 8px 8px',
-    elements:
-      opts.elements ?? [{ tag: 'markdown', content: opts.body, text_size: 'notation' }],
-  };
-}
-
-function panelHeader(titleMd: string): object {
-  return {
-    title: { tag: 'markdown', content: titleMd },
-    vertical_align: 'center',
-    // Collapsed = ▸ (points right); rotates 90° clockwise to ▾ when expanded.
-    icon: { tag: 'standard_icon', token: 'right-small-ccm_outlined', size: '16px 16px' },
-    icon_position: 'follow_text',
-    icon_expanded_angle: 90,
-  };
 }
 
 function markdown(content: string): object {

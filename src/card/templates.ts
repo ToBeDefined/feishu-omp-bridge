@@ -41,6 +41,36 @@ export function actions(buttons: ButtonSpec[]): object {
 
 const HR: object = { tag: 'hr' };
 
+interface PanelOpts {
+  title: string;
+  expanded: boolean;
+  border: 'grey' | 'red' | 'blue';
+  /** Markdown body — ignored when `elements` is provided. */
+  body?: string;
+  /** Prebuilt panel elements — overrides `body` (used for nested panels). */
+  elements?: object[];
+}
+
+/** Collapsed-by-default ▸ panel; expanding rotates the arrow to ▾. */
+export function collapsiblePanel(opts: PanelOpts): object {
+  return {
+    tag: 'collapsible_panel',
+    expanded: opts.expanded,
+    header: {
+      title: { tag: 'markdown', content: opts.title },
+      vertical_align: 'center',
+      icon: { tag: 'standard_icon', token: 'right-small-ccm_outlined', size: '16px 16px' },
+      icon_position: 'follow_text',
+      icon_expanded_angle: 90,
+    },
+    border: { color: opts.border, corner_radius: '5px' },
+    vertical_spacing: '8px',
+    padding: '8px 8px 8px 8px',
+    elements:
+      opts.elements ?? [{ tag: 'markdown', content: opts.body, text_size: 'notation' }],
+  };
+}
+
 /** Collapsed, markdown-safe one-line digest of user/assistant content. */
 function digest(text: string, max = 80): string {
   const flat = text.replace(/\s+/g, ' ').trim();
@@ -298,6 +328,32 @@ export function contextCard(
       { text: '🕘 恢复会话', value: { cmd: 'resume' } },
     ]),
   ]);
+}
+
+/** /diff card: stat fence up top, the full diff collapsed in one panel. */
+export function diffCard(cwd: string, stat: string, diff: string): object {
+  const DIFF_MAX = 4000;
+  const truncated =
+    diff.length > DIFF_MAX
+      ? `${diff.slice(0, DIFF_MAX)}\n…（diff 已截断，完整内容看本机）`
+      : diff;
+  const elements: object[] = [
+    md('📦 **git diff**', 'heading'),
+    md(`_\`${escapeCode(tildePath(cwd))}\` 工作区未提交改动_`, 'notation'),
+  ];
+  if (stat) elements.push(md(codeFence(stat)));
+  elements.push(
+    collapsiblePanel({
+      title: '📄 **改动内容**',
+      expanded: false,
+      border: 'grey',
+      body: codeFence(truncated, 'diff'),
+    }),
+  );
+  if (diff.length > DIFF_MAX) {
+    elements.push(noteMd('_⚠️ diff 已截断_'));
+  }
+  return shell('📦 git diff', elements);
 }
 
 const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [

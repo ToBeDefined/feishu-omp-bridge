@@ -412,6 +412,11 @@ describe('cwdChangedCard', () => {
     expect(out).toContain('"cmd":"ws.list"');
     expect(out).toContain('"cmd":"status"');
   });
+
+  it('carries the topic scope note when provided', () => {
+    const out = JSON.stringify(cwdChangedCard('/repo/src', '话题独立会话'));
+    expect(out).toContain('话题独立会话');
+  });
 });
 
 describe('newSessionCard', () => {
@@ -445,5 +450,17 @@ describe('newSessionCard', () => {
     );
     expect(out).not.toContain('已中断');
     expect(out).toContain('已开始新会话');
+  });
+
+  it('carries the topic scope note when provided', () => {
+    const out = JSON.stringify(
+      newSessionCard({
+        cwd: '/repo',
+        idleLine: '全局 30 分钟',
+        wasRunning: false,
+        scopeNote: '话题独立会话',
+      }),
+    );
+    expect(out).toContain('话题独立会话');
   });
 });

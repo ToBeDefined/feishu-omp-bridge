@@ -35,6 +35,7 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
       globalMs ? Math.round(globalMs / 60_000) : 0,
     ),
     wasRunning,
+    scopeNote: ctx.chatMode === 'topic' ? '话题独立会话' : undefined,
   });
   try {
     await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });

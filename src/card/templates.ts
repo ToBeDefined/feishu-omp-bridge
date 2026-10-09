@@ -250,9 +250,10 @@ export function statusCard(info: StatusInfo): object {
 
 /** /cd success card: the new cwd, the session-reset consequence, and the
  * two most likely follow-ups (workspace list, status). */
-export function cwdChangedCard(cwd: string): object {
+export function cwdChangedCard(cwd: string, scopeNote?: string): object {
   return shell('📁 已切换工作目录', [
     md('📁 **已切换工作目录**', 'heading'),
+    ...(scopeNote ? [md(`_${escapeMd(scopeNote)}_`, 'notation')] : []),
     md(`新的 cwd：\`${escapeCode(tildePath(cwd))}\``),
     md('_session 已重置，下一条消息在新目录开始。_', 'notation'),
     { tag: 'hr' },
@@ -625,6 +626,8 @@ export interface NewSessionInfo {
   thinking?: string;
   idleLine: string;
   wasRunning: boolean;
+  /** Rendered under the heading, e.g. topic chats: 「话题独立会话」。 */
+  scopeNote?: string;
 }
 
 /** Compact /new confirmation — deliberately NOT the full /context dump:
@@ -637,6 +640,7 @@ export function newSessionCard(info: NewSessionInfo): object {
         : '✅ **已开始新会话**',
       'heading',
     ),
+    ...(info.scopeNote ? [md(`_${escapeMd(info.scopeNote)}_`, 'notation')] : []),
     {
       tag: 'column_set',
       flex_mode: 'stretch',

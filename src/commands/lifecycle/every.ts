@@ -59,7 +59,21 @@ async function handleEvery(args: string, ctx: CommandContext): Promise<void> {
   if (sub === 'rm' || sub === 'remove') {
     const id = parts[1] ?? '';
     const removed = await scheduler.remove(id);
-    await reply(ctx, removed ? `✅ 已删除定时任务 \`${id}\`` : `❌ 未找到定时任务 \`${id}\``);
+    if (!removed) {
+      await reply(ctx, `❌ 未找到定时任务 \`${id}\``);
+      return;
+    }
+    // Refresh the list card so the remaining tasks stay visible in place.
+    const rows = scheduler.list().map((t) => {
+      const next = new Date(t.nextRunAt);
+      const hhmm = `${String(next.getHours()).padStart(2, '0')}:${String(next.getMinutes()).padStart(2, '0')}`;
+      return { id: t.id, interval: formatInterval(t.intervalMs), nextRun: hhmm, prompt: t.prompt };
+    });
+    await ctx.channel.send(
+      ctx.msg.chatId,
+      { card: everyCard(rows) },
+      { replyTo: ctx.msg.messageId },
+    );
     return;
   }
 

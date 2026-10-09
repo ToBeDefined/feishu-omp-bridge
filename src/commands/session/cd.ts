@@ -44,7 +44,12 @@ async function handleCd(args: string, ctx: CommandContext): Promise<void> {
   ctx.sessions.clear(ctx.scope);
   await ctx.channel.send(
     ctx.msg.chatId,
-    { card: cwdChangedCard(absolute) },
+    {
+      card: cwdChangedCard(
+        absolute,
+        ctx.chatMode === 'topic' ? '话题独立会话' : undefined,
+      ),
+    },
     { replyTo: ctx.msg.messageId },
   );
 }

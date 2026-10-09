@@ -394,6 +394,55 @@ export function execResultCard(info: ExecResultInfo): object {
   return shell('🖥 命令执行', elements);
 }
 
+/** /ps card: one row per running bot, current one starred, each with an
+ * inline 退出 button (admin gate enforced by the dispatcher). */
+export interface PsRow {
+  id: string;
+  appId: string;
+  botName?: string;
+  startedAgo: string;
+  isCurrent: boolean;
+}
+
+export function psCard(rows: PsRow[]): object {
+  const blocks: object[] = [md(`🖥 **Bot 进程** ×${rows.length}`, 'heading')];
+  rows.forEach((row, i) => {
+    const label = row.botName ?? row.appId;
+    blocks.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: 'small',
+      columns: [
+        {
+          tag: 'column',
+          width: 'weighted',
+          weight: 1,
+          vertical_align: 'center',
+          elements: [
+            md(
+              `**#${i + 1}** ${escapeMd(label)}${row.isCurrent ? ' ⭐ 当前' : ''}`,
+            ),
+            md(`_\`${escapeCode(row.id)}\` · ${escapeMd(row.appId)} · ${escapeMd(row.startedAgo)}启动_`, 'notation'),
+          ],
+        },
+        {
+          tag: 'column',
+          width: 'auto',
+          vertical_align: 'center',
+          elements: [
+            button({ text: '退出', value: { cmd: 'exit', arg: row.id }, style: 'danger' }),
+          ],
+        },
+      ],
+    });
+  });
+  blocks.push(
+    { tag: 'hr' },
+    md('_用 /exit <id|#> 关掉某一个；⭐ 为当前正在回复你的进程。_', 'notation'),
+  );
+  return shell('🖥 Bot 进程', blocks);
+}
+
 const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',

@@ -9,10 +9,35 @@ import {
   md,
   newSessionCard,
   panel,
+  psCard,
   shell,
   statusCard,
   workspacesCard,
 } from './templates';
+
+describe('psCard', () => {
+  it('marks the current process and wires exit buttons per row', () => {
+    const out = JSON.stringify(
+      psCard([
+        { id: 'p1', appId: 'cli_a', botName: '尼莫', startedAgo: '3 小时前', isCurrent: true },
+        { id: 'p2', appId: 'cli_b', startedAgo: '2 分钟前', isCurrent: false },
+      ]),
+    );
+    expect(out).toContain('×2');
+    expect(out).toContain('⭐ 当前');
+    expect(out).toContain('尼莫');
+    expect(out).toContain('"arg":"p2"');
+    expect(out).toContain('"arg":"p1"');
+    expect(out).toContain('3 小时前');
+  });
+
+  it('renders a single process without the count noise', () => {
+    const out = JSON.stringify(
+      psCard([{ id: 'p1', appId: 'cli_a', startedAgo: '刚刚', isCurrent: true }]),
+    );
+    expect(out).toContain('×1');
+  });
+});
 
 describe('execResultCard', () => {
   it('renders success with collapsed output and the command line', () => {

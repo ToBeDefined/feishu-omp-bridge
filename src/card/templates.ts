@@ -17,13 +17,13 @@ function button(spec: ButtonSpec): object {
 }
 
 /** JSON 2.0 markdown element; `size` shrinks ('notation') or enlarges ('heading'). */
-function md(content: string, size?: 'heading' | 'notation'): object {
+export function md(content: string, size?: 'heading' | 'notation'): object {
   return size === undefined
     ? { tag: 'markdown', content }
     : { tag: 'markdown', content, text_size: size };
 }
 
-function actions(buttons: ButtonSpec[]): object {
+export function actions(buttons: ButtonSpec[]): object {
   // Schema 2.0 has no `action` container — buttons ride in a column_set row.
   return {
     tag: 'column_set',
@@ -41,7 +41,7 @@ function actions(buttons: ButtonSpec[]): object {
 const HR: object = { tag: 'hr' };
 
 /** Schema 2.0 card shell: `summary` is the notification/condensed preview. */
-function shell(summary: string, elements: object[]): object {
+export function shell(summary: string, elements: object[]): object {
   return {
     schema: '2.0',
     config: { summary: { content: summary } },
@@ -50,7 +50,7 @@ function shell(summary: string, elements: object[]): object {
 }
 
 /** Grey info panel column (the rounded stat-card look). */
-function panel(elements: object[]): object {
+export function panel(elements: object[]): object {
   return {
     tag: 'column',
     width: 'weighted',

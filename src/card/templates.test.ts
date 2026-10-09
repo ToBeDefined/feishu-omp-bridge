@@ -1,6 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { helpCard, statusCard, workspacesCard } from './templates';
+import { actions, helpCard, md, panel, shell, statusCard, workspacesCard } from './templates';
 import { resumeCard, type ResumeOption } from './model-card';
+
+describe('shared card kit', () => {
+  it('exports the 2.0 kit pieces for other card modules', () => {
+    expect(shell('预览', [md('正文')])).toMatchObject({
+      schema: '2.0',
+      config: { summary: { content: '预览' } },
+    });
+    expect(md('x', 'notation')).toMatchObject({ text_size: 'notation' });
+    expect(panel([md('k')])).toMatchObject({ tag: 'column', background_style: 'grey' });
+    expect(actions([{ text: 'go', value: { cmd: 'x' } }])).toMatchObject({
+      tag: 'column_set',
+    });
+  });
+});
 
 function statusFixture(extra: Partial<Parameters<typeof statusCard>[0]> = {}) {
   return {

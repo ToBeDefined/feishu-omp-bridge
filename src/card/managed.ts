@@ -145,43 +145,34 @@ async function removeFromRunningCards(messageId: string): Promise<void> {
   }
 }
 
-function interruptedCard(): object {
-  return {
-    schema: '2.0',
-    config: { update_multi: true },
-    body: {
-      elements: [
-        { tag: 'markdown', content: '⚠️ **进程在回复期间重启，本条回复未完成。**' },
-      ],
-    },
-  };
-}
-
 /**
  * Called once at boot: cards still in-flight from the previous process get
  * finalized as interrupted, so crash-interrupted replies don't linger with a
- * live ⏹ button. Managed cards (cardId set) update via cardkit; streaming
- * cards (cardId empty) patch via the message API.
+ * live ⏹ button. Uses im.v1.message.patch for every card type — it replaces
+ * the message content wholesale regardless of whether the card was created
+ * via cardkit (managed) or channel.stream (streaming).
  */
 export async function finalizeInterruptedCards(channel: LarkChannel): Promise<void> {
   const leftovers = await readRunningCards();
   await unlink(paths.runningCardsFile).catch(() => {});
-  for (const { messageId, cardId } of leftovers) {
+  for (const { messageId } of leftovers) {
+    // Skip invalid entries (test data, empty ids).
+    if (!messageId || messageId === 'om_sent' || !messageId.startsWith('om_')) continue;
     try {
-      if (cardId) {
-        await channel.rawClient.cardkit.v1.card.update({
-          path: { card_id: cardId },
-          data: {
-            card: { type: 'card_json', data: JSON.stringify(interruptedCard()) },
-            sequence: Date.now(),
-          },
-        });
-      } else {
-        await channel.rawClient.im.v1.message.patch({
-          path: { message_id: messageId },
-          data: { content: JSON.stringify(interruptedCard()) },
-        });
-      }
+      await channel.rawClient.im.v1.message.patch({
+        path: { message_id: messageId },
+        data: {
+          content: JSON.stringify({
+            schema: '2.0',
+            config: { update_multi: true },
+            body: {
+              elements: [
+                { tag: 'markdown', content: '⚠️ **进程在回复期间重启，本条回复未完成。**' },
+              ],
+            },
+          }),
+        },
+      });
       log.info('card', 'interrupted-finalized', { messageId });
     } catch (err) {
       log.warn('card', 'interrupted-finalize-failed', { messageId, err: String(err) });

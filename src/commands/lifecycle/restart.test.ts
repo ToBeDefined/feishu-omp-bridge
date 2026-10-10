@@ -34,7 +34,7 @@ describe('/restart command', () => {
     // The process dies mid-restart: no boot-time notice can be sent from here,
     // so the marker is what tells the relaunched daemon to confirm.
     expect(bodies.some((b) => b.includes('🚀'))).toBe(false);
-    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'notify');
+    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'notify', undefined, undefined);
     expect(clearOnlineNotice).not.toHaveBeenCalled();
   });
 

@@ -26,7 +26,7 @@ async function handleRestart(_args: string, ctx: CommandContext): Promise<void> 
   }
   try {
     // The new process sends the boot confirmation for a real launchd restart.
-    await markOnlineNotice(ctx.msg.chatId, 'notify');
+    await markOnlineNotice(ctx.msg.chatId, 'notify', undefined, messageId);
     await new Promise((resolve) => setTimeout(resolve, RESTART_FLUSH_GRACE_MS));
     const realRestart = await ctx.controls.restartProcess();
     if (!realRestart) {

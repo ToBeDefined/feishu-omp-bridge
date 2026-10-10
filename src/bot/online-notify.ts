@@ -22,8 +22,14 @@ export async function markOnlineNotice(
   chatId: string,
   mode: OnlineNoticeMode,
   path: string = paths.onlineNotifyFile,
+  messageId?: string,
 ): Promise<void> {
-  await writeFile(path, `${JSON.stringify({ chatId, mode })}\n`, 'utf8');
+  await writeFile(path, `${JSON.stringify({ chatId, mode, messageId })}\n`, 'utf8');
+}
+export interface OnlineNotice {
+  chatId: string;
+  mode: OnlineNoticeMode;
+  messageId?: string;
 }
 
 /** Drop a marker that no boot will consume (in-process reconnect, failed
@@ -37,7 +43,7 @@ export async function clearOnlineNotice(path: string = paths.onlineNotifyFile): 
 export async function takeOnlineNotice(
   path: string = paths.onlineNotifyFile,
   legacyPath: string = paths.legacyOnlineNotifyFile,
-): Promise<{ chatId: string; mode: OnlineNoticeMode } | undefined> {
+): Promise<OnlineNotice | undefined> {
   // A bounce that deploys this rename is performed by the previous build,
   // which still writes the legacy filename. Consume it once so the first
   // boot after the upgrade is not silent; droppable once that release is out.
@@ -50,10 +56,12 @@ export async function takeOnlineNotice(
     }
     await unlink(candidate).catch(() => {});
     try {
-      const parsed = JSON.parse(raw) as { chatId?: unknown; mode?: unknown };
+      const parsed = JSON.parse(raw) as { chatId?: unknown; mode?: unknown; messageId?: unknown };
       if (typeof parsed.chatId === 'string' && parsed.chatId) {
         const chatId = parsed.chatId;
-        return { chatId, mode: parsed.mode === 'skip' ? 'skip' : 'notify' };
+        const mode = parsed.mode === 'skip' ? 'skip' : 'notify';
+        const messageId = typeof parsed.messageId === 'string' ? parsed.messageId : undefined;
+        return { chatId, mode, ...(messageId ? { messageId } : {}) };
       }
     } catch {
       /* corrupt marker: dropped above, keep looking */

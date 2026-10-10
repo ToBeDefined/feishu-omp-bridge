@@ -25,6 +25,8 @@ import {
 } from '../../config/store';
 import { gcOldLogs, log } from '../../core/logger';
 import { kickstart } from '../../daemon/launchd';
+import { restartCard } from '../../card/templates';
+import { updateManagedCard } from '../../card/managed';
 import { takeOnlineNotice } from '../../bot/online-notify';
 import { gcMediaCache, MEDIA_GC_MAX_AGE_MS } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
@@ -269,22 +271,24 @@ export async function runStart(opts: StartOptions): Promise<void> {
   const notifyTargets: string[] = [];
   const notice = await takeOnlineNotice();
   if (notice?.mode === 'notify') notifyTargets.push(notice.chatId);
-  for (const chatId of notifyTargets) {
+  if (notice?.mode === 'notify' && notice.messageId) {
     try {
-      await bridge.channel.send(
-        chatId,
-        { markdown: '🚀 **已上线**' },
-        {},
-      );
-      log.info('notify', 'online', { chatId });
+      await updateManagedCard(bridge.channel, notice.messageId, restartCard('done'));
+      log.info('notify', 'restart-card-updated', { chatId: notice.chatId, messageId: notice.messageId });
     } catch (err) {
-      log.warn('notify', 'online-failed', {
-        chatId,
-        err: err instanceof Error ? err.message : String(err),
-      });
+      log.warn('notify', 'restart-card-update-failed', { messageId: notice.messageId, err: String(err) });
+      await bridge.channel.send(notice.chatId, { markdown: '🚀 **已上线**' }, {});
+    }
+  } else {
+    for (const chatId of notifyTargets) {
+      try {
+        await bridge.channel.send(chatId, { markdown: '🚀 **已上线**' }, {});
+        log.info('notify', 'online', { chatId });
+      } catch (err) {
+        log.warn('notify', 'online-failed', { chatId, err: err instanceof Error ? err.message : String(err) });
+      }
     }
   }
-
   process.on('SIGINT', () => void stop('SIGINT'));
   process.on('SIGTERM', () => void stop('SIGTERM'));
   // Last-ditch sync unregister in case something exits without going through

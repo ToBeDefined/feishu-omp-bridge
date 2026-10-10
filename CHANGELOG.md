@@ -14,7 +14,7 @@
 ## [Unreleased]
 
 ### Added
-- **`/history` 命令**：对话历史清单，按最后活动时间倒序。`/history` 只看当前
+- **`/history`（别名 `/sessions`）命令**：对话历史清单，按最后活动时间倒序。`/history` 只看当前
   工作目录，`/history all` 看全部工作目录（跨 workspace，每行标注目录）；每行
   显示最后活动时间、对话轮数、标题或最后一条用户消息、session id 句柄，并带
   「继续对话」按钮（与 `/resume <id>` 同一条恢复路径：占用校验 + 原目录存在性

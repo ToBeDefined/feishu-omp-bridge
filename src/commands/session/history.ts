@@ -8,11 +8,13 @@ import { listSessions, type SessionRecord } from './sessions';
 
 export const historyHandlers: Record<string, Handler> = {
   '/history': handleHistory,
+  // Alias: the card is the session ledger, and `/sessions` is what people type.
+  '/sessions': handleHistory,
 };
 
 /**
- * `/history`          — past conversations in the CURRENT workspace
- * `/history all`      — every past conversation, across workspaces
+ * `/history` (`/sessions`)          — past conversations in the CURRENT workspace
+ * `/history all` (`/sessions all`)  — every past conversation, across workspaces
  *
  * Both are newest-activity-first, and every row carries a 继续对话 button.
  *

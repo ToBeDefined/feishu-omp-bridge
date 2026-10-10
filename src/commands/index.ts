@@ -92,6 +92,7 @@ const ADMIN_COMMANDS: Record<string, true> = {
   '/search': true,
   '/s': true,
   '/history': true,
+  '/sessions': true,
   '/exit': true,
   '/reconnect': true,
   '/doctor': true,

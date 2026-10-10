@@ -1,5 +1,5 @@
 import type { CommandContext, Handler } from '../index';
-import { reply } from '../shared';
+import { reply, RESTART_FLUSH_GRACE_MS } from '../shared';
 import { log } from '../../core/logger';
 import { clearOnlineNotify, markOnlineNotify } from '../../bot/online-notify';
 
@@ -15,6 +15,8 @@ async function handleRestart(_args: string, ctx: CommandContext): Promise<void> 
     // only reaches chats with a persisted session, and /new, /cd and /ws all
     // clear the entry — a restart right after them used to look like a crash.
     await markOnlineNotify(ctx.msg.chatId);
+    // 让上面的回复先 flush 到飞书，否则 kickstart 的 SIGTERM 会把它丢掉。
+    await new Promise((resolve) => setTimeout(resolve, RESTART_FLUSH_GRACE_MS));
     const realRestart = await ctx.controls.restartProcess();
     // True restart (launchd kickstart -k): this process is about to die and
     // the daemon relaunches with newly built code — no "done" ack can be

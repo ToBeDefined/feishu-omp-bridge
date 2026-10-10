@@ -19,6 +19,14 @@ export function formatIdleLine(
 export const FORM_SETTLE_MS = 1000;
 
 /**
+ * Grace wait before bouncing the process (/release, /restart): text replies
+ * travel the WS pipeline, and launchd's SIGTERM drops not-yet-flushed
+ * outbound frames — the release/restart notices used to vanish silently.
+ * Latest measured round-trip leaves plenty of headroom at 800ms.
+ */
+export const RESTART_FLUSH_GRACE_MS = 800;
+
+/**
  * Send a plain markdown reply, swallowing any send error. Used by command
  * handlers where a failed reply shouldn't bubble up and crash the bot —
  * losing the message is better than dying.

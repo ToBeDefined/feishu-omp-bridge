@@ -1,5 +1,5 @@
 import type { CommandContext, Handler } from '../index';
-import { reply } from '../shared';
+import { reply, RESTART_FLUSH_GRACE_MS } from '../shared';
 import { log } from '../../core/logger';
 import {
   repoRoot,
@@ -75,6 +75,8 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
     // Persist which chat asked, so the post-boot "已上线" reaches it even
     // when its session entry was cleared (/new, /cd, /ws) before /release.
     await markOnlineNotify(ctx.msg.chatId);
+    // 「构建成功」回复走 WS，先等它 flush 再 kickstart，否则会被 SIGTERM 丢掉。
+    await new Promise((resolve) => setTimeout(resolve, RESTART_FLUSH_GRACE_MS));
     const realRestart = await ctx.controls.restartProcess();
     if (!realRestart) {
       // In-process reconnect: no boot happens, so nothing would consume

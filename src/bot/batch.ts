@@ -4,7 +4,14 @@ import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter, AgentEvent, AgentUiRequest } from '../agent/types';
 import type { ActiveRuns, RunClaim, RunHandle } from './active-runs';
 import { createFeishuHostIntegration } from './feishu-host';
-import { forgetManagedCard, forgetStreamingCard, rememberStreamingCard, sendManagedCard, updateManagedCard } from '../card/managed';
+import {
+  forgetManagedCard,
+  forgetStreamingCard,
+  rememberStreamingCard,
+  sendManagedCard,
+  snapshotStreamingCard,
+  updateManagedCard,
+} from '../card/managed';
 import { renderOmpUiRequestCard, renderOmpUiResultCard } from '../card/omp-ui';
 import { renderCard, type RunCard } from '../card/run-renderer';
 import { createTableBudget, splitByTableBudget } from '../card/tables';
@@ -738,20 +745,27 @@ async function runCardPage(
   // still-running card; re-pushing an already-terminal card just duplicates
   // the user-visible content.
   let sawTerminalPush = false;
+  const initialCard = renderCard(
+    filter(session.state),
+    pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
+  );
   await channel.stream(
     chatId,
     {
       card: {
-        initial: renderCard(
-          filter(session.state),
-          pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
-        ),
+        initial: initialCard,
         producer: async (ctrl) => {
           // Crash recovery: streaming cards don't go through the managed-card
-          // system, so persist their messageId for the boot-time finalizer.
-          void rememberStreamingCard(ctrl.messageId, chatId);
+          // system, so persist their messageId + snapshot for the boot-time
+          // finalizer (Feishu can't return card content afterwards).
+          void rememberStreamingCard(ctrl.messageId, chatId, initialCard);
           try {
-          const q = coalesceLatest((card: object) => ctrl.update(card), {
+          const q = coalesceLatest((card: object) => {
+            // Persist the snapshot BEFORE pushing: whatever reached Feishu is
+            // what a crash-restart must replay.
+            snapshotStreamingCard(ctrl.messageId, card);
+            return ctrl.update(card);
+          }, {
             minIntervalMs: CARD_UPDATE_MIN_INTERVAL_MS,
           });
           await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {

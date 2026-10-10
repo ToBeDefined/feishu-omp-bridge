@@ -325,7 +325,13 @@ export function thinkingCancelledCard(): object {
 }
 
 export interface ResumeOption {
+  /** OMP session id of the work session's ACTIVE segment (display handle). */
   sessionId: string;
+  /** Work session id — the button payload / actual resume target (Task 9).
+   * Falls back to `sessionId` for unclaimed history files. */
+  workSessionId?: string;
+  /** Declared segment count; `🧵 N 段` shows only when > 1. */
+  segmentCount?: number;
   cwd: string;
   /** Session start, ISO. */
   timestamp: string;
@@ -366,7 +372,10 @@ export function resumeCard(
   ];
 
   sessions.forEach((s, i) => {
-    const isCurrent = current !== undefined && s.sessionId === current;
+    // The resume target is the work session when present (Task 9); a row for
+    // an unclaimed history file still keys on its OMP session id.
+    const key = s.workSessionId ?? s.sessionId;
+    const isCurrent = current !== undefined && key === current;
     const num = `#${offset + i + 1}`;
     // Named session → title leads, summary becomes a detail line; unnamed →
     // the summary IS the identity; neither → placeholder.
@@ -378,8 +387,9 @@ export function resumeCard(
     const tsMs = Date.parse(s.timestamp);
     const metaParts = [
       Number.isFinite(tsMs) ? formatAgo(Date.now() - tsMs) : '',
+      s.segmentCount !== undefined && s.segmentCount > 1 ? `🧵 ${s.segmentCount} 段` : '',
       `\`${escapeCode(shortPath(s.cwd))}\``,
-      escapeMd(shortSessionId(s.sessionId)),
+      escapeMd(shortSessionId(key)),
     ].filter(Boolean);
     const details: object[] = [
       { tag: 'markdown', content: heading },
@@ -420,7 +430,7 @@ export function resumeCard(
               type: isCurrent ? 'default' : 'primary',
               // Keep the value so the click still resolves to this session, but a
               // current-session switch is a no-op in applyResume.
-              value: { cmd: 'resume.use', arg: s.sessionId },
+              value: { cmd: 'resume.use', arg: key },
             },
           ],
         },

@@ -283,11 +283,19 @@ export class WorkSessionStore {
     this.schedulePersist();
   }
 
-  /** /resume、/history 继续对话：切到指定工作会话（绑定它最新的一段）。 */
-  adoptWorkSession(scope: string, workSessionId: string, cwd?: string): boolean {
+  /**
+   * /resume、/history 继续对话：切到指定工作会话。
+   *
+   * `segmentId` 是要认领的段（`pickActiveSegment` 选出的那个）；缺省取最新段。
+   * `cwd` 是该段解析后的工作目录（`resolveSafeCwd` 校验过）。
+   */
+  adoptWorkSession(scope: string, workSessionId: string, cwd?: string, segmentId?: string): boolean {
     const ws = this.workSessions[workSessionId];
     if (!ws) return false;
-    const seg = latestSegment(ws);
+    const seg =
+      segmentId !== undefined
+        ? ws.segments.find((s) => s.sessionId === segmentId) ?? latestSegment(ws)
+        : latestSegment(ws);
     this.scopes[scope] = { ...this.scopes[scope], activeWorkSession: ws.id };
     this.workSessions[ws.id] = {
       ...ws,

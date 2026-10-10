@@ -4,7 +4,7 @@ import { recallMessage, reply } from '../shared';
 import { sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
 import { applyResume } from './resume';
-import { listWorkSessions, scanSessionFiles, type SessionRecord } from './sessions';
+import { listWorkSessions, scanSessionFiles } from './sessions';
 
 export const historyHandlers: Record<string, Handler> = {
   '/history': handleHistory,
@@ -25,23 +25,35 @@ export const historyHandlers: Record<string, Handler> = {
 export async function handleHistory(args: string, ctx: CommandContext): Promise<void> {
   const tokens = args.trim().split(/\s+/).filter(Boolean);
 
-  // 继续对话 button: the payload is a WORK session id (Task 9 will hand it to
-  // `adoptWorkSession`). Until then, resume that work session's LATEST segment
-  // through the same /resume path — the cross-chat ownership guard and the
-  // "recorded cwd still exists" check apply identically.
+  // 继续对话 button: the payload is a WORK session id. Hand it to applyResume,
+  // which picks the SAME segment `listWorkSessions` used for the row's topic
+  // (current-if-alive, else latest alive) — so the button restores exactly the
+  // conversation the row described.
   if (tokens[0] === 'resume') {
     const workSessionId = tokens.slice(1).join('');
-    const row = (await listWorkSessions(ctx)).find((r) => r.workSessionId === workSessionId);
-    const latestSegmentId = row?.segments[row.segments.length - 1]?.sessionId;
-    const match =
-      latestSegmentId !== undefined
-        ? (await scanSessionFiles(ctx)).find((s) => s.sessionId === latestSegmentId)
-        : undefined;
-    if (!match) {
+    const ws = ctx.workSessions.workSessionById(workSessionId);
+    if (ws !== undefined) {
+      await applyResume(ctx, {
+        workSessionId,
+        sessionId: ws.currentSegmentId ?? workSessionId,
+        cwd: ws.cwd,
+        timestamp: new Date(ws.createdAtMs).toISOString(),
+      });
+      return;
+    }
+    // Unclaimed history file: its workSessionId IS its own OMP session id.
+    const rec = (await scanSessionFiles(ctx)).find((s) => s.sessionId === workSessionId);
+    if (!rec) {
       await reply(ctx, `❌ 未找到会话 \`${workSessionId}\`，可能已被删除。`);
       return;
     }
-    await applyResume(ctx, asResumeOption(match));
+    await applyResume(ctx, {
+      workSessionId,
+      sessionId: rec.sessionId,
+      cwd: rec.cwd,
+      timestamp: rec.startedAt,
+      updatedAtMs: rec.updatedAtMs,
+    });
     return;
   }
   const unknown = tokens.filter((t) => t !== 'all' && t !== 'cwd' && t !== 'page' && !/^\d+$/.test(t));
@@ -93,27 +105,6 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
       ...(currentWorkSessionId !== undefined ? { currentWorkSessionId } : {}),
     }),
   );
-}
-
-/** A listed session in the shape `applyResume` consumes. */
-function asResumeOption(s: SessionRecord): {
-  sessionId: string;
-  cwd: string;
-  timestamp: string;
-  updatedAtMs: number;
-  title?: string;
-  summary: string;
-  lastMessage?: string;
-} {
-  return {
-    sessionId: s.sessionId,
-    cwd: s.cwd,
-    timestamp: s.startedAt,
-    updatedAtMs: s.updatedAtMs,
-    ...(s.title !== undefined ? { title: s.title } : {}),
-    summary: s.summary ?? '',
-    ...(s.lastMessage !== undefined ? { lastMessage: s.lastMessage } : {}),
-  };
 }
 
 /** Named workspace pointing at `cwd`, else the collapsed path. */

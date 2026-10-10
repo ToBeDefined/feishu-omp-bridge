@@ -2,7 +2,34 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getOmpSessionDir } from '../../config/schema';
 import type { CommandContext } from '../index';
-import { sampleSegmentId, scanSessionFile } from './context';
+import type { WorkSegment, WorkSession } from '../../session/work-session';
+import { scanSessionFile } from './context';
+
+/**
+ * 工作会话里「正在用」的段 —— 段选择的**唯一口径**。
+ *
+ * `currentSegmentId` 指向的段仍存活（其 OMP 会话文件还在）时选它；否则从
+ * `segments` 末尾向前找第一个存活的段；都不存活返回 undefined。
+ *
+ * /history 行展示的 topic 与 /resume（含 /history 继续对话）实际恢复的段都必须
+ * 走这里：两者口径一旦分叉，卡片上显示的会话与点击后真正恢复的段就会错位
+ * （Task 8 评审 P2）。调用方先批量取好存活集合再传 `isAlive`，避免逐行 stat/readdir。
+ */
+export function pickActiveSegment(
+  ws: WorkSession,
+  isAlive: (sessionId: string) => boolean,
+): WorkSegment | undefined {
+  const current = ws.currentSegmentId;
+  if (current !== undefined && isAlive(current)) {
+    const seg = ws.segments.find((s) => s.sessionId === current);
+    if (seg !== undefined) return seg;
+  }
+  for (let i = ws.segments.length - 1; i >= 0; i -= 1) {
+    const seg = ws.segments[i];
+    if (seg !== undefined && isAlive(seg.sessionId)) return seg;
+  }
+  return undefined;
+}
 
 /**
  * One session JSONL on disk, as both /resume (picker) and /history (ledger)
@@ -103,9 +130,18 @@ export interface WorkSessionSegmentStat {
 export interface WorkSessionRecord {
   /** Work session id (first segment's OMP id; orphan files use their own id). */
   workSessionId: string;
+  /** Work session start (ms epoch; orphan files use their file timestamp). */
+  startedAtMs: number;
+  /**
+   * The segment `pickActiveSegment` chose (current-if-alive, else latest
+   * alive) — the exact segment `/resume` adopts. Its last user message is
+   * `topic`, so the row and the resume button can never point at different
+   * segments. Absent when every segment file is gone.
+   */
+  activeSegmentId?: string;
   /** Work session name (/rename). */
   title?: string;
-  /** Last user message of the current/latest segment — the display fallback. */
+  /** Last user message of the ACTIVE segment (see `activeSegmentId`). */
   topic?: string;
   /**
    * `ws.segments.length`: the work session's declared segment count, INCLUDING
@@ -141,6 +177,7 @@ export async function listWorkSessions(ctx: CommandContext): Promise<WorkSession
   const byId = new Map(files.map((f) => [f.sessionId, f]));
   const claimed = new Set<string>();
   const rows: WorkSessionRecord[] = [];
+  const isAlive = (sessionId: string): boolean => byId.has(sessionId);
 
   for (const ws of ctx.workSessions.allWorkSessions()) {
     const segments: WorkSessionSegmentStat[] = [];
@@ -155,13 +192,16 @@ export async function listWorkSessions(ctx: CommandContext): Promise<WorkSession
       });
       claimed.add(seg.sessionId);
     }
-    // Display fallback is deliberately the CURRENT (else latest) segment only,
-    // matching /ctx, /rename and /new: scanning older segments to find a
-    // message would be O(dir) per work session.
-    const sampleId = sampleSegmentId(ws);
-    const topic = segments.find((s) => s.sessionId === sampleId)?.lastMessage;
+    // Display + resume share ONE segment rule: whichever segment
+    // `pickActiveSegment` returns is what the row describes and what the
+    // 继续对话 button adopts — so they cannot drift apart.
+    const active = pickActiveSegment(ws, isAlive);
+    const activeId = active?.sessionId;
+    const topic = segments.find((s) => s.sessionId === activeId)?.lastMessage;
     rows.push({
       workSessionId: ws.id,
+      startedAtMs: ws.createdAtMs,
+      ...(activeId !== undefined ? { activeSegmentId: activeId } : {}),
       ...(ws.title !== undefined ? { title: ws.title } : {}),
       ...(topic !== undefined ? { topic } : {}),
       segmentCount: ws.segments.length,
@@ -176,8 +216,11 @@ export async function listWorkSessions(ctx: CommandContext): Promise<WorkSession
   // Files no work session claims (old history, or pre-backfill): their own row.
   for (const f of files) {
     if (claimed.has(f.sessionId)) continue;
+    const startedAtMs = Date.parse(f.startedAt);
     rows.push({
       workSessionId: f.sessionId,
+      startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : f.updatedAtMs,
+      activeSegmentId: f.sessionId,
       ...(f.lastMessage ? { topic: f.lastMessage } : {}),
       segmentCount: 1,
       turns: f.turns,

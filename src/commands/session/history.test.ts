@@ -117,6 +117,8 @@ function makeCtx(over: Partial<Record<string, unknown>> = {}): {
         },
       ],
       titleFor: (id?: string) => (id === 's1' ? '命名的会话' : undefined),
+      workSessionById: () => undefined,
+      workSessionForSegment: () => undefined,
       activeWorkSession: () =>
         spy.currentSessionId
           ? { id: spy.currentSessionId, currentSegmentId: spy.currentSessionId, cwd: tmp }

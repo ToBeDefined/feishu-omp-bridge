@@ -8,12 +8,17 @@ import {
 } from './search-card';
 
 function sampleContext(over: Partial<SearchContext> = {}): SearchContext {
+  const messages = over.messages ?? [{ role: 'user' as const, content: '问题' }];
   return {
-    messages: [{ role: 'user', content: '问题' }],
-    hitIndex: 0,
-    sessionId: 'sess-1',
+    workSessionId: 'sess-1',
     workspace: '~/repo',
     title: '标题',
+    matchCount: 1,
+    groups: [
+      { segmentId: 'sess-1', messages, hitIndex: 0, matchCount: over.matchCount ?? 1 },
+    ],
+    messages,
+    hitIndex: 0,
     ...over,
   };
 }
@@ -44,7 +49,7 @@ describe('search-card T10 additions', () => {
       'kw',
       [
         sampleContext({
-          sessionId: UUID,
+          workSessionId: UUID,
           title: '会话 UI',
           workspace: '~/repo',
           matchCount: 3,
@@ -69,7 +74,7 @@ describe('search-card T10 additions', () => {
 
   it('shows relative time and pagination in the results card', () => {
     const contexts = Array.from({ length: 8 }, (_, i) => ({
-      ...sampleContext({ sessionId: `s${i}` }),
+      ...sampleContext({ workSessionId: `s${i}` }),
       messages: [
         {
           role: 'user' as const,
@@ -153,7 +158,7 @@ describe('searchResultsCard', () => {
   });
 
   it('pages results past the per-card cap', () => {
-    const many = Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
+    const many = Array.from({ length: 8 }, (_, i) => sampleContext({ workSessionId: `s${i}` }));
     const card = searchResultsCard('foo', many, 'q1', true);
     const body = JSON.stringify(card);
     // 8 items → first page renders #1..#6 headings; #7 rides page 2.
@@ -168,9 +173,65 @@ describe('searchResultsCard', () => {
   });
 
   it('renders all items in the done (settled) view', () => {
-    const many = Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
+    const many = Array.from({ length: 8 }, (_, i) => sampleContext({ workSessionId: `s${i}` }));
     const done = JSON.stringify(searchResultsCard('foo', many, 'q1', false));
     expect(done).toContain('"content":"#8 ·');
+  });
+
+  it('annotates a multi-segment work session with its segment count', () => {
+    const card = JSON.stringify(
+      searchResultsCard('foo', [sampleContext({ segmentCount: 3, matchCount: 4 })], 'q1', true),
+    );
+    expect(card).toContain('🧵 3 段');
+    expect(card).toContain('🔎 4 处匹配');
+    // A single-segment work session does not advertise its segment count.
+    expect(JSON.stringify(searchResultsCard('foo', [sampleContext()], 'q1', true))).not.toContain(
+      '🧵',
+    );
+  });
+
+  it('lists each matched segment under one heading, labelled by segment', () => {
+    const card = JSON.stringify(
+      searchResultsCard(
+        'foo',
+        [
+          sampleContext({
+            workSessionId: 'ws-1',
+            groups: [
+              {
+                segmentId: '019f9432-b808-7000-8bf4-073defc52637',
+                messages: [{ role: 'user', content: '新段命中' }],
+                hitIndex: 0,
+                matchCount: 1,
+              },
+              {
+                segmentId: 'old-segment-01',
+                messages: [{ role: 'assistant', content: '旧段命中' }],
+                hitIndex: 0,
+                matchCount: 1,
+              },
+            ],
+          }),
+        ],
+        'q1',
+        true,
+      ),
+    );
+    // Exactly one heading for the work session; both segments' hits follow it.
+    expect(card.match(/"text_size":"heading"/g)).toHaveLength(1);
+    expect(card).toContain('新段命中');
+    expect(card).toContain('旧段命中');
+    // Each hit block is labelled with its (short) segment id.
+    expect(card).toContain('🧵 段 `019f9432…`');
+    expect(card).toContain('🧵 段 `old-segm…`');
+  });
+
+  it('renders a topic fallback when the work session is unnamed', () => {
+    const card = JSON.stringify(
+      searchResultsCard('foo', [sampleContext({ title: undefined, topic: '看下 FC1 在做什么' })], 'q1', true),
+    );
+    expect(card).toContain('**看下 FC1 在做什么**');
+    expect(card).not.toContain('🏷');
   });
 });
 

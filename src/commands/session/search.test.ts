@@ -5,21 +5,19 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { CommandContext } from '../index';
 import { paths } from '../../config/paths';
 import { searchSession, workspaceLabel } from './search';
-import { renderSearchContext } from '../../card/search-card';
+import { renderSearchContext, searchResultsCard } from '../../card/search-card';
+import { WorkSessionStore } from '../../session/work-store';
 
 const origSessionsDir = paths.ompSessionsDir;
 let tmp: string | undefined;
 
-function ctxFor(workspaces: Record<string, string> = {}, titles: Record<string, string> = {}): CommandContext {
+function ctxFor(
+  workspaces: Record<string, string> = {},
+  workSessions?: { workSessionForSegment: (sessionId: string) => unknown },
+): CommandContext {
   return {
     workspaces: { listNamed: () => workspaces },
-    workSessions: {
-      allWorkSessions: () =>
-        Object.entries(titles).map(([sessionId, title]) => ({
-          title,
-          segments: [{ sessionId }],
-        })),
-    },
+    workSessions: workSessions ?? { workSessionForSegment: () => undefined },
     controls: { cfg: {} },
   } as CommandContext;
 }
@@ -101,13 +99,13 @@ describe('searchSession', () => {
 
     expect(hits).toHaveLength(2);
     // Newest hit first: session B (11:00) precedes session A (10:00).
-    expect(hits[0]!.sessionId).toBe('sessB');
+    expect(hits[0]!.workSessionId).toBe('sessB');
     expect(hits[0]!.workspace).toBe('/repoB');
-    expect(hits[1]!.sessionId).toBe('sessA');
+    expect(hits[1]!.workSessionId).toBe('sessA');
     expect(hits[1]!.workspace).toBe('/repoA');
     // sessC (no keyword) and sessD (keyword only in thinking) are excluded.
-    expect(hits.map((h) => h.sessionId)).not.toContain('sessC');
-    expect(hits.map((h) => h.sessionId)).not.toContain('sessD');
+    expect(hits.map((h) => h.workSessionId)).not.toContain('sessC');
+    expect(hits.map((h) => h.workSessionId)).not.toContain('sessD');
   });
 
   it('resolves workspace label from a named workspace', async () => {
@@ -194,10 +192,10 @@ describe('searchSession', () => {
     }
 
     const capped = await searchSession('codegraph', ctxFor(), 2);
-    expect(capped.map((h) => h.sessionId)).toEqual(['c', 'b']);
+    expect(capped.map((h) => h.workSessionId)).toEqual(['c', 'b']);
 
     const all = await searchSession('codegraph', ctxFor());
-    expect(all.map((h) => h.sessionId)).toEqual(['c', 'b', 'a']);
+    expect(all.map((h) => h.workSessionId)).toEqual(['c', 'b', 'a']);
   });
 
   it('matches case-insensitively', async () => {
@@ -209,7 +207,7 @@ describe('searchSession', () => {
 
     const hits = await searchSession('codegraph', ctxFor());
     expect(hits).toHaveLength(1);
-    expect(hits[0]!.sessionId).toBe('a');
+    expect(hits[0]!.workSessionId).toBe('a');
   });
 
   it('returns an empty array when nothing matches', async () => {
@@ -274,21 +272,109 @@ describe('searchSession', () => {
     expect(out).not.toContain('\n# 大标题');
   });
 
-  it('annotates hits with the session title from the store', async () => {
+  it('uses the work session title as the row identity', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
     paths.ompSessionsDir = tmp;
     await writeSession(tmp, 'a.jsonl', { id: 'sessA', cwd: '/repoA', ts: '2026-08-15T10:00:00.000Z' }, [
       { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: 'codegraph 检索' }] },
     ]);
-    // sessB has no title, must stay unlabeled.
+    // sessB is not in any work session → stays unlabeled.
     await writeSession(tmp, 'b.jsonl', { id: 'sessB', cwd: '/repoB', ts: '2026-08-15T11:00:00.000Z' }, [
       { role: 'user', ts: '2026-08-15T11:00:01.000Z', content: [{ type: 'text', text: 'codegraph 用法' }] },
     ]);
+    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    await store.load();
+    store.bindSegment('oc_1', 'sessA', '/repoA');
+    store.setTitle('oc_1', '修搜索');
 
-    const hits = await searchSession('codegraph', ctxFor({}, { sessA: '修搜索' }));
-    const bySession = Object.fromEntries(hits.map((h) => [h.sessionId, h.title]));
+    const hits = await searchSession('codegraph', ctxFor({}, store));
+    const bySession = Object.fromEntries(hits.map((h) => [h.workSessionId, h.title]));
     expect(bySession.sessA).toBe('修搜索');
     expect(bySession.sessB).toBeUndefined();
+    await store.flush();
+  });
+
+  it('falls back to the latest segment last user message when the work session is unnamed', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    await writeSession(tmp, 'segA.jsonl', { id: 'segA', cwd: '/repo', ts: '2026-08-15T10:00:00.000Z' }, [
+      { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: '最后一条用户消息 codegraph' }] },
+    ]);
+    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    await store.load();
+    store.bindSegment('oc_1', 'segA', '/repo');
+
+    const hits = await searchSession('codegraph', ctxFor({}, store));
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.title).toBeUndefined();
+    expect(hits[0]!.topic).toBe('最后一条用户消息 codegraph');
+    await store.flush();
+  });
+
+  it('fabricates no title when a work session has neither name nor user message', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    // Assistant-only turn: no real user message to fall back to.
+    await writeSession(tmp, 'segA.jsonl', { id: 'segA', cwd: '/repo', ts: '2026-08-15T10:00:00.000Z' }, [
+      { role: 'assistant', ts: '2026-08-15T10:00:02.000Z', content: [{ type: 'text', text: 'codegraph 回答' }] },
+    ]);
+    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    await store.load();
+    store.bindSegment('oc_1', 'segA', '/repo');
+
+    const hits = await searchSession('codegraph', ctxFor({}, store));
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.title).toBeUndefined();
+    expect(hits[0]!.topic).toBeUndefined();
+    // Heading is just the row number — no invented identity.
+    const card = JSON.stringify(searchResultsCard('codegraph', hits, 'q1', true));
+    expect(card).toContain('"content":"#1","text_size":"heading"');
+    await store.flush();
+  });
+
+  it('merges two segments of one work session into a single row with its segment count', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    await writeSession(tmp, 'segA.jsonl', { id: 'segA', cwd: '/repo', ts: '2026-08-15T10:00:00.000Z' }, [
+      { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: '第一段 codegraph' }] },
+    ]);
+    await writeSession(tmp, 'segB.jsonl', { id: 'segB', cwd: '/repo', ts: '2026-08-15T11:00:00.000Z' }, [
+      { role: 'user', ts: '2026-08-15T11:00:01.000Z', content: [{ type: 'text', text: '第二段 codegraph' }] },
+    ]);
+    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    await store.load();
+    store.bindSegment('oc_1', 'segA', '/repo');
+    store.bindSegment('oc_1', 'segB', '/repo');
+
+    const hits = await searchSession('codegraph', ctxFor({}, store));
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.workSessionId).toBe('segA');
+    expect(hits[0]!.segmentCount).toBe(2);
+    expect(hits[0]!.matchCount).toBe(2);
+    // One group per matched segment, newest segment first.
+    expect(hits[0]!.groups.map((g) => g.segmentId)).toEqual(['segB', 'segA']);
+
+    // Card: exactly one heading row, with the segment count annotated.
+    const card = JSON.stringify(searchResultsCard('codegraph', hits, 'q1', true));
+    expect(card.match(/"text_size":"heading"/g)).toHaveLength(1);
+    expect(card).toContain('🧵 2 段');
+    await store.flush();
+  });
+
+  it('shows an unclaimed segment as its own single row (identity = the segment)', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    await writeSession(tmp, 'orphan.jsonl', { id: 'orphan-1', cwd: '/repo', ts: '2026-08-15T10:00:00.000Z' }, [
+      { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: 'codegraph 孤儿段' }] },
+    ]);
+
+    const hits = await searchSession('codegraph', ctxFor());
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.workSessionId).toBe('orphan-1');
+    expect(hits[0]!.segmentCount).toBe(1);
+    expect(hits[0]!.title).toBeUndefined();
+    expect(hits[0]!.topic).toBeUndefined();
+    expect(hits[0]!.groups.map((g) => g.segmentId)).toEqual(['orphan-1']);
   });
 
   it('groups multiple hits from one session into a single context', async () => {
@@ -303,8 +389,9 @@ describe('searchSession', () => {
 
     const hits = await searchSession('codegraph', ctxFor());
     expect(hits).toHaveLength(1);
-    expect(hits[0]!.sessionId).toBe('sessA');
+    expect(hits[0]!.workSessionId).toBe('sessA');
     expect(hits[0]!.matchCount).toBe(2);
+    expect(hits[0]!.groups).toHaveLength(1);
     // Representative is the newest matching pair inside the session.
     expect(hits[0]!.messages.map((m) => m.content)).toEqual([
       '第二处 codegraph 追问',

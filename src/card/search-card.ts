@@ -1,4 +1,4 @@
-import { codeSpan, summarize } from '../utils/text';
+import { codeSpan, summarize, summarizeMd } from '../utils/text';
 import { escapeMd } from '../utils/text';
 import { formatAgoOr } from '../utils/time';
 import { actions, shortSessionId, type ButtonSpec } from './templates';
@@ -15,19 +15,43 @@ export interface SearchHit {
   timestamp?: string;
 }
 
-export interface SearchContext {
+/** One OMP segment's matched Q&A pairs inside a work session. */
+export interface SearchHitGroup {
+  /** OMP segment id; labelled on the hit only when >1 segment matched. */
+  segmentId?: string;
   messages: SearchHit[];
   hitIndex: number;
-  sessionId?: string;
-  workspace?: string;
-  /** Number of matched Q&A pairs in the session; >1 when grouped. */
-  matchCount?: number;
-  /** User-assigned session title (/rename), when the hit belongs to one. */
+  /** Matched Q&A pairs within this segment. */
+  matchCount: number;
+}
+
+/**
+ * One search row = one WORK session (Task 10): every segment of the work
+ * session that matched collapses under a single heading, with each segment's
+ * hits listed below. A legacy segment no work session claims is its own
+ * single-segment row (`workSessionId` = the segment id).
+ */
+export interface SearchContext {
+  /** Work session id; for an unclaimed segment, the segment id itself. */
+  workSessionId: string;
+  /** User-assigned title (/rename), when the work session is named. */
   title?: string;
+  /** Display fallback when unnamed: last user message of its current/latest segment. */
+  topic?: string;
+  workspace?: string;
+  /** Declared work-session segment count; `🧵 N 段` is shown only when >1. */
+  segmentCount?: number;
+  /** Σ matched Q&A pairs across all segments; `🔎` is shown only when >1. */
+  matchCount: number;
+  /** Matched pairs per source segment, newest segment first. */
+  groups: SearchHitGroup[];
+  /** Newest group's pair — the detail view's default snippet. */
+  messages: SearchHit[];
+  hitIndex: number;
 }
 
 export function renderSearchContext(
-  context: SearchContext,
+  context: { messages: SearchHit[]; hitIndex: number },
   mode: 'compact' | 'detail' = 'compact',
   keyword?: string,
 ): string {
@@ -124,31 +148,49 @@ export function searchResultsCard(
     const globalIdx = offset + i;
     const ago = formatAgoOr(lastHitTime(c), '');
     // Identity line is heading-sized; everything else drops to a small grey
-    // meta line. Blending a 36-char session UUID and the workspace path into
-    // the heading produced several lines of oversized text per result on a
-    // phone.
-    const heading = [`#${globalIdx + 1}`, c.title ? `🏷 ${escapeMd(c.title)}` : '']
-      .filter(Boolean)
-      .join(' · ');
+    // meta line. Blending a 36-char id and the workspace path into the heading
+    // produced several lines of oversized text per result on a phone.
+    // Identity = the work session's name, else its topic fallback (last user
+    // message of its current/latest segment); never an invented title.
+    const identity = c.title
+      ? `🏷 ${escapeMd(c.title)}`
+      : c.topic
+        ? `**${summarizeMd(c.topic, 24)}**`
+        : '';
+    const heading = [`#${globalIdx + 1}`, identity].filter(Boolean).join(' · ');
     const metaLine = [
       c.workspace ? `📁 ${escapeMd(c.workspace)}` : '',
       ago ? `🕘 ${ago}` : '',
-      c.matchCount && c.matchCount > 1 ? `🔎 ${c.matchCount} 处匹配` : '',
-      // Handle only — the full id is in 查看详情, where it is actionable.
-      c.sessionId ? `🆔 ${shortSessionId(c.sessionId)}` : '',
+      c.matchCount > 1 ? `🔎 ${c.matchCount} 处匹配` : '',
+      // Work-session scale; a single segment would just be noise.
+      c.segmentCount && c.segmentCount > 1 ? `🧵 ${c.segmentCount} 段` : '',
+      // Identity handle of the WORK session — the full id is in 查看详情.
+      `🆔 ${shortSessionId(c.workSessionId)}`,
     ]
       .filter(Boolean)
       .join(' · ');
     blocks.push(
       { tag: 'markdown', content: heading, text_size: 'heading' },
       ...(metaLine ? [{ tag: 'markdown', content: metaLine, text_size: 'notation' }] : []),
-      { tag: 'markdown', content: renderSearchContext(c, 'compact', keyword) },
     );
+    // Each matched segment keeps the usual hit style; only a work session that
+    // matched on >1 segment labels which segment each block came from.
+    const multiSegment = c.groups.length > 1;
+    for (const g of c.groups) {
+      if (multiSegment && g.segmentId) {
+        blocks.push({
+          tag: 'markdown',
+          content: `🧵 段 \`${shortSessionId(g.segmentId)}\``,
+          text_size: 'notation',
+        });
+      }
+      blocks.push({ tag: 'markdown', content: renderSearchContext(g, 'compact', keyword) });
+    }
     if (showButtons) {
       blocks.push(
         ...actions([
           { text: '查看详情', value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` } },
-          { text: '继续对话', value: { cmd: 'search.resume', arg: c.sessionId }, style: 'primary' },
+          { text: '继续对话', value: { cmd: 'search.resume', arg: c.workSessionId }, style: 'primary' },
         ]),
       );
     }
@@ -200,7 +242,7 @@ export function searchEmptyCard(keyword: string): object {
 }
 
 export function searchDetailCard(
-  sessionId: string | undefined,
+  workSessionId: string | undefined,
   content: string,
   queryRef?: string,
   idx?: number,
@@ -208,15 +250,16 @@ export function searchDetailCard(
   workspace?: string,
 ): object {
   const label = idx !== undefined ? `搜索结果 #${idx}` : '搜索详情';
-  // Done state keeps the full header (number / workspace / session) — only
-  // the buttons are stripped. "✅" marks it as settled.
+  // Done state keeps the full header (number / workspace / work session) —
+  // only the buttons are stripped. "✅" marks it as settled.
   const elements: object[] = [
     { tag: 'markdown', content: `✅ **${label}**`, text_size: 'heading' },
   ];
   const metaLine = [
     workspace ? `📁 ${escapeMd(workspace)}` : '',
-    // Full id here: this is the one place a session can be identified exactly.
-    sessionId ? `🆔 ${escapeMd(sessionId)}` : '',
+    // Full id here: this is the one place the work session can be identified
+    // exactly (the list only carries an 8-char handle).
+    workSessionId ? `🆔 ${escapeMd(workSessionId)}` : '',
   ]
     .filter(Boolean)
     .join(' · ');
@@ -226,7 +269,7 @@ export function searchDetailCard(
     elements.push(
       { tag: 'hr' },
       ...actions([
-        { text: '继续对话', value: { cmd: 'search.resume', arg: sessionId ?? '' }, style: 'primary' },
+        { text: '继续对话', value: { cmd: 'search.resume', arg: workSessionId ?? '' }, style: 'primary' },
         { text: '完成', value: { cmd: 'search.done', arg: queryRef ?? '' } },
       ]),
     );

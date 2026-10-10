@@ -11,6 +11,7 @@ import {
   helpCard,
   md,
   newSessionCard,
+  psCard,
   panel,
   releaseCard,
   restartCard,

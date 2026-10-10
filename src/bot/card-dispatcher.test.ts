@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { renderAgentSelectedCard } from './card-dispatcher';
+import { handleCardAction } from './card-dispatcher';
+import { agentSelectedCard } from '../card/templates';
 
-describe('renderAgentSelectedCard', () => {
+describe('agentSelectedCard', () => {
   it('renders a schema-2.0 card showing the frozen choice, without buttons', () => {
-    const card = renderAgentSelectedCard('发布') as {
+    const card = agentSelectedCard('发布') as {
       schema: string;
       body: { elements: Array<{ tag: string; content: string }> };
     };
@@ -16,7 +17,7 @@ describe('renderAgentSelectedCard', () => {
   });
 
   it('escapes markdown metacharacters in the label', () => {
-    const card = renderAgentSelectedCard('a*b_c') as { body: { elements: Array<{ content: string }> } };
+    const card = agentSelectedCard('a*b_c') as { body: { elements: Array<{ content: string }> } };
     expect(card.body.elements[0]?.content).not.toContain('a*b');
   });
 });

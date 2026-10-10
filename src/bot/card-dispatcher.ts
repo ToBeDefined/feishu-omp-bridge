@@ -10,7 +10,7 @@ import { log } from '../core/logger';
 import type { SessionStore } from '../session/store';
 import { AGENT_CALLBACK_MARKER } from '../card/agent-card';
 import { forgetManagedCard, updateManagedCard } from '../card/managed';
-import { escapeMd } from '../utils/text';
+import { agentSelectedCard } from '../card/templates';
 import {
   isOmpUiPayload,
   ompUiRequestId,
@@ -211,7 +211,7 @@ async function forwardToAgent(
     ? deps.evt.action.name.trim()
     : undefined;
   if (label) {
-    await updateManagedCard(deps.channel, deps.evt.messageId, renderAgentSelectedCard(label)).catch(() => {
+    await updateManagedCard(deps.channel, deps.evt.messageId, agentSelectedCard(label)).catch(() => {
       /* unmanaged card — nothing to update */
     });
     forgetManagedCard(deps.evt.messageId);
@@ -233,15 +233,6 @@ async function forwardToAgent(
     createTime: Date.now(),
   };
   deps.pending.push(scope, synthetic);
-}
-
-/** Card shown after an agent-card click: the choice, frozen, no buttons. */
-export function renderAgentSelectedCard(label: string): object {
-  return {
-    schema: '2.0',
-    config: { summary: { content: `✅ 已选择 ${label}` } },
-    body: { elements: [{ tag: 'markdown', content: `✅ 已选择：**${escapeMd(label)}**` }] },
-  };
 }
 
 async function respondToOmpUi(

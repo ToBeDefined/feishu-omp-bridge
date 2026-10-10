@@ -604,6 +604,16 @@ export function staleNoticeCard(): object {
   };
 }
 
+/** Response card after an agent-authored choice button click: the choice,
+ * frozen, no buttons. */
+export function agentSelectedCard(label: string): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: `✅ 已选择 ${label}` } },
+    body: { elements: [{ tag: 'markdown', content: `✅ 已选择：**${escapeMd(label)}**` }] },
+  };
+}
+
 const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',

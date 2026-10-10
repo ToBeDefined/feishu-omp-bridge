@@ -52,6 +52,8 @@ function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
     workSessions: {
       activeWorkSession: () => workSession(),
       titleFor: () => undefined,
+      // 当前会话（会话优先的 cwd 口径读它）；这个 stub 没有活跃会话。
+      currentSession: () => undefined,
       getIdleTimeoutMinutes: () => undefined,
     } as never,
     workspaces: {
@@ -121,6 +123,7 @@ describe('renderContext', () => {
       makeCtx({
         workSessions: {
           activeWorkSession: () => workSession({ title: '修搜索' }),
+          currentSession: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),
@@ -138,6 +141,7 @@ describe('renderContext', () => {
       makeCtx({
         workSessions: {
           activeWorkSession: () => workSession({ lastActiveAtMs: Date.now() }),
+          currentSession: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),
@@ -148,6 +152,7 @@ describe('renderContext', () => {
       makeCtx({
         workSessions: {
           activeWorkSession: () => undefined,
+          currentSession: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),
@@ -160,6 +165,7 @@ describe('renderContext', () => {
       makeCtx({
         workSessions: {
           activeWorkSession: () => workSession({ lastActiveAtMs: Date.now(), createdAtMs: Date.now() }),
+          currentSession: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),
@@ -187,6 +193,7 @@ describe('renderContext', () => {
       makeCtx({
         workSessions: {
           activeWorkSession: () => workSession({ title: '修搜索' }),
+          currentSession: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),
@@ -206,6 +213,7 @@ describe('renderContext', () => {
       makeCtx({
         workSessions: {
           activeWorkSession: () => undefined,
+          currentSession: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),

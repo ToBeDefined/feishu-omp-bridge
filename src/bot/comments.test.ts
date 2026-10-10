@@ -87,8 +87,11 @@ function makeDeps(channel: LarkChannel, agent: AgentAdapter) {
     channel,
     evt: makeEvt(),
     agent,
-    workSessions: { resumeFor: () => undefined, bindSegment: () => {} } as unknown as WorkSessionStore,
-    workspaces: { cwdFor: () => '/repo' } as unknown as WorkspaceStore,
+    workSessions: {
+      currentSession: () => undefined,
+      bindSegment: () => {},
+    } as unknown as WorkSessionStore,
+    workspaces: { cwdFor: () => '/repo', setCwd: () => {} } as unknown as WorkspaceStore,
     cfg: {} as AppConfig,
   };
 }

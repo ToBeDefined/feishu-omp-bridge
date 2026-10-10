@@ -14,6 +14,7 @@ import { contextCard, type ContextInfo } from '../../card/templates';
 import { formatAgo, formatAgoOr, formatClockOr } from '../../utils/time';
 import type { WorkSession } from '../../session/work-session';
 import { sessionName } from './display';
+import { conversationCwd } from '../../session/current-cwd';
 
 export const contextHandlers: Record<string, Handler> = {
   '/context': handleContext,
@@ -24,12 +25,12 @@ export function collectContextInfo(
   ctx: CommandContext,
   summary: { lastMessage?: string; lastReply?: string } = {},
 ): ContextInfo {
-  const scopeCwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
   const active = ctx.workSessions.activeWorkSession(ctx.scope);
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
-  // 身份 = 会话（一个 OMP 会话 = 一个对话）：cwd 取它自己的目录，名字取 /rename
-  // 的 title，没有就回退到它最后一条用户消息（调用方已取到的 summary）。
-  const cwd = active?.cwd ?? scopeCwd;
+  // 身份 = 会话（一个 OMP 会话 = 一个对话）：cwd 取它自己的目录（会话优先，聊天
+  // 窗口的 cwd 只是它没有会话时的落点），名字取 /rename 的 title，没有就回退到它
+  // 最后一条用户消息（调用方已取到的 summary）。
+  const cwd = conversationCwd(ctx.workspaces, ctx.workSessions, ctx.scope);
   const sessionId = active?.currentSegmentId;
   const name = sessionName(active) ?? (summary.lastMessage?.trim() || undefined);
   return {

@@ -9,6 +9,7 @@ import { extractUserInput } from './context';
 import { summarize } from '../../utils/text';
 import { latestSegment, type WorkSession } from '../../session/work-session';
 import { resolveSessionDisplay } from './display';
+import { conversationCwd } from '../../session/current-cwd';
 
 export const renameHandlers: Record<string, Handler> = {
   '/rename': handleRename,

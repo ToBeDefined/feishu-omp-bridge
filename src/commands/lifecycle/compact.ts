@@ -4,6 +4,7 @@ import type { CommandContext, Handler } from '../index';
 import { getOmpModel, getOmpSessionDir } from '../../config/schema';
 import { compactTimeoutMs, estimateCompactSeconds, estimateSessionTokens } from '../../agent/omp/estimate';
 import { reply } from '../shared';
+import { resolveConversationCwd } from '../../session/current-cwd';
 import { compactCard } from '../../card/templates';
 
 export const compactHandlers: Record<string, Handler> = {
@@ -48,8 +49,12 @@ async function compactIdle(
   }
 
   try {
-    const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
-    const sessionId = ctx.workSessions.resumeFor(ctx.scope, cwd);
+    // 会话优先：压缩的是**当前会话**，在它自己的目录里。
+    const { cwd, sessionId } = await resolveConversationCwd(
+      ctx.workspaces,
+      ctx.workSessions,
+      ctx.scope,
+    );
     if (!sessionId) {
       if (!opts.silentIfMissing) {
         await reply(ctx, '⚠️ 当前没有可压缩的会话（先发起一次对话）。');

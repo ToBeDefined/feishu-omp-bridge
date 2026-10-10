@@ -3,6 +3,7 @@ import type { CommentEvent, LarkChannel } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
 import type { AppConfig } from '../config/schema';
 import { isUserAllowed } from '../config/schema';
+import { resolveConversationCwd } from '../session/current-cwd';
 import { log } from '../core/logger';
 import type { WorkSessionStore } from '../session/work-store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -138,8 +139,12 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   commentInFlight.add(synthChatId);
   let reactionAdded = false;
   try {
-    const cwd = workspaces.cwdFor(synthChatId) ?? homedir();
-    const resumeFrom = workSessions.resumeFor(synthChatId, cwd);
+    // 会话优先：文档评论的合成 scope 也一样，续它自己的会话与目录。
+    const { cwd, sessionId: resumeFrom } = await resolveConversationCwd(
+      workspaces,
+      workSessions,
+      synthChatId,
+    );
     log.info('comment', 'session', { synthChatId, resumeFrom: resumeFrom ?? null, cwd });
 
     // Cloud-doc comments have no streaming UI — the user just sees their

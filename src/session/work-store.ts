@@ -419,12 +419,19 @@ export class WorkSessionStore {
     this.schedulePersist();
   }
 
-  /** 可 resume 的 OMP 会话 id：当前段、且 cwd 一致。 */
-  resumeFor(scope: string, cwd: string): string | undefined {
+  /**
+   * 当前会话（一个 OMP 会话 = 一个对话）及其**自己的** cwd。
+   *
+   * cwd 由会话携带而不是由调用方比对：旧 `resumeFor(scope, cwd)` 要求两者一致，
+   * 一旦聊天窗口的 cwd 与会话不同就静默不 resume、另开一段新对话 —— 上下文实际
+   * 跟着聊天窗口走了。目录是否还在由调用方（`resolveConversationCwd`）判断。
+   */
+  currentSession(scope: string): { sessionId: string; cwd: string } | undefined {
     const active = this.activeWorkSession(scope);
-    if (!active?.currentSegmentId) return undefined;
+    if (active?.currentSegmentId === undefined) return undefined;
     const seg = active.segments.find((s) => s.sessionId === active.currentSegmentId);
-    return seg && seg.cwd === cwd ? seg.sessionId : undefined;
+    if (seg === undefined) return undefined;
+    return { sessionId: seg.sessionId, cwd: seg.cwd };
   }
 
   /**

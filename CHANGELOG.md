@@ -321,6 +321,15 @@
 
 ### Changed
 
+- **会话上下文跟着 OMP 会话走，不再跟着聊天窗口走**：cwd 由**会话**携带
+  （`WorkSessionStore.currentSession()`），运行前的目录解析统一走
+  `resolveConversationCwd()`——有当前会话且其目录还在，就在**它自己的**目录里续它，
+  并把聊天窗口的 cwd 同步过去；没有会话才用窗口的 cwd（新对话落在那里）。
+  此前运行期用「窗口 cwd + `resumeFor(scope, cwd)` 比对」，两者一旦不一致就静默
+  不 resume、另开一段对话（上下文实际交给了窗口）。展示口径（`/history` 默认视图、
+  `/ctx`、`/status`、`/diff`）用只读的 `conversationCwd()`，同样会话优先；
+  `/status` 的「换会话」提示改为真实信号「当前会话的目录已不存在」；
+  `/compact`、`/exec`、`/diff`、文档评论（评论合成 scope）一并切到同一口径。
 - **会话模型回正：一个 OMP 会话 = 一个对话**。`sessions.json` 仍是 v2
   （`{ v, scopes, workSessions }`，工作会话 id = 首段 OMP 会话 id），但每次换
   OMP 会话都开**新对话**，不再往同一「工作会话」里追加段——于是既不需要

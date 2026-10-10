@@ -28,8 +28,14 @@ function makeCtx(overrides: {
     msg: { chatId: 'oc_1', messageId: 'om_1', content: '' },
     scope: 'oc_1',
     chatMode: 'p2p',
-    workspaces: { cwdFor: () => overrides.cwd ?? '/repo' },
-    workSessions: { resumeFor: () => overrides.sessionId },
+    // 会话优先的 cwd 口径：当前会话自带 cwd，且目录要真实存在（用系统临时目录）。
+    workspaces: { cwdFor: () => overrides.cwd ?? tmpdir(), setCwd: () => {} },
+    workSessions: {
+      currentSession: () =>
+        overrides.sessionId
+          ? { sessionId: overrides.sessionId, cwd: overrides.cwd ?? tmpdir() }
+          : undefined,
+    },
     activeRuns: overrides.activeRuns ?? new ActiveRuns(),
     agent: { compactSession: overrides.compactSession },
     controls: {
@@ -73,7 +79,7 @@ describe('/compact command', () => {
     await vi.waitFor(() => expect(compactSession).toHaveBeenCalled());
     expect(compactSession).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 's1',
-      cwd: '/repo',
+      cwd: tmpdir(),
       model: undefined,
       customInstructions: 'keep the last question',
       timeoutMs: 600_000,
@@ -82,13 +88,14 @@ describe('/compact command', () => {
 
   it('compacts the persisted session when idle', async () => {
     const compactSession = vi.fn(async () => undefined);
-    const ctx = makeCtx({ compactSession, cwd: '/repo', sessionId: 's1' });
+    // cwd 由会话携带（会话优先口径）：用真实存在的目录。
+    const ctx = makeCtx({ compactSession, cwd: tmpdir(), sessionId: 's1' });
 
     await compactHandlers['/compact']!('keep the last question', ctx);
 
     expect(compactSession).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 's1',
-      cwd: '/repo',
+      cwd: tmpdir(),
       model: undefined,
       customInstructions: 'keep the last question',
       timeoutMs: 600_000,

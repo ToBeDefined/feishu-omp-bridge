@@ -1,9 +1,9 @@
-import { homedir } from 'node:os';
 import { HISTORY_PAGE_SIZE, historyCard, type HistoryRow } from '../../card/history-card';
 import { recallMessage, reply } from '../shared';
 import { sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
 import { applyResume } from './resume';
+import { conversationCwd } from '../../session/current-cwd';
 import { listWorkSessions, scanSessionFiles } from './sessions';
 
 export const historyHandlers: Record<string, Handler> = {
@@ -72,7 +72,8 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
   const offsetToken = tokens.find((t) => /^\d+$/.test(t));
   const offset = offsetToken ? Number(offsetToken) : 0;
 
-  const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+  // 默认视图 = 当前会话所在目录（会话优先；没有会话时才是聊天窗口的 cwd）。
+  const cwd = conversationCwd(ctx.workspaces, ctx.workSessions, ctx.scope);
   const all = await listWorkSessions(ctx);
   // One row per work session; cwd mode filters on the work session's own cwd
   // (its LATEST segment), so a work session that crossed directories is not

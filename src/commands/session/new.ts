@@ -4,6 +4,7 @@ import { formatIdleLine, reply } from '../shared';
 import { newSessionCard } from '../../card/templates';
 import { escapeMd } from '../../utils/text';
 import { createBoundChat, defaultChatName } from './group';
+import { conversationCwd } from '../../session/current-cwd';
 import { getOmpModel, getOmpThinking, getRunIdleTimeoutMs } from '../../config/schema';
 import { log } from '../../core/logger';
 
@@ -30,7 +31,8 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   ctx.workspaces.clearUndo(ctx.scope);
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
   const card = newSessionCard({
-    cwd: ctx.workspaces.cwdFor(ctx.scope) ?? homedir(),
+    // /new 之后没有当前会话，这里就是新对话将落在的目录。
+    cwd: conversationCwd(ctx.workspaces, ctx.workSessions, ctx.scope),
     model: getOmpModel(ctx.controls.cfg),
     thinking: getOmpThinking(ctx.controls.cfg),
     idleLine: formatIdleLine(

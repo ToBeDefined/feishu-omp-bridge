@@ -44,6 +44,7 @@ import {
   getShowToolCalls,
   isChatAllowed,
 } from '../config/schema';
+import { resolveConversationCwd } from '../session/current-cwd';
 import { log } from '../core/logger';
 import { attachTextExtracts, type MediaCache } from '../media/cache';
 import { attachTranscripts } from '../media/transcribe';
@@ -237,8 +238,8 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
   const prompt = buildPrompt(batch, attachments, quotes, unresolvedFileKeys);
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
-  const cwd = await resolveRunCwd(workspaces, scope);
-  const resumeFrom = workSessions.resumeFor(scope, cwd);
+  // 会话优先：有当前会话就在**它自己的**目录里续它（cwd 由会话携带）。
+  const { cwd, sessionId: resumeFrom } = await resolveConversationCwd(workspaces, workSessions, scope);
   if (resumeFrom) {
     log.info('session', 'resume', { sessionId: resumeFrom, cwd });
   } else {
@@ -546,18 +547,6 @@ async function streamEvents(
  * Falls back to $HOME and repairs the stored workspace. Shared by the
  * normal batch and scheduled-prompt paths.
  */
-async function resolveRunCwd(workspaces: WorkspaceStore, scope: string): Promise<string> {
-  let cwd = workspaces.cwdFor(scope) ?? homedir();
-  try {
-    const st = await stat(cwd);
-    if (!st.isDirectory()) throw new Error('not a directory');
-  } catch {
-    log.warn('session', 'cwd-missing', { staleCwd: cwd });
-    cwd = homedir();
-    workspaces.setCwd(scope, cwd);
-  }
-  return cwd;
-}
 
 /** Reap the OMP subprocess after the stream ends (shared by all modes). */
 async function reapRun(handle: RunHandle): Promise<void> {
@@ -902,7 +891,7 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
   let release: (() => void) | undefined;
   try {
     release = await pool.acquire();
-    const cwd = await resolveRunCwd(workspaces, scope);
+    const { cwd } = await resolveConversationCwd(workspaces, workSessions, scope);
     const replyMode = getMessageReplyMode(controls.cfg);
     const runModel = getOmpModel(controls.cfg);
     if (runModel) await recordModelUse(runModel).catch(() => {});
@@ -918,7 +907,7 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
 
     const run = agent.run({
       prompt,
-      sessionId: workSessions.resumeFor(scope, cwd),
+      sessionId: workSessions.currentSession(scope)?.sessionId,
       cwd,
       model: runModel,
       thinking: getOmpThinking(controls.cfg),

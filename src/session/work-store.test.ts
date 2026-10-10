@@ -337,7 +337,7 @@ describe('WorkSessionStore corruption tolerance', () => {
     stores.push(store);
     await store.load();
     expect(store.chats().sort()).toEqual(['oc_good']);
-    expect(store.resumeFor('oc_good', '/repo')).toBe('s1');
+    expect(store.currentSession('oc_good')).toEqual({ sessionId: 's1', cwd: '/repo' });
   });
 
   it('persists atomically (tmp file removed after save)', async () => {
@@ -396,15 +396,17 @@ describe('WorkSessionStore v2', () => {
     expect(store.allWorkSessions()).toEqual([]);
   });
 
-  it('resumes only the current segment in the requested cwd', async () => {
+  it('reports the current conversation with its OWN cwd (no caller-side cwd match)', async () => {
     const store = new WorkSessionStore(file);
     stores.push(store);
     await store.load();
     store.bindSegment('oc_1', 'sess-a', '/repo');
-    expect(store.resumeFor('oc_1', '/repo')).toBe('sess-a');
-    expect(store.resumeFor('oc_1', '/other')).toBeUndefined();   // cwd 变了 → 起新段
-    store.startWorkSession('oc_1');                              // /new：摘掉活跃指针
-    expect(store.resumeFor('oc_1', '/repo')).toBeUndefined();    // /new 之后不复用旧对话
+
+    // cwd 由会话携带：调用方不再拿聊天窗口的 cwd 去比对（那会让上下文跟着窗口走）。
+    expect(store.currentSession('oc_1')).toEqual({ sessionId: 'sess-a', cwd: '/repo' });
+
+    store.startWorkSession('oc_1'); // /new：摘掉活跃指针
+    expect(store.currentSession('oc_1')).toBeUndefined(); // /new 之后是新对话
   });
 
   it('starts the next work session on demand and keeps the old one', async () => {

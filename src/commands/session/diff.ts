@@ -1,8 +1,8 @@
 import { execFile } from 'node:child_process';
-import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
+import { conversationCwd } from '../../session/current-cwd';
 import { diffCard } from '../../card/templates';
 
 const execFileAsync = promisify(execFile);
@@ -12,7 +12,8 @@ export const diffHandlers: Record<string, Handler> = {
 };
 
 async function handleDiff(_args: string, ctx: CommandContext): Promise<void> {
-  const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+  // 会话优先：diff 的是当前会话所在仓库。
+  const cwd = conversationCwd(ctx.workspaces, ctx.workSessions, ctx.scope);
   let stat: string;
   let diff: string;
   try {

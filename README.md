@@ -42,6 +42,9 @@ omp --mode rpc --session-dir ~/.feishu-omp-bridge/omp-sessions
 
 - 会换到新 OMP 会话（= 开新对话）的：`/new`（`/reset`）、`/cd`、`/ws use`（含 `/ws undo`），以及运行期漂移（cwd 变了 / 会话文件被删 / 旧会话已无法 `--resume`）。
 - **不会**换会话的：`/release` 重启、`/compact`（都在同一段里接着跑）。
+- **cwd 由会话携带**：续一段对话就在**它自己的**目录里跑（窗口的 cwd 会跟随它）；
+  只有没有当前会话时（`/new`、`/cd`、`/ws use` 之后）才用窗口的 cwd 决定新对话落在哪。
+  `/history` 的默认视图、`/ctx`、`/status`、`/diff`、`/compact`、`/exec` 都按这个口径。
 - 标题属于**那个对话**：`/rename` 命名当前对话；没名字时 `/history`、`/search`、`/resume` 回退显示该对话最后一条用户消息。
 - `/history` 一行 = 一个对话（活动时间 / 轮数 / 标题或最后一条用户消息）；「继续对话」恢复它，`/history all` 看全部工作目录。
 - 升级须知：早期版本把多个 OMP 会话挂在同一「工作会话」下（需要手工合并/拆分），现在加载旧文件时会自动规范化成「一段一对话」，并留一份 `sessions.json.v2.bak`。
@@ -577,7 +580,7 @@ pnpm build
 | --- | --- |
 | 启动时报找不到 `omp` | 确认 `omp --version` 可用，并先运行一次 `omp` 完成模型 / 认证配置。 |
 | OMP RPC 启动后无响应 | 单独运行 `omp --mode rpc` 做 smoke test；检查 `~/.feishu-omp-bridge/logs/`。 |
-| OMP 没有续上次对话 | 发 `/context` 看当前会话 id；`/cd`、`/ws use`、`/new` 或运行期漂移（cwd 变了、会话文件被删）都会换成新对话 —— 旧对话仍在 `/history` 里，点「继续对话」即可回去。 |
+| OMP 没有续上次对话 | 发 `/context` 看当前会话 id：会话文件被删、或你 `/cd`、`/ws use`、`/new` 都会换成新对话（旧对话仍在 `/history` 里，点「继续对话」回去）。窗口的 cwd 不再影响续接——续的是会话自己的目录。 |
 | 群聊无响应 | 确认消息里 `@bot`，或在 `/config` / `config.json` 中调整 `requireMentionInGroup`。 |
 | 卡片长时间不动 | 用 `/stop` 中断；也可设置 `/timeout 10` 开启当前 session idle 探活。 |
 | OMP 等待选择 / 输入 | 回复单独出现的“OMP 交互”卡片；等待期间 idle watchdog 会暂停。 |

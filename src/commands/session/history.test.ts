@@ -105,6 +105,7 @@ function makeCtx(over: Partial<Record<string, unknown>> = {}): {
       setCwd: spy.setCwd,
     },
     workSessions: {
+      currentSession: () => undefined,
       // listWorkSessions folds each work session's segments into one row; the
       // raw scanSessionFiles still maps segmentId→title from here.
       allWorkSessions: () => [
@@ -284,22 +285,27 @@ describe('/history', () => {
     );
   });
 
-  it('filters rows by each conversation own cwd', async () => {
+  it('defaults to the CURRENT conversation directory, not the chat window cwd', async () => {
     const store = new WorkSessionStore(join(tmp, 'sessions.json'));
     await store.load();
-    // 一个 OMP 会话 = 一个对话：两摊活各自一段，cwd 各随自己。
-    store.bindSegment('oc_1', 'here-ws', tmp, { startedAtMs: 1, lastActiveAtMs: 1 });
-    store.startWorkSession('oc_1');
+    // 一摊一段：先开 /repo/old 那段，再开 tmp 那段（= 当前会话）。
     store.bindSegment('oc_1', 'there-ws', '/repo/old', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.startWorkSession('oc_1');
+    store.bindSegment('oc_1', 'here-ws', tmp, { startedAtMs: 2, lastActiveAtMs: 2 });
     await writeSession('there.jsonl', { id: 'there-ws', cwd: '/repo/old', ts: '2026-01-01T00:00:00Z' }, 1, Date.now() - 100_000, 'OLD');
     await writeSession('here.jsonl', { id: 'here-ws', cwd: tmp, ts: '2026-01-02T00:00:00Z' }, 2, Date.now() - 50_000, 'NEW');
 
-    await handleHistory('', makeCtx({ workSessions: store }).ctx);
+    // 聊天窗口的 cwd 故意指到别处：默认视图必须跟着**会话**走（会话在哪跑就看哪）。
+    const { ctx } = makeCtx({
+      workSessions: store,
+      workspaces: { cwdFor: () => '/repo/elsewhere', listNamed: () => ({}), setCwd: () => {} },
+    });
+    await handleHistory('', ctx);
     const card = cardJson();
-    // 行按会话自己的 cwd 过滤：只有当前工作目录下的对话在列。
+
     expect(card).toContain('NEW 问题 1');
     expect(card).not.toContain('OLD 问题 0');
-    // 行的身份就是会话 id（卡片字段已更名），也正好是「继续对话」的载荷。
+    // 行的身份就是会话 id（= 「继续对话」的载荷）。
     expect(card).toContain('🆔 here-ws');
     expect(card).not.toContain('there-ws');
     await store.flush();

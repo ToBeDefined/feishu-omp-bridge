@@ -13,6 +13,7 @@ import {
   newSessionCard,
   psCard,
   panel,
+  onlineCard,
   releaseCard,
   restartCard,
   shell,
@@ -494,5 +495,15 @@ describe('newSessionCard', () => {
       }),
     );
     expect(out).toContain('话题独立会话');
+  });
+});
+
+describe('onlineCard', () => {
+  it('announces the boot with heading and note, no buttons', () => {
+    const out = JSON.stringify(onlineCard());
+    expect(out).toContain('已上线');
+    expect(out).toContain('服务已重新启动');
+    expect(out).not.toContain('"button"');
+    expect(out).not.toContain('column');
   });
 });

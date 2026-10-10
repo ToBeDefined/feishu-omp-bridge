@@ -641,6 +641,16 @@ export function agentSelectedCard(label: string): object {
   };
 }
 
+/** Boot confirmation for an ORDINARY start (crash recovery, manual launch):
+ * nobody asked for the bounce, so the bot announces it came back. `/release`
+ * and `/restart` are covered by their own command cards. */
+export function onlineCard(): RunCard {
+  return shell('🚀 已上线', [
+    md('🚀 **已上线**', 'heading'),
+    md('_服务已重新启动，可以继续发送消息。_', 'notation'),
+  ]);
+}
+
 const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',

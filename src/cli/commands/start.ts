@@ -27,6 +27,7 @@ import { gcOldLogs, log } from '../../core/logger';
 import { kickstart } from '../../daemon/launchd';
 import { finalizeInterruptedCards, updateManagedCard } from '../../card/managed';
 import { takeOnlineNotice } from '../../bot/online-notify';
+import { onlineCard } from '../../card/templates';
 import { gcMediaCache, MEDIA_GC_MAX_AGE_MS } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
 import {
@@ -285,6 +286,21 @@ export async function runStart(opts: StartOptions): Promise<void> {
     await bridge.channel.send(notice.chatId, { markdown: '🚀 **已上线**' }, {}).catch((err) => {
       log.warn('notify', 'online-failed', { chatId: notice.chatId, err: String(err) });
     });
+  } else if (!notice) {
+    // ORDINARY boot (crash recovery, manual start, launchd relaunch): nobody
+    // requested the bounce, so announce the bot is back to every chat with a
+    // persisted session. `/release` (skip) and `/restart` (notify) cover
+    // themselves with their own command cards.
+    // Only real chat ids are valid receive_ids: session keys are scopes, and
+    // cloud-doc comments (`doc:…`) / topic chats (`chatId:threadId`) would
+    // fail every boot.
+    const targets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
+    for (const chatId of targets) {
+      await bridge.channel
+        .send(chatId, { card: onlineCard() }, {})
+        .then(() => log.info('notify', 'online', { chatId }))
+        .catch((err) => log.warn('notify', 'online-failed', { chatId, err: String(err) }));
+    }
   }
   process.on('SIGINT', () => void stop('SIGINT'));
   process.on('SIGTERM', () => void stop('SIGTERM'));

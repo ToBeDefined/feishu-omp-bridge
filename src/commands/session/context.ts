@@ -32,7 +32,9 @@ export function collectContextInfo(
   // 最后一条用户消息（调用方已取到的 summary）。
   const cwd = conversationCwd(ctx.workspaces, ctx.workSessions, ctx.scope);
   const sessionId = active?.currentSegmentId;
-  const name = sessionName(active) ?? (summary.lastMessage?.trim() || undefined);
+  // 名字 = 真标题（/rename 起的）。**不拿最后一条用户消息冒充标题**：那会让
+  // 「标题」这一行看起来像用户起的名，实际只是他上一句话。
+  const name = sessionName(active);
   return {
     scope: ctx.scope,
     chatMode: ctx.chatMode,
@@ -87,7 +89,7 @@ export function renderContext(
     `💬 **聊天窗口**: ${scopeLine}`,
     `📁 **工作目录**: \`${cwd}\``,
     `🧠 **会话**: ${sessionLine}`,
-    `🏷 **标题**: \`${info.sessionName ?? '未命名'}\``,
+    info.sessionName ? `🏷 **标题**: \`${info.sessionName}\`` : '',
     `🕒 **开始**: ${formatClockOr(info.createdAt, '（无，新会话）')}`,
     `🕘 **最后活动**: ${formatAgoOr(info.updatedAt, '（无，新会话）')}`,
     lastMsgLine,

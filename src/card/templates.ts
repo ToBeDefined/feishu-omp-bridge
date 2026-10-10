@@ -256,7 +256,8 @@ export function statusCard(info: StatusInfo): object {
 
   const sessionPanel = [
     md('**🗂 会话**'),
-    md(info.sessionName ? `🏷 ${escapeMd(info.sessionName)}` : '🏷 _未命名_'),
+    // 没有真名字就不渲染这一行：占位的「未命名」会让人以为会话有名字。
+    ...(info.sessionName ? [md(`🏷 ${escapeMd(info.sessionName)}`)] : []),
     md(
       info.sessionId
         ? `🔗 \`${escapeCode(info.sessionId)}\``
@@ -335,7 +336,8 @@ export function contextCard(
     ...stackedPanels([
       panel([
         md('**🗂 会话**'),
-        md(info.sessionName ? `🏷 ${escapeMd(info.sessionName)}` : '🏷 _未命名_'),
+        // 没有真名字就不渲染这一行：占位的「未命名」会让人以为会话有名字。
+    ...(info.sessionName ? [md(`🏷 ${escapeMd(info.sessionName)}`)] : []),
         md(
           info.sessionId
             ? `🔗 \`${escapeCode(info.sessionId)}\``

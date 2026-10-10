@@ -135,7 +135,8 @@ describe('/rename command', () => {
     store.bindSegment('oc_1', 'sess-b', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
     await handleRename('', ctx);
 
-    expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('未命名'));
+    // 新对话没有标题 → 如实说「没有标题」（不拿最后一条消息冒充）。
+    expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('没有标题'));
     expect(store.titleFor('sess-a')).toBe('bridge UI 调整');
     expect(store.titleFor('sess-b')).toBeUndefined();
   });
@@ -183,25 +184,6 @@ describe('/rename command', () => {
     await handleRename('', ctx);
 
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('现有标题'));
-  });
-
-  it('falls back to the latest segment last user message when unnamed', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
-    await writeSessionFile('sess-a', '看一下 KMP 的导出');
-    const ctx = makeCtx();
-
-    await handleRename('', ctx);
-
-    expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('看一下 KMP 的导出'));
-  });
-
-  it('reports unnamed when there is no title and no history', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
-    const ctx = makeCtx();
-
-    await handleRename('', ctx);
-
-    expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('未命名'));
   });
 
   it('rejects an over-long title', async () => {
@@ -337,21 +319,6 @@ describe('/rename command', () => {
     expect(store.activeWorkSession('oc_1')?.title).toBeUndefined();
   });
 
-  it('truncates and escapes the fallback message in the no-arg query', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
-    // 超过 40 字、且带反引号 / markdown 元字符的原始用户消息，末尾放个哨兵。
-    const raw = '先看一下 `rm -rf` 和 *重点* 这些标记，再补充一长串填充内容凑到四十个字以上 ZZZ';
-    await writeSessionFile('sess-a', raw);
-    const ctx = makeCtx();
-
-    await handleRename('', ctx);
-
-    const shown = reply.mock.calls.at(-1)?.[1] as string;
-    expect(shown).toContain('…'); // 已截断
-    expect(shown).not.toContain('ZZZ'); // 哨兵在 40 字外，被截掉
-    expect(shown).not.toContain('`rm -rf`'); // 用户反引号被中和，代码段没被提前闭合
-    expect(shown).toContain('\\*重点\\*'); // markdown 元字符已转义
-  });
 });
 
 describe('/rename 与 /new：/new 起新对话，不背旧名字', () => {
@@ -374,7 +341,7 @@ describe('/rename 与 /new：/new 起新对话，不背旧名字', () => {
     store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
 
     await handleRename('', makeCtx());
-    expect(reply).toHaveBeenLastCalledWith(expect.anything(), expect.stringContaining('未命名'));
+    expect(reply).toHaveBeenLastCalledWith(expect.anything(), expect.stringContaining('没有标题'));
 
     const { ctx, sent } = makeNewCtx();
     await newHandlers['/new']!('', ctx);

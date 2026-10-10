@@ -8,7 +8,7 @@ import { codeSpan, summarizeMd } from '../../utils/text';
 import { extractUserInput } from './context';
 import { summarize } from '../../utils/text';
 import { latestSegment, type WorkSession } from '../../session/work-session';
-import { resolveSessionDisplay } from './display';
+import { sessionName } from './display';
 import { conversationCwd } from '../../session/current-cwd';
 
 export const renameHandlers: Record<string, Handler> = {
@@ -35,17 +35,15 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
   }
 
   if (!title) {
-    // 名字优先（同步、零 IO）；无名时回退取样段（当前段优先，否则最新段）的最后
-    // 一条用户消息做展示。回退消息是原始用户输入，必须与其它展示处一致地截断 +
-    // 转义，不能裸插进代码段（否则长消息撑爆消息体，`*`/`` ` `` 还能把代码段提前
-    // 闭合）。名字解析收敛在 resolveSessionDisplay 里。
-    const { name, topic } = await resolveSessionDisplay(ctx, active);
-    const display = name ?? topic;
+    // 只认真标题（/rename 起的，同步零 IO）。无名就如实说没有 —— 从前这里拿最后
+    // 一条用户消息当标题念出来，用户以为那句就是会话名。标题文本经 `codeSpan`
+    // 转义 + 截断，不能被 `*`/`` ` `` 破坏代码段或被长文本撑爆消息体。
+    const display = sessionName(active);
     await reply(
       ctx,
       display
         ? `当前会话标题：\`${codeSpan(summarizeMd(display, 40))}\`\n\n发 \`/rename <新标题>\` 修改，\`/rename auto\` 用 LLM 生成，\`/rename clear\` 清除。`
-        : '当前会话未命名（也没有可显示的历史消息）。\n\n用法：`/rename <标题>` — 给当前会话起名，`/rename auto` 用 LLM 生成，`/rename clear` 清除。',
+        : '当前会话没有标题。\n\n用法：`/rename <标题>` — 给当前会话起名，`/rename auto` 用 LLM 生成，`/rename clear` 清除。',
     );
     return;
   }

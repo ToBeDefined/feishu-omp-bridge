@@ -3,7 +3,7 @@ import type { CommandContext, Handler } from '../index';
 import { statusCard } from '../../card/templates';
 import { getOmpModel, getOmpThinking, getRunIdleTimeoutMs } from '../../config/schema';
 import { formatIdleLine } from '../shared';
-import { resolveSessionDisplay } from './display';
+import { sessionName } from './display';
 import { resolveConversationCwd } from '../../session/current-cwd';
 
 export const statusHandlers: Record<string, Handler> = {
@@ -21,9 +21,8 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
     ctx.scope,
   );
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
-  // 名字解析收敛到共享助手：有 title 时零 IO，不再为了显示名字空扫会话目录。
-  const { name, topic } = await resolveSessionDisplay(ctx, active);
-  const displayName = name ?? topic;
+  // 名字 = 真标题（/rename 起的），没有就不显示标题行；**不拿最后一条消息冒充**。
+  const displayName = sessionName(active);
   const card = statusCard({
     cwd,
     ...(active?.currentSegmentId !== undefined ? { sessionId: active.currentSegmentId } : {}),

@@ -118,7 +118,7 @@ describe('renderContext', () => {
     expect(matched).not.toContain('当前目录无快捷方式');
   });
 
-  it('shows the session title when set', () => {
+  it('shows the session title when set (and nothing when it is not)', () => {
     const titled = renderContext(
       makeCtx({
         workSessions: {
@@ -130,8 +130,8 @@ describe('renderContext', () => {
     );
     expect(titled).toContain('**标题**: `修搜索`');
 
-    const untitled = renderContext(makeCtx());
-    expect(untitled).toContain('**标题**: `未命名`');
+    // 没有名字 → 没有标题行（旧的「未命名」占位会让人以为会话有名字）。
+    expect(renderContext(makeCtx())).not.toContain('标题');
   });
 
   it('shows last conversation time', () => {
@@ -188,8 +188,8 @@ describe('renderContext', () => {
     expect(out).not.toContain('最后回复');
   });
 
-  it('标题按 name → 最后一条用户消息 → 未命名 回退', () => {
-    const titled = renderContext(
+  it('标题只认 /rename 起的名字：没有就不显示这一行', () => {
+    const named = renderContext(
       makeCtx({
         workSessions: {
           activeWorkSession: () => workSession({ title: '修搜索' }),
@@ -197,15 +197,20 @@ describe('renderContext', () => {
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),
+      {},
     );
-    expect(titled).toContain('**标题**: `修搜索`');
+    expect(named).toContain('**标题**: `修搜索`');
 
-    // 没起过名字时回退到这条会话最后一条用户消息。
-    expect(renderContext(makeCtx(), { lastMessage: '看一下 KMP 导出' })).toContain(
-      '**标题**: `看一下 KMP 导出`',
-    );
-
-    expect(renderContext(makeCtx())).toContain('**标题**: `未命名`');
+    // 无名会话：不能拿「最后一条用户消息」冒充标题（用户会以为那句就是会话名）。
+    const unnamed = renderContext(makeCtx(), {
+      lastMessage: '进行运行编译以及测试',
+      lastReply: '**编译 + 测试 + 运行……**',
+    });
+    expect(unnamed).not.toContain('标题');
+    expect(unnamed).not.toContain('未命名');
+    // 最后消息照旧单独一行（它本来就该在那一行）。
+    expect(unnamed).toContain('**最后消息**');
+    expect(unnamed).toContain('进行运行编译以及测试');
   });
 
   it('无活跃会话时不崩，会话行提示下一条消息新建', () => {
@@ -219,7 +224,8 @@ describe('renderContext', () => {
       }),
     );
     expect(out).toContain('**会话**: （无，下一条消息新建）');
-    expect(out).toContain('**标题**: `未命名`');
+    // 没有会话（自然也没有名字）→ 不渲染标题行。
+    expect(out).not.toContain('标题');
     expect(out).toContain('**开始**: （无，新会话）');
   });
 
@@ -227,7 +233,8 @@ describe('renderContext', () => {
     const out = renderContext(makeCtx());
     // 身份 = 会话 id（🧠 会话 行），名字落在当前对话上。
     expect(out).toContain('🧠 **会话**');
-    expect(out).toContain('🏷 **标题**');
+    // 无名会话没有标题行 —— 别拿最后一条用户消息冒充。
+    expect(out).not.toContain('标题');
     expect(out).not.toContain('工作会话');
     expect(out).not.toContain('当前段');
     expect(out).not.toContain('段');

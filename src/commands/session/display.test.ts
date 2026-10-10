@@ -4,8 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommandContext } from '../index';
 import { WorkSessionStore } from '../../session/work-store';
-import * as contextModule from './context';
-import { resolveSessionDisplay, sessionName } from './display';
+import { sessionName } from './display';
 
 let root: string;
 let ompDir: string;
@@ -58,73 +57,5 @@ describe('sessionName', () => {
     store.setTitle('oc_1', '  修搜索  ');
     expect(sessionName(store.activeWorkSession('oc_1')!)).toBe('修搜索');
     expect(sessionName(undefined)).toBeUndefined();
-  });
-});
-
-describe('resolveSessionDisplay', () => {
-  it('有 title 时不扫目录（loadSessionSummary 未被调用）', async () => {
-    store.bindSegment('oc_1', 'sess-a', root);
-    store.setTitle('oc_1', 'KMP 导出');
-    const spy = vi.spyOn(contextModule, 'loadSessionSummary');
-
-    const out = await resolveSessionDisplay(makeCtx(), store.activeWorkSession('oc_1')!);
-
-    expect(out).toEqual({ name: 'KMP 导出' });
-    expect(spy).not.toHaveBeenCalled();
-  });
-
-  it('无 title 时取当前段（优先）的最后一条用户消息作为 topic', async () => {
-    store.bindSegment('oc_1', 'sess-old', root);
-    store.bindSegment('oc_1', 'sess-new', root);
-    await writeSessionFile('sess-old', '旧段的消息');
-    await writeSessionFile('sess-new', '当前段的消息');
-
-    const out = await resolveSessionDisplay(makeCtx(), store.activeWorkSession('oc_1')!);
-
-    expect(out).toEqual({ topic: '当前段的消息' });
-  });
-
-  it('没有当前段时退回最新段的最后一条用户消息', async () => {
-    // 一个 OMP 会话 = 一个对话：load 规范化后运行期不再有多段/无当前段的活，
-    // 这种中间态只在历史文件里出现。直接种一份「单段但缺 currentSegmentId」
-    // 的 v2 文件来覆盖「退回最新段」这条回退分支（load 不拆单段活）。
-    await writeFile(
-      join(root, 'sessions.json'),
-      JSON.stringify({
-        v: 2,
-        scopes: { oc_1: { activeWorkSession: 'sess-new' } },
-        workSessions: {
-          'sess-new': {
-            id: 'sess-new', scope: 'oc_1', cwd: root, createdAtMs: 2, lastActiveAtMs: 2,
-            segments: [{ sessionId: 'sess-new', cwd: root, startedAtMs: 2, lastActiveAtMs: 2 }],
-          },
-        },
-      }),
-      'utf8',
-    );
-    await store.load();
-    await writeSessionFile('sess-new', '最新段的消息');
-
-    const out = await resolveSessionDisplay(makeCtx(), store.activeWorkSession('oc_1')!);
-
-    expect(out).toEqual({ topic: '最新段的消息' });
-  });
-
-  it('取不到名字/消息时两者都缺省（undefined）', async () => {
-    store.bindSegment('oc_1', 'sess-a', root); // 目录里没有 sess-a 的 JSONL
-
-    const out = await resolveSessionDisplay(makeCtx(), store.activeWorkSession('oc_1')!);
-
-    expect(out.name).toBeUndefined();
-    expect(out.topic).toBeUndefined();
-  });
-
-  it('没有工作会话时返回空对象，不触碰会话目录', async () => {
-    const spy = vi.spyOn(contextModule, 'loadSessionSummary');
-
-    const out = await resolveSessionDisplay(makeCtx(), undefined);
-
-    expect(out).toEqual({});
-    expect(spy).not.toHaveBeenCalled();
   });
 });

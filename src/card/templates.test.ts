@@ -243,12 +243,14 @@ function statusFixture(extra: Partial<Parameters<typeof statusCard>[0]> = {}) {
 }
 
 describe('statusCard', () => {
-  it('shows the work session name when set', () => {
+  it('shows the session name when set, and no title line when there is none', () => {
     const withName = JSON.stringify(statusCard(statusFixture({ sessionName: '修搜索' })));
     expect(withName).toContain('修搜索');
 
+    // 没有名字就不渲染标题行：占位的「未命名」会让人以为会话有名字。
     const without = JSON.stringify(statusCard(statusFixture()));
-    expect(without).toContain('未命名');
+    expect(without).not.toContain('未命名');
+    expect(without).not.toContain('🏷');
   });
 
   it('renders as a schema 2.0 card with session and environment panels', () => {
@@ -469,7 +471,9 @@ describe('contextCard', () => {
       }),
     );
     expect(out).not.toContain('最近内容');
-    expect(out).toContain('未命名');
+    // 没名字 → 没有标题行（也不拿占位冒充）。
+    expect(out).not.toContain('未命名');
+    expect(out).not.toContain('🏷');
     expect(out).toContain('跟随默认');
     expect(out).toContain('（当前目录无快捷方式）');
   });

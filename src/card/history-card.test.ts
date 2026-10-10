@@ -156,7 +156,9 @@ describe('historyCard', () => {
     );
     const buttons = allButtons(card);
     // Only the OTHER row can be resumed.
-    expect(buttons.map((b) => b.arg)).toEqual(['other-session-id-0000']);
+    expect(buttons.filter((b) => b.cmd === 'history.resume').map((b) => b.arg)).toEqual([
+      'other-session-id-0000',
+    ]);
     // The marker sits right behind the row number, not in the small meta line.
     expect(JSON.stringify(card)).toContain('**#1** ✅ 当前 · 🏷 **bridge UI 调整**');
     const markdown = [...JSON.stringify(card).matchAll(/"tag":"markdown","content":"((?:[^"\\]|\\.)*)"/g)].map(
@@ -181,5 +183,34 @@ describe('historyCard', () => {
 
     const single = JSON.stringify(historyCard([row({ segmentCount: 1 })], { mode: 'cwd', offset: 0, total: 1 }));
     expect(single).not.toContain('🧵');
+  });
+
+  it('offers 与上一条合并 on every row but the first, keeping the row above', () => {
+    const rows = [
+      row({ workSessionId: 'row-a' }),
+      row({ workSessionId: 'row-b' }),
+      row({ workSessionId: 'row-c' }),
+    ];
+    const card = historyCard(rows, { mode: 'cwd', offset: 0, total: 3 });
+
+    const merges = allButtons(card).filter((b) => b.cmd === 'work.merge');
+    // keep = the row above, fold = this row.
+    expect(merges).toEqual([
+      { cmd: 'work.merge', arg: 'row-a row-b', label: '与上一条合并' },
+      { cmd: 'work.merge', arg: 'row-b row-c', label: '与上一条合并' },
+    ]);
+  });
+
+  it('offers 🗂 拆段 only for multi-segment rows, seeding segment 2', () => {
+    const card = historyCard(
+      [
+        row({ workSessionId: 'multi-seg', segmentCount: 3 }),
+        row({ workSessionId: 'one-seg', segmentCount: 1 }),
+      ],
+      { mode: 'cwd', offset: 0, total: 2 },
+    );
+
+    const splits = allButtons(card).filter((b) => b.cmd === 'work.split');
+    expect(splits).toEqual([{ cmd: 'work.split', arg: 'multi-seg 2', label: '🗂 拆段' }]);
   });
 });

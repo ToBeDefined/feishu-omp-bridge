@@ -331,6 +331,116 @@ export class WorkSessionStore {
     this.schedulePersist();
   }
 
+  /**
+   * /work merge：把 `foldId` 这摊活并进 `keepId`（保留 keep 的身份与名字）。
+   *
+   * 段按 `startedAtMs` 升序拼接，并以 `sessionId` 去重（同一 OMP 会话在两边
+   * 都出现时保留 keep 的那份）；`title` 取 keep 的非空名字，没有才用 fold 的；
+   * `scope` 取非空的那个；`cwd`/`lastActiveAtMs` 跟随合并后**最新活动**的那一段；
+   * `currentSegmentId` 取两者中更晚活动的那个（其段仍在合并结果里时）。删掉
+   * fold，并把所有指向它的 scope 指针改指 keep。任一 id 不存在返回 false。
+   */
+  mergeWorkSessions(keepId: string, foldId: string): boolean {
+    if (keepId === foldId) return false;
+    const keep = this.workSessions[keepId];
+    const fold = this.workSessions[foldId];
+    if (!keep || !fold) return false;
+
+    const segments = [...keep.segments];
+    for (const seg of fold.segments) {
+      if (!segments.some((s) => s.sessionId === seg.sessionId)) segments.push(seg);
+    }
+    segments.sort((a, b) => a.startedAtMs - b.startedAtMs);
+    const latest = segments.reduce((m, s) => (s.lastActiveAtMs > m.lastActiveAtMs ? s : m));
+
+    const keepCurrent =
+      keep.currentSegmentId !== undefined
+        ? segments.find((s) => s.sessionId === keep.currentSegmentId)
+        : undefined;
+    const foldCurrent =
+      fold.currentSegmentId !== undefined
+        ? segments.find((s) => s.sessionId === fold.currentSegmentId)
+        : undefined;
+    const currentSegmentId =
+      keepCurrent && foldCurrent
+        ? foldCurrent.lastActiveAtMs > keepCurrent.lastActiveAtMs
+          ? foldCurrent.sessionId
+          : keepCurrent.sessionId
+        : keepCurrent?.sessionId ?? foldCurrent?.sessionId;
+
+    const title = keep.title?.trim() ? keep.title : fold.title;
+    const merged: WorkSession = {
+      ...keep,
+      scope: keep.scope ?? fold.scope,
+      cwd: latest.cwd,
+      lastActiveAtMs: latest.lastActiveAtMs,
+      segments,
+    };
+    if (title !== undefined) merged.title = title;
+    if (currentSegmentId !== undefined) merged.currentSegmentId = currentSegmentId;
+    else delete merged.currentSegmentId;
+
+    this.workSessions[keepId] = merged;
+    delete this.workSessions[foldId];
+    // fold 消失了，任何绑到它的 scope 指针必须改指 keep，否则 load 里的
+    // 补链逻辑会把它当成"指针悬空"另选一条最近活跃的活来绑。
+    for (const [scope, state] of Object.entries(this.scopes)) {
+      if (state.activeWorkSession === foldId) {
+        this.scopes[scope] = { ...state, activeWorkSession: keepId };
+      }
+    }
+    this.schedulePersist();
+    return true;
+  }
+
+  /**
+   * /work split：以 `fromSegmentId` 为界，把它及其后的段切出成一个**新工作
+   * 会话**（id = 该段 id）；原工作会话保留前面的段。
+   *
+   * 新工作会话沿用原 `scope`，`createdAtMs`/`lastActiveAtMs`/`cwd` 按切出的段
+   * 计算；原 `currentSegmentId` 若落在切出部分则搬过去，否则原会话清空它。
+   * `fromSegmentId` 不存在、不属于该工作会话、或是首段（切点不能是首段）时
+   * 返回 undefined。段既不丢也不重复。
+   */
+  splitWorkSession(wsId: string, fromSegmentId: string): string | undefined {
+    const ws = this.workSessions[wsId];
+    if (!ws) return undefined;
+    const idx = ws.segments.findIndex((s) => s.sessionId === fromSegmentId);
+    if (idx <= 0) return undefined;
+
+    const head = ws.segments.slice(0, idx);
+    const tail = ws.segments.slice(idx);
+    const current = ws.currentSegmentId;
+    const currentMovedToTail =
+      current !== undefined && tail.some((s) => s.sessionId === current);
+
+    const created = deriveWorkSession(
+      ws.scope,
+      fromSegmentId,
+      tail,
+      currentMovedToTail ? current : undefined,
+    );
+
+    const headLatest = head.reduce((m, s) => (s.lastActiveAtMs > m.lastActiveAtMs ? s : m));
+    const headCurrent =
+      current !== undefined && !currentMovedToTail
+        ? head.find((s) => s.sessionId === current)
+        : undefined;
+    const nextHead: WorkSession = {
+      ...ws,
+      cwd: headCurrent?.cwd ?? headLatest.cwd,
+      lastActiveAtMs: headLatest.lastActiveAtMs,
+      segments: head,
+    };
+    if (headCurrent !== undefined) nextHead.currentSegmentId = headCurrent.sessionId;
+    else delete nextHead.currentSegmentId;
+
+    this.workSessions[fromSegmentId] = created;
+    this.workSessions[wsId] = nextHead;
+    this.schedulePersist();
+    return fromSegmentId;
+  }
+
   /** 可 resume 的 OMP 会话 id：当前段、且 cwd 一致。 */
   resumeFor(scope: string, cwd: string): string | undefined {
     const active = this.activeWorkSession(scope);

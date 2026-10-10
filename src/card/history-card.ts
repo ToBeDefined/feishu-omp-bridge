@@ -107,33 +107,50 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
         text_size: 'notation',
       });
     }
-    // Row layout: content in a weighted column, the resume button in an auto
+    // Row layout: content in a weighted column, action buttons in an auto
     // column — `width` is only honoured under `flex_mode: 'none'`, and the
     // weighted column absorbs the slack so nothing is stretched or squeezed.
+    //
+    // Buttons: 继续对话 (unless this row is already current — a no-op resume),
+    // 与上一条合并 (only when there IS a row above: keep = that row, fold =
+    // this one), and 拆段 (only for multi-segment work sessions; the concrete
+    // cut point is left to the command, the button seeds segment 2).
+    const prev = i > 0 ? page[i - 1] : undefined;
+    const rowButtons: object[] = [];
+    if (!isCurrent) {
+      rowButtons.push(
+        button({
+          text: '继续对话',
+          value: { cmd: 'history.resume', arg: row.workSessionId },
+          style: 'primary',
+        }),
+      );
+    }
+    if (prev) {
+      rowButtons.push(
+        button({
+          text: '与上一条合并',
+          value: { cmd: 'work.merge', arg: `${prev.workSessionId} ${row.workSessionId}` },
+        }),
+      );
+    }
+    if (row.segmentCount > 1) {
+      rowButtons.push(
+        button({
+          text: '🗂 拆段',
+          value: { cmd: 'work.split', arg: `${row.workSessionId} 2` },
+        }),
+      );
+    }
     elements.push({
       tag: 'column_set',
       flex_mode: 'none',
       horizontal_spacing: 'small',
       columns: [
         { tag: 'column', width: 'weighted', weight: 1, vertical_align: 'center', elements: lines },
-        // Resuming the session you are already on is a no-op, so that row
-        // carries a marker instead of a button.
-        ...(isCurrent
-          ? []
-          : [
-              {
-                tag: 'column',
-                width: 'auto',
-                vertical_align: 'center',
-                elements: [
-                  button({
-                    text: '继续对话',
-                    value: { cmd: 'history.resume', arg: row.workSessionId },
-                    style: 'primary',
-                  }),
-                ],
-              },
-            ]),
+        ...(rowButtons.length > 0
+          ? [{ tag: 'column', width: 'auto', vertical_align: 'center', elements: rowButtons }]
+          : []),
       ],
     });
     if (i < page.length - 1) elements.push({ tag: 'hr' });

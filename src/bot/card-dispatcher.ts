@@ -107,9 +107,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     fromCardAction: true,
   };
 
-  const [name, ...rest] = cmd.split('.');
-  const sub = rest.join(' ');
-  const args = composeArgs(sub, payload);
+  const { name, args } = resolveCardCommand(cmd, payload);
 
   try {
     const ok = await runCommandHandler(name ?? '', args, ctx);
@@ -284,6 +282,20 @@ function composeArgs(sub: string, payload: Record<string, unknown>): string {
     (typeof payload.name === 'string' && payload.name) ||
     '';
   return arg ? `${sub} ${arg}` : sub;
+}
+
+/**
+ * Map a button `cmd` + payload to the text command it invokes:
+ * `{cmd:'work.merge', arg:'keep fold'}` → `('/work', 'merge keep fold')`,
+ * i.e. the same shape `/work merge keep fold` types. Exported so the
+ * `.`-to-subcommand contract is unit-testable without a live channel.
+ */
+export function resolveCardCommand(
+  cmd: string,
+  payload: Record<string, unknown>,
+): { name: string; args: string } {
+  const [name, ...rest] = cmd.split('.');
+  return { name: name ?? '', args: composeArgs(rest.join(' '), payload) };
 }
 
 function makeFakeMsg(

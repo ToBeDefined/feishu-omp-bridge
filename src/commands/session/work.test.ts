@@ -131,3 +131,155 @@ describe('/work command', () => {
     expect(handlers['/work']).toBe(handleWork);
   });
 });
+
+describe('/work merge', () => {
+  async function twoWorkSessions(): Promise<void> {
+    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.setTitle('oc_1', '旧活');
+    store.startWorkSession('oc_1');
+    store.bindSegment('oc_1', 'sess-b', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
+    await store.flush();
+  }
+
+  it('folds the second id into the first and reports the merged segment count', async () => {
+    await twoWorkSessions();
+    const { ctx } = makeCtx();
+
+    await handleWork('merge sess-a sess-b', ctx);
+
+    expect(store.workSessionById('sess-b')).toBeUndefined();
+    expect(store.workSessionById('sess-a')?.segments.map((s) => s.sessionId)).toEqual([
+      'sess-a',
+      'sess-b',
+    ]);
+    expect(store.activeWorkSession('oc_1')?.id).toBe('sess-a');
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('已把'));
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('共 2 段'));
+  });
+
+  it('infers the earlier work session when only one id is given', async () => {
+    await twoWorkSessions();
+    const { ctx } = makeCtx();
+
+    await handleWork('merge sess-b', ctx);
+
+    expect(store.workSessionById('sess-b')).toBeUndefined();
+    // sess-b's seed was folded INTO the earlier sess-a.
+    expect(store.workSessionById('sess-a')?.segments.map((s) => s.sessionId)).toEqual([
+      'sess-a',
+      'sess-b',
+    ]);
+  });
+
+  it('reports a missing id', async () => {
+    await twoWorkSessions();
+    const { ctx } = makeCtx();
+
+    await handleWork('merge sess-a nope', ctx);
+
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('找不到工作会话'));
+    expect(store.workSessionById('sess-b')).toBeDefined();
+  });
+
+  it('rejects a work session owned by another chat', async () => {
+    store.bindSegment('oc_2', 'foreign', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    await twoWorkSessions();
+    const { ctx } = makeCtx();
+
+    await handleWork('merge sess-a foreign', ctx);
+
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('不是当前会话的工作会话'));
+    expect(store.workSessionById('foreign')).toBeDefined();
+  });
+
+  it('refuses to merge a work session into itself', async () => {
+    await twoWorkSessions();
+    const { ctx } = makeCtx();
+
+    await handleWork('merge sess-a sess-a', ctx);
+
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('不能把工作会话并入自己'));
+  });
+
+  it('shows usage when no id is given', async () => {
+    await twoWorkSessions();
+    const { ctx } = makeCtx();
+
+    await handleWork('merge', ctx);
+
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('用法'));
+  });
+
+  it('asks for an active work session first', async () => {
+    const { ctx } = makeCtx(); // fresh store: nothing bound
+
+    await handleWork('merge a b', ctx);
+
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('没有活跃的工作会话'));
+  });
+});
+
+describe('/work split', () => {
+  async function threeSegments(): Promise<void> {
+    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.dropCurrentSegment('oc_1');
+    store.bindSegment('oc_1', 'sess-b', '/other', { startedAtMs: 2, lastActiveAtMs: 2 });
+    store.dropCurrentSegment('oc_1');
+    store.bindSegment('oc_1', 'sess-c', '/repo', { startedAtMs: 3, lastActiveAtMs: 3 });
+    await store.flush();
+  }
+
+  it('cuts from the given 1-based segment index into a new work session', async () => {
+    await threeSegments();
+    const { ctx } = makeCtx();
+
+    await handleWork('split sess-a 2', ctx);
+
+    expect(store.workSessionById('sess-a')?.segments.map((s) => s.sessionId)).toEqual(['sess-a']);
+    expect(store.workSessionById('sess-b')?.segments.map((s) => s.sessionId)).toEqual([
+      'sess-b',
+      'sess-c',
+    ]);
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('切出新工作会话'));
+  });
+
+  it('rejects the first segment as a cut point', async () => {
+    await threeSegments();
+    const { ctx } = makeCtx();
+
+    await handleWork('split sess-a 1', ctx);
+
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('段序号无效'));
+    expect(store.workSessionById('sess-b')).toBeUndefined();
+  });
+
+  it('rejects an out-of-range segment index', async () => {
+    await threeSegments();
+    const { ctx } = makeCtx();
+
+    await handleWork('split sess-a 9', ctx);
+
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('段序号无效'));
+  });
+
+  it('reports a missing work session and a foreign one', async () => {
+    store.bindSegment('oc_2', 'foreign', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    await threeSegments();
+    const { ctx } = makeCtx();
+
+    await handleWork('split nope 2', ctx);
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('找不到工作会话'));
+
+    reply.mockClear();
+    await handleWork('split foreign 2', ctx);
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('不是当前会话的工作会话'));
+  });
+
+  it('asks for an active work session first', async () => {
+    const { ctx } = makeCtx();
+
+    await handleWork('split a 2', ctx);
+
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('没有活跃的工作会话'));
+  });
+});

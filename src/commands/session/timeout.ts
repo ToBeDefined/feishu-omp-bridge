@@ -17,7 +17,7 @@ async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
   if (!trimmed) {
     const scopeMinutes = ctx.workSessions.getIdleTimeoutMinutes(ctx.scope);
     const usage =
-      '\n\n用法:\n- `/timeout 15` 当前 session 设 15 分钟\n- `/timeout off` 当前 session 关闭探活\n- `/timeout default` 清除 session 覆盖,回退全局\n\n_注:`/new` 会清掉当前 session 的覆盖,回到全局_';
+      '\n\n用法:\n- `/timeout 15` 当前 chat 设 15 分钟\n- `/timeout off` 当前 chat 关闭探活\n- `/timeout default` 清除覆盖,回退全局\n\n_注:这个覆盖跟着当前 chat 走,`/new`、`/cd`、`/ws use` 都不会清掉它;只有 `/timeout default` 才回退到全局_';
     if (scopeMinutes !== undefined) {
       const effective =
         scopeMinutes > 0 ? `${scopeMinutes} 分钟` : '已关闭（当前 session）';

@@ -35,6 +35,51 @@ interface V1Entry {
   idleTimeoutMinutes?: unknown;
 }
 
+/**
+ * v1 平铺 `titles`（会话 id → 名字）→ v2 工作会话名字。
+ *
+ * `titles` 是全局的"会话 id → 名字"表：/rename 的名字挂在会话上，chat 换了
+ * OMP 会话后旧名字仍留在这里。迁移按"1 chat = 1 工作会话 + 1 段"建好工作会话
+ * 后调用，一个 sid 只有落在某个段的属主工作会话上才有意义，所以只回填能对上
+ * 段的那些。
+ *
+ * 一个工作会话可能不止一段（v1 迁移本身只产单段，但被 /resume、漂移扩展过
+ * 的工作会话不保证）：多个 sid 命中同一工作会话时取**最早段**那个 sid 的标题
+ * （`segments` 按发生顺序存放），其余冲突以先到者为准并记 `log.info`。
+ * 对不上任何工作会话段的旧标题不能静默丢：计数 `log.warn` 一次；这些与工作
+ * 会话无关的旧标题需要在后续历史回填 / 手工修正里处理（见
+ * `bridge migrate work-sessions`）。
+ */
+export function backfillLegacyTitles(
+  workSessions: Record<string, WorkSession>,
+  legacyTitles: Record<string, unknown>,
+): void {
+  const titleOf = (sid: string): string | undefined =>
+    typeof legacyTitles[sid] === 'string' ? (legacyTitles[sid] as string) : undefined;
+  const matched = new Set<string>();
+  for (const ws of Object.values(workSessions)) {
+    for (const seg of ws.segments) {
+      const title = titleOf(seg.sessionId);
+      if (title === undefined) continue;
+      matched.add(seg.sessionId);
+      if (ws.title === undefined) {
+        // 最早段先到：它拿到名字，后面同属这个工作会话的段只能算冲突。
+        ws.title = title;
+      } else {
+        log.info('session', 'legacy-title-conflict', {
+          workSession: ws.id, sessionId: seg.sessionId,
+        });
+      }
+    }
+  }
+  // 与工作会话无关的旧标题（历史会话已不在任何工作会话里）不得静默丢弃。
+  let orphaned = 0;
+  for (const [sid, raw] of Object.entries(legacyTitles)) {
+    if (typeof raw === 'string' && !matched.has(sid)) orphaned += 1;
+  }
+  if (orphaned > 0) log.warn('session', 'legacy-titles-orphaned', { count: orphaned });
+}
+
 export class WorkSessionStore {
   private scopes: Record<string, ScopeStateV2> = {};
   private workSessions: Record<string, WorkSession> = {};
@@ -114,12 +159,9 @@ export class WorkSessionStore {
       this.scopes[scope] = { ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}) };
       if (typeof entry.sessionId !== 'string' || typeof entry.cwd !== 'string') continue;
       const startedAtMs = typeof entry.createdAt === 'number' ? entry.createdAt : entry.updatedAt;
-      const title =
-        typeof entry.title === 'string'
-          ? entry.title
-          : typeof legacyTitles[entry.sessionId] === 'string'
-            ? (legacyTitles[entry.sessionId] as string)
-            : undefined;
+      // entry.title 是权威名字；平铺 titles 的名字等 chat 条目全部迁移完、
+      // 工作会话的段落定后由 `backfillLegacyTitles` 统一回填。
+      const title = typeof entry.title === 'string' ? entry.title : undefined;
       const ws = beginWorkSession(scope, {
         sessionId: entry.sessionId,
         cwd: entry.cwd,
@@ -130,6 +172,9 @@ export class WorkSessionStore {
       this.workSessions[ws.id] = ws;
       this.scopes[scope] = { ...this.scopes[scope], activeWorkSession: ws.id };
     }
+    // 平铺 titles 里其它段 id（历史非绑定会话）的标题在这里补回各自的
+    // 工作会话；对不上任何工作会话的不再静默丢弃（warn 计数）。
+    backfillLegacyTitles(this.workSessions, legacyTitles);
   }
 
   activeWorkSession(scope: string): WorkSession | undefined {

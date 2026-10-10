@@ -1,14 +1,19 @@
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { WorkSessionStore } from './work-store';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { backfillLegacyTitles, WorkSessionStore } from './work-store';
+import type { WorkSession } from './work-session';
+import { log } from '../core/logger';
+
+vi.mock('../core/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), fail: vi.fn() } }));
 
 let dir: string;
 let file: string;
 let stores: WorkSessionStore[];
 
 beforeEach(async () => {
+  vi.clearAllMocks();
   dir = await mkdtemp(join(tmpdir(), 'work-store-test-'));
   file = join(dir, 'sessions.json');
   stores = [];
@@ -539,5 +544,65 @@ describe('WorkSessionStore v2', () => {
     await store.load();
 
     expect(store.activeWorkSession('oc_1')?.id).toBe('sess-new');
+  });
+});
+
+describe('WorkSessionStore legacy flat titles', () => {
+  it('backfills a flat title that names a migrated segment without warning', async () => {
+    // v1 只把名字平铺在 titles 里（entry 上没有）：迁移后必须落到属主工作会话。
+    await writeFileAtomic(file, JSON.stringify({
+      oc_1: { sessionId: 'sess-1', cwd: '/repo', updatedAt: 200 },
+      oc_2: { sessionId: 'sess-2', cwd: '/repo', updatedAt: 100 },
+      titles: { 'sess-1': '这摊活的名字' },
+    }));
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    await store.load();
+
+    expect(store.titleFor('sess-1')).toBe('这摊活的名字');
+    expect(store.titleFor('sess-2')).toBeUndefined();
+    expect(log.warn).not.toHaveBeenCalledWith('session', 'legacy-titles-orphaned', expect.anything());
+  });
+
+  it('warns once about flat titles matching no work session, leaving titles intact', async () => {
+    await writeFileAtomic(file, JSON.stringify({
+      oc_1: { sessionId: 'sess-1', cwd: '/repo', updatedAt: 200, title: '已有名字' },
+      titles: { 'sess-gone': '孤儿标题', 'sess-also-gone': '另一个孤儿' },
+    }));
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    await store.load();
+
+    expect(store.titleFor('sess-1')).toBe('已有名字');
+    expect(log.warn).toHaveBeenCalledTimes(1);
+    expect(log.warn).toHaveBeenCalledWith('session', 'legacy-titles-orphaned', { count: 2 });
+  });
+
+  it('assigns the earliest matching segment title when several hit one work session', () => {
+    // v1 迁移本身只产单段，但被 /resume、漂移扩展过的工作会话会有多段：
+    // 多个 sid 命中它时行为必须确定 —— 按最早段。
+    const ws: WorkSession = {
+      id: 'sess-a', scope: 'oc_1', cwd: '/repo', createdAtMs: 1, lastActiveAtMs: 3,
+      currentSegmentId: 'sess-c',
+      segments: [
+        { sessionId: 'sess-a', cwd: '/repo', startedAtMs: 1, lastActiveAtMs: 1 },
+        { sessionId: 'sess-b', cwd: '/repo', startedAtMs: 2, lastActiveAtMs: 2 },
+        { sessionId: 'sess-c', cwd: '/repo', startedAtMs: 3, lastActiveAtMs: 3 },
+      ],
+    };
+
+    backfillLegacyTitles(
+      { 'sess-a': ws },
+      { 'sess-b': 'B 名', 'sess-a': 'A 名', 'sess-c': 'C 名' },
+    );
+
+    expect(ws.title).toBe('A 名');
+    expect(log.info).toHaveBeenCalledWith('session', 'legacy-title-conflict', {
+      workSession: 'sess-a', sessionId: 'sess-b',
+    });
+    expect(log.info).toHaveBeenCalledWith('session', 'legacy-title-conflict', {
+      workSession: 'sess-a', sessionId: 'sess-c',
+    });
+    expect(log.warn).not.toHaveBeenCalled();
   });
 });

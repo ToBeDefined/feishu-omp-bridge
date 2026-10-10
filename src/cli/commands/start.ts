@@ -26,7 +26,7 @@ import {
 import { gcOldLogs, log } from '../../core/logger';
 import { kickstart } from '../../daemon/launchd';
 import { finalizeInterruptedCards, updateManagedCard } from '../../card/managed';
-import { takeOnlineNotice } from '../../bot/online-notify';
+import { clearOnlineNotice, takeOnlineNotice } from '../../bot/online-notify';
 import { onlineCard } from '../../card/templates';
 import { gcMediaCache, MEDIA_GC_MAX_AGE_MS } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
@@ -237,10 +237,17 @@ export async function runStart(opts: StartOptions): Promise<void> {
           const fallback = setTimeout(() => {
             if (stopping) return; // SIGTERM landed; graceful stop is in flight
             log.warn('restart', 'kickstart-ambiguous-survived');
+            // No boot is coming after all: drop the boot-notice marker here
+            // (callers now treat this path as "restart in flight" and keep it).
+            void clearOnlineNotice();
             void restartInProcess();
           }, 3000);
           fallback.unref();
-          return false;
+          // Report TRUE: the relaunch is in flight. Returning false used to
+          // make /release and /restart clear the online-notice marker and send
+          // a spurious reconnect ack, so the rebooting process saw no marker
+          // and announced itself with an ordinary-boot 「已上线」 card.
+          return true;
         }
         log.warn('restart', 'kickstart-failed', {
           stderr: result.stderr.slice(0, 200),

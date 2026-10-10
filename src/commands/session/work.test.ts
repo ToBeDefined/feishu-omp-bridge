@@ -66,6 +66,8 @@ describe('/work command', () => {
     expect(active?.id).toBe('sess-b');
     expect(active?.title).toBe('会话重构');
     expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('已开始新工作会话：'));
+    // 名字包在反引号里（与 /rename 一致）。
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('`会话重构`'));
   });
 
   it('starts an unnamed work session and keeps the old one in history', async () => {

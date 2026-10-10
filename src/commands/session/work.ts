@@ -28,7 +28,7 @@ export async function handleWork(args: string, ctx: CommandContext): Promise<voi
   await reply(
     ctx,
     name
-      ? `✅ 已开始新工作会话：${codeSpan(name)}\n下一条消息在这个工作会话里继续。`
+      ? `✅ 已开始新工作会话：\`${codeSpan(name)}\`\n下一条消息在这个工作会话里继续。`
       : '✅ 已开始新工作会话（未命名，列表里显示最后一条消息）。\n下一条消息在这个工作会话里继续。',
   );
 }

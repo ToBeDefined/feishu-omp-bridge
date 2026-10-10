@@ -7,6 +7,7 @@ import { reply } from '../shared';
 import { codeSpan } from '../../utils/text';
 import { extractUserInput } from './context';
 import { summarize } from '../../utils/text';
+import { latestSegment, type WorkSession } from '../../session/work-session';
 
 export const renameHandlers: Record<string, Handler> = {
   '/rename': handleRename,
@@ -14,6 +15,8 @@ export const renameHandlers: Record<string, Handler> = {
 
 const MAX_TITLE_LENGTH = 60;
 const AUTO_TITLE_MAX = 30;
+/** 没有任何工作会话时的统一提示：读、清、写都走它，不做任何写入。 */
+const NO_WORK_SESSION = '❌ 当前还没有工作会话，先发一条消息或用 /work 开始一件新工作。';
 /** Internal marker told to the model not to emit; no longer used for
  * history stripping since generation runs in an isolated session dir. */
 const RENAME_AUTO_MARKER = '<rename-auto-title>';
@@ -21,35 +24,41 @@ const RENAME_AUTO_MARKER = '<rename-auto-title>';
 export async function handleRename(args: string, ctx: CommandContext): Promise<void> {
   const title = args.trim();
 
+  // /rename 命名的是**当前工作会话**（读、清、写同一目标）。没有活跃工作会话时
+  // 读/清/写/auto 一律给同一条提示，且不动盘。
+  const active = ctx.workSessions.activeWorkSession(ctx.scope);
+  if (!active) {
+    await reply(ctx, NO_WORK_SESSION);
+    return;
+  }
+
   if (!title) {
-    const current = ctx.workSessions.titleFor(ctx.workSessions.activeWorkSession(ctx.scope)?.currentSegmentId);
+    // 名字优先；无名时回退工作会话最新段的最后一条用户消息做展示。
+    const display = active.title?.trim() || (await lastUserMessage(ctx, active));
     await reply(
       ctx,
-      current
-        ? `当前会话标题：\`${current}\`\n\n发 \`/rename <新标题>\` 修改，\`/rename auto\` 用 LLM 生成，\`/rename clear\` 清除。`
-        : '当前会话没有标题。\n\n用法：`/rename <标题>` — 给当前会话起名，`/rename auto` 用 LLM 生成，`/rename clear` 清除。',
+      display
+        ? `当前工作会话标题：\`${display}\`\n\n发 \`/rename <新标题>\` 修改，\`/rename auto\` 用 LLM 生成，\`/rename clear\` 清除。`
+        : '当前工作会话未命名（也没有可显示的历史消息）。\n\n用法：`/rename <标题>` — 给当前工作会话起名，`/rename auto` 用 LLM 生成，`/rename clear` 清除。',
     );
     return;
   }
 
   if (title === 'clear') {
     const removed = ctx.workSessions.clearTitle(ctx.scope);
-    await reply(ctx, removed ? '✅ 已清除当前会话标题。' : '当前会话本就没有标题。');
+    await reply(ctx, removed ? '✅ 已清除当前工作会话标题。' : '当前工作会话本就没有标题。');
     return;
   }
 
   if (title === 'auto') {
     await reply(ctx, '🤖 正在用 LLM 生成标题…');
-    const generated = await generateTitleWithLlm(ctx);
+    const generated = await generateTitleWithLlm(ctx, active);
     if (!generated) {
-      await reply(ctx, '❌ 无法生成标题（会话内容太少或生成失败），请手动 `/rename <标题>`。');
+      await reply(ctx, '❌ 无法生成标题（工作会话内容太少或生成失败），请手动 `/rename <标题>`。');
       return;
     }
-    if (!ctx.workSessions.setTitle(ctx.scope, generated)) {
-      await reply(ctx, '❌ 当前还没有会话，先发一条消息再命名。');
-      return;
-    }
-    await reply(ctx, `✅ 已自动生成标题：\`${codeSpan(generated)}\``);
+    ctx.workSessions.setTitle(ctx.scope, generated);
+    await reply(ctx, `✅ 已自动生成工作会话标题：\`${codeSpan(generated)}\``);
     return;
   }
 
@@ -58,11 +67,16 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
     return;
   }
 
-  if (!ctx.workSessions.setTitle(ctx.scope, title)) {
-    await reply(ctx, '❌ 当前还没有会话，先发一条消息再命名。');
-    return;
-  }
-  await reply(ctx, `✅ 已设置当前会话标题：\`${title}\``);
+  ctx.workSessions.setTitle(ctx.scope, title);
+  await reply(ctx, `✅ 已设置当前工作会话标题：\`${codeSpan(title)}\``);
+}
+
+/** 工作会话最新段的最后一条用户消息（未命名时的展示回退）。 */
+async function lastUserMessage(ctx: CommandContext, ws: WorkSession): Promise<string | undefined> {
+  const seg = latestSegment(ws);
+  if (!seg) return undefined;
+  const messages = await loadRecentUserMessages(ctx, seg.sessionId, 1);
+  return messages[messages.length - 1];
 }
 
 /** Ask the agent to title the session from the user's recent messages. A
@@ -75,11 +89,12 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
  * and can carry echoed generation prompts that skew the title. Isolation also
  * means the generation prompt never lands in the main session file or gets
  * echoed back by the bridge. */
-async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null> {
-  const active = ctx.workSessions.activeWorkSession(ctx.scope);
-  if (!active?.currentSegmentId) return null;
+async function generateTitleWithLlm(ctx: CommandContext, active: WorkSession): Promise<string | null> {
+  // 取样窗口 = 当前工作会话**最新段**的会话文件（/new 会丢当前段指针，但段还在）。
+  const seg = latestSegment(active);
+  if (!seg) return null;
 
-  const messages = await loadRecentUserMessages(ctx, active.currentSegmentId);
+  const messages = await loadRecentUserMessages(ctx, seg.sessionId);
   if (messages.length === 0) return null;
   const list = messages.map((m, i) => `${i + 1}. ${summarize(m, 200)}`).join('\n');
 

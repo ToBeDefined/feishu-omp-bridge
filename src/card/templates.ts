@@ -708,7 +708,7 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',
     items: [
-      ['/new · /reset', '清空当前会话，从零开始'],
+      ['/new · /reset', '重置上下文（同一工作会话，新的一段）'],
       ['/work [名字]', '开启一件新工作（唯一的工作会话边界）'],
       ['/new chat [名字]', '新建群 + 新会话，自动拉你进群'],
       ['/resume', '历史会话列表，一键恢复'],

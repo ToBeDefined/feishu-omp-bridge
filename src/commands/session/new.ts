@@ -52,23 +52,21 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
 }
 
 /**
- * 工作会话的显示名：`/rename` 起的名字优先，无名时回退到该工作会话最后一条
- * 用户消息（沿 `segments` 从新到旧找，和 `displayName` 的口径一致）。两者都
- * 拿不到时返回 undefined——卡片上不显示，绝不硬编码「未命名」。
+ * 工作会话的显示名：`/rename` 起的名字优先，无名时回退到该工作会话**最近一段**
+ * 的最后一条用户消息。两者都拿不到时返回 undefined——卡片上不显示，绝不硬编码
+ * 「未命名」。只试最近 1 个段：`loadSessionSummary` 每次都全目录扫描，逐段回退
+ * 在大工作会话上开销线性放大，而最近一段就是用户最可能记得的那条消息。
  */
 async function resolveWorkSessionName(ctx: CommandContext): Promise<string | undefined> {
   const active = ctx.workSessions.activeWorkSession(ctx.scope);
   if (!active) return undefined;
   const named = active.title?.trim();
   if (named) return named;
-  for (let i = active.segments.length - 1; i >= 0; i -= 1) {
-    const seg = active.segments[i];
-    if (!seg) continue;
-    const { lastMessage } = await loadSessionSummary(ctx, seg.sessionId);
-    const msg = lastMessage.trim();
-    if (msg) return msg;
-  }
-  return undefined;
+  const seg = active.segments[active.segments.length - 1];
+  if (!seg) return undefined;
+  const { lastMessage } = await loadSessionSummary(ctx, seg.sessionId);
+  const msg = lastMessage.trim();
+  return msg || undefined;
 }
 
 async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {

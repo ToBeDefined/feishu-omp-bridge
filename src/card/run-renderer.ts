@@ -158,11 +158,11 @@ function renderProcessRun(items: ProcessItem[], tables: TableBudget): object {
     0,
   );
   const suffix = failed > 0 ? `（${failed} 失败）` : '';
-  // The failure count belongs to the tool calls, so it must sit right after
-  // their count — trailing it after the thinking count read as if the
-  // reasoning had failed.
+  // Thinking first, tools last: the stretch usually opens with reasoning, and
+  // trailing the tool count lets its failure count sit at the end of the
+  // title instead of dangling next to an unrelated count.
   return collapsiblePanel({
-    title: `🛠 **工具调用** ×${toolCount}${suffix} · 🧠 **思考过程** ×${thinkingCount}`,
+    title: `🧠 **思考** ×${thinkingCount} · 🛠 **工具** ×${toolCount}${suffix}`,
     expanded: false,
     border: failed > 0 ? 'red' : 'grey',
     elements: items.flatMap((it) =>

@@ -146,8 +146,8 @@ describe('renderCard', () => {
       expanded: false,
       border: { color: 'red' },
       header: {
-        // The failure count trails the TOOL count, not the thinking count.
-        title: { content: '🛠 **工具调用** ×3（1 失败） · 🧠 **思考过程** ×1' },
+        // Merged title: thinking first, tools last (failure count at the end).
+        title: { content: '🧠 **思考** ×1 · 🛠 **工具** ×3（1 失败）' },
       },
       elements: [
         // Chronological inside: the thinking segment came before the calls.
@@ -291,7 +291,7 @@ describe('renderCard', () => {
       });
     // [0] the standalone thinking segment; [1] the merged tools+thinking row.
     expect(panelTitles[0]).toContain('思考过程');
-    expect(panelTitles[1]).toContain('工具调用** ×1 · 🧠 **思考过程** ×1');
+    expect(panelTitles[1]).toContain('🧠 **思考** ×1 · 🛠 **工具** ×1');
     expect(longMarkdown(elements, 'A 的结论')).toBeDefined();
     expect(longMarkdown(elements, 'B 的结论')).toBeDefined();
   });

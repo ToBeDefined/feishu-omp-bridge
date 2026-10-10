@@ -18,6 +18,7 @@ async function handleRestart(_args: string, ctx: CommandContext): Promise<void> 
       ctx.msg.chatId,
       restartCard('starting'),
       ctx.msg.messageId,
+      { track: true },
     );
     messageId = sent.messageId;
   } catch (err) {

@@ -10,7 +10,7 @@ import {
 } from '../../release/run';
 import { clearOnlineNotice, markOnlineNotice } from '../../bot/online-notify';
 import { releaseCard, type ReleaseStepState } from '../../card/templates';
-import { sendManagedCard, updateManagedCard } from '../../card/managed';
+import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 
 let inFlight = false;
 
@@ -35,7 +35,9 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
   const push = async (): Promise<void> => {
     const card = releaseCard({ steps, phase: 'running' });
     if (!messageId) {
-      const sent = await sendManagedCard(ctx.channel, ctx.msg.chatId, card, ctx.msg.messageId);
+      const sent = await sendManagedCard(ctx.channel, ctx.msg.chatId, card, ctx.msg.messageId, {
+        track: true,
+      });
       messageId = sent.messageId;
     } else {
       await updateManagedCard(ctx.channel, messageId, card);
@@ -54,6 +56,9 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
           : {}),
       }),
     );
+    // Card reached its final state: stop crash-tracking it, so the boot after
+    // the restart cannot overwrite「已发布上线」with an interruption notice.
+    forgetManagedCard(messageId);
   };
   let failingStep: ReleaseStepName | undefined;
   try {

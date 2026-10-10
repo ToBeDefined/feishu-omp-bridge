@@ -26,6 +26,14 @@ interface PersistedRunningCard {
 // a new run of /account will mint a fresh card.
 const byMessageId = new Map<string, ManagedEntry>();
 
+/**
+ * messageIds whose card can be left mid-flight (streaming replies, progress
+ * cards, forms). ONLY these are snapshotted to disk — fire-and-forget info
+ * cards complete within one request and need no crash recovery, so tracking
+ * them would just accumulate dead entries.
+ */
+const tracked = new Set<string>();
+
 export interface ManagedCardSendResult {
   messageId: string;
   cardId: string;
@@ -45,6 +53,7 @@ export async function sendManagedCard(
   chatId: string,
   card: object,
   replyTo?: string,
+  opts: { track?: boolean } = {},
 ): Promise<ManagedCardSendResult> {
   const created = await channel.rawClient.cardkit.v1.card.create({
     data: { type: 'card_json', data: JSON.stringify(card) },
@@ -74,7 +83,10 @@ export async function sendManagedCard(
   }
 
   byMessageId.set(messageId, { cardId, sequence: 0 });
-  void upsertRunningCard({ messageId, cardId, chatId, card });
+  if (opts.track) {
+    tracked.add(messageId);
+    void upsertRunningCard({ messageId, cardId, chatId, card });
+  }
   // ponytail: cap at 200; streaming run cards don't use this map. Forms
   // forget on settle; leftovers are abandoned clicks / agent cards.
   if (byMessageId.size > 200) {
@@ -111,16 +123,32 @@ export async function updateManagedCard(
     log.fail('card', err, { step: 'managed-update', cardId: entry.cardId, seq: entry.sequence });
     throw err;
   }
-  void updateRunningCardSnapshot(messageId, card);
+  if (tracked.has(messageId)) void snapshotThrottled(messageId, card);
 }
 
 /** Drop the mapping; call after the card is recalled or the flow ends. */
 export function forgetManagedCard(messageId: string): void {
   byMessageId.delete(messageId);
+  tracked.delete(messageId);
+  lastSnapshotAt.delete(messageId);
   void removeFromRunningCards(messageId);
 }
 
 const RUNNING_CARDS_MAX = 50;
+
+/** Minimum gap between snapshot writes for one card (ms). */
+const SNAPSHOT_MIN_INTERVAL_MS = 2000;
+
+/** Per-card write throttle: a burst of updates must not rewrite the whole
+ * file each time. */
+const lastSnapshotAt = new Map<string, number>();
+
+function snapshotThrottled(messageId: string, card: object): Promise<void> | false {
+  const now = Date.now();
+  if (now - (lastSnapshotAt.get(messageId) ?? 0) < SNAPSHOT_MIN_INTERVAL_MS) return false;
+  lastSnapshotAt.set(messageId, now);
+  return updateRunningCardSnapshot(messageId, card);
+}
 
 async function readRunningCards(): Promise<PersistedRunningCard[]> {
   try {

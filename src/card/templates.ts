@@ -286,13 +286,6 @@ export function statusCard(info: StatusInfo): object {
     ...(info.sessionStale
       ? [md('⚠️ _session 来自旧 cwd，下一条消息将新建会话_', 'notation')]
       : []),
-    HR,
-    ...actions([
-      { text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' },
-      { text: '🕘 恢复会话', value: { cmd: 'resume' } },
-      { text: '📂 工作空间', value: { cmd: 'ws.list' } },
-      { text: '💡 帮助', value: { cmd: 'help' } },
-    ]),
   ]);
 }
 

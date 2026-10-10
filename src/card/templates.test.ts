@@ -309,12 +309,16 @@ describe('statusCard', () => {
     expect(out).toContain('旧 cwd');
   });
 
-  it('keeps the quick actions, including one-click resume', () => {
+  it('is informational — no action buttons', () => {
     const out = JSON.stringify(statusCard(statusFixture()));
-    expect(out).toContain('"cmd":"new"');
-    expect(out).toContain('"cmd":"resume"');
-    expect(out).toContain('"cmd":"ws.list"');
-    expect(out).toContain('"cmd":"help"');
+    // The four quick actions were noise: every one of them is a typed command
+    // documented in /help, and /help is the card that carries the shortcuts.
+    expect(out).not.toContain('"tag":"button"');
+    for (const cmd of ['new', 'resume', 'ws.list', 'help']) {
+      expect(out).not.toContain(`"cmd":"${cmd}"`);
+    }
+    // No dangling divider where the button row used to be.
+    expect(out).not.toContain('"tag":"hr"');
   });
 });
 

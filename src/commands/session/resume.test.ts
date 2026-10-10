@@ -220,7 +220,7 @@ describe('applyResume adopting a work session', () => {
     await store.flush();
   });
 
-  it('未认领的历史文件：bindSegment 保留会话文件的开始/最后活动时间', async () => {
+  it('未认领的历史文件：开它自己的工作会话，时间取会话文件', async () => {
     const a = await dir('a');
     await writeSession('legacy', a);
     const store = await openStore(); // no work session claims 'legacy'
@@ -233,13 +233,44 @@ describe('applyResume adopting a work session', () => {
       updatedAtMs: 4242,
     });
 
-    const seg = store.activeWorkSession('oc_1')?.segments.at(-1);
-    expect(seg?.sessionId).toBe('legacy');
+    const active = store.activeWorkSession('oc_1');
+    expect(active?.id).toBe('legacy');
+    expect(active?.segments.map((s) => s.sessionId)).toEqual(['legacy']);
     // Times come from the session file (match payload), not `now`.
-    expect(seg?.startedAtMs).toBe(1000);
-    expect(seg?.lastActiveAtMs).toBe(4242);
+    expect(active?.segments[0]?.startedAtMs).toBe(1000);
+    expect(active?.segments[0]?.lastActiveAtMs).toBe(4242);
     expect(setCwd).toHaveBeenCalledWith('oc_1', a);
     expect(interrupt).toHaveBeenCalledWith('oc_1');
+    await store.flush();
+  });
+
+  it('继续无归属历史：不挂进当前活跃工作会话，也不顶着它的标题', async () => {
+    const a = await dir('a');
+    await writeSession('legacy', a);
+    const store = await openStore();
+    // The chat is in the middle of another piece of work, with a name.
+    store.bindSegment('oc_1', 'current-work', a, { startedAtMs: 10, lastActiveAtMs: 10 });
+    store.setTitle('oc_1', '更新 UI 效果以及扩展功能');
+    const { ctx } = makeCtx(store, { scope: 'oc_1' });
+
+    // /history 继续对话 on the unclaimed conversation's row.
+    await applyResume(ctx, {
+      sessionId: 'legacy',
+      cwd: a,
+      timestamp: new Date(1000).toISOString(),
+      updatedAtMs: 4242,
+    });
+
+    const active = store.activeWorkSession('oc_1');
+    expect(active?.id).toBe('legacy');
+    expect(active?.title).toBeUndefined();
+    // The other work session keeps its segment... and its name.
+    expect(store.workSessionById('current-work')?.segments.map((s) => s.sessionId)).toEqual([
+      'current-work',
+    ]);
+    const text = renderContext(ctx, {});
+    expect(text).toContain('`legacy`');
+    expect(text).not.toContain('更新 UI 效果以及扩展功能');
     await store.flush();
   });
 });

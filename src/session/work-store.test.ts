@@ -25,6 +25,46 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+describe('claimWorkSession（继续无归属的历史会话）', () => {
+  it('以该会话为首段开一摊工作会话，并接上活跃指针', async () => {
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    await store.load();
+    store.bindSegment('oc_1', 'current-work', '/repo', { startedAtMs: 5, lastActiveAtMs: 5 });
+
+    store.claimWorkSession('oc_1', 'legacy', '/repo', { startedAtMs: 100, lastActiveAtMs: 200 });
+
+    const active = store.activeWorkSession('oc_1');
+    expect(active?.id).toBe('legacy');
+    expect(active?.segments).toEqual([
+      { sessionId: 'legacy', cwd: '/repo', startedAtMs: 100, lastActiveAtMs: 200 },
+    ]);
+    // 那摊旧活原样留着，没被吞掉一段。
+    expect(store.workSessionById('current-work')?.segments.map((s) => s.sessionId)).toEqual([
+      'current-work',
+    ]);
+    await store.flush();
+  });
+
+  it('该会话已被某个工作会话占用时改走 adopt，不造第二份', async () => {
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    await store.load();
+    store.bindSegment('oc_2', 'seg-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.bindSegment('oc_2', 'seg-b', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
+
+    // oc_1 想继续 oc_2 那摊活里的 seg-a。
+    store.claimWorkSession('oc_1', 'seg-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+
+    const active = store.activeWorkSession('oc_1');
+    expect(active?.id).toBe('seg-a');
+    expect(active?.segments.map((s) => s.sessionId)).toEqual(['seg-a', 'seg-b']);
+    expect(active?.currentSegmentId).toBe('seg-a');
+    expect(store.allWorkSessions()).toHaveLength(1);
+    await store.flush();
+  });
+});
+
 describe('WorkSessionStore dropCurrentSegment', () => {
   it('drops the current segment but keeps the work session, its title and idle override', async () => {
     const store = new WorkSessionStore(file);

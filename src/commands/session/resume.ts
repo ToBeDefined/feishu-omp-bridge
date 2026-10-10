@@ -286,10 +286,12 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
   if (ws !== undefined) {
     ctx.workSessions.adoptWorkSession(ctx.scope, ws.id, cwd, target);
   } else {
-    // No work session claims this file (old/unclaimed history): bind it as a new
-    // segment, keeping its OWN start/last-active times rather than "now".
+    // No work session claims this file (old/unclaimed history): continuing it
+    // STARTS its own work session — it must keep its own identity (no title,
+    // its own start/last-active times) instead of joining whatever work
+    // session this chat happens to be on.
     const startedAtMs = Date.parse(match.timestamp);
-    ctx.workSessions.bindSegment(ctx.scope, target, cwd, {
+    ctx.workSessions.claimWorkSession(ctx.scope, target, cwd, {
       ...(Number.isFinite(startedAtMs) && startedAtMs > 0 ? { startedAtMs } : {}),
       ...(match.updatedAtMs !== undefined ? { lastActiveAtMs: match.updatedAtMs } : {}),
     });

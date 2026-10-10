@@ -57,6 +57,15 @@
   才先写 `sessions.json.v1.bak` 再落盘（幂等）。
 
 ### Fixed
+- **`/history 继续对话` 恢复无归属历史时不再挂进当前工作会话**：回填不出归属的
+  历史会话（`workSessionId` = 它自己的 id）此前走 `bindSegment`——那是**运行期**
+  「同一摊活换了 OMP 会话」的路径，会把这段历史追加进 chat 的**当前活跃工作会话**；
+  结果恢复后的 `/ctx` / 恢复卡片顶着当前那摊活的标题、`/history` 的行与恢复后的
+  身份（工作会话 id / 段数 / 标题）对不上（用户报「history 之后继续对话，标题还是
+  错的」）。现在这类会话由 `WorkSessionStore.claimWorkSession` 认领为**它自己的
+  工作会话**：id = 首段 id、单段、无标题，开始/最后活跃时间取会话文件本身；被别的
+  工作会话占用时（含只作为某段存在）改走 adopt，不会出现两份指向同一 JSONL 的
+  工作会话。`/resume <id>` 与 `/history seg` 之外的同一条 `applyResume` 路径一并生效。
 - **标题不再跟着 chat 跑（属工作会话）**：`/rename` 命名的对象从「某个 OMP
   会话 / chat 条目」改为当前**工作会话**——OMP 换段（`/new`、`/cd`、漂移）后
   名字仍在，`/ctx`、`/status`、`/history`、`/resume`、`/search` 都以工作会话

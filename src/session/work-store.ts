@@ -322,6 +322,46 @@ export class WorkSessionStore {
     this.schedulePersist();
   }
 
+  /**
+   * 继续一段**归属未定**的历史会话（回填不出工作会话的老文件）时，它自己就是
+   * 一摊活：以它为首段建一个工作会话，并接上本 scope 的活跃指针。
+   *
+   * 为什么不能走 `bindSegment`：那条路是**运行期**「同一摊活换了 OMP 会话」用的
+   * ——它把段追加进**当前活跃工作会话**。拿它恢复一段无归属的历史，会把这段历史
+   * 挂进当前活跃工作会话，于是 `/ctx`、恢复卡片顶着别人的标题、段数也平白多一段
+   * （`/history` 的行说「这段会话」，恢复后却变成「另一摊活」）。
+   *
+   * 该 id 已经被某个工作会话占用时（同一个 OMP 会话只能属于一个工作会话）改走
+   * adopt，宁可靠上去也不造出两份指向同一 JSONL 的工作会话。
+   */
+  claimWorkSession(
+    scope: string,
+    sessionId: string,
+    cwd: string,
+    times?: { startedAtMs?: number; lastActiveAtMs?: number },
+  ): void {
+    if (this.workSessions[sessionId] !== undefined) {
+      this.adoptWorkSession(scope, sessionId, cwd, sessionId);
+      return;
+    }
+    const owner = this.workSessionForSegment(sessionId);
+    if (owner !== undefined) {
+      this.adoptWorkSession(scope, owner.id, cwd, sessionId);
+      return;
+    }
+    const now = Date.now();
+    const ws = beginWorkSession(scope, {
+      sessionId,
+      cwd,
+      startedAtMs: times?.startedAtMs ?? now,
+      lastActiveAtMs: times?.lastActiveAtMs ?? now,
+    });
+    this.workSessions[ws.id] = ws;
+    // 同 `adoptWorkSession` 的语义：活跃指针从旧工作会话挪到这摊新活上。
+    this.scopes[scope] = { ...this.scopes[scope], activeWorkSession: ws.id };
+    this.schedulePersist();
+  }
+
   /** /new、stale 漂移：丢掉“当前段”指针，段本身留在工作会话里。 */
   dropCurrentSegment(scope: string): void {
     const active = this.activeWorkSession(scope);

@@ -81,6 +81,7 @@ async function writeSession(
 /** Captures the session/cwd the handler points the scope at. */
 interface ResumeSpy {
   bindSegment: ReturnType<typeof vi.fn>;
+  claimWorkSession: ReturnType<typeof vi.fn>;
   setCwd: ReturnType<typeof vi.fn>;
   interrupt: ReturnType<typeof vi.fn>;
   currentSessionId: string | undefined;
@@ -92,6 +93,7 @@ function makeCtx(over: Partial<Record<string, unknown>> = {}): {
 } {
   const spy: ResumeSpy = {
     bindSegment: vi.fn(),
+    claimWorkSession: vi.fn(),
     setCwd: vi.fn(),
     interrupt: vi.fn(),
     currentSessionId: undefined,
@@ -126,6 +128,7 @@ function makeCtx(over: Partial<Record<string, unknown>> = {}): {
           : undefined,
       chats: () => ['oc_1'],
       bindSegment: spy.bindSegment,
+      claimWorkSession: spy.claimWorkSession,
       // renderContext reads the scope's idle-timeout override.
       getIdleTimeoutMinutes: () => undefined,
     },
@@ -339,25 +342,27 @@ describe('/history', () => {
   it('resumes the session a 继续对话 button points at', async () => {
     const { ctx, spy } = makeCtx();
     await handleHistory('resume s3', ctx);
-    // applyResume ran for the real record: cwd pinned, session switched with
-    // that session's OWN start/last-active times (s3 = 2026-01-02, active two
-    // minutes ago — not the moment of the click), and any in-flight run in
-    // this scope interrupted.
-    expect(spy.bindSegment).toHaveBeenCalledWith('oc_1', 's3', tmp, {
+    // s3 is unclaimed history, so resuming it opens ITS OWN work session — with
+    // that session's own start/last-active times (2026-01-02, active two
+    // minutes ago; not the moment of the click) — and interrupts any in-flight
+    // run in this scope.
+    expect(spy.claimWorkSession).toHaveBeenCalledWith('oc_1', 's3', tmp, {
       startedAtMs: Date.parse('2026-01-02T00:00:00Z'),
       lastActiveAtMs: expect.any(Number),
     });
+    expect(spy.bindSegment).not.toHaveBeenCalled();
     expect(spy.setCwd).toHaveBeenCalledWith('oc_1', tmp);
     expect(spy.interrupt).toHaveBeenCalledWith('oc_1');
     // The listing is not re-sent — the card settles into 会话已恢复.
     expect(sendManagedCard).not.toHaveBeenCalled();
   });
 
-  it('binds a resumed session to its own times on the active work session', async () => {
+  it('继续无归属历史：自开一摊，不接当前工作会话的名字', async () => {
     const store = new WorkSessionStore(join(tmp, 'sessions.json'));
     await store.load();
+    // The chat is mid-way through another piece of work, with a name.
     store.bindSegment('oc_1', 's1', tmp);
-    store.setTitle('oc_1', '被替换的会话名');
+    store.setTitle('oc_1', '别的活的名字');
 
     const { ctx } = makeCtx({ workSessions: store });
     await applyResume(ctx, {
@@ -368,18 +373,23 @@ describe('/history', () => {
       summary: '',
     });
 
-    // The resumed session reports its own history, as a new segment of the
-    // SAME work session (resume does not start a new work session)...
+    // s3 is unclaimed history: continuing it must NOT be absorbed into the
+    // chat's current work session (that made /ctx wear the other work's title).
     const ws = store.activeWorkSession('oc_1');
-    expect(ws?.currentSegmentId).toBe('s3');
-    expect(ws?.segments.find((s) => s.sessionId === 's3')).toMatchObject({
-      startedAtMs: Date.parse('2026-01-02T00:00:00Z'),
-      lastActiveAtMs: 1_700_000_000_000,
-    });
-    // ...and the name set before the resume names this work session, so it
-    // still applies (a work session keeps its name across its segments).
-    expect(store.titleFor('s3')).toBe('被替换的会话名');
-    expect(renderContext(ctx, {})).toContain('被替换的会话名');
+    expect(ws?.id).toBe('s3');
+    expect(ws?.title).toBeUndefined();
+    expect(ws?.segments).toEqual([
+      {
+        sessionId: 's3',
+        cwd: tmp,
+        startedAtMs: Date.parse('2026-01-02T00:00:00Z'),
+        lastActiveAtMs: 1_700_000_000_000,
+      },
+    ]);
+    // The other piece of work keeps its own segment and its own name.
+    expect(store.workSessionById('s1')?.segments.map((x) => x.sessionId)).toEqual(['s1']);
+    expect(store.titleFor('s1')).toBe('别的活的名字');
+    expect(renderContext(ctx, {})).not.toContain('别的活的名字');
     // Settle the store's async persist before afterEach removes tmp.
     await store.flush();
   });

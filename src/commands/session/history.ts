@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { HISTORY_PAGE_SIZE, historyCard, type HistoryRow } from '../../card/history-card';
+import { historySegCard } from '../../card/history-seg-card';
 import { recallMessage, reply } from '../shared';
 import { sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
@@ -15,45 +16,97 @@ export const historyHandlers: Record<string, Handler> = {
 /**
  * `/history` (`/sessions`)          — past conversations in the CURRENT workspace
  * `/history all` (`/sessions all`)  — every past conversation, across workspaces
+ * `/history seg <workSessionId>`    — the work session's segments, each restorable
  *
- * Both are newest-activity-first, and every row carries a 继续对话 button.
+ * The listings are newest-activity-first, and every row carries a 继续对话 button.
  *
  * Card buttons arrive through the dispatcher's `cmd` → `sub arg` mapping:
- * - `{cmd:'history.page',   arg:'<mode> <offset>'}`    → `page <mode> <offset>`
- * - `{cmd:'history.resume', arg:'<workSessionId>'}`    → `resume <workSessionId>`
+ * - `{cmd:'history.page',   arg:'<mode> <offset>'}` → `page <mode> <offset>`
+ * - `{cmd:'history.resume', arg:'<workSessionId>'}` → `resume <workSessionId>`
+ *   (the 继续对话 button; restores the work session's ACTIVE segment) or
+ * - `{cmd:'history.resume', arg:'<segmentId>'}`     → `resume <segmentId>`
+ *   (a segment list's 恢复这一段 button; restores EXACTLY that segment)
  */
 export async function handleHistory(args: string, ctx: CommandContext): Promise<void> {
   const tokens = args.trim().split(/\s+/).filter(Boolean);
 
-  // 继续对话 button: the payload is a WORK session id. Hand it to applyResume,
-  // which picks the SAME segment `listWorkSessions` used for the row's topic
-  // (current-if-alive, else latest alive) — so the button restores exactly the
-  // conversation the row described.
+  // A resume button carries either a work session id (the 继续对话 button) or
+  // one of its segment ids (the segment list's 恢复这一段 button). Hand it to
+  // applyResume, which owns the segment rule and the ownership / cwd guards.
   if (tokens[0] === 'resume') {
-    const workSessionId = tokens.slice(1).join('');
-    const ws = ctx.workSessions.workSessionById(workSessionId);
+    const id = tokens.slice(1).join('');
+    const ws =
+      ctx.workSessions.workSessionById(id) ?? ctx.workSessions.workSessionForSegment(id);
     if (ws !== undefined) {
+      const seg = ws.segments.find((s) => s.sessionId === id);
       await applyResume(ctx, {
-        workSessionId,
-        sessionId: ws.currentSegmentId ?? workSessionId,
-        cwd: ws.cwd,
-        timestamp: new Date(ws.createdAtMs).toISOString(),
+        workSessionId: ws.id,
+        // An id that IS one of the work session's segments = restore exactly
+        // that segment; otherwise resume the work session (its active segment).
+        ...(seg !== undefined ? { segmentId: id } : {}),
+        sessionId: id,
+        cwd: seg?.cwd ?? ws.cwd,
+        timestamp: new Date(seg?.startedAtMs ?? ws.createdAtMs).toISOString(),
+        ...(seg !== undefined ? { updatedAtMs: seg.lastActiveAtMs } : {}),
       });
       return;
     }
-    // Unclaimed history file: its workSessionId IS its own OMP session id.
-    const rec = (await scanSessionFiles(ctx)).find((s) => s.sessionId === workSessionId);
+    // Unclaimed history file: its id IS its own OMP session id.
+    const rec = (await scanSessionFiles(ctx)).find((s) => s.sessionId === id);
     if (!rec) {
-      await reply(ctx, `❌ 未找到会话 \`${workSessionId}\`，可能已被删除。`);
+      await reply(ctx, `❌ 未找到会话 \`${id}\`，可能已被删除。`);
       return;
     }
     await applyResume(ctx, {
-      workSessionId,
+      workSessionId: rec.sessionId,
       sessionId: rec.sessionId,
       cwd: rec.cwd,
       timestamp: rec.startedAt,
       updatedAtMs: rec.updatedAtMs,
     });
+    return;
+  }
+
+  // Segment list: `/history seg <workSessionId>` renders one row per segment of
+  // the work session, each with a 恢复这一段 button (payload → `resume <id>`,
+  // which restores EXACTLY that segment). Per-segment stats come from the ONE
+  // `scanSessionFiles` pass this command already owns — never a second walk.
+  if (tokens[0] === 'seg') {
+    const wsId = tokens.slice(1).join('');
+    const ws = ctx.workSessions.workSessionById(wsId);
+    if (ws === undefined) {
+      await reply(ctx, `❌ 未找到工作会话 \`${wsId}\`，可能已被删除。`);
+      return;
+    }
+    const byId = new Map((await scanSessionFiles(ctx)).map((f) => [f.sessionId, f]));
+    const currentSegmentId = ctx.workSessions.activeWorkSession(ctx.scope)?.currentSegmentId;
+    // Unnamed work session: fall back to the active segment's last user message,
+    // so the header is not just "未命名".
+    const topic = byId.get(
+      currentSegmentId ?? ws.segments[ws.segments.length - 1]?.sessionId ?? '',
+    )?.lastMessage;
+    if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+    await sendManagedCard(
+      ctx.channel,
+      ctx.msg.chatId,
+      historySegCard({
+        workSessionId: ws.id,
+        segments: ws.segments.map((seg) => {
+          const rec = byId.get(seg.sessionId);
+          return {
+            sessionId: seg.sessionId,
+            cwd: seg.cwd,
+            startedAtMs: seg.startedAtMs,
+            lastActiveAtMs: rec?.updatedAtMs ?? seg.lastActiveAtMs,
+            ...(rec !== undefined ? { turns: rec.turns } : {}),
+            ...(rec?.lastMessage !== undefined ? { lastMessage: rec.lastMessage } : {}),
+          };
+        }),
+        ...(ws.title !== undefined ? { title: ws.title } : {}),
+        ...(topic !== undefined ? { topic } : {}),
+        ...(currentSegmentId !== undefined ? { currentSegmentId } : {}),
+      }),
+    );
     return;
   }
   const unknown = tokens.filter((t) => t !== 'all' && t !== 'cwd' && t !== 'page' && !/^\d+$/.test(t));
@@ -88,6 +141,8 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
     turns: s.turns,
     segmentCount: s.segmentCount,
     workspace: workspaceLabel(ctx, s.cwd),
+    scope: s.scope,
+    ...(s.activeSegmentId !== undefined ? { activeSegmentId: s.activeSegmentId } : {}),
     ...(s.title !== undefined ? { title: s.title } : {}),
     ...(s.topic !== undefined ? { topic: s.topic } : {}),
   }));
@@ -102,6 +157,7 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
       cwd,
       offset: start,
       total: scoped.length,
+      scope: ctx.scope,
       ...(currentWorkSessionId !== undefined ? { currentWorkSessionId } : {}),
     }),
   );

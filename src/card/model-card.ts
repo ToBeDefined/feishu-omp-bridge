@@ -330,6 +330,11 @@ export interface ResumeOption {
   /** Work session id — the button payload / actual resume target (Task 9).
    * Falls back to `sessionId` for unclaimed history files. */
   workSessionId?: string;
+  /** Explicit segment to restore EXACTLY (`/history seg`'s per-row button).
+   * When set and it belongs to the work session, applyResume adopts it as-is
+   * instead of letting `pickActiveSegment` choose; absent = resume the work
+   * session (its active segment). */
+  segmentId?: string;
   /** Declared segment count; `🧵 N 段` shows only when > 1. */
   segmentCount?: number;
   cwd: string;

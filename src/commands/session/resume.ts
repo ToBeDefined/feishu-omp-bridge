@@ -165,13 +165,31 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
   let segmentCwd = match.cwd || homedir();
   if (ws !== undefined) {
     const alive = new Set((await scanSessionFiles(ctx)).map((s) => s.sessionId));
-    const picked = pickActiveSegment(ws, (id) => alive.has(id));
-    if (picked === undefined) {
-      // Ghost work session: the store still lists segments but none of their
-      // files survive. Adopting it would silently point the chat at nothing.
+    // A segment explicitly named by the caller (`/history seg`'s 恢复这一段
+    // button) is restored EXACTLY — pickActiveSegment must not override it.
+    // Everything else (the 继续对话 button, /resume) resumes the work session's
+    // active segment.
+    const requested =
+      match.segmentId !== undefined
+        ? ws.segments.find((s) => s.sessionId === match.segmentId)
+        : undefined;
+    if (match.segmentId !== undefined && requested === undefined) {
+      log.warn('command', 'resume-unknown-segment', {
+        scope: ctx.scope,
+        workSessionId: ws.id,
+        segmentId: match.segmentId,
+      });
+      await reply(ctx, `❌ 工作会话 \`${ws.id}\` 里没有段 \`${match.segmentId}\`。`);
+      return;
+    }
+    const picked = requested ?? pickActiveSegment(ws, (id) => alive.has(id));
+    if (picked === undefined || !alive.has(picked.sessionId)) {
+      // Ghost segment: the store still lists it but its file is gone. Adopting
+      // it would silently point the chat at nothing.
       log.warn('command', 'resume-ghost-work-session', {
         scope: ctx.scope,
         workSessionId: ws.id,
+        ...(match.segmentId !== undefined ? { segmentId: match.segmentId } : {}),
       });
       await reply(ctx, '❌ 这段工作的会话文件已不存在（可能被清理），无法恢复。');
       return;

@@ -679,6 +679,7 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
     title: '🗂 会话管理',
     items: [
       ['/new · /reset', '清空当前会话，从零开始'],
+      ['/work [名字]', '开启一件新工作（唯一的工作会话边界）'],
       ['/new chat [名字]', '新建群 + 新会话，自动拉你进群'],
       ['/resume', '历史会话列表，一键恢复'],
       ['/rename <标题>', '会话命名；`auto` LLM 生成，`clear` 清除'],

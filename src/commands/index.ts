@@ -63,8 +63,9 @@ export interface CommandContext {
 
 export type Handler = (args: string, ctx: CommandContext) => Promise<void>;
 
-/** All slash commands, merged from per-domain handler modules. */
-const handlers: Record<string, Handler> = {
+/** All slash commands, merged from per-domain handler modules.
+ * Exported so command-registration tests can assert exact wiring. */
+export const handlers: Record<string, Handler> = {
   ...sessionHandlers,
   ...modelHandlers,
   ...lifecycleHandlers,
@@ -84,6 +85,7 @@ const ADMIN_COMMANDS: Record<string, true> = {
   '/thinking': true,
   '/think': true,
   '/restart': true,
+  '/work': true,
   '/context': true,
   '/ctx': true,
   '/resume': true,

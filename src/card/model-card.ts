@@ -71,10 +71,8 @@ export function modelProviderCard(
   thinking?: string,
 ): object {
   const lines = [
-    '🎛️ **切换模型**',
-    '',
-    `当前模型:` + formatCurrent(current),
-    `思考强度:` + formatCurrent(thinking),
+    `当前模型：` + formatCurrent(current),
+    `思考强度：` + formatCurrent(thinking),
   ];
   const commonButtons = modelCommonButtons(current, commons);
   const commonBlock: object[] =
@@ -109,6 +107,7 @@ export function modelProviderCard(
     config: { summary: { content: '切换模型' } },
     body: {
       elements: [
+        { tag: 'markdown', content: '🎛 **切换模型**', text_size: 'heading' },
         { tag: 'markdown', content: lines.join('\n') },
         ...commonBlock,
         ...recentBlock,
@@ -144,10 +143,11 @@ export function modelSelectCard(
       elements: [
         {
           tag: 'markdown',
+          text_size: 'heading',
           content:
-            `🎛️ **${provider} 模型**\n` +
-            `当前模型:` + formatCurrent(current) +
-            `\n思考强度:` + formatCurrent(thinking),
+            `🎛 **${provider} 模型**\n` +
+            `当前模型：` + formatCurrent(current) +
+            `\n思考强度：` + formatCurrent(thinking),
         },
         { tag: 'hr' },
         {
@@ -204,13 +204,18 @@ export function modelSelectCard(
 
 /** Post-set confirmation card. Shows the new model and current thinking. */
 export function modelSavedCard(model: string, thinking?: string): object {
-  const lines = [`✅ **模型已设为** \`${model}\``];
-  lines.push(`🧠 **思考强度**:${thinking ? `\`${thinking}\`` : '_跟随 OMP 默认_'}`);
-  lines.push('', '下一条消息生效。');
   return {
     schema: '2.0',
     config: { summary: { content: '模型已切换' } },
-    body: { elements: [{ tag: 'markdown', content: lines.join('\n') }] },
+    body: {
+      elements: [
+        { tag: 'markdown', content: `✅ **模型已设为** \`${model}\``, text_size: 'heading' },
+        {
+          tag: 'markdown',
+          content: `🧠 **思考强度**：${thinking ? `\`${thinking}\`` : '_跟随 OMP 默认_'}\n\n_下一条消息生效。_`,
+        },
+      ],
+    },
   };
 }
 
@@ -233,9 +238,10 @@ export function thinkingCard(current?: string): object {
       elements: [
         {
           tag: 'markdown',
+          text_size: 'heading',
           content:
             `🧠 **思考强度**\n` +
-            `当前:` + (current ? `\`${current}\`` : '_跟随 OMP 默认_') +
+            `当前：` + (current ? `\`${current}\`` : '_跟随 OMP 默认_') +
             `\n\n_只作用于当前模型,不影响模型切换_`,
         },
         { tag: 'hr' },
@@ -298,7 +304,12 @@ export function thinkingSavedCard(level: string): object {
     config: { summary: { content: '思考强度已切换' } },
     body: {
       elements: [
-        { tag: 'markdown', content: `✅ **思考强度已设为** \`${level}\`\n\n下一条消息生效。` },
+        {
+          tag: 'markdown',
+          content: `✅ **思考强度已设为** \`${level}\``,
+          text_size: 'heading',
+        },
+        { tag: 'markdown', content: '_下一条消息生效。_', text_size: 'notation' },
       ],
     },
   };

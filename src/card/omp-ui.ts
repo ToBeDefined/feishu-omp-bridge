@@ -36,7 +36,7 @@ export function responseFromOmpUiAction(
 
 export function renderOmpUiRequestCard(request: AgentUiRequest, scope?: string): object {
   const elements: object[] = [
-    markdown(`🧩 **${escapeMd(request.title)}**`),
+    { tag: 'markdown', content: `🧩 **${escapeMd(request.title)}**`, text_size: 'heading' },
     markdown(introText(request)),
   ];
 

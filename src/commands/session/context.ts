@@ -11,26 +11,52 @@ import type { CommandContext, Handler } from '../index';
 import { formatIdleLine } from '../shared';
 import { summarizeMd } from '../../utils/text';
 import { contextCard, type ContextInfo } from '../../card/templates';
-import { formatAgoOr, formatClockOr } from '../../utils/time';
+import { formatAgo, formatAgoOr, formatClockOr } from '../../utils/time';
+import type { WorkSession } from '../../session/work-session';
 
 export const contextHandlers: Record<string, Handler> = {
   '/context': handleContext,
   '/ctx': handleContext,
 };
 
+/**
+ * 给工作会话取样「最后一条用户消息」的段：当前段优先，没有当前段（/new 之后，
+ * 新段还没落地）就退回最新段。用来做无名工作会话的标题回退。
+ */
+export function sampleSegmentId(active: WorkSession | undefined): string | undefined {
+  if (!active) return undefined;
+  return active.currentSegmentId ?? active.segments[active.segments.length - 1]?.sessionId;
+}
+
 export function collectContextInfo(
   ctx: CommandContext,
   summary: { lastMessage?: string; lastReply?: string } = {},
 ): ContextInfo {
-  const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+  const scopeCwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
   const active = ctx.workSessions.activeWorkSession(ctx.scope);
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
+  // 身份 = 工作会话，不再是某个 OMP 会话：cwd 取工作会话最新段，段数/目录数
+  // 描述这摊活的规模，当前 OMP id 只在「当前段」里出现。
+  const segments = active?.segments ?? [];
+  const cwd = active?.cwd ?? scopeCwd;
+  const name = active?.title?.trim() || summary.lastMessage?.trim() || undefined;
+  const currentSegmentId = active?.currentSegmentId;
+  const currentSegment =
+    currentSegmentId !== undefined
+      ? segments.find((s) => s.sessionId === currentSegmentId)
+      : undefined;
   return {
     scope: ctx.scope,
     chatMode: ctx.chatMode,
     cwd,
-    sessionId: active?.currentSegmentId,
-    sessionTitle: ctx.workSessions.titleFor(active?.currentSegmentId),
+    ...(active !== undefined ? { workSessionId: active.id } : {}),
+    ...(name !== undefined ? { workSessionName: name } : {}),
+    segmentCount: segments.length,
+    cwdCount: new Set(segments.map((s) => s.cwd)).size,
+    ...(currentSegmentId !== undefined ? { currentSessionId: currentSegmentId } : {}),
+    ...(currentSegment !== undefined
+      ? { currentSegmentLastActiveMs: currentSegment.lastActiveAtMs }
+      : {}),
     createdAt: active?.createdAtMs,
     updatedAt: active?.lastActiveAtMs,
     running: ctx.activeRuns.has(ctx.scope),
@@ -53,11 +79,24 @@ export function renderContext(
 ): string {
   const info = collectContextInfo(ctx, summary);
   const cwd = info.cwd;
-  const active = ctx.workSessions.activeWorkSession(ctx.scope);
   const running = info.running;
   const scopeLine =
     ctx.chatMode === 'topic' ? `\`${ctx.scope}\`（话题独立会话）` : `\`${ctx.scope}\``;
-  const sessionLine = active?.currentSegmentId ? `\`${active.currentSegmentId}\`` : '（无，下条消息新建）';
+  // N 段 · M 个目录：只有工作会话真的跨了多个目录才标注。
+  const multiDir =
+    info.cwdCount > 1 ? ` _（${info.segmentCount} 段 · ${info.cwdCount} 个目录）_` : '';
+  const workSessionLine =
+    info.workSessionId !== undefined
+      ? `\`${info.workSessionId}\` _（${info.segmentCount} 段）_`
+      : '（无，下一条消息新建）';
+  const currentSegmentLine =
+    info.currentSessionId !== undefined
+      ? `\`${info.currentSessionId}\`${
+          info.currentSegmentLastActiveMs !== undefined
+            ? ` _（最近活动 ${formatAgo(Date.now() - info.currentSegmentLastActiveMs)}）_`
+            : ''
+        }`
+      : '（无，下一条消息新建）';
   const runningLine = running ? '有任务正在执行' : '空闲，等待指令';
   const modelLine = info.model ? `\`${info.model}\`` : '跟随 OMP 默认';
   const thinkingLine = info.thinking ? `\`${info.thinking}\`` : '跟随 OMP 默认';
@@ -67,7 +106,7 @@ export function renderContext(
   const matchingNames = Object.entries(ctx.workspaces.listNamed())
     .filter(([, path]) => path === cwd)
     .map(([name]) => `\`${name}\``);
-  const wsLine =
+  const quickDirLine =
     matchingNames.length > 0 ? matchingNames.join(' ') : '（当前目录无快捷方式）';
   const lastMsgLine = summary.lastMessage
     ? `💬 **最后消息**: ${summarizeMd(summary.lastMessage)}`
@@ -77,18 +116,19 @@ export function renderContext(
     : '';
   const lines = [
     `💬 **聊天窗口**: ${scopeLine}`,
-    `📁 **工作目录**: \`${cwd}\``,
-    `🧠 **会话 ID**: ${sessionLine}`,
-    info.sessionTitle ? `🏷 **标题**: \`${info.sessionTitle}\`` : '',
-    `🕒 **开始对话**: ${formatClockOr(active?.createdAtMs, '（无，新会话）')}`,
-    `🕘 **最后对话**: ${formatAgoOr(active?.lastActiveAtMs, '（无，新会话）')}`,
+    `📁 **工作目录**: \`${cwd}\`${multiDir}`,
+    `🧠 **工作会话**: ${workSessionLine}`,
+    `🏷 **标题**: \`${info.workSessionName ?? '未命名'}\``,
+    `🕒 **开始**: ${formatClockOr(info.createdAt, '（无，新工作会话）')}`,
+    `🕘 **最后活动**: ${formatAgoOr(info.updatedAt, '（无，新工作会话）')}`,
+    `🧵 **当前段**: ${currentSegmentLine}`,
     lastMsgLine,
     lastReplyLine,
     `⚙️ **任务状态**: ${runningLine}`,
     `🤖 **当前模型**: ${modelLine}`,
     `💭 **思考强度**: ${thinkingLine}`,
     `⏱ **空闲超时**: ${idleLine}`,
-    `📂 **快捷目录**: ${wsLine}`,
+    `📂 **快捷目录**: ${quickDirLine}`,
   ];
   return lines.filter(Boolean).join('\n');
 }
@@ -191,10 +231,11 @@ export async function loadSessionSummary(
 
 async function handleContext(_args: string, ctx: CommandContext): Promise<void> {
   const active = ctx.workSessions.activeWorkSession(ctx.scope);
-  let summary = { lastMessage: '', lastReply: '' };
-  if (active?.currentSegmentId) {
-    summary = await loadSessionSummary(ctx, active.currentSegmentId);
-  }
+  const sampleId = sampleSegmentId(active);
+  const summary =
+    sampleId !== undefined
+      ? await loadSessionSummary(ctx, sampleId)
+      : { lastMessage: '', lastReply: '' };
   const card = contextCard(collectContextInfo(ctx, summary));
   await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
 }

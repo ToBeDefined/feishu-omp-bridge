@@ -231,7 +231,9 @@ describe('shared card kit', () => {
 function statusFixture(extra: Partial<Parameters<typeof statusCard>[0]> = {}) {
   return {
     cwd: '/repo',
-    sessionId: 's1',
+    workSessionId: 'ws-1',
+    segmentCount: 1,
+    cwdCount: 1,
     sessionStale: false,
     agentName: 'omp',
     scope: 'oc_1',
@@ -243,14 +245,12 @@ function statusFixture(extra: Partial<Parameters<typeof statusCard>[0]> = {}) {
 }
 
 describe('statusCard', () => {
-  it('shows the session title when set', () => {
-    const withTitle = JSON.stringify(
-      statusCard(statusFixture({ sessionTitle: '修搜索' })),
-    );
-    expect(withTitle).toContain('修搜索');
+  it('shows the work session name when set', () => {
+    const withName = JSON.stringify(statusCard(statusFixture({ workSessionName: '修搜索' })));
+    expect(withName).toContain('修搜索');
 
     const without = JSON.stringify(statusCard(statusFixture()));
-    expect(without).not.toContain('标题');
+    expect(without).toContain('未命名');
   });
 
   it('renders as a schema 2.0 card with session and environment panels', () => {
@@ -279,6 +279,25 @@ describe('statusCard', () => {
     expect(out).toContain('旧 cwd');
   });
 
+  it('reports the work session id, segment count and current segment', () => {
+    const out = JSON.stringify(
+      statusCard(
+        statusFixture({
+          workSessionId: 'ws-first',
+          currentSessionId: 'seg-c',
+          segmentCount: 3,
+          cwdCount: 2,
+        }),
+      ),
+    );
+    expect(out).toContain('工作会话');
+    expect(out).toContain('`ws-first`');
+    expect(out).toContain('（3 段）');
+    expect(out).toContain('当前段');
+    expect(out).toContain('`seg-c`');
+    expect(out).toContain('（3 段 · 2 个目录）');
+  });
+
   it('is informational — no action buttons', () => {
     const out = JSON.stringify(statusCard(statusFixture()));
     // The four quick actions were noise: every one of them is a typed command
@@ -296,17 +315,19 @@ describe('session id rendering', () => {
   const ULID = '01J8Z9K2ABCDEFGHJKLMNPQRST';
 
   it('shows the full session id on the status/context cards', () => {
-    expect(JSON.stringify(statusCard(statusFixture({ sessionId: ULID })))).toContain(ULID);
+    expect(JSON.stringify(statusCard(statusFixture({ workSessionId: ULID })))).toContain(ULID);
     const ctx = contextCard({
       scope: 'oc_x',
       chatMode: 'p2p',
       cwd: '/repo',
-      sessionId: ULID,
+      workSessionId: ULID,
+      segmentCount: 1,
+      cwdCount: 1,
       running: false,
       idleLine: '探活：跟随全局',
       wsNames: [],
       summary: {},
-    } as never);
+    });
     expect(JSON.stringify(ctx)).toContain(ULID);
     // No truncated form leaks through.
     expect(JSON.stringify(ctx)).not.toContain('01J8Z9K2…');
@@ -394,8 +415,10 @@ describe('contextCard', () => {
     scope: 'oc_1',
     chatMode: 'p2p' as const,
     cwd: '/repo',
-    sessionId: '019f3a2b-7c8d-73e1-9f2a-4b5c6d7e8f90',
-    sessionTitle: '修搜索',
+    workSessionId: '019f3a2b-7c8d-73e1-9f2a-4b5c6d7e8f90',
+    workSessionName: '修搜索',
+    segmentCount: 3,
+    cwdCount: 1,
     createdAt: Date.now() - 86_400_000,
     updatedAt: Date.now() - 120_000,
     running: false,
@@ -444,8 +467,9 @@ describe('contextCard', () => {
     const out = JSON.stringify(
       contextCard({
         ...base,
-        sessionId: undefined,
-        sessionTitle: undefined,
+        workSessionId: undefined,
+        workSessionName: undefined,
+        currentSessionId: undefined,
         createdAt: undefined,
         updatedAt: undefined,
         model: undefined,

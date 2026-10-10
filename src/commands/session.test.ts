@@ -1,22 +1,44 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { CommandContext } from './index';
 import { extractUserInput, renderContext } from './session';
+import { WorkSessionStore } from '../session/work-store';
+import type { WorkSegment, WorkSession } from '../session/work-session';
 
 const ULID = '019f0000-0000-7000-0000-000000000000';
 
 /** A WorkSession stub with the current segment set (what /ctx reads). */
 function workSession(
-  over: { sessionId?: string; cwd?: string; createdAtMs?: number; lastActiveAtMs?: number } = {},
-): Record<string, unknown> {
-  const sessionId = over.sessionId ?? ULID;
+  over: {
+    id?: string;
+    title?: string;
+    cwd?: string;
+    createdAtMs?: number;
+    lastActiveAtMs?: number;
+    currentSegmentId?: string;
+    segments?: WorkSegment[];
+  } = {},
+): WorkSession {
+  const id = over.id ?? ULID;
+  const cwd = over.cwd ?? '/home/proj';
+  const at = over.createdAtMs ?? 0;
+  const seg = (sessionId: string, segCwd: string, segAt: number): WorkSegment => ({
+    sessionId,
+    cwd: segCwd,
+    startedAtMs: segAt,
+    lastActiveAtMs: segAt,
+  });
   return {
-    id: sessionId,
+    id,
     scope: 'oc_1',
-    cwd: over.cwd ?? '/x',
-    ...(over.createdAtMs !== undefined ? { createdAtMs: over.createdAtMs } : {}),
-    ...(over.lastActiveAtMs !== undefined ? { lastActiveAtMs: over.lastActiveAtMs } : {}),
-    currentSegmentId: sessionId,
-    segments: [],
+    cwd,
+    ...(over.title !== undefined ? { title: over.title } : {}),
+    createdAtMs: at,
+    lastActiveAtMs: over.lastActiveAtMs ?? at,
+    currentSegmentId: over.currentSegmentId ?? id,
+    segments: over.segments ?? [seg(id, cwd, at)],
   };
 }
 
@@ -110,42 +132,39 @@ describe('renderContext', () => {
     const titled = renderContext(
       makeCtx({
         workSessions: {
-          activeWorkSession: () => workSession({ sessionId: 's1' }),
-          titleFor: (id?: string) => (id === 's1' ? '修搜索' : undefined),
+          activeWorkSession: () => workSession({ title: '修搜索' }),
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),
     );
-    expect(titled).toContain('修搜索');
+    expect(titled).toContain('**标题**: `修搜索`');
 
     const untitled = renderContext(makeCtx());
-    expect(untitled).not.toContain('标题');
+    expect(untitled).toContain('**标题**: `未命名`');
   });
 
   it('shows last conversation time', () => {
     const recent = renderContext(makeCtx());
-    expect(recent).toContain('最后对话');
+    expect(recent).toContain('最后活动');
     const fresh = renderContext(
       makeCtx({
         workSessions: {
           activeWorkSession: () => workSession({ lastActiveAtMs: Date.now() }),
-          titleFor: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),
     );
     expect(fresh).toContain('0 秒前');
-    // No session → new conversation
+    // No session → new work session
     const none = renderContext(
       makeCtx({
         workSessions: {
           activeWorkSession: () => undefined,
-          titleFor: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),
     );
-    expect(none).toContain('（无，新会话）');
+    expect(none).toContain('（无，新工作会话）');
   });
 
   it('shows conversation start time', () => {
@@ -153,12 +172,11 @@ describe('renderContext', () => {
       makeCtx({
         workSessions: {
           activeWorkSession: () => workSession({ lastActiveAtMs: Date.now(), createdAtMs: Date.now() }),
-          titleFor: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),
     );
-    expect(started).toContain('开始对话');
+    expect(started).toContain('开始');
     expect(started).toContain('今天'); // same-day clock
   });
 
@@ -174,6 +192,74 @@ describe('renderContext', () => {
     const out = renderContext(makeCtx());
     expect(out).not.toContain('最后消息');
     expect(out).not.toContain('最后回复');
+  });
+});
+
+describe('renderContext — 以工作会话为单位', () => {
+  let root: string;
+  let store: WorkSessionStore;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'ctx-ws-'));
+    store = new WorkSessionStore(join(root, 'sessions.json'));
+    await store.load();
+  });
+
+  afterEach(async () => {
+    await store.flush();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const ctxWith = (over: Partial<CommandContext> = {}): CommandContext =>
+    makeCtx({
+      workSessions: store,
+      controls: { cfg: { preferences: { ompSessionDir: join(root, 'omp') } } } as never,
+      ...over,
+    });
+
+  it('把工作会话 id、段数与当前段作为身份，OMP id 不再当身份', () => {
+    store.bindSegment('oc_1', 'ws-first', root);
+    store.bindSegment('oc_1', 'seg-b', root);
+    store.bindSegment('oc_1', 'seg-c', root);
+
+    const out = renderContext(ctxWith(), {});
+
+    expect(out).toContain('**工作会话**: `ws-first` _（3 段）_');
+    expect(out).toContain('（3 段）');
+    expect(out).toContain('**当前段**: `seg-c`');
+    // OMP 会话 id 只出现在「当前段」，不再有一条把它当身份的「会话 ID」行。
+    expect(out).not.toContain('会话 ID');
+  });
+
+  it('标题按 name → 最后一条用户消息 → 未命名 回退', () => {
+    store.bindSegment('oc_1', 'ws-first', root);
+
+    store.setTitle('oc_1', '修搜索');
+    expect(renderContext(ctxWith(), {})).toContain('**标题**: `修搜索`');
+
+    store.clearTitle('oc_1');
+    expect(renderContext(ctxWith(), { lastMessage: '看一下 KMP 导出' })).toContain(
+      '**标题**: `看一下 KMP 导出`',
+    );
+
+    expect(renderContext(ctxWith(), {})).toContain('**标题**: `未命名`');
+  });
+
+  it('跨目录工作会话标注「N 段 · M 个目录」', () => {
+    store.bindSegment('oc_1', 'seg-a', join(root, 'a'));
+    store.bindSegment('oc_1', 'seg-b', join(root, 'b'));
+
+    const out = renderContext(ctxWith(), {});
+
+    expect(out).toContain('（2 段 · 2 个目录）');
+  });
+
+  it('无 activeWorkSession 时不崩且给出新建提示', () => {
+    const out = renderContext(ctxWith(), {});
+
+    expect(out).toContain('**工作会话**: （无，下一条消息新建）');
+    expect(out).toContain('**当前段**: （无，下一条消息新建）');
+    expect(out).toContain('**标题**: `未命名`');
   });
 });
 

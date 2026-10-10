@@ -9,9 +9,20 @@ import { escapeCode, escapeMd, summarizeMd } from '../utils/text';
 export interface ContextInfo {
   scope: string;
   chatMode: 'p2p' | 'group' | 'topic';
+  /** 当前工作目录：工作会话最新段的 cwd（没有工作会话时退回 scope cwd）。 */
   cwd: string;
-  sessionId?: string;
-  sessionTitle?: string;
+  /** 当前工作会话 id（= 第一段的 OMP 会话 id）；无工作会话时缺失。 */
+  workSessionId?: string;
+  /** 显示名：/rename 的名字，回退到工作会话最后一条用户消息；都没有则缺失。 */
+  workSessionName?: string;
+  /** 工作会话的段数。 */
+  segmentCount: number;
+  /** 工作会话跨过的不同目录数（> 1 = 多目录工作会话）。 */
+  cwdCount: number;
+  /** 当前段的 OMP 会话 id —— OMP id 只在这里出现，不再是身份。 */
+  currentSessionId?: string;
+  /** 当前段最近活动时间（ms），用于「当前段」的相对活动时间。 */
+  currentSegmentLastActiveMs?: number;
   createdAt?: number;
   updatedAt?: number;
   running: boolean;
@@ -21,6 +32,11 @@ export interface ContextInfo {
   /** Named workspaces pointing at the current cwd. */
   wsNames: string[];
   summary: { lastMessage?: string; lastReply?: string };
+}
+
+/** 「N 段 · M 个目录」标注：只在工作会话真的跨了多个目录时出现。 */
+function workSessionDirsLabel(info: { segmentCount: number; cwdCount: number }): string {
+  return info.cwdCount > 1 ? ` _（${info.segmentCount} 段 · ${info.cwdCount} 个目录）_` : '';
 }
 
 export interface ButtonSpec {
@@ -221,10 +237,18 @@ export function workspacesCard(current: string | undefined, named: Record<string
 }
 
 export interface StatusInfo {
+  /** 当前工作目录：工作会话最新段的 cwd（没有工作会话时退回 scope cwd）。 */
   cwd: string;
-  sessionId?: string;
-  /** User-assigned session title (/rename), if any. */
-  sessionTitle?: string;
+  /** 当前工作会话 id；无工作会话时缺失。 */
+  workSessionId?: string;
+  /** 显示名：/rename 的名字，回退到工作会话最后一条用户消息。 */
+  workSessionName?: string;
+  /** 工作会话的段数。 */
+  segmentCount: number;
+  /** 工作会话跨过的不同目录数（> 1 = 多目录工作会话）。 */
+  cwdCount: number;
+  /** 当前段的 OMP 会话 id —— OMP id 只在这里出现。 */
+  currentSessionId?: string;
   sessionStale: boolean;
   agentName: string;
   /** Session scope (= chatId or chatId:threadId in topic groups). */
@@ -250,16 +274,17 @@ export function statusCard(info: StatusInfo): object {
       : `窗口 \`${escapeCode(info.scope)}\``;
 
   const sessionPanel = [
-    md('**🗂 会话**'),
+    md('**🗂 工作会话**'),
+    md(info.workSessionName ? `🏷 ${escapeMd(info.workSessionName)}` : '🏷 _未命名_'),
     md(
-      info.sessionTitle
-        ? `🏷 ${escapeMd(info.sessionTitle)}`
-        : '🏷 _未命名_',
+      info.workSessionId
+        ? `🔗 \`${escapeCode(info.workSessionId)}\` _（${info.segmentCount} 段）_`
+        : '🔗 _无，下条消息新建_',
     ),
     md(
-      info.sessionId
-        ? `🔗 \`${escapeCode(info.sessionId)}\``
-        : '🔗 _无，下条消息新建_',
+      info.currentSessionId
+        ? `🧵 当前段 \`${escapeCode(info.currentSessionId)}\``
+        : '🧵 _（无，下条消息新建）_',
     ),
     md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
     md(`🕘 ${formatAgoOr(info.lastActive, '新会话')}`),
@@ -267,7 +292,7 @@ export function statusCard(info: StatusInfo): object {
   ];
   const envPanel = [
     md('**🧩 环境**'),
-    md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
+    md(`📁 \`${escapeCode(tildePath(info.cwd))}\`${workSessionDirsLabel(info)}`),
     md(`🤖 ${escapeMd(info.agentName)}`),
     md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
     md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
@@ -333,12 +358,17 @@ export function contextCard(
     md(scopeLine, 'notation'),
     ...stackedPanels([
       panel([
-        md('**🗂 会话**'),
-        md(info.sessionTitle ? `🏷 ${escapeMd(info.sessionTitle)}` : '🏷 _未命名_'),
+        md('**🗂 工作会话**'),
+        md(info.workSessionName ? `🏷 ${escapeMd(info.workSessionName)}` : '🏷 _未命名_'),
         md(
-          info.sessionId
-            ? `🔗 \`${escapeCode(info.sessionId)}\``
+          info.workSessionId
+            ? `🔗 \`${escapeCode(info.workSessionId)}\` _（${info.segmentCount} 段）_`
             : '🔗 _无，下条消息新建_',
+        ),
+        md(
+          info.currentSessionId
+            ? `🧵 当前段 \`${escapeCode(info.currentSessionId)}\``
+            : '🧵 _（无，下条消息新建）_',
         ),
         md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
         md(`🕘 ${formatAgoOr(info.updatedAt, '新会话')}`),
@@ -346,7 +376,7 @@ export function contextCard(
       ]),
       panel([
         md('**🧩 环境**'),
-        md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
+        md(`📁 \`${escapeCode(tildePath(info.cwd))}\`${workSessionDirsLabel(info)}`),
         md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
         md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
         md(`⏱ ${escapeMd(info.idleLine)}`),

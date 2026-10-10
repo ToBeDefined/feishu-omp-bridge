@@ -1,6 +1,6 @@
 import { summarizeMd } from '../utils/text';
 import { isOmpThinkingLevel, OMP_THINKING_LEVELS } from '../config/schema';
-import { actions, shortPath, type ButtonSpec } from './templates';
+import { actions, shortPath, shortSessionId, type ButtonSpec } from './templates';
 import { escapeCode, escapeMd } from '../utils/text';
 import { formatAgo } from '../utils/time';
 
@@ -338,13 +338,6 @@ export interface ResumeOption {
   lastMessage?: string;
 }
 
-/** First 8 chars of a session id — the compact per-row handle in the
- * `/resume` list, where 20 full ULIDs would swamp the row. Singular
- * "this is your session" lines show the id in full. */
-function shortId(id: string): string {
-  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
-}
-
 /** Session picker card for `/resume`. One compact row per session:
  * title/summary + time · cwd · id on the left, a one-click 恢复 button
  * on the right. */
@@ -382,7 +375,7 @@ export function resumeCard(
     const metaParts = [
       Number.isFinite(tsMs) ? formatAgo(Date.now() - tsMs) : '',
       `\`${escapeCode(shortPath(s.cwd))}\``,
-      escapeMd(shortId(s.sessionId)),
+      escapeMd(shortSessionId(s.sessionId)),
     ].filter(Boolean);
     const details: object[] = [
       { tag: 'markdown', content: heading },

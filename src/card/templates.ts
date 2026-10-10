@@ -85,6 +85,12 @@ export function actions(buttons: ButtonSpec[]): object[] {
   return rows;
 }
 
+/** 8-char session-id handle. Singular "this is your session" lines show the
+ * id in full (26-36 chars); lists need only enough to tell rows apart. */
+export function shortSessionId(id: string): string {
+  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+}
+
 /**
  * Stack info panels one per row, each FULL width.
  *

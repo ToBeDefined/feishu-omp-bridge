@@ -1,7 +1,7 @@
 import { codeSpan, summarize } from '../utils/text';
 import { escapeMd } from '../utils/text';
 import { formatAgoOr } from '../utils/time';
-import { actions, type ButtonSpec } from './templates';
+import { actions, shortSessionId, type ButtonSpec } from './templates';
 
 /**
  * Search result card rendering (moved out of commands/session/search.ts so
@@ -123,20 +123,25 @@ export function searchResultsCard(
   shown.forEach((c, i) => {
     const globalIdx = offset + i;
     const ago = formatAgoOr(lastHitTime(c), '');
+    // Identity line is heading-sized; everything else drops to a small grey
+    // meta line. Blending a 36-char session UUID and the workspace path into
+    // the heading produced several lines of oversized text per result on a
+    // phone.
+    const heading = [`#${globalIdx + 1}`, c.title ? `🏷 ${escapeMd(c.title)}` : '']
+      .filter(Boolean)
+      .join(' · ');
     const metaLine = [
-      c.title ? `🏷 ${c.title}` : '',
-      c.workspace ? `📁 ${c.workspace}` : '',
-      c.sessionId ? `🆔 ${c.sessionId}` : '',
+      c.workspace ? `📁 ${escapeMd(c.workspace)}` : '',
       ago ? `🕘 ${ago}` : '',
       c.matchCount && c.matchCount > 1 ? `🔎 ${c.matchCount} 处匹配` : '',
+      // Handle only — the full id is in 查看详情, where it is actionable.
+      c.sessionId ? `🆔 ${shortSessionId(c.sessionId)}` : '',
     ]
       .filter(Boolean)
       .join(' · ');
-    const title = `#${globalIdx + 1}${metaLine ? ` · ${metaLine}` : ''}`;
     blocks.push(
-      // Heading-size title so the item number / workspace / session stands
-      // out; the conversation snippet below it stays at normal size.
-      { tag: 'markdown', content: title, text_size: 'heading' },
+      { tag: 'markdown', content: heading, text_size: 'heading' },
+      ...(metaLine ? [{ tag: 'markdown', content: metaLine, text_size: 'notation' }] : []),
       { tag: 'markdown', content: renderSearchContext(c, 'compact', keyword) },
     );
     if (showButtons) {
@@ -203,19 +208,20 @@ export function searchDetailCard(
   workspace?: string,
 ): object {
   const label = idx !== undefined ? `搜索结果 #${idx}` : '搜索详情';
-  const parts = [
-    label,
-    workspace ? `📁 ${workspace}` : '',
-    sessionId ? `🆔 ${sessionId}` : '',
-  ].filter(Boolean);
   // Done state keeps the full header (number / workspace / session) — only
   // the buttons are stripped. "✅" marks it as settled.
-  const head = parts.length > 0 ? `✅ ${parts.join(' · ')}` : '✅ 搜索详情';
   const elements: object[] = [
-    { tag: 'markdown', content: head },
-    { tag: 'hr' },
-    { tag: 'markdown', content },
+    { tag: 'markdown', content: `✅ **${label}**`, text_size: 'heading' },
   ];
+  const metaLine = [
+    workspace ? `📁 ${escapeMd(workspace)}` : '',
+    // Full id here: this is the one place a session can be identified exactly.
+    sessionId ? `🆔 ${escapeMd(sessionId)}` : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  if (metaLine) elements.push({ tag: 'markdown', content: metaLine, text_size: 'notation' });
+  elements.push({ tag: 'hr' }, { tag: 'markdown', content });
   if (!done) {
     elements.push(
       { tag: 'hr' },

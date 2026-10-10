@@ -38,6 +38,35 @@ describe('search-card T10 additions', () => {
     expect(out).not.toContain('**普通');
   });
 
+  it('splits the row into a heading identity line and a small meta line', () => {
+    const UUID = '019f9432-b808-7000-8bf4-073defc52637';
+    const out = searchResultsCard(
+      'kw',
+      [
+        sampleContext({
+          sessionId: UUID,
+          title: '会话 UI',
+          workspace: '~/repo',
+          matchCount: 3,
+          messages: [
+            { role: 'user', content: 'kw 在这里', timestamp: new Date().toISOString() },
+          ],
+        }),
+      ],
+      'q1',
+    );
+    const json = JSON.stringify(out);
+    // Heading line: number + title only.
+    expect(json).toContain('"content":"#1 · 🏷 会话 UI","text_size":"heading"');
+    // Meta line rides below it at notation size, with an 8-char id handle.
+    expect(json).toContain('"content":"📁 ~/repo · 🕘 0 秒前 · 🔎 3 处匹配 · 🆔 019f9432…","text_size":"notation"');
+    // The 36-char UUID never lands in the oversized line.
+    const heading = (out as { body: { elements: Array<{ content?: string; text_size?: string }> } })
+      .body.elements.filter((e) => e.text_size === 'heading')
+      .map((e) => e.content ?? '');
+    expect(heading.join('\n')).not.toContain(UUID);
+  });
+
   it('shows relative time and pagination in the results card', () => {
     const contexts = Array.from({ length: 8 }, (_, i) => ({
       ...sampleContext({ sessionId: `s${i}` }),
@@ -150,9 +179,12 @@ describe('searchDetailCard', () => {
     const done = JSON.stringify(
       searchDetailCard('sess-9', 'content', undefined, 3, true, '~/ws'),
     );
-    expect(done).toContain('✅ 搜索结果 #3');
-    expect(done).toContain('📁 ~/ws');
-    expect(done).toContain('🆔 sess-9');
+    // Heading carries the identity; workspace + FULL session id ride in a
+    // small meta line (a 36-char UUID must not be heading-sized).
+    expect(done).toContain('✅ **搜索结果 #3**');
+    expect(done).toContain('"text_size":"heading"');
+    expect(done).toContain('📁 ~/ws · 🆔 sess-9');
+    expect(done).toContain('"text_size":"notation"');
     expect(done).not.toContain('继续对话');
     expect(done).not.toContain('完成');
   });

@@ -42,16 +42,9 @@ export const RESET_CONTEXT_COMMANDS: Record<string, true> = {
 
 /**
  * Whether a handled command discards the messages queued behind the run.
- *
- * `/work` is the stronger context boundary (`/new` + a fresh work session) and
- * must clear the queue — but its `merge`/`split` subcommands are in-place
- * history fixes on the *existing* work session, so they must not. They are
- * distinguished by the first argument token, matching the handler's own
- * subcommand dispatch.
  */
-export function resetsContext(cmd: string, firstArg: string | undefined): boolean {
-  if (cmd !== '/work') return RESET_CONTEXT_COMMANDS[cmd] === true;
-  return firstArg !== 'merge' && firstArg !== 'split';
+export function resetsContext(cmd: string): boolean {
+  return RESET_CONTEXT_COMMANDS[cmd] === true;
 }
 
 export interface IntakeDeps {
@@ -155,7 +148,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
   if (handled) {
     const tokens = msg.content.trim().split(/\s+/);
     const cmd = tokens[0] ?? '';
-    if (handled !== 'denied' && resetsContext(cmd, tokens[1])) {
+    if (handled !== 'denied' && resetsContext(cmd)) {
       const dropped = pending.cancel(scope);
       log.info('intake', 'command-reset', { scope, cmd, droppedPending: dropped.length });
     } else if (handled === 'denied') {

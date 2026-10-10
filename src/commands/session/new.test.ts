@@ -58,37 +58,38 @@ function makeCtx(over: { wasRunning?: boolean } = {}): {
 
 const cardJson = (sent: unknown[]): string => JSON.stringify(sent[0]);
 
-describe('/new — 只重置上下文', () => {
-  it('keeps the SAME work session, drops only the current segment', async () => {
+describe('/new — 开新对话', () => {
+  it('starts a new conversation: the active pointer is cleared, the old one stays', async () => {
     store.bindSegment('oc_1', 'sess-a', root);
-    store.bindSegment('oc_1', 'sess-b', root);
-    const before = store.activeWorkSession('oc_1');
+    store.setTitle('oc_1', '修搜索');
+    const spy = vi.spyOn(store, 'startWorkSession');
     const { ctx } = makeCtx();
 
     await handleNew('', ctx);
 
-    const after = store.activeWorkSession('oc_1');
-    // 同一个工作会话，id 不变。
-    expect(after?.id).toBe(before?.id);
-    expect(after?.id).toBe('sess-a');
-    // 段没丢，只是没有“当前段”了。
-    expect(after?.segments.map((s) => s.sessionId)).toEqual(['sess-a', 'sess-b']);
-    expect(after?.currentSegmentId).toBeUndefined();
+    expect(spy).toHaveBeenCalledWith('oc_1');
+    // 下一条消息新建 OMP 会话 = 新的一摊：当前对话被摘掉。
+    expect(store.activeWorkSession('oc_1')).toBeUndefined();
+    // 旧对话连同它的名字原样留在 store 里。
+    expect(store.workSessionById('sess-a')?.title).toBe('修搜索');
+    expect(store.titleFor('sess-a')).toBe('修搜索');
   });
 
-  it('does NOT start a new work session', async () => {
+  it('keeps the old conversation in the store after /new', async () => {
     store.bindSegment('oc_1', 'sess-a', root);
     store.setTitle('oc_1', '修搜索');
     const { ctx } = makeCtx();
 
     await handleNew('', ctx);
 
-    // 工作会话总数不变（没有 /work 那样的归档 + 新建）。
-    expect(store.allWorkSessions()).toHaveLength(1);
-    expect(store.activeWorkSession('oc_1')?.title).toBe('修搜索');
+    // 旧对话没被删：/history 里仍能看到它，名字也还在。
+    expect(store.allWorkSessions().map((ws) => ws.id)).toContain('sess-a');
+    expect(store.titleFor('sess-a')).toBe('修搜索');
+    // 但当前对话已不是它 —— 下一条消息开新的。
+    expect(store.activeWorkSession('oc_1')).toBeUndefined();
   });
 
-  it('binds the next segment into the SAME work session, inheriting its title', async () => {
+  it('binds the next message into a NEW, unnamed conversation', async () => {
     store.bindSegment('oc_1', 'sess-a', root);
     store.setTitle('oc_1', '修搜索');
     const { ctx } = makeCtx();
@@ -97,11 +98,12 @@ describe('/new — 只重置上下文', () => {
     store.bindSegment('oc_1', 'sess-next', root);
 
     const ws = store.activeWorkSession('oc_1');
-    expect(ws?.id).toBe('sess-a');
-    expect(ws?.segments.map((s) => s.sessionId)).toEqual(['sess-a', 'sess-next']);
-    expect(ws?.currentSegmentId).toBe('sess-next');
-    // 同一工作会话的新一段继承名字。
-    expect(ws?.title).toBe('修搜索');
+    // 新对话 = 新的一摊，名字从无名开始。
+    expect(ws?.id).toBe('sess-next');
+    expect(ws?.title).toBeUndefined();
+    // 旧对话的名字不会被新对话继承。
+    expect(store.workSessionById('sess-a')?.title).toBe('修搜索');
+    expect(store.titleFor('sess-a')).toBe('修搜索');
   });
 
   it('interrupts the running task', async () => {
@@ -121,7 +123,7 @@ describe('/new — 只重置上下文', () => {
 });
 
 describe('/new — 卡片文案', () => {
-  it('shows the work session name and says the context was reset', async () => {
+  it('says the context was reset, without the old conversation name', async () => {
     store.bindSegment('oc_1', 'sess-a', root);
     store.setTitle('oc_1', 'KMP 导出');
     const { ctx, sent } = makeCtx();
@@ -130,10 +132,9 @@ describe('/new — 卡片文案', () => {
 
     const json = cardJson(sent);
     expect(json).toContain('上下文已重置');
-    expect(json).toContain('KMP 导出');
-    expect(json).toContain('仍在同一工作会话');
-    // 不再是“开始新会话”的说法。
-    expect(json).not.toContain('已开始新会话');
+    // 新对话刚开、还没名字：不再顶着旧对话的名字。
+    expect(json).not.toContain('KMP 导出');
+    expect(json).not.toContain('仍在同一工作会话');
   });
 
   it('renders no name placeholder when the work session is unnamed', async () => {
@@ -148,10 +149,10 @@ describe('/new — 卡片文案', () => {
     expect(json).not.toContain('🧵');
   });
 
-  it('falls back to the last user message when there is no title', async () => {
+  it('does not surface a stale name from history (fresh conversation is unnamed)', async () => {
     store.bindSegment('oc_1', 'sess-a', root);
     const { ctx, sent } = makeCtx();
-    // 让 OMP 会话目录里有一份该段的 JSONL，最后一条用户消息作为回退名字。
+    // 旧的 OMP 会话文件里有消息，但 /new 之后当前对话是新的、未命名的。
     const dir = join(root, 'omp');
     await mkdir(dir, { recursive: true });
     await writeFile(
@@ -171,6 +172,7 @@ describe('/new — 卡片文案', () => {
 
     await handleNew('', ctx);
 
-    expect(cardJson(sent)).toContain('看一下 KMP 的导出');
+    expect(cardJson(sent)).toContain('上下文已重置');
+    expect(cardJson(sent)).not.toContain('看一下 KMP 的导出');
   });
 });

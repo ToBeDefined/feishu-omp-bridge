@@ -1,5 +1,11 @@
 # 工作会话（Work Session）重构 Implementation Plan
 
+> **状态：已作废（2026-10-11 晚）。** 该方案引入的「工作会话 + 段」要求用户
+> 手工 `/work merge|split` 修正分段，实际使用后判定不合理：**一个 OMP 会话
+> 就是一个对话**，`/resume` 直接恢复它即可。现已按新口径改造（见 CHANGELOG
+> `[Unreleased]`）：`/work`、`/history seg`、合并/拆分按钮、回填 CLI 全部下线，
+> 多段旧文件加载时自动规范化成「一段一对话」。下文仅作历史记录。
+
 > **For Claude:** Use `${SUPERPOWERS_SKILLS_ROOT}/skills/collaboration/executing-plans/SKILL.md` to implement this plan task-by-task.
 
 **Goal:** 把 bridge 的持久化单位从「chat ↔ OMP 会话」换成**工作会话**：一次工作由 `/work [名字]` 开启，`/new`、`/cd`、`/ws use`、OMP 漂移、`/resume`、`/release` 重启都只是同一工作会话里的「段」，`/history`、`/ctx`、`/status`、`/resume`、`/rename`、`/search` 全部以工作会话为单位。

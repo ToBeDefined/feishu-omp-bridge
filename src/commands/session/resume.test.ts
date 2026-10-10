@@ -112,56 +112,18 @@ function makeCtx(store: WorkSessionStore, over: Record<string, unknown> = {}): C
 }
 
 describe('pickActiveSegment', () => {
-  it('prefers the current segment while alive, else the latest alive', async () => {
+  it('returns the conversation while its file is alive, else nothing', async () => {
     const store = await openStore();
     store.bindSegment('oc_1', 's1', '/repo');
-    store.bindSegment('oc_1', 's2', '/repo');
-    store.bindSegment('oc_1', 's1', '/repo'); // re-run older → current = s1
     const ws = store.workSessionById('s1')!;
     expect(pickActiveSegment(ws, () => true)?.sessionId).toBe('s1');
-    // current (s1) dead → fall back to the newest alive (s2).
-    expect(pickActiveSegment(ws, (id) => id === 's2')?.sessionId).toBe('s2');
+    // 文件被删（幽灵对话）：没有可恢复的段。
     expect(pickActiveSegment(ws, () => false)).toBeUndefined();
     await store.flush();
   });
 });
 
 describe('applyResume adopting a work session', () => {
-  it('adopts a 3-segment work session at the picked segment and its cwd', async () => {
-    const a = await dir('a');
-    const b = await dir('b');
-    const c = await dir('c');
-    await writeSession('ws-1', a);
-    await writeSession('seg-2', b);
-    await writeSession('seg-3', c);
-    const store = await openStore();
-    store.bindSegment('oc_1', 'ws-1', a, { startedAtMs: 1, lastActiveAtMs: 1 });
-    store.bindSegment('oc_1', 'seg-2', b, { startedAtMs: 2, lastActiveAtMs: 2 });
-    store.bindSegment('oc_1', 'seg-3', c, { startedAtMs: 3, lastActiveAtMs: 3 });
-    store.bindSegment('oc_1', 'seg-2', b, { startedAtMs: 2, lastActiveAtMs: 4 }); // current = seg-2, not latest
-    store.startWorkSession('oc_1'); // archived: no scope currently holds it
-
-    const { ctx, setCwd, interrupt } = makeCtx(store, { scope: 'oc_9' });
-    await applyResume(ctx, {
-      workSessionId: 'ws-1',
-      sessionId: 'seg-3',
-      cwd: a,
-      timestamp: new Date(1).toISOString(),
-    });
-
-    const active = store.activeWorkSession('oc_9');
-    expect(active?.id).toBe('ws-1');
-    // currentSegmentId = exactly what pickActiveSegment returns.
-    expect(active?.currentSegmentId).toBe(
-      pickActiveSegment(store.workSessionById('ws-1')!, () => true)?.sessionId,
-    );
-    expect(active?.currentSegmentId).toBe('seg-2');
-    expect(active?.cwd).toBe(b);
-    expect(setCwd).toHaveBeenCalledWith('oc_9', b);
-    expect(interrupt).toHaveBeenCalledWith('oc_9');
-    await store.flush();
-  });
-
   it('claims a scope:null history work session for the current chat', async () => {
     const a = await dir('a');
     await writeSession('legacy-ws', a);
@@ -373,7 +335,7 @@ describe('/history topic and 继续对话 resume the same segment', () => {
 });
 
 describe('listResumableSessions', () => {
-  it('lists one row per work session with its id and segment count', async () => {
+  it('lists one row per OMP session (one session = one conversation)', async () => {
     const a = await dir('a');
     await writeSession('s1', a, 1, Date.now() - 1000);
     await writeSession('s2', a, 1, Date.now() - 500);
@@ -384,8 +346,9 @@ describe('listResumableSessions', () => {
 
     const { ctx } = makeCtx(store, { scope: 'oc_9' });
     const options = await listResumableSessions(ctx);
-    expect(options).toHaveLength(1);
-    expect(options[0]).toMatchObject({ workSessionId: 's1', segmentCount: 2, sessionId: 's2' });
+    // 两段会话 = 两个可恢复的对话，各自带着自己的 id。
+    expect(options.map((o) => o.sessionId).sort()).toEqual(['s1', 's2']);
+    expect(options.every((o) => o.segmentCount === 1)).toBe(true);
     await store.flush();
   });
 });
@@ -401,33 +364,3 @@ describe('renderContext', () => {
   });
 });
 
-describe('/resume a non-active segment id', () => {
-  it('points at /history seg instead of reporting the segment not found', async () => {
-    const a = await dir('a');
-    const b = await dir('b');
-    const c = await dir('c');
-    await writeSession('seg-a', a);
-    await writeSession('seg-b', b);
-    await writeSession('seg-c', c);
-    const store = await openStore();
-    store.bindSegment('oc_1', 'seg-a', a, { startedAtMs: 1, lastActiveAtMs: 1 });
-    store.bindSegment('oc_1', 'seg-b', b, { startedAtMs: 2, lastActiveAtMs: 2 });
-    store.bindSegment('oc_1', 'seg-c', c, { startedAtMs: 3, lastActiveAtMs: 3 }); // current
-    store.startWorkSession('oc_1'); // archived: resumable from another chat
-
-    const { ctx } = makeCtx(store, { scope: 'oc_9' });
-    reply.mockClear();
-    // seg-b is a middle segment: not the work session's active one, so it is
-    // absent from the /resume picker.
-    await resumeHandlers['/resume']!('seg-b', ctx);
-
-    expect(reply).toHaveBeenCalledTimes(1);
-    const text = reply.mock.calls[0]![1];
-    expect(text).toContain('历史段');
-    expect(text).toContain('seg-a'); // the owning work session id
-    expect(text).toContain('/history seg');
-    // Nothing was silently resumed.
-    expect(store.activeWorkSession('oc_9')).toBeUndefined();
-    await store.flush();
-  });
-});

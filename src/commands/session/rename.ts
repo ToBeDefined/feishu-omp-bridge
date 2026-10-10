@@ -8,7 +8,7 @@ import { codeSpan, summarizeMd } from '../../utils/text';
 import { extractUserInput } from './context';
 import { summarize } from '../../utils/text';
 import { latestSegment, type WorkSession } from '../../session/work-session';
-import { resolveWorkSessionDisplay } from './display';
+import { resolveSessionDisplay } from './display';
 
 export const renameHandlers: Record<string, Handler> = {
   '/rename': handleRename,
@@ -16,8 +16,8 @@ export const renameHandlers: Record<string, Handler> = {
 
 const MAX_TITLE_LENGTH = 60;
 const AUTO_TITLE_MAX = 30;
-/** 没有任何工作会话时的统一提示：读、清、写都走它，不做任何写入。 */
-const NO_WORK_SESSION = '❌ 当前还没有工作会话，先发一条消息或用 /work 开始一件新工作。';
+/** 没有当前会话时的统一提示：读、清、写都走它，不做任何写入。 */
+const NO_WORK_SESSION = '❌ 当前还没有会话，先发一条消息开始一段对话。';
 /** Internal marker told to the model not to emit; no longer used for
  * history stripping since generation runs in an isolated session dir. */
 const RENAME_AUTO_MARKER = '<rename-auto-title>';
@@ -25,7 +25,7 @@ const RENAME_AUTO_MARKER = '<rename-auto-title>';
 export async function handleRename(args: string, ctx: CommandContext): Promise<void> {
   const title = args.trim();
 
-  // /rename 命名的是**当前工作会话**（读、清、写同一目标）。没有活跃工作会话时
+  // /rename 命名的是**当前会话**（读、清、写同一目标）。没有当前会话时
   // 读/清/写/auto 一律给同一条提示，且不动盘。
   const active = ctx.workSessions.activeWorkSession(ctx.scope);
   if (!active) {
@@ -37,38 +37,38 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
     // 名字优先（同步、零 IO）；无名时回退取样段（当前段优先，否则最新段）的最后
     // 一条用户消息做展示。回退消息是原始用户输入，必须与其它展示处一致地截断 +
     // 转义，不能裸插进代码段（否则长消息撑爆消息体，`*`/`` ` `` 还能把代码段提前
-    // 闭合）。名字解析收敛在 resolveWorkSessionDisplay 里。
-    const { name, topic } = await resolveWorkSessionDisplay(ctx, active);
+    // 闭合）。名字解析收敛在 resolveSessionDisplay 里。
+    const { name, topic } = await resolveSessionDisplay(ctx, active);
     const display = name ?? topic;
     await reply(
       ctx,
       display
-        ? `当前工作会话标题：\`${codeSpan(summarizeMd(display, 40))}\`\n\n发 \`/rename <新标题>\` 修改，\`/rename auto\` 用 LLM 生成，\`/rename clear\` 清除。`
-        : '当前工作会话未命名（也没有可显示的历史消息）。\n\n用法：`/rename <标题>` — 给当前工作会话起名，`/rename auto` 用 LLM 生成，`/rename clear` 清除。',
+        ? `当前会话标题：\`${codeSpan(summarizeMd(display, 40))}\`\n\n发 \`/rename <新标题>\` 修改，\`/rename auto\` 用 LLM 生成，\`/rename clear\` 清除。`
+        : '当前会话未命名（也没有可显示的历史消息）。\n\n用法：`/rename <标题>` — 给当前会话起名，`/rename auto` 用 LLM 生成，`/rename clear` 清除。',
     );
     return;
   }
 
   if (title === 'clear') {
     const removed = ctx.workSessions.clearTitle(ctx.scope);
-    await reply(ctx, removed ? '✅ 已清除当前工作会话标题。' : '当前工作会话本就没有标题。');
+    await reply(ctx, removed ? '✅ 已清除当前会话标题。' : '当前会话本就没有标题。');
     return;
   }
 
   if (title === 'auto') {
-    // 记下目标工作会话 id：生成是异步的，期间 /work（摘掉当前指针）或 /resume
-    //（切到别的工作会话）都会让 active 变样。名字必须落在发起时那个活上。
+    // 记下目标会话 id：生成是异步的，期间 /new、/cd 或 /resume 都会让当前
+    // 会话变样。名字必须落在发起时那个会话上。
     const target = active.id;
     await reply(ctx, '🤖 正在用 LLM 生成标题…');
     const generated = await generateTitleWithLlm(ctx, active);
     if (!generated) {
-      await reply(ctx, '❌ 无法生成标题（工作会话内容太少或生成失败），请手动 `/rename <标题>`。');
+      await reply(ctx, '❌ 无法生成标题（会话内容太少或生成失败），请手动 `/rename <标题>`。');
       return;
     }
     if (!ctx.workSessions.setTitleById(target, generated)) {
       await reply(
         ctx,
-        '❌ 生成完成但目标工作会话已不存在（可能被执行了 /work 或 /resume），名字未保存。',
+        '❌ 生成完成但目标会话已不存在（期间可能 /new、/cd 或 /resume 换了会话），名字未保存。',
       );
       return;
     }
@@ -96,7 +96,7 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
  * means the generation prompt never lands in the main session file or gets
  * echoed back by the bridge. */
 async function generateTitleWithLlm(ctx: CommandContext, active: WorkSession): Promise<string | null> {
-  // 取样窗口 = 当前工作会话**最新段**的会话文件（/new 会丢当前段指针，但段还在）。
+  // 取样窗口 = 当前会话自己的会话文件。
   const seg = latestSegment(active);
   if (!seg) return null;
 

@@ -248,7 +248,8 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
     // `undefined !== cwd` used to match here and wipe it on the next message.
     if (active?.currentSegmentId !== undefined && active.cwd !== cwd) {
       log.info('session', 'stale-cleared', { staleCwd: active.cwd, newCwd: cwd });
-      workSessions.dropCurrentSegment(scope);
+      // 目录换了 → 这次跑的必然是新 OMP 会话 = 新对话。
+      workSessions.startWorkSession(scope);
     } else {
       log.info('session', 'fresh', { cwd });
     }
@@ -392,9 +393,9 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
   // dead id and replay the batch once.
   if (resumeFrom && !retriedStaleSession && run.staleSession) {
     log.warn('session', 'stale-cleared', { sessionId: resumeFrom, cwd });
-    // Drop only the dead current segment; the work session (and its title) and
-    // the scope's idle-timeout override both survive the rollover.
-    workSessions.dropCurrentSegment(scope);
+    // 这段会话已经续不上了（文件没落盘 / model 丢失）：重放会在新 OMP 会话里
+    // 跑，也就是开一段新对话；scope 的空闲超时等偏好不受影响。
+    workSessions.startWorkSession(scope);
     // The first attempt's claim was consumed by its register, and a /compact
     // deferred during the run may have taken the slot meanwhile. Reserve again
     // — if the slot is taken, the replay must not start a second agent on the

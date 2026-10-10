@@ -368,7 +368,7 @@ describe('searchSession', () => {
     await store.flush();
   });
 
-  it('merges two segments of one work session into a single row with its segment count', async () => {
+  it('每个 OMP 会话各占一行（一段一对话），标题或最后一条用户消息作为身份', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
     paths.ompSessionsDir = tmp;
     await writeSession(tmp, 'segA.jsonl', { id: 'segA', cwd: '/repo', ts: '2026-08-15T10:00:00.000Z' }, [
@@ -380,20 +380,25 @@ describe('searchSession', () => {
     const store = new WorkSessionStore(join(tmp, 'sessions.json'));
     await store.load();
     store.bindSegment('oc_1', 'segA', '/repo');
+    // 新对话（/new 等）开新的一摊：segB 不并入 segA 的行。
+    store.startWorkSession('oc_1');
     store.bindSegment('oc_1', 'segB', '/repo');
 
     const hits = await searchSession('codegraph', ctxFor({}, store));
-    expect(hits).toHaveLength(1);
-    expect(hits[0]!.workSessionId).toBe('segA');
-    expect(hits[0]!.segmentCount).toBe(2);
-    expect(hits[0]!.matchCount).toBe(2);
-    // One group per matched segment, newest segment first.
-    expect(hits[0]!.groups.map((g) => g.segmentId)).toEqual(['segB', 'segA']);
+    // 一个 OMP 会话 = 一个对话：两个会话 = 两行，各自一段，不再合并计数。
+    expect(hits).toHaveLength(2);
+    expect(hits.map((h) => h.workSessionId).sort()).toEqual(['segA', 'segB']);
+    expect(hits.every((h) => h.segmentCount === 1)).toBe(true);
+    expect(hits.every((h) => h.groups.length === 1)).toBe(true);
+    // 没名字时以最后一条用户消息作为身份。
+    const topicById = Object.fromEntries(hits.map((h) => [h.workSessionId, h.topic]));
+    expect(topicById.segA).toBe('第一段 codegraph');
+    expect(topicById.segB).toBe('第二段 codegraph');
 
-    // Card: exactly one heading row, with the segment count annotated.
+    // 卡片：一行一个 heading，不再有「N 段」标注。
     const card = JSON.stringify(searchResultsCard('codegraph', hits, 'q1', true));
-    expect(card.match(/"text_size":"heading"/g)).toHaveLength(1);
-    expect(card).toContain('🧵 2 段');
+    expect(card.match(/"text_size":"heading"/g)).toHaveLength(2);
+    expect(card).not.toContain('🧵');
     await store.flush();
   });
 

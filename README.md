@@ -30,20 +30,21 @@ omp --mode rpc --session-dir ~/.feishu-omp-bridge/omp-sessions
 ### 消息与会话
 
 - 支持飞书 / Lark 私聊、普通群聊 `@bot`、话题群 topic、云文档评论 `@bot`。
-- 每个 chat / topic 独立保存**工作会话**（见下节），下一轮用 `omp --mode rpc --resume <session_id>` 续聊最新的一段。
-- 话题群按 `chatId:threadId` 隔离工作会话、cwd、pending queue 和 active run。
+- 每个 chat / topic 独立保存**当前会话**，下一轮用 `omp --mode rpc --resume <session_id>` 续聊。
+- 话题群按 `chatId:threadId` 隔离会话、cwd、pending queue 和 active run。
 - 支持图片输入：飞书图片会下载到本地缓存，再转成 OMP RPC image payload。
 - 支持文件下载缓存，供 OMP 后续按本地路径读取。
 - 支持消息 debounce：短时间连续消息会合并成一个 batch prompt。
 
-### 工作会话
+### 会话模型
 
-一次工作由 `/work [名字]` 开启，这是**唯一**的会话边界。OMP 会话只是它的**段**：`/new`（只重置上下文）、`/cd`、`/ws use`、`/resume`、OMP 漂移、`/release` 重启都只在同一工作会话里追加 / 切换段，不新开工作。工作会话 id = 它**第一段**的 OMP 会话 id，段再多也不变。
+**一个 OMP 会话 = 一个对话。** 桥只在 chat/topic 上记住「当前会话」，下一轮 `--resume` 它；续不上（或者你主动开新的）就开一段新对话，旧对话原样留在 `/history` 里。
 
-- 标题属于工作会话：`/rename` 命名它；没名字时 `/history`、`/search`、`/resume` 回退显示该工作会话最后一条用户消息。
-- `/history` 一行 = 一个工作会话（标注段数 / 轮数）；「继续对话」恢复最新段，`/history seg <id>` 展开各段、可单独恢复。
-- `/work merge <id> [id]`、`/work split <id> <段序号>` 手工修正历史分段。
-- 历史用 `bridge migrate work-sessions`（默认 dry-run，`--apply` 落盘）按日志边界回填。
+- 会换到新 OMP 会话（= 开新对话）的：`/new`（`/reset`）、`/cd`、`/ws use`（含 `/ws undo`），以及运行期漂移（cwd 变了 / 会话文件被删 / 旧会话已无法 `--resume`）。
+- **不会**换会话的：`/release` 重启、`/compact`（都在同一段里接着跑）。
+- 标题属于**那个对话**：`/rename` 命名当前对话；没名字时 `/history`、`/search`、`/resume` 回退显示该对话最后一条用户消息。
+- `/history` 一行 = 一个对话（活动时间 / 轮数 / 标题或最后一条用户消息）；「继续对话」恢复它，`/history all` 看全部工作目录。
+- 升级须知：早期版本把多个 OMP 会话挂在同一「工作会话」下（需要手工合并/拆分），现在加载旧文件时会自动规范化成「一段一对话」，并留一份 `sessions.json.v2.bak`。
 
 ### OMP RPC 流式输出
 
@@ -341,7 +342,7 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 - `allowedChats` 空或未设置：允许所有 chat。
 - `admins` 空或未设置：所有允许用户都可执行管理员命令。
 - `owner` 未设置：回退到 `admins[0]`；两者都未设置时，高危命令对所有人拒绝。
-- 管理员命令（`admins`）：`/account`、`/config`、`/model`、`/thinking`、`/restart`、`/context`、`/resume`、`/session`、`/every`、`/search`、`/history`、`/sessions`、`/work`、`/diff`、`/exit`、`/reconnect`、`/doctor`、`/cd`、`/ws`。
+- 管理员命令（`admins`）：`/account`、`/config`、`/model`、`/thinking`、`/restart`、`/context`、`/resume`、`/session`、`/every`、`/search`、`/history`、`/sessions`、`/diff`、`/exit`、`/reconnect`、`/doctor`、`/cd`、`/ws`。
 - 归属者命令（`owner`，比 admins 更严）：`/release`、`/exec`、`/run` —— 只有 owner 能跑，协作者拿 admin 也无法执行 shell。
 
 ## 数据目录
@@ -352,7 +353,7 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 | `~/.feishu-omp-bridge/secrets.enc` | 本地加密 secret keystore。 |
 | `~/.feishu-omp-bridge/.keystore.salt` | keystore salt。 |
 | `~/.feishu-omp-bridge/secrets-getter` | exec secret provider wrapper。 |
-| `~/.feishu-omp-bridge/sessions.json` | v2：各 scope 的当前工作会话指针 + timeout 覆盖，以及全部工作会话（含各自有序的段）。旧文件加载时自动迁移（v1 备份为 `sessions.json.v1.bak`）。 |
+| `~/.feishu-omp-bridge/sessions.json` | v2：各 scope 的当前会话指针 + timeout 覆盖，以及全部会话（标题 / cwd / 时间）。旧文件加载时自动迁移；含多段「工作会话」的 v2 文件会被就地规范化成「一段一对话」并备份为 `sessions.json.v2.bak`（v1 文件备份为 `sessions.json.v1.bak`）。 |
 | `~/.feishu-omp-bridge/omp-sessions/` | bridge 专用 OMP JSONL session 文件。 |
 | `~/.feishu-omp-bridge/workspaces.json` | 命名工作空间。 |
 | `~/.feishu-omp-bridge/processes.json` | 本机 bridge 进程注册表。 |
@@ -363,18 +364,17 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 
 | 命令 | 作用 |
 | --- | --- |
-| `/work [名字]` | 开启一件新工作（工作会话，唯一的分段边界）；子命令 `merge`/`split` 见「工作会话」。 |
-| `/new`、`/reset` | 只重置上下文（同一工作会话里新起一段），不再换工作会话。 |
+| `/new`、`/reset` | 开一段**新对话**（旧对话留在 `/history` 里）。 |
 | `/new chat [name]` | 创建新群并拉你进去，继承当前 cwd。需要 bot 具备 `im:chat` 权限。 |
-| `/cd <path>` | 切换当前 chat/topic 的工作目录（同一工作会话里新起一段，cwd 随段走）。支持绝对路径、`~/xxx`、相对当前目录的路径（如 `src`、`../x`）。 |
+| `/cd <path>` | 切换当前 chat/topic 的工作目录并开新对话（cwd 不匹配没法续旧会话）。支持绝对路径、`~/xxx`、相对当前目录的路径（如 `src`、`../x`）。 |
 | `/ws list` | 查看命名工作空间。 |
 | `/ws add <name> <path>` | 保存当前 cwd 为命名工作空间。 |
-| `/ws use <name>` | 切换到命名工作空间（同一工作会话里新起一段）。 |
+| `/ws use <name>` | 切换到命名工作空间（换目录 = 开新对话；`/ws undo` 同理）。 |
 | `/config` | 打开偏好设置卡片。 |
 | `/account` | 更换 bot app 凭据并重连。 |
-| `/context` | 查看当前工作会话上下文(工作会话 id/段数/当前段/cwd/模型/探活等)。 |
-| `/rename <标题>` | 给当前**工作会话**起名;`/rename auto` 用 LLM 生成(≤20 字),`/rename clear` 清除。标题显示在 `/context`、`/status`、`/resume`、`/search`。 |
-| `/history [all]`、`/sessions` | 工作会话清单，按最后活动时间倒序：默认只看**当前工作目录**，`all` 看全部工作目录。每行 = 一个工作会话（活动时间 / 轮数 / 段数 / 标题或最后一条用户消息），「继续对话」恢复最新段，`/history seg <id>` 列出各段并单独恢复；超过 8 条分页。admin 命令。 |
+| `/context` | 查看当前会话上下文（会话 id / 标题 / cwd / 模型 / 探活等）。 |
+| `/rename <标题>` | 给当前**对话**起名；`/rename auto` 用 LLM 生成(≤20 字)，`/rename clear` 清除。标题显示在 `/context`、`/status`、`/resume`、`/search`。 |
+| `/history [all]`、`/sessions` | 会话清单，按最后活动时间倒序：默认只看**当前工作目录**，`all` 看全部工作目录。每行 = 一个 OMP 会话（活动时间 / 轮数 / 标题或最后一条用户消息），「继续对话」恢复它；超过 8 条分页。admin 命令。 |
 | `/status` | 查看当前 scope、cwd、session、agent。 |
 | `/stop` | 终止当前正在执行的 OMP run。 |
 | `/timeout [N|off|default]` | 设置当前 session 的 idle timeout，或关闭 / 恢复全局默认。 |
@@ -577,8 +577,7 @@ pnpm build
 | --- | --- |
 | 启动时报找不到 `omp` | 确认 `omp --version` 可用，并先运行一次 `omp` 完成模型 / 认证配置。 |
 | OMP RPC 启动后无响应 | 单独运行 `omp --mode rpc` 做 smoke test；检查 `~/.feishu-omp-bridge/logs/`。 |
-| OMP 没有续上次对话 | 发 `/context` 看工作会话与「当前段」；cwd 变化会让 bridge 在同一工作会话里新起一段。 |
-| 历史会话没归到同一件工作 | 先 `bridge migrate work-sessions`（dry-run）看回填计划，`--apply` 落盘后可用 `/work merge|split` 手工修正。 |
+| OMP 没有续上次对话 | 发 `/context` 看当前会话 id；`/cd`、`/ws use`、`/new` 或运行期漂移（cwd 变了、会话文件被删）都会换成新对话 —— 旧对话仍在 `/history` 里，点「继续对话」即可回去。 |
 | 群聊无响应 | 确认消息里 `@bot`，或在 `/config` / `config.json` 中调整 `requireMentionInGroup`。 |
 | 卡片长时间不动 | 用 `/stop` 中断；也可设置 `/timeout 10` 开启当前 session idle 探活。 |
 | OMP 等待选择 / 输入 | 回复单独出现的“OMP 交互”卡片；等待期间 idle watchdog 会暂停。 |

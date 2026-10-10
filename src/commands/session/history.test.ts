@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,7 +10,6 @@ import { listWorkSessions, scanSessionFiles } from './sessions';
 import { applyResume } from './resume';
 import { renderContext } from './context';
 import { WorkSessionStore } from '../../session/work-store';
-import { resolveCardCommand } from '../../bot/card-dispatcher';
 
 const { reply, recallMessage, sendManagedCard } = vi.hoisted(() => ({
   reply: vi.fn(async (_ctx: unknown, _text: string) => {}),
@@ -180,7 +179,7 @@ describe('scanSessionFiles', () => {
 });
 
 describe('listWorkSessions', () => {
-  it('aggregates a 3-segment work session into one row (turns summed)', async () => {
+  it('renders one row per OMP session (one session = one conversation)', async () => {
     await writeSession('g1.jsonl', { id: 'ws-1', cwd: tmp, ts: '2026-03-01T00:00:00Z' }, 2, Date.now() - 300_000);
     await writeSession('g2.jsonl', { id: 'seg-2', cwd: tmp, ts: '2026-03-02T00:00:00Z' }, 3, Date.now() - 200_000);
     await writeSession('g3.jsonl', { id: 'seg-3', cwd: tmp, ts: '2026-03-03T00:00:00Z' }, 4, Date.now() - 100_000);
@@ -191,11 +190,10 @@ describe('listWorkSessions', () => {
     store.bindSegment('oc_1', 'seg-3', tmp, { startedAtMs: 3_000, lastActiveAtMs: 3_000 });
 
     const rows = await listWorkSessions(makeCtx({ workSessions: store }).ctx);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ workSessionId: 'ws-1', segmentCount: 3, turns: 9 });
-    expect(rows[0]!.segments.map((s) => s.sessionId)).toEqual(['ws-1', 'seg-2', 'seg-3']);
-    // 最后活动 = max（工作会话自身、各段文件 mtime）
-    expect(rows[0]!.lastActiveAtMs).toBeGreaterThanOrEqual(Date.now() - 300_000);
+    // 三段会话 = 三行，各自带自己的轮数（step 2/3/4 不再并成一行）。
+    expect(rows.map((r) => r.workSessionId).sort()).toEqual(['seg-2', 'seg-3', 'ws-1']);
+    expect(rows.map((r) => r.turns).sort()).toEqual([2, 3, 4]);
+    expect(rows.every((r) => r.segmentCount === 1)).toBe(true);
     await store.flush();
   });
 
@@ -230,17 +228,22 @@ describe('listWorkSessions', () => {
     await store.flush();
   });
 
-  it("keeps a work session's declared segment count when a segment file is gone", async () => {
+  it('lists a conversation whose file was deleted without inventing data for it', async () => {
     await writeSession('keep.jsonl', { id: 'ws-k', cwd: tmp, ts: '2026-05-01T00:00:00Z' }, 2, Date.now() - 100_000);
     const store = new WorkSessionStore(join(tmp, 'sessions.json'));
     await store.load();
     store.bindSegment('oc_1', 'ws-k', tmp, { startedAtMs: 1, lastActiveAtMs: 1 });
+    // 这段对话的会话文件不存在（没写过）。
     store.bindSegment('oc_1', 'gone-seg', tmp, { startedAtMs: 2, lastActiveAtMs: 2 });
 
     const rows = await listWorkSessions(makeCtx({ workSessions: store }).ctx);
-    const row = rows.find((r) => r.workSessionId === 'ws-k');
-    expect(row).toMatchObject({ segmentCount: 2, turns: 2 });
-    expect(row!.segments.map((s) => s.sessionId)).toEqual(['ws-k']);
+    const gone = rows.find((r) => r.workSessionId === 'gone-seg');
+    // 没有文件就没轮数/没有可恢复的段，但在清单里仍然占一行（点「继续对话」会明确报错）。
+    expect(gone).toMatchObject({ turns: 0, segmentCount: 1 });
+    expect(gone?.activeSegmentId).toBeUndefined();
+    const keep = rows.find((r) => r.workSessionId === 'ws-k');
+    expect(keep).toMatchObject({ turns: 2, segmentCount: 1 });
+    expect(keep?.activeSegmentId).toBe('ws-k');
     await store.flush();
   });
 });
@@ -281,23 +284,24 @@ describe('/history', () => {
     );
   });
 
-  it('filters by the work session cwd, not an older segment cwd', async () => {
+  it('filters rows by each conversation own cwd', async () => {
     const store = new WorkSessionStore(join(tmp, 'sessions.json'));
     await store.load();
-    // Cross-directory work session: an old segment lived in /repo/old, the
-    // latest one lives in the current workspace (tmp).
-    store.bindSegment('oc_1', 'cross-ws', '/repo/old', { startedAtMs: 1, lastActiveAtMs: 1 });
-    store.bindSegment('oc_1', 'seg-new', tmp, { startedAtMs: 2, lastActiveAtMs: 2 });
-    await writeSession('cross1.jsonl', { id: 'cross-ws', cwd: '/repo/old', ts: '2026-01-01T00:00:00Z' }, 1, Date.now() - 100_000, 'OLD');
-    await writeSession('cross2.jsonl', { id: 'seg-new', cwd: tmp, ts: '2026-01-02T00:00:00Z' }, 2, Date.now() - 50_000, 'NEW');
+    // 一个 OMP 会话 = 一个对话：两摊活各自一段，cwd 各随自己。
+    store.bindSegment('oc_1', 'here-ws', tmp, { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.startWorkSession('oc_1');
+    store.bindSegment('oc_1', 'there-ws', '/repo/old', { startedAtMs: 1, lastActiveAtMs: 1 });
+    await writeSession('there.jsonl', { id: 'there-ws', cwd: '/repo/old', ts: '2026-01-01T00:00:00Z' }, 1, Date.now() - 100_000, 'OLD');
+    await writeSession('here.jsonl', { id: 'here-ws', cwd: tmp, ts: '2026-01-02T00:00:00Z' }, 2, Date.now() - 50_000, 'NEW');
 
     await handleHistory('', makeCtx({ workSessions: store }).ctx);
     const card = cardJson();
-    // The cross-dir work session is kept (its LATEST segment is here) even
-    // though its first segment's cwd is elsewhere...
-    expect(card).toContain('🧵 2 段');
+    // 行按会话自己的 cwd 过滤：只有当前工作目录下的对话在列。
     expect(card).toContain('NEW 问题 1');
     expect(card).not.toContain('OLD 问题 0');
+    // 行的身份就是会话 id（卡片字段已更名），也正好是「继续对话」的载荷。
+    expect(card).toContain('🆔 here-ws');
+    expect(card).not.toContain('there-ws');
     await store.flush();
   });
 
@@ -415,171 +419,5 @@ describe('/history', () => {
   it('replaces the clicked card instead of stacking a new one', async () => {
     await handleHistory('all 8', makeCtx({ fromCardAction: true }).ctx);
     expect(recallMessage).toHaveBeenCalled();
-  });
-});
-
-describe('/history seg', () => {
-  let a: string;
-  let b: string;
-  let c: string;
-
-  beforeEach(async () => {
-    a = join(tmp, 'dir-a');
-    b = join(tmp, 'dir-b');
-    c = join(tmp, 'dir-c');
-    await mkdir(a, { recursive: true });
-    await mkdir(b, { recursive: true });
-    await mkdir(c, { recursive: true });
-  });
-
-  /** 3 segments in ONE work session; seg-a (the id) is the earliest, seg-c the
-   * latest/current — so seg-a ≠ what pickActiveSegment would return. */
-  async function threeSegments(turns = { a: 2, b: 3, c: 4 }): Promise<WorkSessionStore> {
-    await writeSession('seg-a.jsonl', { id: 'seg-a', cwd: a, ts: '2026-01-01T00:00:00Z' }, turns.a, Date.now() - 300_000, 'A');
-    await writeSession('seg-b.jsonl', { id: 'seg-b', cwd: b, ts: '2026-01-02T00:00:00Z' }, turns.b, Date.now() - 200_000, 'B');
-    await writeSession('seg-c.jsonl', { id: 'seg-c', cwd: c, ts: '2026-01-03T00:00:00Z' }, turns.c, Date.now() - 100_000, 'C');
-    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
-    await store.load();
-    store.bindSegment('oc_1', 'seg-a', a, { startedAtMs: 1_000, lastActiveAtMs: 1_000 });
-    store.bindSegment('oc_1', 'seg-b', b, { startedAtMs: 2_000, lastActiveAtMs: 2_000 });
-    store.bindSegment('oc_1', 'seg-c', c, { startedAtMs: 3_000, lastActiveAtMs: 3_000 }); // current = latest
-    return store;
-  }
-
-  it('lists every segment of the work session, in order, with per-segment stats', async () => {
-    const store = await threeSegments();
-    await handleHistory('seg seg-a', makeCtx({ workSessions: store }).ctx);
-
-    const card = cardJson();
-    expect(sendManagedCard).toHaveBeenCalledWith(expect.anything(), 'oc_1', expect.anything());
-    expect(card).toContain('共 3 段');
-    // All three segments appear, earliest first.
-    expect(card).toContain('#1');
-    expect(card).toContain('#2');
-    expect(card).toContain('#3');
-    expect(card.indexOf('#1')).toBeLessThan(card.indexOf('#2'));
-    expect(card.indexOf('#2')).toBeLessThan(card.indexOf('#3'));
-    expect(card).toContain('seg-a');
-    expect(card).toContain('seg-b');
-    expect(card).toContain('seg-c');
-    // Real turn counts per segment (from scanSessionFiles, not summed).
-    expect(card).toContain('💬 2 轮');
-    expect(card).toContain('💬 3 轮');
-    expect(card).toContain('💬 4 轮');
-    // Each row is summarised by that segment's last user message.
-    expect(card).toContain('A 问题 1');
-    expect(card).toContain('C 问题 3');
-    await store.flush();
-  });
-
-  it('errors for an unknown work session id', async () => {
-    const store = await threeSegments();
-    await handleHistory('seg nope', makeCtx({ workSessions: store }).ctx);
-    expect(sendManagedCard).not.toHaveBeenCalled();
-    expect(reply.mock.calls[0]![1]).toContain('未找到工作会话');
-    await store.flush();
-  });
-
-  it('renders 恢复这一段 buttons whose payload maps to `resume <segmentId>`', async () => {
-    const store = await threeSegments();
-    await handleHistory('seg seg-a', makeCtx({ workSessions: store }).ctx);
-
-    const card = cardJson();
-    expect(card).toContain('恢复这一段');
-    expect(card).toContain('"cmd":"history.resume","arg":"seg-b"');
-    // Back button returns to the work-session ledger.
-    expect(card).toContain('"cmd":"history.page","arg":"cwd 0"');
-    // The dispatcher turns that payload into the text command the handler reads.
-    expect(resolveCardCommand('history.resume', { arg: 'seg-b' })).toEqual({
-      name: 'history',
-      args: 'resume seg-b',
-    });
-    await store.flush();
-  });
-
-  it('restores the EXACT segment clicked, not the work session active one', async () => {
-    const store = await threeSegments();
-    const { ctx, spy } = makeCtx({ workSessions: store });
-
-    // Row #1 is the earliest segment (seg-a); its id IS the work session id,
-    // so this is exactly where pickActiveSegment would wrongly return seg-c.
-    await handleHistory('resume seg-a', ctx);
-
-    expect(store.workSessionById('seg-a')?.currentSegmentId).toBe('seg-a');
-    expect(store.activeWorkSession('oc_1')?.cwd).toBe(a);
-    expect(spy.setCwd).toHaveBeenCalledWith('oc_1', a);
-    expect(spy.interrupt).toHaveBeenCalledWith('oc_1');
-    // /ctx's 当前段 follows the restored segment.
-    expect(renderContext(ctx, {})).toContain('**当前段**: `seg-a`');
-    await store.flush();
-  });
-
-  it('also restores a middle segment exactly', async () => {
-    const store = await threeSegments();
-    const { ctx, spy } = makeCtx({ workSessions: store });
-
-    await handleHistory('resume seg-b', ctx);
-
-    expect(store.workSessionById('seg-a')?.currentSegmentId).toBe('seg-b');
-    expect(store.activeWorkSession('oc_1')?.cwd).toBe(b);
-    expect(spy.setCwd).toHaveBeenCalledWith('oc_1', b);
-    await store.flush();
-  });
-
-  it('shows an unnamed work session’s segments (identity falls back gracefully)', async () => {
-    // All segments empty → no last message to fall back to.
-    const store = await threeSegments({ a: 0, b: 0, c: 0 });
-    expect(store.workSessionById('seg-a')?.title).toBeUndefined();
-    await handleHistory('seg seg-a', makeCtx({ workSessions: store }).ctx);
-
-    const card = cardJson();
-    expect(card).toContain('共 3 段');
-    expect(card).toContain('seg-a');
-    expect(card).toContain('seg-c');
-    expect(card).toContain('未命名工作会话');
-    await store.flush();
-  });
-
-  it('keeps a declared segment whose file is gone visible', async () => {
-    const store = await threeSegments();
-    // Drop seg-b's file: it stays declared, so the list must still show it.
-    await rm(join(tmp, 'seg-b.jsonl'));
-    await handleHistory('seg seg-a', makeCtx({ workSessions: store }).ctx);
-
-    const card = cardJson();
-    expect(card).toContain('共 3 段');
-    expect(card).toContain('seg-b');
-    expect(card).toContain('文件缺失');
-    await store.flush();
-  });
-
-  it('topics the displayed ws, not the caller’s active one', async () => {
-    const store = await threeSegments();
-    // Archive seg-a's work session and open a DIFFERENT one on oc_1.
-    store.startWorkSession('oc_1');
-    await writeSession('other.jsonl', { id: 'other', cwd: a, ts: '2026-02-01T00:00:00Z' }, 1, Date.now(), 'OTHER');
-    store.bindSegment('oc_1', 'other', a, { startedAtMs: 5_000, lastActiveAtMs: 5_000 });
-    expect(store.activeWorkSession('oc_1')?.id).toBe('other');
-
-    await handleHistory('seg seg-a', makeCtx({ workSessions: store }).ctx);
-    const card = cardJson();
-    // Header topic = seg-a ws's OWN display segment (seg-c), not the active ws.
-    expect(card).toContain('**C 问题 3**');
-    expect(card).not.toContain('OTHER');
-    // Displayed ws ≠ caller's active ws → no ✅ marker anywhere.
-    expect(card).not.toContain('✅ 当前');
-    await store.flush();
-  });
-
-  it('marks ✅ on the displayed ws’s own fallback segment when its current file is gone', async () => {
-    const store = await threeSegments();
-    await rm(join(tmp, 'seg-c.jsonl')); // ws seg-a's currentSegmentId is seg-c
-    await handleHistory('seg seg-a', makeCtx({ workSessions: store }).ctx);
-
-    const card = cardJson();
-    // Display falls back to the latest alive segment (#2 = seg-b), not the dead #3.
-    expect(card).toContain('**#2** ✅ 当前');
-    expect(card).not.toContain('**#3** ✅ 当前');
-    await store.flush();
   });
 });

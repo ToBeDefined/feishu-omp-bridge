@@ -142,8 +142,8 @@ describe('intakeMessage mid-run routing', () => {
     }
   });
 
-  it('starting a new work session drops queued messages, named or not', async () => {
-    for (const content of ['/work', '/work my new task']) {
+  it('starting a new conversation drops queued messages', async () => {
+    for (const content of ['/new', '/reset', '/cd /repo']) {
       vi.clearAllMocks();
       const deps = makeDeps();
       deps.msg = makeMsg(content);
@@ -151,18 +151,6 @@ describe('intakeMessage mid-run routing', () => {
 
       await intakeMessage(deps);
       expect(deps.pending.cancel).toHaveBeenCalledWith('oc_1');
-    }
-  });
-
-  it('the /work merge and split subcommands keep queued messages', async () => {
-    for (const content of ['/work merge ws-a', '/work split ws-a 2']) {
-      vi.clearAllMocks();
-      const deps = makeDeps();
-      deps.msg = makeMsg(content);
-      tryHandleCommand.mockResolvedValue(true);
-
-      await intakeMessage(deps);
-      expect(deps.pending.cancel).not.toHaveBeenCalled();
     }
   });
 

@@ -8,7 +8,7 @@ import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
 import { codeSpan } from '../../utils/text';
 import { extractUserInput, scanSessionFile } from './context';
 import { applyResume, listResumableSessions } from './resume';
-import { pickDisplaySegmentId, workSessionName } from './display';
+import { sessionName, sessionIdOf } from './display';
 import {
   renderSearchContext,
   searchDetailCard,
@@ -97,15 +97,14 @@ interface SegmentHit extends WorkSessionIdentity {
 
 /**
  * Resolve a segment's work-session identity + display name, memoised by work
- * session id so a multi-segment work session is resolved once.
+ * session id so a hit is resolved once.
  *
  * Unlike the /status-style helper, this never calls `loadSessionSummary`: both
  * the name (title, zero IO) and the unnamed topic fallback come from the
- * search's OWN scan — `aliveIds` (which segments are on disk) feeds the shared
- * `pickDisplaySegmentId` rule, and `lastUserBySegment` supplies the picked
- * segment's last user message. That avoids one full-directory scan per unnamed
- * hit work session. A segment no work session claims is its own single-segment
- * work session (identity = the segment), never named.
+ * search's OWN scan — `lastUserBySegment` supplies the session's last user
+ * message. That avoids one full-directory scan per unnamed session. A session
+ * no work session claims is its own conversation (identity = the session),
+ * never named.
  */
 async function resolveSegmentIdentity(
   ctx: CommandContext,
@@ -119,11 +118,11 @@ async function resolveSegmentIdentity(
   const workSessionId = ws?.id ?? sessionId ?? fileName;
   const cached = cache.get(workSessionId);
   if (cached) return cached;
-  const title = workSessionName(ctx, ws);
+  const title = sessionName(ws);
   let topic: string | undefined;
   if (title === undefined && ws !== undefined) {
-    const activeId = pickDisplaySegmentId(ws, aliveIds);
-    const last = activeId !== undefined ? lastUserBySegment.get(activeId) : undefined;
+    const displayId = sessionIdOf(ws);
+    const last = displayId !== undefined ? lastUserBySegment.get(displayId) : undefined;
     topic = last?.trim() || undefined;
   }
   const resolved: WorkSessionIdentity = {
@@ -453,7 +452,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
         searchDetailCard(workSessionId, full, `${queryId} ${idx}`, idx, false, wsLabel),
       ).catch(() => {});
     } else {
-      await reply(ctx, `🆔 工作会话: \`${workSessionId}\`\n\n${full}`);
+      await reply(ctx, `🆔 会话: \`${workSessionId}\`\n\n${full}`);
     }
     return;
   }

@@ -4,7 +4,6 @@ import { formatIdleLine, reply } from '../shared';
 import { newSessionCard } from '../../card/templates';
 import { escapeMd } from '../../utils/text';
 import { createBoundChat, defaultChatName } from './group';
-import { resolveWorkSessionDisplay } from './display';
 import { getOmpModel, getOmpThinking, getRunIdleTimeoutMs } from '../../config/schema';
 import { log } from '../../core/logger';
 
@@ -23,14 +22,9 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   }
 
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
-  // /new 只重置上下文，不换工作会话：名字（或最后一条用户消息）要带进卡片，
-  // 用户才知道自己还在同一摊活里。先取名字再丢当前段。
-  const { name, topic } = await resolveWorkSessionDisplay(
-    ctx,
-    ctx.workSessions.activeWorkSession(ctx.scope),
-  );
-  const workSessionName = name ?? topic;
-  ctx.workSessions.dropCurrentSegment(ctx.scope);
+  // 一个 OMP 会话 = 一个对话：/new 起一段**新对话**（下一条消息新建 OMP 会话），
+  // 旧对话原样留在 /history 里、名字也留在它自己身上，新对话从无名开始。
+  ctx.workSessions.startWorkSession(ctx.scope);
   // A new session invalidates any pending /ws undo: rolling back would also
   // clear the session the user just started.
   ctx.workspaces.clearUndo(ctx.scope);
@@ -45,7 +39,6 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     ),
     wasRunning,
     scopeNote: ctx.chatMode === 'topic' ? '话题独立会话' : undefined,
-    ...(workSessionName !== undefined ? { workSessionName } : {}),
   });
   try {
     await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });

@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import type { RunCard } from './run-renderer';
 import { formatAgoOr, formatClockOr } from '../utils/time';
-import { escapeCode, escapeMd, summarizeMd } from '../utils/text';
+import { escapeCode, escapeMd } from '../utils/text';
 
 /** Input for /context renders — gathered by commands/session/context.ts
  * (`collectContextInfo`) and consumed here, so the text renderer and the
@@ -9,20 +9,12 @@ import { escapeCode, escapeMd, summarizeMd } from '../utils/text';
 export interface ContextInfo {
   scope: string;
   chatMode: 'p2p' | 'group' | 'topic';
-  /** 当前工作目录：工作会话最新段的 cwd（没有工作会话时退回 scope cwd）。 */
+  /** 当前工作目录（= 会话的 cwd，没有会话时退回 scope cwd）。 */
   cwd: string;
-  /** 当前工作会话 id（= 第一段的 OMP 会话 id）；无工作会话时缺失。 */
-  workSessionId?: string;
-  /** 显示名：/rename 的名字，回退到工作会话最后一条用户消息；都没有则缺失。 */
-  workSessionName?: string;
-  /** 工作会话的段数。 */
-  segmentCount: number;
-  /** 工作会话跨过的不同目录数（> 1 = 多目录工作会话）。 */
-  cwdCount: number;
-  /** 当前段的 OMP 会话 id —— OMP id 只在这里出现，不再是身份。 */
-  currentSessionId?: string;
-  /** 当前段最近活动时间（ms），用于「当前段」的相对活动时间。 */
-  currentSegmentLastActiveMs?: number;
+  /** 当前会话 id（一个 OMP 会话 = 一个对话）；无会话时缺失。 */
+  sessionId?: string;
+  /** 显示名：/rename 的名字，回退到最后一条用户消息；都没有则缺失。 */
+  sessionName?: string;
   createdAt?: number;
   updatedAt?: number;
   running: boolean;
@@ -32,11 +24,6 @@ export interface ContextInfo {
   /** Named workspaces pointing at the current cwd. */
   wsNames: string[];
   summary: { lastMessage?: string; lastReply?: string };
-}
-
-/** 「N 段 · M 个目录」标注：只在工作会话真的跨了多个目录时出现。 */
-function workSessionDirsLabel(info: { segmentCount: number; cwdCount: number }): string {
-  return info.cwdCount > 1 ? ` _（${info.segmentCount} 段 · ${info.cwdCount} 个目录）_` : '';
 }
 
 export interface ButtonSpec {
@@ -237,18 +224,12 @@ export function workspacesCard(current: string | undefined, named: Record<string
 }
 
 export interface StatusInfo {
-  /** 当前工作目录：工作会话最新段的 cwd（没有工作会话时退回 scope cwd）。 */
+  /** 当前工作目录（= 会话的 cwd，没有会话时退回 scope cwd）。 */
   cwd: string;
-  /** 当前工作会话 id；无工作会话时缺失。 */
-  workSessionId?: string;
-  /** 显示名：/rename 的名字，回退到工作会话最后一条用户消息。 */
-  workSessionName?: string;
-  /** 工作会话的段数。 */
-  segmentCount: number;
-  /** 工作会话跨过的不同目录数（> 1 = 多目录工作会话）。 */
-  cwdCount: number;
-  /** 当前段的 OMP 会话 id —— OMP id 只在这里出现。 */
-  currentSessionId?: string;
+  /** 当前会话 id（一个 OMP 会话 = 一个对话）；无会话时缺失。 */
+  sessionId?: string;
+  /** 显示名：/rename 的名字，回退到最后一条用户消息。 */
+  sessionName?: string;
   sessionStale: boolean;
   agentName: string;
   /** Session scope (= chatId or chatId:threadId in topic groups). */
@@ -274,17 +255,12 @@ export function statusCard(info: StatusInfo): object {
       : `窗口 \`${escapeCode(info.scope)}\``;
 
   const sessionPanel = [
-    md('**🗂 工作会话**'),
-    md(info.workSessionName ? `🏷 ${escapeMd(info.workSessionName)}` : '🏷 _未命名_'),
+    md('**🗂 会话**'),
+    md(info.sessionName ? `🏷 ${escapeMd(info.sessionName)}` : '🏷 _未命名_'),
     md(
-      info.workSessionId
-        ? `🔗 \`${escapeCode(info.workSessionId)}\` _（${info.segmentCount} 段）_`
+      info.sessionId
+        ? `🔗 \`${escapeCode(info.sessionId)}\``
         : '🔗 _无，下条消息新建_',
-    ),
-    md(
-      info.currentSessionId
-        ? `🧵 当前段 \`${escapeCode(info.currentSessionId)}\``
-        : '🧵 _（无，下条消息新建）_',
     ),
     md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
     md(`🕘 ${formatAgoOr(info.lastActive, '新会话')}`),
@@ -292,7 +268,7 @@ export function statusCard(info: StatusInfo): object {
   ];
   const envPanel = [
     md('**🧩 环境**'),
-    md(`📁 \`${escapeCode(tildePath(info.cwd))}\`${workSessionDirsLabel(info)}`),
+    md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
     md(`🤖 ${escapeMd(info.agentName)}`),
     md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
     md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
@@ -358,17 +334,12 @@ export function contextCard(
     md(scopeLine, 'notation'),
     ...stackedPanels([
       panel([
-        md('**🗂 工作会话**'),
-        md(info.workSessionName ? `🏷 ${escapeMd(info.workSessionName)}` : '🏷 _未命名_'),
+        md('**🗂 会话**'),
+        md(info.sessionName ? `🏷 ${escapeMd(info.sessionName)}` : '🏷 _未命名_'),
         md(
-          info.workSessionId
-            ? `🔗 \`${escapeCode(info.workSessionId)}\` _（${info.segmentCount} 段）_`
+          info.sessionId
+            ? `🔗 \`${escapeCode(info.sessionId)}\``
             : '🔗 _无，下条消息新建_',
-        ),
-        md(
-          info.currentSessionId
-            ? `🧵 当前段 \`${escapeCode(info.currentSessionId)}\``
-            : '🧵 _（无，下条消息新建）_',
         ),
         md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
         md(`🕘 ${formatAgoOr(info.updatedAt, '新会话')}`),
@@ -376,7 +347,7 @@ export function contextCard(
       ]),
       panel([
         md('**🧩 环境**'),
-        md(`📁 \`${escapeCode(tildePath(info.cwd))}\`${workSessionDirsLabel(info)}`),
+        md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
         md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
         md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
         md(`⏱ ${escapeMd(info.idleLine)}`),
@@ -708,8 +679,7 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',
     items: [
-      ['/new · /reset', '重置上下文（同一工作会话，新的一段）'],
-      ['/work [名字]', '开启一件新工作（唯一的工作会话边界）'],
+      ['/new · /reset', '重置上下文，开始新对话'],
       ['/new chat [名字]', '新建群 + 新会话，自动拉你进群'],
       ['/resume', '历史会话列表，一键恢复'],
       ['/rename <标题>', '会话命名；`auto` LLM 生成，`clear` 清除'],
@@ -764,16 +734,11 @@ export interface NewSessionInfo {
   wasRunning: boolean;
   /** Rendered under the heading, e.g. topic chats: 「话题独立会话」。 */
   scopeNote?: string;
-  /** 当前工作会话的显示名（名字，回退到最后一条用户消息）。`/new` 只重置
-   * 上下文、不换工作会话，带出这个名字用户才知道自己还在同一摊活里；拿不到
-   * 就不显示——绝不硬编码「未命名」之类占位。 */
-  workSessionName?: string;
 }
 
 /** Compact /new confirmation — deliberately NOT the full /context dump:
  * a fresh session has nothing to show for 「开始/最后对话」 yet. */
 export function newSessionCard(info: NewSessionInfo): object {
-  const name = info.workSessionName?.trim();
   return shell('✅ 上下文已重置', [
     md(
       info.wasRunning
@@ -782,9 +747,6 @@ export function newSessionCard(info: NewSessionInfo): object {
       'heading',
     ),
     ...(info.scopeNote ? [md(`_${escapeMd(info.scopeNote)}_`, 'notation')] : []),
-    ...(name
-      ? [md(`🧵 **工作会话**: ${summarizeMd(name, 40)}（上下文已重置，仍在同一工作会话）`)]
-      : []),
     ...stackedPanels([
       panel([
         md('**🧩 环境**'),

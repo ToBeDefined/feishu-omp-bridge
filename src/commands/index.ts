@@ -85,7 +85,6 @@ const ADMIN_COMMANDS: Record<string, true> = {
   '/thinking': true,
   '/think': true,
   '/restart': true,
-  '/work': true,
   '/context': true,
   '/ctx': true,
   '/resume': true,

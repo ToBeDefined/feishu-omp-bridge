@@ -15,35 +15,33 @@ export interface SearchHit {
   timestamp?: string;
 }
 
-/** One OMP segment's matched Q&A pairs inside a work session. */
+/** One OMP session's matched Q&A pairs (one session = one conversation). */
 export interface SearchHitGroup {
-  /** OMP segment id; labelled on the hit only when >1 segment matched. */
+  /** 遗留字段：单一会话模型下不再用于分块标注，保留以兼容收集方。 */
   segmentId?: string;
   messages: SearchHit[];
   hitIndex: number;
-  /** Matched Q&A pairs within this segment. */
+  /** Matched Q&A pairs within this group. */
   matchCount: number;
 }
 
 /**
- * One search row = one WORK session (Task 10): every segment of the work
- * session that matched collapses under a single heading, with each segment's
- * hits listed below. A legacy segment no work session claims is its own
- * single-segment row (`workSessionId` = the segment id).
+ * One search row = one conversation (one OMP session): every matched Q&A pair
+ * that session contains collapses under a single heading.
  */
 export interface SearchContext {
-  /** Work session id; for an unclaimed segment, the segment id itself. */
+  /** OMP session id — the row's identity and the resume target. */
   workSessionId: string;
-  /** User-assigned title (/rename), when the work session is named. */
+  /** User-assigned title (/rename), when the session is named. */
   title?: string;
-  /** Display fallback when unnamed: last user message of its current/latest segment. */
+  /** Display fallback when unnamed: the session's last user message. */
   topic?: string;
   workspace?: string;
-  /** Declared work-session segment count; `🧵 N 段` is shown only when >1. */
+  /** 遗留字段：单一会话模型下不再渲染，保留以兼容收集方。 */
   segmentCount?: number;
-  /** Σ matched Q&A pairs across all segments; `🔎` is shown only when >1. */
+  /** Σ matched Q&A pairs; `🔎` is shown only when >1. */
   matchCount: number;
-  /** Matched pairs per source segment, newest segment first. */
+  /** Matched pairs per source group. */
   groups: SearchHitGroup[];
   /** Newest group's pair — the detail view's default snippet. */
   messages: SearchHit[];
@@ -162,9 +160,7 @@ export function searchResultsCard(
       c.workspace ? `📁 ${escapeMd(c.workspace)}` : '',
       ago ? `🕘 ${ago}` : '',
       c.matchCount > 1 ? `🔎 ${c.matchCount} 处匹配` : '',
-      // Work-session scale; a single segment would just be noise.
-      c.segmentCount && c.segmentCount > 1 ? `🧵 ${c.segmentCount} 段` : '',
-      // Identity handle of the WORK session — the full id is in 查看详情.
+      // Identity handle of the session — the full id is in 查看详情.
       `🆔 ${shortSessionId(c.workSessionId)}`,
     ]
       .filter(Boolean)
@@ -173,17 +169,9 @@ export function searchResultsCard(
       { tag: 'markdown', content: heading, text_size: 'heading' },
       ...(metaLine ? [{ tag: 'markdown', content: metaLine, text_size: 'notation' }] : []),
     );
-    // Each matched segment keeps the usual hit style; only a work session that
-    // matched on >1 segment labels which segment each block came from.
-    const multiSegment = c.groups.length > 1;
+    // One session = one conversation: every hit block belongs to that session,
+    // so no per-segment label is needed.
     for (const g of c.groups) {
-      if (multiSegment && g.segmentId) {
-        blocks.push({
-          tag: 'markdown',
-          content: `🧵 段 \`${shortSessionId(g.segmentId)}\``,
-          text_size: 'notation',
-        });
-      }
       blocks.push({ tag: 'markdown', content: renderSearchContext(g, 'compact', keyword) });
     }
     if (showButtons) {

@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { constants, copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
@@ -81,7 +81,7 @@ export function backfillLegacyTitles(
 }
 
 /**
- * 按一组段推导工作会话的派生字段（`/work split` 切出新工作会话时用）：
+ * 按一组段推导工作会话的派生字段（`load` 把历史多段工作会话规范成一段一摊时用）：
  * 起始 = 最早段的 `startedAtMs`，活跃 = 最新活动段，`cwd` 跟**当前段**（没有
  * 当前段时退回最新活动段）——与 `touchSegment` 的 cwd 口径一致。
  */
@@ -157,6 +157,13 @@ export class WorkSessionStore {
             this.scopes[scope] = { ...state, activeWorkSession: ws.id };
           }
         }
+        // 口径：**一个 OMP 会话 = 一个对话**。早期文件让一摊活有序挂着多段，
+        // 那要求用户自己合并/拆分；现在把多段摊子就地拆成一段一摊，历史里
+        // 每个会话各自一行、名字只留给当时所在的那一段。
+        if (this.splitMultiSegmentWorkSessions() && opts.persist !== false) {
+          await this.backupOnce('.v2.bak');
+          this.schedulePersist();
+        }
         return;
       }
       this.migrateV1(raw);
@@ -173,6 +180,53 @@ export class WorkSessionStore {
         return;
       }
       throw err;
+    }
+  }
+
+  /**
+   * 把「一摊活挂多段」的历史就地规范成「一段一摊」（幂等）。
+   *
+   * 标题归属：名字是用户在某一刻给**当前对话**起的，所以落在原
+   * `currentSegmentId` 那一段上（挪到首段会让名字挂到别的对话上）。scope 的
+   * 活跃指针改指当前对话那一段，其余各段成为可继续、但不占指针的历史会话。
+   *
+   * 返回是否真的改动了状态（调用方据此决定备份 + 落盘）。
+   */
+  private splitMultiSegmentWorkSessions(): boolean {
+    const multi = this.allWorkSessions().filter((ws) => ws.segments.length > 1);
+    if (multi.length === 0) return false;
+    for (const original of multi) {
+      const { title, currentSegmentId } = original;
+      const owner = currentSegmentId ?? original.segments[original.segments.length - 1]?.sessionId;
+      // 先摘掉原键：它通常等于首段 id（不变量 `id === segments[0].sessionId`）。
+      // 若等拆完再删，就会把刚建好的首段对话一起删掉——多段活少一摊。
+      delete this.workSessions[original.id];
+      for (const seg of original.segments) {
+        const ws = deriveWorkSession(original.scope, seg.sessionId, [seg], seg.sessionId);
+        // 只有被命名的那一段继承名字；其余保持无名（/history 用最后一条用户
+        // 消息显示），这样一行一个对话，名字不会跟着一整摊活跑。
+        if (title !== undefined && seg.sessionId === owner) ws.title = title;
+        this.workSessions[seg.sessionId] = ws;
+      }
+      for (const [scope, state] of Object.entries(this.scopes)) {
+        if (state.activeWorkSession === original.id) {
+          this.scopes[scope] = { ...state, activeWorkSession: owner };
+        }
+      }
+    }
+    return true;
+  }
+
+  /** 一次性留档：升级前的文件形态出问题时能回退。只在目标不存在时写。 */
+  private async backupOnce(suffix: string): Promise<void> {
+    const dest = `${this.path}${suffix}`;
+    try {
+      await copyFile(this.path, dest, constants.COPYFILE_EXCL);
+      log.info('session', 'sessions-backup', { dest });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+        log.warn('session', 'sessions-backup-failed', { dest, err: String(err) });
+      }
     }
   }
 
@@ -276,11 +330,15 @@ export class WorkSessionStore {
   }
 
   /**
-   * 运行期绑定：工作会话的当前段 = 这次跑的 OMP 会话（不在则追加一段）。
+   * 运行期绑定：这次跑的 OMP 会话 = 当前对话。
    *
-   * 同一段的**重跑**要把时间推到这一次（段/工作会话的 `lastActiveAtMs` = 本次
-   * 运行时间），否则「同一段永远停在第一次跑的时刻」。`times` 是这段会话自己
-   * 的时间戳（/resume、/history 继续对话指向历史会话时用），缺省则用“现在”。
+   * **一个 OMP 会话 = 一个对话**，所以：
+   * - 同 id 的**重跑**只把时间推到这一次（否则「同一段永远停在第一次跑的时刻」）；
+   * - id 变了（OMP 换了会话，而桥没走 `/new` / `/cd` / 漂移那几条显式路径）则**开
+   *   一段新对话**，绝不追加成同一摊的第二段 —— 否则 `/history` 会把两段对话并成
+   *   一行、行上的名字也会张冠李戴（用户可见的错误）。
+   *
+   * `times` 是该会话自己的时间戳（恢复历史会话时用），缺省用“现在”。
    */
   bindSegment(
     scope: string,
@@ -297,28 +355,27 @@ export class WorkSessionStore {
       lastActiveAtMs: at,
     };
     const active = this.activeWorkSession(scope);
-    if (active) {
-      const touched = touchSegment(active, seg, at);
-      const idx = touched.segments.findIndex((s) => s.sessionId === sessionId);
-      // 段级，以及（touchSegment 里的）工作会话级都取 Math.max：普通重跑
-      // at = now 仍然向前推进，而 /resume、/history 继续对话带来的历史时间
-      // 不会把活跃时间拽回去。
-      const segments = touched.segments.map((s, i) =>
-        i === idx ? { ...s, lastActiveAtMs: Math.max(s.lastActiveAtMs, at) } : s);
+    if (active && active.currentSegmentId === sessionId) {
+      // 同 id 重跑：touchSegment 里段级/工作会话级都取 Math.max，时间只向前走。
       this.workSessions[active.id] = {
-        ...touched,
-        segments,
-        currentSegmentId: sessionId,
+        ...touchSegment(active, seg, at),
         ...(active.scope === null ? { scope } : {}),
       };
-    } else {
-      const ws = beginWorkSession(scope, seg);
-      const pending = this.scopes[scope]?.pendingTitle;
-      if (pending !== undefined && pending !== '') ws.title = pending;
-      this.workSessions[ws.id] = ws;
-      const { pendingTitle: _drop, ...rest } = this.scopes[scope] ?? {};
-      this.scopes[scope] = { ...rest, activeWorkSession: ws.id };
+      this.schedulePersist();
+      return;
     }
+    // 其余一律开新对话。这个会话已在 store 里（先前归档过的对话又被用上）时认领
+    // 它，别用它覆盖掉已经存在的名字。
+    if (this.workSessions[sessionId] !== undefined) {
+      this.adoptWorkSession(scope, sessionId, cwd, sessionId);
+      return;
+    }
+    const ws = beginWorkSession(scope, seg);
+    const pending = this.scopes[scope]?.pendingTitle;
+    if (pending !== undefined && pending !== '') ws.title = pending;
+    this.workSessions[ws.id] = ws;
+    const { pendingTitle: _drop, ...rest } = this.scopes[scope] ?? {};
+    this.scopes[scope] = { ...rest, activeWorkSession: ws.id };
     this.schedulePersist();
   }
 
@@ -360,163 +417,6 @@ export class WorkSessionStore {
     // 同 `adoptWorkSession` 的语义：活跃指针从旧工作会话挪到这摊新活上。
     this.scopes[scope] = { ...this.scopes[scope], activeWorkSession: ws.id };
     this.schedulePersist();
-  }
-
-  /** /new、stale 漂移：丢掉“当前段”指针，段本身留在工作会话里。 */
-  dropCurrentSegment(scope: string): void {
-    const active = this.activeWorkSession(scope);
-    if (!active || active.currentSegmentId === undefined) return;
-    const { currentSegmentId: _drop, ...rest } = active;
-    this.workSessions[active.id] = rest;
-    this.schedulePersist();
-  }
-
-  /**
-   * 恢复不变量 `id === segments[0].sessionId`：`mergeWorkSessions` 合并后工作
-   * 会话的键可能还挂在 keep 的旧 id 上，而首段已换成更早的段——此后
-   * `/work split` 以首段为切点时 `fromSegmentId === wsId`，新工作会话会立刻被
-   * 旧键覆盖，整条尾巴丢失。
-   *
-   * 这里把工作会话改键到首段 id，并同步改指所有 `scopes[*].activeWorkSession`
-   * 上指向旧 id 的指针（不改指的话 `load` 的补链逻辑会当成"指针悬空"，另选一条
-   * 最近活跃的活来绑）。首段已是键、或工作会话无段时原样返回，不动任何状态。
-   */
-  private reIdToFirstSegment(ws: WorkSession): WorkSession {
-    const firstId = ws.segments[0]?.sessionId;
-    if (firstId === undefined || firstId === ws.id) return ws;
-    const oldId = ws.id;
-    const rekeyed: WorkSession = { ...ws, id: firstId };
-    delete this.workSessions[oldId];
-    this.workSessions[firstId] = rekeyed;
-    for (const [scope, state] of Object.entries(this.scopes)) {
-      if (state.activeWorkSession === oldId) {
-        this.scopes[scope] = { ...state, activeWorkSession: firstId };
-      }
-    }
-    return rekeyed;
-  }
-
-  /**
-   * /work merge：把 `foldId` 这摊活并进 `keepId`（保留 keep 的身份与名字）。
-   *
-   * 段按 `startedAtMs` 升序拼接，并以 `sessionId` 去重（同一 OMP 会话在两边
-   * 都出现时保留 keep 的那份）；`title` 取 keep 的非空名字，没有才用 fold 的；
-   * `scope` 取非空的那个；`cwd`/`lastActiveAtMs` 跟随合并后**最新活动**的那一段；
-   * `currentSegmentId` 取两者中更晚活动的那个（其段仍在合并结果里时）。删掉
-   * fold，并把所有指向它的 scope 指针改指 keep。任一 id 不存在返回 false。
-   */
-  mergeWorkSessions(keepId: string, foldId: string): boolean {
-    if (keepId === foldId) return false;
-    const keep = this.workSessions[keepId];
-    const fold = this.workSessions[foldId];
-    if (!keep || !fold) return false;
-
-    const segments = [...keep.segments];
-    for (const seg of fold.segments) {
-      if (!segments.some((s) => s.sessionId === seg.sessionId)) segments.push(seg);
-    }
-    segments.sort((a, b) => a.startedAtMs - b.startedAtMs);
-    const latest = segments.reduce((m, s) => (s.lastActiveAtMs > m.lastActiveAtMs ? s : m));
-
-    const keepCurrent =
-      keep.currentSegmentId !== undefined
-        ? segments.find((s) => s.sessionId === keep.currentSegmentId)
-        : undefined;
-    const foldCurrent =
-      fold.currentSegmentId !== undefined
-        ? segments.find((s) => s.sessionId === fold.currentSegmentId)
-        : undefined;
-    const currentSegmentId =
-      keepCurrent && foldCurrent
-        ? foldCurrent.lastActiveAtMs > keepCurrent.lastActiveAtMs
-          ? foldCurrent.sessionId
-          : keepCurrent.sessionId
-        : keepCurrent?.sessionId ?? foldCurrent?.sessionId;
-
-    // 纯空白名字当作没名字：否则一个空白的 keep.title 会挡住 fold 的真名字，
-    // 也会被当成有效标题写进合并结果。
-    const keepTitle = keep.title?.trim() ? keep.title : undefined;
-    const foldTitle = fold.title?.trim() ? fold.title : undefined;
-    const title = keepTitle ?? foldTitle;
-    const merged: WorkSession = {
-      ...keep,
-      scope: keep.scope ?? fold.scope,
-      cwd: latest.cwd,
-      lastActiveAtMs: latest.lastActiveAtMs,
-      segments,
-    };
-    if (title !== undefined) merged.title = title;
-    else delete merged.title;
-    if (currentSegmentId !== undefined) merged.currentSegmentId = currentSegmentId;
-    else delete merged.currentSegmentId;
-
-    this.workSessions[keepId] = merged;
-    delete this.workSessions[foldId];
-    // fold 消失了，任何绑到它的 scope 指针必须改指 keep，否则 load 里的
-    // 补链逻辑会把它当成"指针悬空"另选一条最近活跃的活来绑。
-    for (const [scope, state] of Object.entries(this.scopes)) {
-      if (state.activeWorkSession === foldId) {
-        this.scopes[scope] = { ...state, activeWorkSession: keepId };
-      }
-    }
-    // keep 未必是最早的段：合并后键仍挂在 keep 的旧 id 上，`/work split` 若以
-    // 首段为切点就会撞键丢段。统一在这里恢复 `id === segments[0].sessionId`，
-    // 与 §0 的不变量一致（merged.id 总是最早段 id）。
-    this.reIdToFirstSegment(merged);
-    this.schedulePersist();
-    return true;
-  }
-
-  /**
-   * /work split：以 `fromSegmentId` 为界，把它及其后的段切出成一个**新工作
-   * 会话**（id = 该段 id）；原工作会话保留前面的段。
-   *
-   * 新工作会话沿用原 `scope`，`createdAtMs`/`lastActiveAtMs`/`cwd` 按切出的段
-   * 计算；原 `currentSegmentId` 若落在切出部分则搬过去，否则原会话清空它。
-   * `fromSegmentId` 不存在、不属于该工作会话、或是首段（切点不能是首段）时
-   * 返回 undefined。段既不丢也不重复。
-   */
-  splitWorkSession(wsId: string, fromSegmentId: string): string | undefined {
-    const target = this.workSessions[wsId];
-    if (!target) return undefined;
-    // 防御手工编辑 / 旧数据：工作会话的键未必等于首段 id（merge 后的历史形态）。
-    // 不先恢复不变量，`fromSegmentId` 命中首段时两个键会相同，写新工作会话的那
-    // 一步立刻被旧键覆盖，整条尾巴丢失却回复"成功"。
-    const ws = this.reIdToFirstSegment(target);
-    const idx = ws.segments.findIndex((s) => s.sessionId === fromSegmentId);
-    if (idx <= 0) return undefined;
-
-    const head = ws.segments.slice(0, idx);
-    const tail = ws.segments.slice(idx);
-    const current = ws.currentSegmentId;
-    const currentMovedToTail =
-      current !== undefined && tail.some((s) => s.sessionId === current);
-
-    const created = deriveWorkSession(
-      ws.scope,
-      fromSegmentId,
-      tail,
-      currentMovedToTail ? current : undefined,
-    );
-
-    const headLatest = head.reduce((m, s) => (s.lastActiveAtMs > m.lastActiveAtMs ? s : m));
-    const headCurrent =
-      current !== undefined && !currentMovedToTail
-        ? head.find((s) => s.sessionId === current)
-        : undefined;
-    const nextHead: WorkSession = {
-      ...ws,
-      cwd: headCurrent?.cwd ?? headLatest.cwd,
-      lastActiveAtMs: headLatest.lastActiveAtMs,
-      segments: head,
-    };
-    if (headCurrent !== undefined) nextHead.currentSegmentId = headCurrent.sessionId;
-    else delete nextHead.currentSegmentId;
-
-    this.workSessions[fromSegmentId] = created;
-    this.workSessions[ws.id] = nextHead;
-    this.schedulePersist();
-    return fromSegmentId;
   }
 
   /** 可 resume 的 OMP 会话 id：当前段、且 cwd 一致。 */

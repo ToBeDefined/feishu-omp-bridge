@@ -231,9 +231,7 @@ describe('shared card kit', () => {
 function statusFixture(extra: Partial<Parameters<typeof statusCard>[0]> = {}) {
   return {
     cwd: '/repo',
-    workSessionId: 'ws-1',
-    segmentCount: 1,
-    cwdCount: 1,
+    sessionId: 'ws-1',
     sessionStale: false,
     agentName: 'omp',
     scope: 'oc_1',
@@ -246,7 +244,7 @@ function statusFixture(extra: Partial<Parameters<typeof statusCard>[0]> = {}) {
 
 describe('statusCard', () => {
   it('shows the work session name when set', () => {
-    const withName = JSON.stringify(statusCard(statusFixture({ workSessionName: '修搜索' })));
+    const withName = JSON.stringify(statusCard(statusFixture({ sessionName: '修搜索' })));
     expect(withName).toContain('修搜索');
 
     const without = JSON.stringify(statusCard(statusFixture()));
@@ -279,23 +277,20 @@ describe('statusCard', () => {
     expect(out).toContain('旧 cwd');
   });
 
-  it('reports the work session id, segment count and current segment', () => {
+  it('reports the session id as a single identity line (no segment layer)', () => {
     const out = JSON.stringify(
       statusCard(
         statusFixture({
-          workSessionId: 'ws-first',
-          currentSessionId: 'seg-c',
-          segmentCount: 3,
-          cwdCount: 2,
+          sessionId: 'ws-first',
         }),
       ),
     );
-    expect(out).toContain('工作会话');
+    expect(out).toContain('会话');
     expect(out).toContain('`ws-first`');
-    expect(out).toContain('（3 段）');
-    expect(out).toContain('当前段');
-    expect(out).toContain('`seg-c`');
-    expect(out).toContain('（3 段 · 2 个目录）');
+    // 单一会话：不再渲染段数 / 「当前段」这一层。
+    expect(out).not.toContain('工作会话');
+    expect(out).not.toContain('段');
+    expect(out).not.toContain('🧵');
   });
 
   it('is informational — no action buttons', () => {
@@ -315,14 +310,12 @@ describe('session id rendering', () => {
   const ULID = '01J8Z9K2ABCDEFGHJKLMNPQRST';
 
   it('shows the full session id on the status/context cards', () => {
-    expect(JSON.stringify(statusCard(statusFixture({ workSessionId: ULID })))).toContain(ULID);
+    expect(JSON.stringify(statusCard(statusFixture({ sessionId: ULID })))).toContain(ULID);
     const ctx = contextCard({
       scope: 'oc_x',
       chatMode: 'p2p',
       cwd: '/repo',
-      workSessionId: ULID,
-      segmentCount: 1,
-      cwdCount: 1,
+      sessionId: ULID,
       running: false,
       idleLine: '探活：跟随全局',
       wsNames: [],
@@ -415,10 +408,8 @@ describe('contextCard', () => {
     scope: 'oc_1',
     chatMode: 'p2p' as const,
     cwd: '/repo',
-    workSessionId: '019f3a2b-7c8d-73e1-9f2a-4b5c6d7e8f90',
-    workSessionName: '修搜索',
-    segmentCount: 3,
-    cwdCount: 1,
+    sessionId: '019f3a2b-7c8d-73e1-9f2a-4b5c6d7e8f90',
+    sessionName: '修搜索',
     createdAt: Date.now() - 86_400_000,
     updatedAt: Date.now() - 120_000,
     running: false,
@@ -467,9 +458,8 @@ describe('contextCard', () => {
     const out = JSON.stringify(
       contextCard({
         ...base,
-        workSessionId: undefined,
-        workSessionName: undefined,
-        currentSessionId: undefined,
+        sessionId: undefined,
+        sessionName: undefined,
         createdAt: undefined,
         updatedAt: undefined,
         model: undefined,
@@ -588,21 +578,7 @@ describe('newSessionCard', () => {
     expect(out).toContain('已重置上下文');
   });
 
-  it('carries the work session name and says it is the same work session', () => {
-    const out = JSON.stringify(
-      newSessionCard({
-        cwd: '/repo',
-        idleLine: '全局 30 分钟',
-        wasRunning: false,
-        workSessionName: '修搜索',
-      }),
-    );
-    expect(out).toContain('🧵');
-    expect(out).toContain('修搜索');
-    expect(out).toContain('仍在同一工作会话');
-  });
-
-  it('omits the work-session line when the name is unknown (no placeholder)', () => {
+  it('renders a plain reset with no work-session / segment line', () => {
     const out = JSON.stringify(
       newSessionCard({
         cwd: '/repo',
@@ -610,7 +586,10 @@ describe('newSessionCard', () => {
         wasRunning: false,
       }),
     );
+    // One session = one conversation: /new starts a fresh conversation, so
+    // there is nothing to say about a prior one.
     expect(out).not.toContain('🧵');
+    expect(out).not.toContain('工作会话');
     expect(out).not.toContain('未命名');
   });
 

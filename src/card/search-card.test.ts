@@ -178,19 +178,16 @@ describe('searchResultsCard', () => {
     expect(done).toContain('"content":"#8 ·');
   });
 
-  it('annotates a multi-segment work session with its segment count', () => {
+  it('never advertises a segment count (one session = one conversation)', () => {
     const card = JSON.stringify(
       searchResultsCard('foo', [sampleContext({ segmentCount: 3, matchCount: 4 })], 'q1', true),
     );
-    expect(card).toContain('🧵 3 段');
+    expect(card).not.toContain('🧵');
+    expect(card).not.toContain('段');
     expect(card).toContain('🔎 4 处匹配');
-    // A single-segment work session does not advertise its segment count.
-    expect(JSON.stringify(searchResultsCard('foo', [sampleContext()], 'q1', true))).not.toContain(
-      '🧵',
-    );
   });
 
-  it('lists each matched segment under one heading, labelled by segment', () => {
+  it('lists every matched block under one session heading', () => {
     const card = JSON.stringify(
       searchResultsCard(
         'foo',
@@ -217,13 +214,13 @@ describe('searchResultsCard', () => {
         true,
       ),
     );
-    // Exactly one heading for the work session; both segments' hits follow it.
+    // Exactly one heading for the session; every matched block's hits follow it.
     expect(card.match(/"text_size":"heading"/g)).toHaveLength(1);
     expect(card).toContain('新段命中');
     expect(card).toContain('旧段命中');
-    // Each hit block is labelled with its (short) segment id.
-    expect(card).toContain('🧵 段 `019f9432…`');
-    expect(card).toContain('🧵 段 `old-segm…`');
+    // No per-segment labelling.
+    expect(card).not.toContain('🧵');
+    expect(card).not.toContain('段 `');
   });
 
   it('renders a topic fallback when the work session is unnamed', () => {

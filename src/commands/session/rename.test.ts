@@ -123,35 +123,39 @@ afterEach(async () => {
 });
 
 describe('/rename command', () => {
-  it('names the WORK session and keeps the name after /new', async () => {
+  it('names the WORK session; after /new the name stays on that conversation', async () => {
     store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
     const ctx = makeCtx();
 
     await handleRename('bridge UI 调整', ctx);
     expect(store.activeWorkSession('oc_1')?.title).toBe('bridge UI 调整');
 
-    // /new clears the current-segment pointer; the name lives on the work
-    // session, so a no-arg query still finds it.
-    store.dropCurrentSegment('oc_1');
+    // 一个 OMP 会话 = 一个对话：/new 起一段新对话，名字属于旧对话，新对话无名。
+    store.startWorkSession('oc_1');
+    store.bindSegment('oc_1', 'sess-b', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
     await handleRename('', ctx);
 
-    expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('bridge UI 调整'));
+    expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('未命名'));
     expect(store.titleFor('sess-a')).toBe('bridge UI 调整');
+    expect(store.titleFor('sess-b')).toBeUndefined();
   });
 
-  it('clears the work session title after /new (same target as set)', async () => {
+  it('clears only the current conversation after /new (旧对话名字不受影响)', async () => {
     store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
     const ctx = makeCtx();
 
     await handleRename('旧标题', ctx);
-    store.dropCurrentSegment('oc_1');
+    store.startWorkSession('oc_1');
+    store.bindSegment('oc_1', 'sess-b', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
     await handleRename('clear', ctx);
 
-    expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已清除'));
-    expect(store.titleFor('sess-a')).toBeUndefined();
+    // 新对话本就没有标题：clear 无事可清，也绝不该动到旧对话的名字。
+    expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('本就没有标题'));
+    expect(store.titleFor('sess-a')).toBe('旧标题');
+    expect(store.titleFor('sess-b')).toBeUndefined();
   });
 
-  it('reports the same hint and writes nothing when there is no work session', async () => {
+  it('reports the same hint and writes nothing when there is no session yet', async () => {
     const agent = agentYielding();
     const ctx = makeCtx({ agent: agent as never });
 
@@ -162,7 +166,7 @@ describe('/rename command', () => {
 
     expect(reply).toHaveBeenCalledTimes(4);
     for (const call of reply.mock.calls) {
-      expect(call[1]).toBe('❌ 当前还没有工作会话，先发一条消息或用 /work 开始一件新工作。');
+      expect(call[1]).toBe('❌ 当前还没有会话，先发一条消息开始一段对话。');
     }
     // Nothing written to the store, and auto didn't even talk to the model.
     expect(store.allWorkSessions()).toHaveLength(0);
@@ -317,7 +321,7 @@ describe('/rename command', () => {
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已自动生成'));
   });
 
-  it('auto reports the name was NOT saved when the target work session is gone', async () => {
+  it('auto reports the name was NOT saved when the target session is gone', async () => {
     store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
     await writeSessionFile('sess-a', '帮我改搜索逻辑');
     const ctx = makeCtx({ agent: agentYielding('新标题') as never });
@@ -328,7 +332,7 @@ describe('/rename command', () => {
 
     expect(reply).toHaveBeenLastCalledWith(
       ctx,
-      expect.stringContaining('目标工作会话已不存在'),
+      expect.stringContaining('目标会话已不存在'),
     );
     expect(store.activeWorkSession('oc_1')?.title).toBeUndefined();
   });
@@ -350,8 +354,8 @@ describe('/rename command', () => {
   });
 });
 
-describe('/rename 与 /new 展示口径一致', () => {
-  it('both prefer the work session title', async () => {
+describe('/rename 与 /new：/new 起新对话，不背旧名字', () => {
+  it('/rename 报当前对话的名字，/new 的卡片不带它（名字留在旧对话上）', async () => {
     store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
     store.setTitle('oc_1', 'KMP 导出');
 
@@ -360,25 +364,10 @@ describe('/rename 与 /new 展示口径一致', () => {
 
     const { ctx, sent } = makeNewCtx();
     await newHandlers['/new']!('', ctx);
-    expect(JSON.stringify(sent[0])).toContain('KMP 导出');
-  });
-
-  it('both fall back to the LATEST segment last user message, not an older one', async () => {
-    store.bindSegment('oc_1', 'sess-old', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
-    store.bindSegment('oc_1', 'sess-new', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
-    await writeSessionFile('sess-old', '旧段的消息');
-    await writeSessionFile('sess-new', '最新段的消息');
-
-    await handleRename('', makeCtx());
-    const shown = reply.mock.calls.at(-1)?.[1] as string;
-    expect(shown).toContain('最新段的消息');
-    expect(shown).not.toContain('旧段的消息');
-
-    const { ctx, sent } = makeNewCtx();
-    await newHandlers['/new']!('', ctx);
-    const card = JSON.stringify(sent[0]);
-    expect(card).toContain('最新段的消息');
-    expect(card).not.toContain('旧段的消息');
+    // 一个 OMP 会话 = 一个对话：/new 只是重置上下文、另起一段新对话，卡片报到即可，
+    // 不该再顶着旧对话的名字（旧名字仍留在旧对话上）。
+    expect(JSON.stringify(sent[0])).not.toContain('KMP 导出');
+    expect(store.titleFor('sess-a')).toBe('KMP 导出');
   });
 
   it('both show no name when there is no title and no history', async () => {

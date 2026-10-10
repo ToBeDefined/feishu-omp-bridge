@@ -286,9 +286,9 @@ function composeArgs(sub: string, payload: Record<string, unknown>): string {
 
 /**
  * Map a button `cmd` + payload to the text command it invokes:
- * `{cmd:'work.merge', arg:'keep fold'}` → `('/work', 'merge keep fold')`,
- * i.e. the same shape `/work merge keep fold` types. Exported so the
- * `.`-to-subcommand contract is unit-testable without a live channel.
+ * `{cmd:'history.page', arg:'all 8'}` → `('/history', 'page all 8')`,
+ * i.e. the same shape a user would type. Exported so the `.`-to-subcommand
+ * contract is unit-testable without a live channel.
  */
 export function resolveCardCommand(
   cmd: string,

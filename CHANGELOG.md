@@ -321,16 +321,19 @@
 
 ### Changed
 
-- **持久化单位从「chat → OMP 会话」换成「工作会话」**：`sessions.json` 升到
-  v2（`{ v, scopes, workSessions }`），一个工作会话有序保存它的全部**段**
-  （段 = 一次 OMP 会话），工作会话 id = 它第一段的 OMP 会话 id；旧文件加载时
-  自动迁移（v1 自动写成 `sessions.json.v1.bak`）。
-- **`/new` 改为只重置上下文**：不再换工作会话、不再丢弃标题，只是在同一工作
-  会话里新起一段（下一条消息新建 OMP 会话）。
-- **`/history`、`/ctx`、`/status`、`/resume`、`/rename`、`/search` 全部以工作
-  会话为单位**：`/history` 一行 = 一个工作会话（含段数 / 轮数），`/resume`
-  恢复它的最新段，`/rename` 命名它，`/ctx`/`/status` 的身份从 OMP 会话 id 换
-  成工作会话 id；段数 / 目录数只在多段 / 多目录时标注。
+- **会话模型回正：一个 OMP 会话 = 一个对话**。`sessions.json` 仍是 v2
+  （`{ v, scopes, workSessions }`，工作会话 id = 首段 OMP 会话 id），但每次换
+  OMP 会话都开**新对话**，不再往同一「工作会话」里追加段——于是既不需要
+  `/work`、也不需要手工合并/拆分，`/history` 一行就是一个对话。
+- **`/new`（`/reset`）、`/cd`、`/ws use`（含 `/ws undo`）开新对话**：下一条消息
+  新建 OMP 会话，旧对话连同它的名字原样留在 `/history` 里；`/release` 重启与
+  `/compact` 仍接在同一段里跑。
+- **`/history`、`/ctx`、`/status`、`/resume`、`/rename`、`/search` 一律以「对话」
+  为单位**：`/rename` 命名当前对话、名字只挂在它自己身上；`/ctx` / `/status`
+  只描述这一个会话（id / 标题 / cwd / 时间），不再有「段数 / 当前段 / 工作会话」。
+- 旧文件迁移：v1（chat → OMP 会话 + 标题）自动迁移，备份为
+  `sessions.json.v1.bak`；含多段的 v2 文件就地规范化成「一段一对话」（标题归到
+  原 `currentSegmentId` 那一段），备份为 `sessions.json.v2.bak`。
 
 - **追加批次**：`/release` 进度卡（三步 ✅/⏳/○ 实时状态 + 失败详情，
   `runRelease` 新增 `onStep` 回调）；删除定时任务后自动刷新任务列表卡；
@@ -373,6 +376,9 @@
 
 ### Removed
 
+- **工作会话/段这一层**：`/work`（含 `merge` / `split` 子命令）、`/history seg`、
+  `/history` 行上的「合并 / 拆分」按钮、`bridge migrate work-sessions` 回填命令，
+  以及 `src/session/backfill.ts`、`src/card/history-seg-card.ts`。
 - 死代码：`src/bot/scope.ts`、`isManaged`、`ChatModeCache.invalidate`、
   未使用的 `senderId` 参数。
 

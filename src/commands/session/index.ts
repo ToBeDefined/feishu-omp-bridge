@@ -9,13 +9,11 @@ import { resumeHandlers } from './resume';
 import { searchHandlers } from './search';
 import { statusHandlers } from './status';
 import { timeoutHandlers } from './timeout';
-import { workHandlers } from './work';
 import { wsHandlers } from './ws';
 
 /** All session/workspace commands, merged from per-command files. */
 export const sessionHandlers: Record<string, Handler> = {
   ...newHandlers,
-  ...workHandlers,
   ...cdHandlers,
   ...diffHandlers,
   ...wsHandlers,

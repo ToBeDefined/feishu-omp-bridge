@@ -52,50 +52,19 @@ describe('claimWorkSession（继续无归属的历史会话）', () => {
     await store.load();
     store.bindSegment('oc_2', 'seg-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
     store.bindSegment('oc_2', 'seg-b', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
+    // 一段一对话：两次 bind 是两段对话，不是同一摊的两段。
+    expect(store.allWorkSessions()).toHaveLength(2);
 
-    // oc_1 想继续 oc_2 那摊活里的 seg-a。
+    // oc_1 想继续 oc_2 的 seg-a 那段对话。
     store.claimWorkSession('oc_1', 'seg-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
 
     const active = store.activeWorkSession('oc_1');
     expect(active?.id).toBe('seg-a');
-    expect(active?.segments.map((s) => s.sessionId)).toEqual(['seg-a', 'seg-b']);
+    expect(active?.segments.map((s) => s.sessionId)).toEqual(['seg-a']);
     expect(active?.currentSegmentId).toBe('seg-a');
-    expect(store.allWorkSessions()).toHaveLength(1);
-    await store.flush();
-  });
-});
-
-describe('WorkSessionStore dropCurrentSegment', () => {
-  it('drops the current segment but keeps the work session, its title and idle override', async () => {
-    const store = new WorkSessionStore(file);
-    stores.push(store);
-    store.bindSegment('oc_1', 'sess-1', '/repo');
-    store.setTitle('oc_1', '修 search bug');
-    store.setIdleTimeoutMinutes('oc_1', 30);
-
-    store.dropCurrentSegment('oc_1');
-
-    // A stale-session rollover is not a context reset: /new /cd /ws own that.
-    // The segment itself stays in the work session (visible in /history), only
-    // the "current" pointer is cleared.
-    const ws = store.activeWorkSession('oc_1');
-    expect(ws?.currentSegmentId).toBeUndefined();
-    expect(ws?.segments.map((s) => s.sessionId)).toEqual(['sess-1']);
-    expect(store.getIdleTimeoutMinutes('oc_1')).toBe(30);
-    // The name belongs to the work session, so it outlives the chat's binding.
-    expect(store.titleFor('sess-1')).toBe('修 search bug');
-    expect(store.resumeFor('oc_1', '/repo')).toBeUndefined();
-    await store.flush();
-  });
-
-  it('keeps a bare override entry created before the first run', async () => {
-    const store = new WorkSessionStore(file);
-    stores.push(store);
-    store.setIdleTimeoutMinutes('oc_1', 15);
-
-    store.dropCurrentSegment('oc_1');
-
-    expect(store.getIdleTimeoutMinutes('oc_1')).toBe(15);
+    // 只认领一个会话，没多造第二份；seg-b 仍是自己的对话。
+    expect(store.allWorkSessions()).toHaveLength(2);
+    expect(store.workSessionById('seg-b')?.segments.map((s) => s.sessionId)).toEqual(['seg-b']);
     await store.flush();
   });
 });
@@ -188,14 +157,16 @@ describe('WorkSessionStore title', () => {
     await store.flush();
   });
 
-  it('keeps a work-session title across /new (the work still exists)', async () => {
+  it('keeps a work-session title across /new (名字跟着旧对话留在 /history)', async () => {
     const store = new WorkSessionStore(file);
     stores.push(store);
     store.bindSegment('oc_1', 'sess-1', '/repo');
     store.setTitle('oc_1', '保留的标题');
 
-    // /new appends the next run as a fresh segment of the SAME work session.
-    store.dropCurrentSegment('oc_1');
+    // 一个 OMP 会话 = 一个对话：/new 起一段新对话（摘掉活跃指针），不再是给
+    // 同一摊活追加一段。旧对话连同它的名字原样留在 /history 里。
+    store.startWorkSession('oc_1');
+    expect(store.activeWorkSession('oc_1')).toBeUndefined();
     expect(store.titleFor('sess-1')).toBe('保留的标题');
     await store.flush();
   });
@@ -281,56 +252,53 @@ describe('WorkSessionStore segment timestamps', () => {
     expect(ws?.lastActiveAtMs).toBe(now);
   });
 
-  it("adopts a resumed session's own start/last-active times without pulling the work session back", async () => {
+  it('binding a different OMP session opens its own conversation with its own times', async () => {
     const store = new WorkSessionStore(file);
     stores.push(store);
     store.bindSegment('oc_1', 'sess-old', '/repo');
-    const activeBefore = store.activeWorkSession('oc_1')?.lastActiveAtMs ?? 0;
+    const oldBefore = store.activeWorkSession('oc_1')?.lastActiveAtMs ?? 0;
 
     store.bindSegment('oc_1', 'sess-new', '/repo', { startedAtMs: 1_000, lastActiveAtMs: 2_000 });
 
-    // Inheriting the previous segment's start would report the wrong session
-    // start for a segment resumed from /history.
-    expect(store.activeWorkSession('oc_1')?.segments.at(-1)).toMatchObject({
-      sessionId: 'sess-new',
-      startedAtMs: 1_000,
-      lastActiveAtMs: 2_000,
-    });
-    // 1_000/2_000 是过去的时刻：历史会话的活跃时间不能把工作会话拽回去。
-    expect(store.activeWorkSession('oc_1')?.lastActiveAtMs).toBeGreaterThanOrEqual(activeBefore);
+    // 新会话 = 新对话：它带着自己的开始/最后活动时间，不借旧对话的时间。
+    const active = store.activeWorkSession('oc_1');
+    expect(active?.id).toBe('sess-new');
+    expect(active?.segments).toEqual([
+      { sessionId: 'sess-new', cwd: '/repo', startedAtMs: 1_000, lastActiveAtMs: 2_000 },
+    ]);
+    // 旧对话原样留着（自己的时间、自己的名字），没被拉高也没被拉低。
+    const old = store.workSessionById('sess-old');
+    expect(old?.segments).toEqual([
+      { sessionId: 'sess-old', cwd: '/repo', startedAtMs: oldBefore, lastActiveAtMs: oldBefore },
+    ]);
+    await store.flush();
   });
 
-  it('never lowers the work session lastActiveAtMs when binding a historical session', async () => {
+  it('reusing an archived conversation adopts it instead of overwriting its name', async () => {
     const store = new WorkSessionStore(file);
     stores.push(store);
-    store.bindSegment('oc_1', 'sess-now', '/repo');   // at = now（真实当前时间）
-    const before = store.activeWorkSession('oc_1')?.lastActiveAtMs ?? 0;
-    expect(before).toBeGreaterThan(2_000);
+    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.setTitle('oc_1', '旧对话');
+    store.startWorkSession('oc_1');            // 归档：下一条消息起新对话
+    store.bindSegment('oc_1', 'sess-b', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
 
-    // /resume、/history 继续对话绑的是很久以前的会话。
-    store.bindSegment('oc_1', 'sess-history', '/repo', { startedAtMs: 1_000, lastActiveAtMs: 2_000 });
+    // 又回到 sess-a 那段对话（例如 /resume）：名字与时间都不该被抹掉。
+    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 3 });
 
-    const ws = store.activeWorkSession('oc_1');
-    expect(ws?.lastActiveAtMs).toBe(before);          // 不回退
-    expect(ws?.segments.at(-1)).toMatchObject({
-      sessionId: 'sess-history',
-      startedAtMs: 1_000,
-      lastActiveAtMs: 2_000,                          // 段保留它自己的历史时间
+    const active = store.activeWorkSession('oc_1');
+    expect(active?.id).toBe('sess-a');
+    expect(store.titleFor('sess-a')).toBe('旧对话');
+    // 认领保留这段对话自己的时间（运行期真正刷新的是会话文件的 mtime，
+    // `/history` 的活跃时间取自文件，不看 store 里这个值）。
+    expect(active?.segments[0]).toEqual({
+      sessionId: 'sess-a',
+      cwd: '/repo',
+      startedAtMs: 1,
+      lastActiveAtMs: 1,
     });
+    await store.flush();
   });
 
-  it('stamps now for a segment bound without times', async () => {
-    const store = new WorkSessionStore(file);
-    stores.push(store);
-    store.bindSegment('oc_1', 'sess-old', '/repo');
-    const before = Date.now();
-
-    store.bindSegment('oc_1', 'sess-fresh', '/repo');
-
-    const seg = store.activeWorkSession('oc_1')?.segments.at(-1);
-    expect(seg?.startedAtMs).toBeGreaterThanOrEqual(before);
-    expect(seg?.lastActiveAtMs).toBeGreaterThanOrEqual(before);
-  });
 });
 
 async function writeFileAtomic(path: string, content: string): Promise<void> {
@@ -428,20 +396,6 @@ describe('WorkSessionStore v2', () => {
     expect(store.allWorkSessions()).toEqual([]);
   });
 
-  it('appends a segment when OMP rolls to a new session (no new work session)', async () => {
-    const store = new WorkSessionStore(file);
-    stores.push(store);
-    await store.load();
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
-    store.dropCurrentSegment('oc_1');            // stale 漂移 / /new：只丢当前段指针
-    store.bindSegment('oc_1', 'sess-b', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
-
-    const ws = store.activeWorkSession('oc_1');
-    expect(ws?.id).toBe('sess-a');
-    expect(ws?.segments.map((s) => s.sessionId)).toEqual(['sess-a', 'sess-b']);
-    expect(ws?.currentSegmentId).toBe('sess-b');
-  });
-
   it('resumes only the current segment in the requested cwd', async () => {
     const store = new WorkSessionStore(file);
     stores.push(store);
@@ -449,21 +403,8 @@ describe('WorkSessionStore v2', () => {
     store.bindSegment('oc_1', 'sess-a', '/repo');
     expect(store.resumeFor('oc_1', '/repo')).toBe('sess-a');
     expect(store.resumeFor('oc_1', '/other')).toBeUndefined();   // cwd 变了 → 起新段
-    store.dropCurrentSegment('oc_1');
-    expect(store.resumeFor('oc_1', '/repo')).toBeUndefined();    // /new 之后不复用旧段
-  });
-
-  it('names the active work session, not the chat or the OMP session', async () => {
-    const store = new WorkSessionStore(file);
-    stores.push(store);
-    await store.load();
-    store.bindSegment('oc_1', 'sess-a', '/repo');
-    store.setTitle('oc_1', 'bridge UI 调整');
-    store.dropCurrentSegment('oc_1');
-    store.bindSegment('oc_1', 'sess-b', '/repo');
-
-    expect(store.titleFor('sess-a')).toBe('bridge UI 调整');   // 名字跟着"这摊活"
-    expect(store.titleFor('sess-b')).toBe('bridge UI 调整');
+    store.startWorkSession('oc_1');                              // /new：摘掉活跃指针
+    expect(store.resumeFor('oc_1', '/repo')).toBeUndefined();    // /new 之后不复用旧对话
   });
 
   it('starts the next work session on demand and keeps the old one', async () => {
@@ -569,7 +510,6 @@ describe('WorkSessionStore v2', () => {
     await store.load();
     store.bindSegment('oc_1', 'sess-a', '/repo');
     store.setIdleTimeoutMinutes('oc_1', 30);
-    store.dropCurrentSegment('oc_1');
     store.startWorkSession('oc_1');
     store.bindSegment('oc_1', 'sess-b', '/repo');
 
@@ -581,12 +521,64 @@ describe('WorkSessionStore v2', () => {
     stores.push(store);
     await store.load();
     store.bindSegment('oc_1', 'sess-a', '/repo');
-    store.dropCurrentSegment('oc_1');
+    store.startWorkSession('oc_1');               // /new：旧对话留档，新对话另起
     store.bindSegment('oc_1', 'sess-b', '/repo');
 
     expect(store.workSessionForSegment('sess-a')?.id).toBe('sess-a');
-    expect(store.workSessionForSegment('sess-b')?.id).toBe('sess-a');
+    expect(store.workSessionForSegment('sess-b')?.id).toBe('sess-b');
     expect(store.workSessionForSegment('nope')).toBeUndefined();
+  });
+
+  it('把历史多段工作会话规范成一段一摊：标题落当前段、指针跟随、幂等', async () => {
+    const original = JSON.stringify({
+      v: 2,
+      scopes: { oc_1: { activeWorkSession: 'sess-a' } },
+      workSessions: {
+        'sess-a': {
+          id: 'sess-a', scope: 'oc_1', cwd: '/repo', createdAtMs: 1, lastActiveAtMs: 3,
+          title: '这摊活的名字',
+          currentSegmentId: 'sess-c',
+          segments: [
+            { sessionId: 'sess-a', cwd: '/repo', startedAtMs: 1, lastActiveAtMs: 1 },
+            { sessionId: 'sess-b', cwd: '/repo', startedAtMs: 2, lastActiveAtMs: 2 },
+            { sessionId: 'sess-c', cwd: '/repo', startedAtMs: 3, lastActiveAtMs: 3 },
+          ],
+        },
+      },
+    });
+    await writeFileAtomic(file, original);
+
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    await store.load();
+
+    // 3 段 → 3 个各自一段的工作会话，id 就是那一段的 sessionId。
+    expect(store.allWorkSessions()).toHaveLength(3);
+    expect(store.workSessionById('sess-a')?.segments).toEqual([
+      { sessionId: 'sess-a', cwd: '/repo', startedAtMs: 1, lastActiveAtMs: 1 },
+    ]);
+    expect(store.workSessionById('sess-b')?.segments.map((s) => s.sessionId)).toEqual(['sess-b']);
+    expect(store.workSessionById('sess-c')?.segments.map((s) => s.sessionId)).toEqual(['sess-c']);
+    // 名字只落在原 currentSegmentId（sess-c）上，不跟着整摊活跑。
+    expect(store.titleFor('sess-c')).toBe('这摊活的名字');
+    expect(store.titleFor('sess-a')).toBeUndefined();
+    expect(store.titleFor('sess-b')).toBeUndefined();
+    // scope 活跃指针改指当前对话那一段；迁移前先留一份备份。
+    expect(store.activeWorkSession('oc_1')?.id).toBe('sess-c');
+    expect(log.info).toHaveBeenCalledWith('session', 'sessions-backup', { dest: `${file}.v2.bak` });
+
+    await store.flush();
+    const normalized = await readFile(file, 'utf8');
+
+    // 幂等：再 load 不重复迁移，也不改写文件（没有多段可拆 → 不触发 persist）。
+    const reloaded = new WorkSessionStore(file);
+    stores.push(reloaded);
+    await reloaded.load();
+    expect(reloaded.allWorkSessions()).toHaveLength(3);
+    expect(reloaded.activeWorkSession('oc_1')?.id).toBe('sess-c');
+    expect(reloaded.titleFor('sess-c')).toBe('这摊活的名字');
+    await reloaded.flush();
+    expect(await readFile(file, 'utf8')).toBe(normalized);
   });
 
   it('keeps scope references for manually-edited v2 files', async () => {

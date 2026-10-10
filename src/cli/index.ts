@@ -17,7 +17,6 @@ import {
   runServiceUnregister,
 } from './commands/service';
 import { runStart } from './commands/start';
-import { runMigrateWorkSessionsCli } from './commands/work-sessions';
 
 const DEFAULT_COMMAND = 'run';
 
@@ -106,16 +105,6 @@ const migrate = program
     await runMigrate(opts);
   });
 
-migrate
-  .command('work-sessions')
-  .description('Backfill work sessions from historical logs (dry-run by default; --apply backs up and writes)')
-  .option('--apply', 'write the backfilled v2 sessions file (default: dry-run, no writes)')
-  .option('--sessions <path>', 'path to sessions.json')
-  .option('--logs <dir>', 'path to the logs directory')
-  .option('--omp-sessions <dir>', 'path to the OMP sessions directory')
-  .action(async (opts: { apply?: boolean; sessions?: string; logs?: string; ompSessions?: string }) => {
-    await runMigrateWorkSessionsCli(opts);
-  });
 const secrets = program
   .command('secrets')
   .description('Manage the bridge\'s encrypted secret keystore (~/.feishu-omp-bridge/secrets.enc)');

@@ -19,31 +19,23 @@ import { formatAgo, formatClock } from '../utils/time';
 export const HISTORY_PAGE_SIZE = 8;
 
 export interface HistoryRow {
-  /** Work session id — the row's identity and the 继续对话 payload. */
-  workSessionId: string;
+  /** OMP session id — one session = one conversation, so this is both the
+   * row's identity and the 继续对话 payload. */
+  sessionId: string;
   /** Last activity (ms epoch) — the sort key and the displayed time. */
   updatedAtMs: number;
-  /** Σ real user turns across the work session's surviving segments. */
+  /** Σ real user turns in the session. */
   turns: number;
-  /** Declared segment count; `🧵 N 段` is shown only when it exceeds 1. */
-  segmentCount: number;
   /** Workspace label (named workspace or collapsed path). Only rendered in
    * 'all' mode, where a page mixes directories. */
   workspace: string;
-  /** Owning scope (chatId or chatId:threadId); `null` for a file no work
-   * session claims. merge/split 只在本 scope 的行上渲染。 */
-  scope: string | null;
-  /** The segment 继续对话 must restore (current-if-alive, else latest alive).
-   * Omitted when every segment file is gone — then the work-session id stands in. */
-  activeSegmentId?: string;
   /** User-assigned title (/rename). */
   title?: string;
-  /** What the conversation was about — the last user message of its latest
-   * (else current) segment. */
+  /** What the conversation was about — the last user message. */
   topic?: string;
 }
 
-/** The scope's CURRENT work session — its row is marked instead of offering a
+/** The scope's CURRENT session — its row is marked instead of offering a
  * resume that would be a no-op. */
 export interface HistoryPage {
   /** 'cwd' = only the current workspace; 'all' = every workspace. */
@@ -52,10 +44,8 @@ export interface HistoryPage {
   cwd?: string;
   offset: number;
   total: number;
-  /** Work session id the calling scope is already on, if any. */
-  currentWorkSessionId?: string;
-  /** The calling scope — merge/split buttons render only on rows it owns. */
-  scope: string;
+  /** OMP session id the calling scope is already on, if any. */
+  currentSessionId?: string;
 }
 
 export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
@@ -84,17 +74,14 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
         : '_未命名会话_';
 
     const isCurrent =
-      opts.currentWorkSessionId !== undefined && row.workSessionId === opts.currentWorkSessionId;
+      opts.currentSessionId !== undefined && row.sessionId === opts.currentSessionId;
     const meta = [
       `🕘 ${formatClock(row.updatedAtMs)} · ${formatAgo(Date.now() - row.updatedAtMs)}`,
-      // Multi-segment work sessions advertise the fact; a single segment would
-      // just be noise.
-      ...(row.segmentCount > 1 ? [`🧵 ${row.segmentCount} 段`] : []),
       `🔁 ${row.turns} 轮`,
       // Every 'cwd'-mode row shares the header's directory — repeating it per
       // row would be noise.
       ...(opts.mode === 'all' ? [`📁 ${escapeMd(row.workspace)}`] : []),
-      `🆔 ${row.workSessionId.slice(0, 8)}…`,
+      `🆔 ${row.sessionId.slice(0, 8)}…`,
     ];
 
     // The current-session marker rides on the identity line — right behind the
@@ -115,42 +102,19 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
         text_size: 'notation',
       });
     }
-    // Row layout: content in a weighted column, action buttons in an auto
+    // Row layout: content in a weighted column, the resume button in an auto
     // column — `width` is only honoured under `flex_mode: 'none'`, and the
     // weighted column absorbs the slack so nothing is stretched or squeezed.
     //
-    // Buttons: 继续对话 (unless this row is already current — a no-op resume),
-    // 与上一条合并 (only when the row above exists AND both rows belong to the
-    // CALLING scope — merging across scopes is rejected by the command), and
-    // 拆段 (only for multi-segment work sessions the caller owns; the concrete
-    // cut point is left to the command, the button seeds segment 2).
-    const prev = i > 0 ? page[i - 1] : undefined;
-    // 归属判定：他 scope 的行、以及无归属（scope: null）的历史文件都不能点这些
-    // 修正按钮——点了必被 /work merge|split 的 scope 校验拒绝。
-    const owns = (r: HistoryRow): boolean => r.scope !== null && r.scope === opts.scope;
+    // The only row action is 继续对话 — and even that is dropped on the current
+    // row, where resuming would be a no-op.
     const rowButtons: object[] = [];
     if (!isCurrent) {
       rowButtons.push(
         button({
           text: '继续对话',
-          value: { cmd: 'history.resume', arg: row.activeSegmentId ?? row.workSessionId },
+          value: { cmd: 'history.resume', arg: row.sessionId },
           style: 'primary',
-        }),
-      );
-    }
-    if (prev && owns(prev) && owns(row)) {
-      rowButtons.push(
-        button({
-          text: '与上一条合并',
-          value: { cmd: 'work.merge', arg: `${prev.workSessionId} ${row.workSessionId}` },
-        }),
-      );
-    }
-    if (owns(row) && row.segmentCount > 1) {
-      rowButtons.push(
-        button({
-          text: '🗂 拆段',
-          value: { cmd: 'work.split', arg: `${row.workSessionId} 2` },
         }),
       );
     }

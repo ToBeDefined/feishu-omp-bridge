@@ -325,17 +325,13 @@ export function thinkingCancelledCard(): object {
 }
 
 export interface ResumeOption {
-  /** OMP session id of the work session's ACTIVE segment (display handle). */
+  /** OMP session id (display handle). */
   sessionId: string;
-  /** Work session id — the button payload / actual resume target (Task 9).
-   * Falls back to `sessionId` for unclaimed history files. */
+  /** 遗留字段：单一会话模型下与会话 id 相同，保留以兼容调用方。 */
   workSessionId?: string;
-  /** Explicit segment to restore EXACTLY (`/history seg`'s per-row button).
-   * When set and it belongs to the work session, applyResume adopts it as-is
-   * instead of letting `pickActiveSegment` choose; absent = resume the work
-   * session (its active segment). */
+  /** 遗留字段：单一会话模型下不再使用，保留以兼容调用方。 */
   segmentId?: string;
-  /** Declared segment count; `🧵 N 段` shows only when > 1. */
+  /** 遗留字段：单一会话模型下不再渲染，保留以兼容调用方。 */
   segmentCount?: number;
   cwd: string;
   /** Session start, ISO. */
@@ -377,8 +373,7 @@ export function resumeCard(
   ];
 
   sessions.forEach((s, i) => {
-    // The resume target is the work session when present (Task 9); a row for
-    // an unclaimed history file still keys on its OMP session id.
+    // One session = one conversation: the resume target is the session id.
     const key = s.workSessionId ?? s.sessionId;
     const isCurrent = current !== undefined && key === current;
     const num = `#${offset + i + 1}`;
@@ -392,7 +387,6 @@ export function resumeCard(
     const tsMs = Date.parse(s.timestamp);
     const metaParts = [
       Number.isFinite(tsMs) ? formatAgo(Date.now() - tsMs) : '',
-      s.segmentCount !== undefined && s.segmentCount > 1 ? `🧵 ${s.segmentCount} 段` : '',
       `\`${escapeCode(shortPath(s.cwd))}\``,
       escapeMd(shortSessionId(key)),
     ].filter(Boolean);

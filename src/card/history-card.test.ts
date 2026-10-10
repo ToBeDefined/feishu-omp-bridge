@@ -5,12 +5,10 @@ const NOW = Date.now();
 
 function row(over: Partial<HistoryRow> = {}): HistoryRow {
   return {
-    workSessionId: '019f9432-b808-7000-8bf4-073defc52637',
+    sessionId: '019f9432-b808-7000-8bf4-073defc52637',
     updatedAtMs: NOW - 3_600_000,
     turns: 12,
-    segmentCount: 1,
     workspace: 'bridge',
-    scope: 'oc_test',
     ...over,
   };
 }
@@ -48,7 +46,6 @@ describe('historyCard', () => {
         cwd: '/Users/tbd/Git/Other/feishu-omp-bridge',
         offset: 0,
         total: 1,
-        scope: 'oc_test',
       }),
     );
     expect(card).toContain('🏷 **会话 UI 优化**');
@@ -63,33 +60,30 @@ describe('historyCard', () => {
 
   it('falls back from title to topic to 未命名', () => {
     const withTopic = JSON.stringify(
-      historyCard([row({ topic: '先看 A 的调用链' })], { mode: 'cwd', offset: 0, total: 1, scope: 'oc_test' }),
+      historyCard([row({ topic: '先看 A 的调用链' })], { mode: 'cwd', offset: 0, total: 1 }),
     );
     expect(withTopic).toContain('**先看 A 的调用链**');
 
-    const bare = JSON.stringify(historyCard([row()], { mode: 'cwd', offset: 0, total: 1, scope: 'oc_test' }));
+    const bare = JSON.stringify(historyCard([row()], { mode: 'cwd', offset: 0, total: 1 }));
     expect(bare).toContain('未命名会话');
   });
 
   it('renders each row identity exactly ONCE', () => {
     // Regression: the identity was pushed as a top-level element AND again
     // inside the row's column, so every row showed its title twice.
-    const rows = [
-      row({ title: '会话 UI 优化' }),
-      row({ workSessionId: 'x'.repeat(26), topic: '看下 FC1 在做什么' }),
-    ];
-    const card = historyCard(rows, { mode: 'all', offset: 0, total: 2, scope: 'oc_test' });
+    const rows = [row({ title: '会话 UI 优化' }), row({ sessionId: 'x'.repeat(26), topic: '看下 FC1 在做什么' })];
+    const card = historyCard(rows, { mode: 'all', offset: 0, total: 2 });
     const text = JSON.stringify(card);
     expect(text.match(/会话 UI 优化/g)?.length).toBe(1);
     expect(text.match(/看下 FC1 在做什么/g)?.length).toBe(1);
     // Exactly one row container per row.
-    const elements = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements;
-    expect(elements.filter((e) => e.tag === 'column_set' && e.flex_mode === 'none')).toHaveLength(2);
+    const parsed = card as { body: { elements: Array<Record<string, unknown>> } };
+    expect(parsed.body.elements.filter((e) => e.tag === 'column_set' && e.flex_mode === 'none')).toHaveLength(2);
   });
 
   it("shows each row's workspace only in all-mode", () => {
-    const rows = [row({ workspace: 'bridge' }), row({ workSessionId: 's2', workspace: '/tmp/other' })];
-    const all = JSON.stringify(historyCard(rows, { mode: 'all', offset: 0, total: 2, scope: 'oc_test' }));
+    const rows = [row({ workspace: 'bridge' }), row({ sessionId: 's2', workspace: '/tmp/other' })];
+    const all = JSON.stringify(historyCard(rows, { mode: 'all', offset: 0, total: 2 }));
     expect(all).toContain('📁 bridge');
     expect(all).toContain('📁 /tmp/other');
     expect(all).toContain('全部工作区 · 2 个会话');
@@ -97,15 +91,15 @@ describe('historyCard', () => {
 
   it('pages 8 rows per card and points the pager at the right offset', () => {
     const rows = Array.from({ length: 20 }, (_, i) =>
-      row({ workSessionId: `019f9432-0000-7000-8bf4-${String(i).padStart(12, '0')}` }),
+      row({ sessionId: `019f9432-0000-7000-8bf4-${String(i).padStart(12, '0')}` }),
     );
-    const first = historyCard(rows, { mode: 'all', offset: 0, total: 20, scope: 'oc_test' });
+    const first = historyCard(rows, { mode: 'all', offset: 0, total: 20 });
     expect(buttonValues(first)).toEqual([{ cmd: 'history.page', arg: `all ${HISTORY_PAGE_SIZE}` }]);
     expect(JSON.stringify(first)).toContain('第 1-8 个');
     expect(JSON.stringify(first)).toContain('↓ 更早（剩 12）');
 
     // Middle page: both directions, each pointing one page back/forward.
-    const middle = historyCard(rows, { mode: 'all', offset: 8, total: 20, scope: 'oc_test' });
+    const middle = historyCard(rows, { mode: 'all', offset: 8, total: 20 });
     expect(buttonValues(middle)).toEqual([
       { cmd: 'history.page', arg: 'all 0' },
       { cmd: 'history.page', arg: 'all 16' },
@@ -116,22 +110,21 @@ describe('historyCard', () => {
     expect(middleJson.indexOf('较新的')).toBeLessThan(middleJson.indexOf('更早'));
 
     // Last page: back only.
-    const last = historyCard(rows, { mode: 'all', offset: 16, total: 20, scope: 'oc_test' });
+    const last = historyCard(rows, { mode: 'all', offset: 16, total: 20 });
     expect(buttonValues(last)).toEqual([{ cmd: 'history.page', arg: 'all 8' }]);
   });
 
   it('has no pager on a single short page and says where to go instead', () => {
-    const card = historyCard([row(), row({ workSessionId: 's2' })], { mode: 'cwd', offset: 0, total: 2, scope: 'oc_test' });
+    const card = historyCard([row(), row({ sessionId: 's2' })], { mode: 'cwd', offset: 0, total: 2 });
     expect(buttonValues(card)).toEqual([]);
     expect(JSON.stringify(card)).toContain('点「继续对话」接着聊');
   });
 
   it('gives every row a 继续对话 button carrying its full session id', () => {
-    const card = historyCard([row({ workSessionId: '019f9432-b808-7000-8bf4-073defc52637' })], {
+    const card = historyCard([row({ sessionId: '019f9432-b808-7000-8bf4-073defc52637' })], {
       mode: 'cwd',
       offset: 0,
       total: 1,
-      scope: 'oc_test',
     });
     const buttons = allButtons(card);
     expect(buttons).toEqual([
@@ -144,8 +137,8 @@ describe('historyCard', () => {
     // Row = weighted content column + auto button column: `width` only applies
     // under flex_mode 'none', and weighted absorbs the slack so the button is
     // neither stretched across the card nor squeezed.
-    const rowSet = (card as { body: { elements: Array<Record<string, unknown>> } }).body
-      .elements.filter((e) => e.tag === 'column_set')[0]!;
+    const parsed = card as { body: { elements: Array<Record<string, unknown>> } };
+    const rowSet = parsed.body.elements.filter((e) => e.tag === 'column_set')[0]!;
     const cols = rowSet.columns as Array<Record<string, unknown>>;
     expect(rowSet.flex_mode).toBe('none');
     expect(cols.map((c) => c.width)).toEqual(['weighted', 'auto']);
@@ -154,8 +147,8 @@ describe('historyCard', () => {
   it('marks the current session instead of offering a no-op resume', () => {
     const current = '01a11d26-5f7a-7106-be95-17618cbbaf57';
     const card = historyCard(
-      [row({ workSessionId: current, title: 'bridge UI 调整' }), row({ workSessionId: 'other-session-id-0000' })],
-      { mode: 'cwd', offset: 0, total: 2, currentWorkSessionId: current, scope: 'oc_test' },
+      [row({ sessionId: current, title: 'bridge UI 调整' }), row({ sessionId: 'other-session-id-0000' })],
+      { mode: 'cwd', offset: 0, total: 2, currentSessionId: current },
     );
     const buttons = allButtons(card);
     // Only the OTHER row can be resumed.
@@ -170,81 +163,26 @@ describe('historyCard', () => {
     expect(markdown.some((c) => c.includes('✅ 当前'))).toBe(true);
     expect(markdown.some((c) => c.includes('🆔') && c.includes('✅ 当前'))).toBe(false);
     // The current row is a single-column layout (no button column).
-    const sets = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements.filter(
-      (e) => e.tag === 'column_set',
+    const parsed = card as { body: { elements: Array<Record<string, unknown>> } };
+    const sets = parsed.body.elements.filter((e) => e.tag === 'column_set');
+    const firstCols = sets[0]!.columns as unknown[];
+    const secondCols = sets[1]!.columns as unknown[];
+    expect(firstCols.length).toBe(1);
+    expect(secondCols.length).toBe(2);
+  });
+
+  it('carries only 继续对话 — no segment count, merge or split surfaces', () => {
+    const card = JSON.stringify(
+      historyCard([row(), row({ sessionId: 's2' })], { mode: 'cwd', offset: 0, total: 2 }),
     );
-    expect((sets[0]!.columns as unknown[]).length).toBe(1);
-    expect((sets[1]!.columns as unknown[]).length).toBe(2);
-  });
-
-  it('shows the segment count only when a row spans more than one segment', () => {
-    const multi = JSON.stringify(
-      historyCard([row({ segmentCount: 3, turns: 9 })], { mode: 'cwd', offset: 0, total: 1, scope: 'oc_test' }),
-    );
-    expect(multi).toContain('🧵 3 段');
-    expect(multi).toContain('🔁 9 轮');
-
-    const single = JSON.stringify(historyCard([row({ segmentCount: 1 })], { mode: 'cwd', offset: 0, total: 1, scope: 'oc_test' }));
-    expect(single).not.toContain('🧵');
-  });
-
-  it('offers 与上一条合并 on every row but the first, keeping the row above', () => {
-    const rows = [
-      row({ workSessionId: 'row-a' }),
-      row({ workSessionId: 'row-b' }),
-      row({ workSessionId: 'row-c' }),
-    ];
-    const card = historyCard(rows, { mode: 'cwd', offset: 0, total: 3, scope: 'oc_test' });
-
-    const merges = allButtons(card).filter((b) => b.cmd === 'work.merge');
-    // keep = the row above, fold = this row.
-    expect(merges).toEqual([
-      { cmd: 'work.merge', arg: 'row-a row-b', label: '与上一条合并' },
-      { cmd: 'work.merge', arg: 'row-b row-c', label: '与上一条合并' },
-    ]);
-  });
-
-  it('offers 🗂 拆段 only for multi-segment rows, seeding segment 2', () => {
-    const card = historyCard(
-      [
-        row({ workSessionId: 'multi-seg', segmentCount: 3 }),
-        row({ workSessionId: 'one-seg', segmentCount: 1 }),
-      ],
-      { mode: 'cwd', offset: 0, total: 2, scope: 'oc_test' },
-    );
-
-    const splits = allButtons(card).filter((b) => b.cmd === 'work.split');
-    expect(splits).toEqual([{ cmd: 'work.split', arg: 'multi-seg 2', label: '🗂 拆段' }]);
-  });
-
-  it('renders merge/split only on rows the calling scope owns', () => {
-    // 'all' mode mixes scopes: rows from another chat and unclaimed (null) rows
-    // must not offer the corrective buttons — the command would reject them.
-    const rows = [
-      row({ workSessionId: 'mine-a', scope: 'oc_test', segmentCount: 3 }),
-      row({ workSessionId: 'mine-b', scope: 'oc_test', segmentCount: 3 }),
-      row({ workSessionId: 'other', scope: 'oc_other', segmentCount: 3 }),
-      row({ workSessionId: 'orphan', scope: null, segmentCount: 3 }),
-    ];
-    const card = historyCard(rows, { mode: 'all', offset: 0, total: 4, scope: 'oc_test' });
-    const buttons = allButtons(card);
-
-    // 拆段: owned multi-segment rows only.
-    expect(buttons.filter((b) => b.cmd === 'work.split').map((b) => b.arg)).toEqual([
-      'mine-a 2',
-      'mine-b 2',
-    ]);
-    // 与上一条合并: needs BOTH this row and the row above owned — so only
-    // mine-b (above it is the owned mine-a) qualifies.
-    expect(buttons.filter((b) => b.cmd === 'work.merge').map((b) => b.arg)).toEqual([
-      'mine-a mine-b',
-    ]);
-    // 继续对话 stays on every non-current row regardless of scope.
-    expect(buttons.filter((b) => b.cmd === 'history.resume').map((b) => b.arg)).toEqual([
-      'mine-a',
-      'mine-b',
-      'other',
-      'orphan',
-    ]);
+    // One session = one conversation: the segment/merge vocabulary is gone.
+    expect(card).not.toContain('工作会话');
+    expect(card).not.toContain('段');
+    expect(card).not.toContain('合并');
+    expect(card).not.toContain('拆分');
+    expect(card).not.toContain('work.merge');
+    expect(card).not.toContain('work.split');
+    const buttons = allButtons(JSON.parse(card) as object);
+    expect(buttons.every((b) => b.label === '继续对话')).toBe(true);
   });
 });

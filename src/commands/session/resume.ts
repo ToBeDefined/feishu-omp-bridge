@@ -21,11 +21,10 @@ export const resumeHandlers: Record<string, Handler> = {
 const RESUME_PAGE_SIZE = 5;
 
 /**
- * 若另一个 scope 的**当前段**落在给定段集合里，返回那个 scope。
+ * 若另一个 scope 的**当前会话**落在给定会话集合里，返回那个 scope。
  *
- * 一次工作只应由一个 chat 恢复：同一 JSONL 被两个 OMP 进程 `--resume` 会让两边
- * 的回合交错写进同一个文件。到工作会话粒度后，「占用」= 对方当前段是本工作会话
- * 的任一段（不再只是单个 sessionId）。
+ * 一个对话只应由一个 chat 恢复：同一 JSONL 被两个 OMP 进程 `--resume` 会让两边的
+ * 回合交错写进同一个文件。
  */
 function occupyingScope(ctx: CommandContext, segmentIds: Iterable<string>): string | undefined {
   const ids = new Set(segmentIds);
@@ -101,27 +100,11 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
 
-  // Direct resume by id prefix: match a work session id or an OMP session id.
+  // Direct resume by id prefix: match an OMP session id (one session = one
+  // conversation, so that id IS the conversation).
   const sessions = await listResumableSessions(ctx);
-  const match = sessions.find(
-    (s) => s.sessionId.startsWith(sub) || (s.workSessionId?.startsWith(sub) ?? false),
-  );
+  const match = sessions.find((s) => s.sessionId.startsWith(sub));
   if (!match) {
-    // The id may be a segment of a work session that is NOT its current/active
-    // one — /resume only offers the active segment, so it is not in the picker.
-    // Don't fail silently: point the caller at /history seg to pick the段.
-    const owner =
-      ctx.workSessions.workSessionForSegment(sub) ??
-      ctx.workSessions
-        .allWorkSessions()
-        .find((ws) => ws.segments.some((s) => s.sessionId.startsWith(sub)));
-    if (owner !== undefined) {
-      await reply(
-        ctx,
-        `这是工作会话 \`${owner.id}\` 的一个历史段，用 \`/history seg ${owner.id}\` 选段恢复。`,
-      );
-      return;
-    }
     await reply(ctx, `❌ 未找到会话 \`${sub}\`。发 \`/resume\` 查看可恢复的会话列表。`);
     return;
   }
@@ -174,30 +157,15 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
   // it like an unclaimed file and fall back to binding `match.sessionId` alone.
   const ws = foundWs !== undefined && foundWs.segments.length > 0 ? foundWs : undefined;
 
-  // Same segment rule as the /history row: current segment if alive, else the
-  // latest surviving one. Its cwd is the directory the session actually ran in.
+  // 一个 OMP 会话 = 一个对话：这一摊活只有那段会话。它的 cwd 就是它跑过的目录。
   let target = match.sessionId;
   let segmentCwd = match.cwd || homedir();
   if (ws !== undefined) {
     const alive = new Set((await scanSessionFiles(ctx)).map((s) => s.sessionId));
-    // A segment explicitly named by the caller (`/history seg`'s 恢复这一段
-    // button) is restored EXACTLY — pickActiveSegment must not override it.
-    // Everything else (the 继续对话 button, /resume) resumes the work session's
-    // active segment.
-    const requested =
-      match.segmentId !== undefined
-        ? ws.segments.find((s) => s.sessionId === match.segmentId)
-        : undefined;
-    if (match.segmentId !== undefined && requested === undefined) {
-      log.warn('command', 'resume-unknown-segment', {
-        scope: ctx.scope,
-        workSessionId: ws.id,
-        segmentId: match.segmentId,
-      });
-      await reply(ctx, `❌ 工作会话 \`${ws.id}\` 里没有段 \`${match.segmentId}\`。`);
-      return;
-    }
-    const picked = requested ?? pickActiveSegment(ws, (id) => alive.has(id));
+    const picked =
+      ws.currentSegmentId !== undefined
+        ? ws.segments.find((s) => s.sessionId === ws.currentSegmentId)
+        : ws.segments[0];
     if (picked === undefined || !alive.has(picked.sessionId)) {
       // Ghost segment: the store still lists it but its file is gone. Adopting
       // it would silently point the chat at nothing.

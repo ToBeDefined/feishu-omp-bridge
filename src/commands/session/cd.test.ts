@@ -26,13 +26,13 @@ afterEach(async () => {
 function makeCtx(cwd: string): {
   ctx: CommandContext;
   setCwd: Mock;
-  clear: Mock;
+  start: Mock;
   interrupt: Mock;
   clearUndo: Mock;
   sent: string[];
 } {
   const setCwd = vi.fn();
-  const clear = vi.fn();
+  const start = vi.fn();
   const interrupt = vi.fn();
   const clearUndo = vi.fn();
   const sent: string[] = [];
@@ -50,13 +50,13 @@ function makeCtx(cwd: string): {
     } as never,
     scope: 'oc_1',
     chatMode: 'p2p',
-    workSessions: { dropCurrentSegment: clear } as never,
+    workSessions: { startWorkSession: start } as never,
     workspaces: { cwdFor: () => cwd, setCwd, clearUndo } as never,
     agent: {} as never,
     activeRuns: { interrupt } as never,
     controls: { cfg: { preferences: { access: { admins: [] } } } } as never,
   } as CommandContext;
-  return { ctx, setCwd, clear, interrupt, clearUndo, sent };
+  return { ctx, setCwd, start, interrupt, clearUndo, sent };
 }
 
 describe('resolveTarget', () => {
@@ -91,11 +91,11 @@ describe('resolveTarget', () => {
 
 describe('/cd', () => {
   it('switches to a relative path under the current cwd', async () => {
-    const { ctx, setCwd, clear, interrupt, clearUndo, sent } = makeCtx(base);
+    const { ctx, setCwd, start, interrupt, clearUndo, sent } = makeCtx(base);
     ctx.msg.content = '/cd src';
     await expect(tryHandleCommand(ctx)).resolves.toBe(true);
     expect(setCwd).toHaveBeenCalledWith('oc_1', join(base, 'src'));
-    expect(clear).toHaveBeenCalledWith('oc_1');
+    expect(start).toHaveBeenCalledWith('oc_1');
     expect(interrupt).toHaveBeenCalledWith('oc_1');
     // A stale /ws undo target would roll the user back to the left workspace.
     expect(clearUndo).toHaveBeenCalledWith('oc_1');
@@ -119,20 +119,20 @@ describe('/cd', () => {
   it('rejects a relative path that is not a directory', async () => {
     const file = join(base, 'readme.md');
     await writeFile(file, 'x');
-    const { ctx, setCwd, clear, sent } = makeCtx(base);
+    const { ctx, setCwd, start, sent } = makeCtx(base);
     ctx.msg.content = '/cd readme.md';
     await tryHandleCommand(ctx);
     expect(setCwd).not.toHaveBeenCalled();
-    expect(clear).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
     expect(sent.join('\n')).toContain('路径不是目录');
   });
 
   it('reports a non-existent relative path without switching', async () => {
-    const { ctx, setCwd, clear, sent } = makeCtx(base);
+    const { ctx, setCwd, start, sent } = makeCtx(base);
     ctx.msg.content = '/cd nosuch';
     await tryHandleCommand(ctx);
     expect(setCwd).not.toHaveBeenCalled();
-    expect(clear).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
     expect(sent.join('\n')).toContain('路径不存在');
   });
 

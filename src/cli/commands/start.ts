@@ -26,7 +26,7 @@ import {
 import { gcOldLogs, log } from '../../core/logger';
 import { kickstart } from '../../daemon/launchd';
 import { restartCard } from '../../card/templates';
-import { updateManagedCard } from '../../card/managed';
+import { finalizeInterruptedCards, updateManagedCard } from '../../card/managed';
 import { takeOnlineNotice } from '../../bot/online-notify';
 import { gcMediaCache, MEDIA_GC_MAX_AGE_MS } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
@@ -271,6 +271,11 @@ export async function runStart(opts: StartOptions): Promise<void> {
   const notifyTargets: string[] = [];
   const notice = await takeOnlineNotice();
   if (notice?.mode === 'notify') notifyTargets.push(notice.chatId);
+  // Crash recovery: managed cards left in-flight by the previous process get
+  // finalized so interrupted replies don't linger with a ⏹ button.
+  await finalizeInterruptedCards(bridge.channel).catch((err) =>
+    log.warn('notify', 'interrupted-finalize-failed', { err: String(err) }),
+  );
   if (notice?.mode === 'notify' && notice.messageId) {
     try {
       await updateManagedCard(bridge.channel, notice.messageId, restartCard('done'));

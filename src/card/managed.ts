@@ -1,9 +1,17 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
+import { readFile, unlink, writeFile } from 'node:fs/promises';
+import { paths } from '../config/paths';
 import { log } from '../core/logger';
 
 interface ManagedEntry {
   cardId: string;
   sequence: number;
+}
+
+interface PersistedRunningCard {
+  messageId: string;
+  cardId: string;
+  chatId: string;
 }
 
 // Module-local because state is per-process. Lost on restart, which is fine —
@@ -58,6 +66,7 @@ export async function sendManagedCard(
   }
 
   byMessageId.set(messageId, { cardId, sequence: 0 });
+  void persistRunningCards([{ messageId, cardId, chatId }], { append: true });
   // ponytail: cap at 200; streaming run cards don't use this map. Forms
   // forget on settle; leftovers are abandoned clicks / agent cards.
   if (byMessageId.size > 200) {
@@ -99,4 +108,72 @@ export async function updateManagedCard(
 /** Drop the mapping; call after the card is recalled or the flow ends. */
 export function forgetManagedCard(messageId: string): void {
   byMessageId.delete(messageId);
+  void (async () => {
+    const list = await readRunningCards();
+    const next = list.filter((c) => c.messageId !== messageId);
+    if (next.length !== list.length) {
+      await writeFile(paths.runningCardsFile, JSON.stringify(next), 'utf8').catch(() => {});
+    }
+  })();
+}
+
+const RUNNING_CARDS_MAX = 50;
+
+async function readRunningCards(): Promise<PersistedRunningCard[]> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(paths.runningCardsFile, 'utf8'));
+    return Array.isArray(parsed) ? (parsed as PersistedRunningCard[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function persistRunningCards(
+  entries: PersistedRunningCard[],
+  opts: { append?: boolean } = {},
+): Promise<void> {
+  try {
+    const list = opts.append
+      ? [...(await readRunningCards()), ...entries].slice(-RUNNING_CARDS_MAX)
+      : entries;
+    await writeFile(paths.runningCardsFile, JSON.stringify(list), 'utf8');
+  } catch (err) {
+    log.warn('card', 'running-cards-persist-failed', { err: String(err) });
+  }
+}
+
+/**
+ * Called once at boot: managed cards still in-flight from the previous
+ * process get finalized as interrupted, so crash-interrupted replies don't
+ * linger with a live ⏹ button. Sequence uses a timestamp because the
+ * previous process may have incremented the cardkit sequence arbitrarily far.
+ */
+export async function finalizeInterruptedCards(channel: LarkChannel): Promise<void> {
+  const leftovers = await readRunningCards();
+  await unlink(paths.runningCardsFile).catch(() => {});
+  for (const { messageId, cardId } of leftovers) {
+    try {
+      await channel.rawClient.cardkit.v1.card.update({
+        path: { card_id: cardId },
+        data: {
+          card: {
+            type: 'card_json',
+            data: JSON.stringify({
+              schema: '2.0',
+              config: { update_multi: true },
+              body: {
+                elements: [
+                  { tag: 'markdown', content: '⚠️ **进程在回复期间重启，本条回复未完成。**' },
+                ],
+              },
+            }),
+          },
+          sequence: Date.now(),
+        },
+      });
+      log.info('card', 'interrupted-finalized', { messageId, cardId });
+    } catch (err) {
+      log.warn('card', 'interrupted-finalize-failed', { messageId, err: String(err) });
+    }
+  }
 }

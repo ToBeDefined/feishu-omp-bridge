@@ -19,6 +19,9 @@ export const paths = {
   modelHistoryFile: join(appDir, 'model-history.json'),
   schedulerFile: join(appDir, 'scheduler.json'),
   onlineNotifyFile: join(appDir, 'online-notify.json'),
+  /** Leftover in-flight managed cards from the previous process — finalized
+   *  by the next boot so crash-interrupted replies don't stay "running". */
+  runningCardsFile: join(appDir, 'running-cards.json'),
   /** Previous name of {@link onlineNotifyFile}. Kept readable because the
    *  bounce that installs this rename is performed by the build being
    *  replaced, which still writes the old filename. */

@@ -144,14 +144,6 @@ async function removeFromRunningCards(messageId: string): Promise<void> {
     await writeFile(paths.runningCardsFile, JSON.stringify(next), 'utf8').catch(() => {});
   }
 }
-
-/**
- * Called once at boot: cards still in-flight from the previous process get
- * finalized as interrupted, so crash-interrupted replies don't linger with a
- * live ⏹ button. Uses im.v1.message.patch for every card type — it replaces
- * the message content wholesale regardless of whether the card was created
- * via cardkit (managed) or channel.stream (streaming).
- */
 export async function finalizeInterruptedCards(channel: LarkChannel): Promise<void> {
   const leftovers = await readRunningCards();
   await unlink(paths.runningCardsFile).catch(() => {});
@@ -159,25 +151,77 @@ export async function finalizeInterruptedCards(channel: LarkChannel): Promise<vo
     // Skip invalid entries (test data, empty ids).
     if (!messageId || messageId === 'om_sent' || !messageId.startsWith('om_')) continue;
     try {
+      // Fetch the current card content so partial output survives the
+      // restart — replacing it wholesale would throw away everything the
+      // user already saw.
+      const fetched = await channel.rawClient.im.v1.message.get({
+        path: { message_id: messageId },
+      });
+      const body = (fetched as { data?: { body?: { content?: string } } }).data?.body?.content;
+      let finalCard: object;
+      if (body) {
+        try {
+          const parsed = JSON.parse(body) as { schema?: string; body?: { elements?: unknown[] } };
+          finalCard = preserveCardContent(parsed);
+        } catch {
+          finalCard = interruptedCard();
+        }
+      } else {
+        finalCard = interruptedCard();
+      }
       await channel.rawClient.im.v1.message.patch({
         path: { message_id: messageId },
-        data: {
-          content: JSON.stringify({
-            schema: '2.0',
-            config: { update_multi: true },
-            body: {
-              elements: [
-                { tag: 'markdown', content: '⚠️ **进程在回复期间重启，本条回复未完成。**' },
-              ],
-            },
-          }),
-        },
+        data: { content: JSON.stringify(finalCard) },
       });
       log.info('card', 'interrupted-finalized', { messageId });
     } catch (err) {
       log.warn('card', 'interrupted-finalize-failed', { messageId, err: String(err) });
     }
   }
+}
+
+/**
+ * Strip running-state chrome (stop buttons, running footers) from a fetched
+ * card and append the interruption note, keeping the streamed content.
+ */
+function preserveCardContent(card: { schema?: string; body?: { elements?: unknown[] } }): object {
+  const elements = Array.isArray(card.body?.elements) ? [...card.body!.elements!] : [];
+  // Remove buttons and column_sets that carry the ⏹ stop button; keep
+  // markdown/text content panels.
+  const kept = elements.filter((el) => {
+    if (typeof el !== 'object' || el === null || !('tag' in el)) return true;
+    const tag = String(el.tag);
+    // Drop action rows and button columns — they belong to the running state.
+    if (tag === 'action') return false;
+    if (tag === 'button') return false;
+    if (tag === 'column_set') {
+      const json = JSON.stringify(el);
+      if (json.includes('"cmd":"stop"') || json.includes('⏹')) return false;
+    }
+    return true;
+  });
+  kept.push({
+    tag: 'markdown',
+    content: '---\n⚠️ **进程在回复期间重启，以上为已输出的部分内容。**',
+    text_size: 'notation',
+  });
+  return {
+    schema: '2.0',
+    config: { update_multi: true },
+    body: { elements: kept },
+  };
+}
+
+function interruptedCard(): object {
+  return {
+    schema: '2.0',
+    config: { update_multi: true },
+    body: {
+      elements: [
+        { tag: 'markdown', content: '⚠️ **进程在回复期间重启，本条回复未完成。**' },
+      ],
+    },
+  };
 }
 
 /**

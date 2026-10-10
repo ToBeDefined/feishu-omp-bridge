@@ -645,6 +645,8 @@ export async function streamCardPages(
 ): Promise<void> {
   const session = createStreamSession(handle, idleTimeoutMs);
   let pageIndex = 0;
+  // 当前这一页的飞书消息 id：失败时用它把停摆的卡补成终态（见 catch）。
+  let inflightCardId: string | undefined;
   try {
     for (;;) {
       // Each page starts from a clean slate: text/tool blocks and reasoning
@@ -671,7 +673,9 @@ export async function streamCardPages(
       }
       const overflow = await runCardPage(
         channel, chatId, sendOpts, session, handle, workSessions, scope, cwd,
-        idleTimeoutMs, hooks, filter, pageIndex,
+        idleTimeoutMs, hooks, filter, pageIndex, (messageId) => {
+          inflightCardId = messageId;
+        },
       );
       // Another page is needed while content is still owed to the user: either
       // the page cut at the table budget (carry) or the run is still streaming.
@@ -686,6 +690,12 @@ export async function streamCardPages(
     // first (near-impossible to reject); if even that fails, fall back to
     // plain text so the user's turn is never silently swallowed. Rethrow so
     // runAgentBatch still logs the failure.
+    //
+    // 先把**这张死掉的卡**补成终态：它停在“运行中”的画面上，用户会一直看到一个
+    // 不消失的 ⏹ 终止按钮（新发的兜底卡救不了它）。
+    if (inflightCardId !== undefined) {
+      await patchStrandedCard(channel, inflightCardId, session, handle, idleTimeoutMs, filter);
+    }
     const replyTo = sendOpts.replyTo;
     const sent = await sendManagedCard(channel, chatId, fallbackCard(session.state, filter), replyTo).catch(
       () => undefined,
@@ -710,6 +720,41 @@ export async function streamCardPages(
 }
 
 
+/**
+ * 把一张停在运行态的卡片补成终态（尽力而为）。
+ *
+ * 内容可能正是失败的原因（超 30KB / 表格超限），所以先按字节切一刀：能放下的
+ * 部分照旧呈现 + 一句提示；连切都切不出来时退回一张极小卡片。补上了就撤掉崩溃
+ * 恢复记录，补不上就留着 —— 别让用户永远看着一个 ⏹ 终止按钮。
+ */
+async function patchStrandedCard(
+  channel: LarkChannel,
+  messageId: string,
+  session: StreamSession,
+  handle: RunHandle,
+  idleTimeoutMs: number | undefined,
+  filter: (state: RunState) => RunState,
+): Promise<void> {
+  const final = finalizeSessionState(session, handle, idleTimeoutMs);
+  const split = splitByByteBudget(final, filter);
+  const card =
+    split.carry.length > 0
+      ? renderCard(filter({ ...split.page, terminal: 'done' }), {
+          bottomNote: '⚠️ 卡片更新失败，本条回复可能不完整',
+        })
+      : renderCard(filter(final));
+  try {
+    await channel.rawClient.im.v1.message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(card) },
+    });
+    forgetStreamingCard(messageId);
+    log.info('card', 'stranded-finalized', { messageId, terminal: final.terminal });
+  } catch (patchErr) {
+    log.warn('card', 'stranded-finalize-failed', { messageId, err: String(patchErr) });
+  }
+}
+
 /** Run one card page; returns true if it overflowed (another page follows). */
 async function runCardPage(
   channel: LarkChannel,
@@ -724,18 +769,22 @@ async function runCardPage(
   hooks: AgentStreamHooks | undefined,
   filter: (state: RunState) => RunState,
   pageIndex: number,
+  onCard?: (messageId: string) => void,
 ): Promise<boolean> {
   let overflow = false;
   // Whether any agent event was reduced into this page. A page that only
   // drains carry after the stream ended has already shown its content in
   // the initial card (rendered in terminal state) — a finalize push would
   // repeat that content verbatim on a second card.
-  let sawEvent = false;
-  // Whether the last pushed card already rendered the terminal state. The
+  // Whether the card currently on screen already renders a terminal state. The
   // finalize push exists to add terminal marks (idle/interrupt/done) to a
-  // still-running card; re-pushing an already-terminal card just duplicates
-  // the user-visible content.
-  let sawTerminalPush = false;
+  // still-running card; re-pushing an already-terminal card just duplicates the
+  // user-visible content.
+  //
+  // 初始卡也算：它若是终态（排空页），这一页就没有补的必要；它若是运行态而整页
+  // 一个事件都没来，**反而必须补** —— 否则那张卡永远停在运行态，用户会一直看着
+  // 一个不消失的 ⏹ 终止按钮（旧代码要求 `sawEvent` 才补，这条静默路径就漏了）。
+  let sawTerminalPush = filter(session.state).terminal !== 'running';
   const initialCard = renderCard(
     filter(session.state),
     pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
@@ -749,7 +798,10 @@ async function runCardPage(
           // Crash recovery: streaming cards don't go through the managed-card
           // system, so persist their messageId + snapshot for the boot-time
           // finalizer (Feishu can't return card content afterwards).
+          onCard?.(ctrl.messageId);
           void rememberStreamingCard(ctrl.messageId, chatId, initialCard);
+          // 失败标记：决定 finally 是否撤掉崩溃恢复记录（见下）。
+          let failed = false;
           try {
           const q = coalesceLatest((card: object) => {
             // Persist the snapshot BEFORE pushing: whatever reached Feishu is
@@ -760,7 +812,6 @@ async function runCardPage(
             minIntervalMs: CARD_UPDATE_MIN_INTERVAL_MS,
           });
           await streamEvents(session, handle, workSessions, scope, cwd, hooks, async (state) => {
-            sawEvent = true;
             // Tables first: Feishu rejects a card past five table components
             // (ErrCode 11310 "card table number over limit") no matter how
             // small it is, so a page must be cut at the table budget rather
@@ -806,7 +857,7 @@ async function runCardPage(
             if (state.terminal !== 'running') sawTerminalPush = true;
             return true;
           });
-          if (!overflow && sawEvent && !sawTerminalPush) {
+          if (!overflow && !sawTerminalPush) {
             // Natural end of the whole stream: finalize + reap on this page.
             // The finalize push goes through the same byte split as a
             // mid-stream overflow — the drained carry can still be past the
@@ -832,7 +883,9 @@ async function runCardPage(
             // (reap happens once in streamCardPages' finally, after all pages)
           }
           } finally {
-            void forgetStreamingCard(ctrl.messageId);
+            // 只在**正常收尾**时撤记录：那张卡此刻已是终态（⏹ 已随终态渲染消失）。
+            // 抛错的路径留着记录 —— 卡片停在运行态，要让下次启动的兜底补卡去收尾。
+            if (!failed) void forgetStreamingCard(ctrl.messageId);
           }
         },
       },

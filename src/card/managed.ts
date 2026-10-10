@@ -225,26 +225,65 @@ export async function finalizeInterruptedCards(
   excludeMessageId?: string,
 ): Promise<boolean> {
   const leftovers = await readRunningCards();
-  await unlink(paths.runningCardsFile).catch(() => {});
+  const retry: PersistedRunningCard[] = [];
   let finalizedRestart = false;
-  for (const { messageId, kind, card } of leftovers) {
+  for (const entry of leftovers) {
+    const { messageId, kind, card } = entry;
     // Cards claimed by the boot-notice marker are finished by the caller
     // instead (the new process confirms /release and /restart themselves).
     if (messageId === excludeMessageId) continue;
     if (!messageId || messageId === 'om_sent' || !messageId.startsWith('om_')) continue;
-    try {
-      const finalCard = finalizeByKind(kind, card);
-      await channel.rawClient.im.v1.message.patch({
-        path: { message_id: messageId },
-        data: { content: JSON.stringify(finalCard) },
-      });
+    if (await deliverInterruptCard(channel, messageId, kind, card)) {
       if (kind === 'restart') finalizedRestart = true;
-      log.info('card', 'interrupted-finalized', { messageId, kind, hadSnapshot: Boolean(card) });
-    } catch (err) {
-      log.warn('card', 'interrupted-finalize-failed', { messageId, kind, err: String(err) });
+    } else {
+      // 补不上就**留着**：这张卡还停在运行态（带 ⏹ 终止按钮），记录的寿命必须
+      // 跟着它 —— 从前这里无论成败都清空记录，于是补卡被飞书拒一次，那个终止
+      // 按钮就永远挂在那里了。
+      retry.push(entry);
     }
   }
+  await writeRunningCards(retry);
   return finalizedRestart;
+}
+
+/** Feishu rejects a card patch past ~30KB (ErrCode 200800 / HTTP 400). */
+const CARD_PATCH_MAX_BYTES = 28 * 1024;
+
+/**
+ * 把一张遗留的运行态卡片补成终态。优先保留已输出的内容（`finalizeByKind`），
+ * 但**超长卡片必被飞书拒**（正是 400 的常见来源），所以放不下 / 被拒时退回一张
+ * 极小终态卡：此处唯一重要的是让用户看不到一个永远不消失的 ⏹。
+ */
+async function deliverInterruptCard(
+  channel: LarkChannel,
+  messageId: string,
+  kind: RunningCardKind,
+  card: object | undefined,
+): Promise<boolean> {
+  const pretty = finalizeByKind(kind, card);
+  const fits = Buffer.byteLength(JSON.stringify(pretty), 'utf8') <= CARD_PATCH_MAX_BYTES;
+  if (fits && (await tryPatchCard(channel, messageId, pretty))) {
+    log.info('card', 'interrupted-finalized', { messageId, kind, hadSnapshot: Boolean(card) });
+    return true;
+  }
+  if (await tryPatchCard(channel, messageId, finalizeByKind(kind, undefined))) {
+    log.info('card', 'interrupted-finalized-short', { messageId, kind, fits });
+    return true;
+  }
+  return false;
+}
+
+async function tryPatchCard(channel: LarkChannel, messageId: string, card: object): Promise<boolean> {
+  try {
+    await channel.rawClient.im.v1.message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(card) },
+    });
+    return true;
+  } catch (err) {
+    log.warn('card', 'interrupted-finalize-failed', { messageId, err: String(err) });
+    return false;
+  }
 }
 
 /** Terminal card for a leftover entry, by kind. */

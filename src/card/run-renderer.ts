@@ -88,6 +88,8 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   }
 
   if (state.terminal === 'running') {
+    // 分割线把控制区（状态 + ⏹）和正文隔开。
+    elements.push({ tag: 'hr' });
     if (state.footer) {
       elements.push(runningFooter(state.footer));
     } else {

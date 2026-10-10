@@ -214,6 +214,8 @@ describe('renderCard', () => {
     );
     expect(footerRow).toBeDefined();
     expect(JSON.stringify(footerRow)).toContain('正在输出');
+    // 正文与控制区之间有分割线。
+    expect(elements[elements.length - 2]).toMatchObject({ tag: 'hr' });
   });
 
   it('skips the thinking panel when thinking is a bare placeholder (e.g. ".")', () => {

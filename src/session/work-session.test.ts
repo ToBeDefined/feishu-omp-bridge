@@ -33,6 +33,18 @@ describe('touchSegment', () => {
     expect(once.segments).toHaveLength(1);
     expect(once.segments[0]?.lastActiveAtMs).toBe(9_000);
   });
+
+  it('follows the touched segment cwd when it is not the last one', () => {
+    // /cd 之后同一工作会话里会有不同 cwd 的段；回到较早段（如 /resume）时
+    // currentSegmentId 与 cwd 必须一致指向那段，而不是数组末段。
+    const two = touchSegment(beginWorkSession('oc_1', seg('01aA', '/repo')), seg('01aB', '/other', 2_000), 2_000);
+    const ws = touchSegment(two, seg('01aA', '/repo'), 3_000);
+    expect(ws.currentSegmentId).toBe('01aA');
+    expect(ws.cwd).toBe('/repo');
+    expect(ws.segments.map((s) => s.sessionId)).toEqual(['01aA', '01aB']);   // 数组顺序不变
+    expect(ws.segments[1]).toMatchObject({ sessionId: '01aB', cwd: '/other' });
+    expect(ws.lastActiveAtMs).toBe(3_000);
+  });
 });
 
 describe('displayName', () => {
@@ -45,6 +57,12 @@ describe('displayName', () => {
   });
   it('returns undefined when neither exists', () => {
     expect(displayName(ws, {})).toBeUndefined();
+  });
+  it('falls back to an earlier segment when the last one has no user message', () => {
+    const two = touchSegment(beginWorkSession('oc_1', seg('01aA')), seg('01aB', '/repo', 2_000), 2_000);
+    expect(displayName(two, { '01aA': '先聊的话题', '01aB': '   ' })).toBe('先聊的话题');
+    // 末段有消息时仍优先用末段
+    expect(displayName(two, { '01aA': '先聊的话题', '01aB': '后来聊的' })).toBe('后来聊的');
   });
 });
 

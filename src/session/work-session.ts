@@ -21,7 +21,7 @@ export interface WorkSession {
   scope: string | null;
   /** /rename 起的名字；空/缺省时显示回退到最后一条用户消息。 */
   title?: string;
-  /** 最近一段的 cwd（/history 行的"工作目录"）。 */
+  /** 当前段的 cwd（/history 行的"工作目录"；/cd 之后同一工作会话里会有不同 cwd 的段）。 */
   cwd: string;
   createdAtMs: number;
   lastActiveAtMs: number;
@@ -64,12 +64,13 @@ export function touchSegment(ws: WorkSession, seg: WorkSegment, nowMs = Date.now
       : ws.segments.map((s, i) =>
           i === idx ? { ...s, lastActiveAtMs: Math.max(s.lastActiveAtMs, seg.lastActiveAtMs) } : s,
         );
-  const last = segments[segments.length - 1] ?? seg;
   return {
     ...ws,
     segments,
     currentSegmentId: seg.sessionId,
-    cwd: last.cwd,
+    // cwd 跟随被 touch 的段（当前段），不是数组末段：/cd 之后同一工作会话里
+    // 会有不同 cwd 的段，/resume 回到较早段时两者不能矛盾。
+    cwd: seg.cwd,
     lastActiveAtMs: Math.max(ws.lastActiveAtMs, nowMs),
   };
 }

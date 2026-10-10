@@ -204,10 +204,11 @@ describe('WorkSessionStore segment timestamps', () => {
     expect(ws?.lastActiveAtMs).toBe(now);
   });
 
-  it("adopts a resumed session's own start/last-active times", async () => {
+  it("adopts a resumed session's own start/last-active times without pulling the work session back", async () => {
     const store = new WorkSessionStore(file);
     stores.push(store);
     store.bindSegment('oc_1', 'sess-old', '/repo');
+    const activeBefore = store.activeWorkSession('oc_1')?.lastActiveAtMs ?? 0;
 
     store.bindSegment('oc_1', 'sess-new', '/repo', { startedAtMs: 1_000, lastActiveAtMs: 2_000 });
 
@@ -217,6 +218,27 @@ describe('WorkSessionStore segment timestamps', () => {
       sessionId: 'sess-new',
       startedAtMs: 1_000,
       lastActiveAtMs: 2_000,
+    });
+    // 1_000/2_000 是过去的时刻：历史会话的活跃时间不能把工作会话拽回去。
+    expect(store.activeWorkSession('oc_1')?.lastActiveAtMs).toBeGreaterThanOrEqual(activeBefore);
+  });
+
+  it('never lowers the work session lastActiveAtMs when binding a historical session', async () => {
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    store.bindSegment('oc_1', 'sess-now', '/repo');   // at = now（真实当前时间）
+    const before = store.activeWorkSession('oc_1')?.lastActiveAtMs ?? 0;
+    expect(before).toBeGreaterThan(2_000);
+
+    // /resume、/history 继续对话绑的是很久以前的会话。
+    store.bindSegment('oc_1', 'sess-history', '/repo', { startedAtMs: 1_000, lastActiveAtMs: 2_000 });
+
+    const ws = store.activeWorkSession('oc_1');
+    expect(ws?.lastActiveAtMs).toBe(before);          // 不回退
+    expect(ws?.segments.at(-1)).toMatchObject({
+      sessionId: 'sess-history',
+      startedAtMs: 1_000,
+      lastActiveAtMs: 2_000,                          // 段保留它自己的历史时间
     });
   });
 
@@ -245,6 +267,16 @@ describe('WorkSessionStore corruption tolerance', () => {
     stores.push(store);
     await store.load();
     expect(store.chats()).toEqual([]);
+  });
+
+  it('tolerates a file whose JSON content is the literal null', async () => {
+    // `null` 是合法 JSON：JSON.parse 返回 null，旧实现直接读 raw.v 会抛 TypeError。
+    await writeFile(file, 'null');
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    await store.load();
+    expect(store.chats()).toEqual([]);
+    expect(store.allWorkSessions()).toEqual([]);
   });
 
   it('loads valid entries and skips malformed ones', async () => {
@@ -397,6 +429,44 @@ describe('WorkSessionStore v2', () => {
     expect(store.titleFor('sess-b')).toBeUndefined();
   });
 
+  it('does not leak a pending name when /work is re-run without one', async () => {
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    await store.load();
+    store.bindSegment('oc_1', 'sess-a', '/repo');
+    store.startWorkSession('oc_1', '先起的名');   // /work 名字
+    store.startWorkSession('oc_1');               // 反悔：再 /work 不带名字
+    store.bindSegment('oc_1', 'sess-b', '/repo');
+
+    expect(store.titleFor('sess-b')).toBeUndefined();
+  });
+
+  it('does not leak a pending name across /resume then an unnamed /work', async () => {
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    await store.load();
+    store.bindSegment('oc_1', 'sess-a', '/repo');
+    store.startWorkSession('oc_1', '先起的名');   // /work 名字
+    store.adoptWorkSession('oc_1', 'sess-a');      // /resume 旧工作
+    store.startWorkSession('oc_1');                // 再 /work（无名）
+    store.bindSegment('oc_1', 'sess-b', '/repo');
+
+    expect(store.titleFor('sess-b')).toBeUndefined();
+  });
+
+  it('lists a scope once even after /work archived earlier sessions', async () => {
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    await store.load();
+    store.bindSegment('oc_1', 'sess-a', '/repo');
+    store.startWorkSession('oc_1');                // 归档：同一 chat 又有活
+    store.bindSegment('oc_1', 'sess-b', '/repo');
+    store.bindSegment('oc_2', 'sess-c', '/repo');
+
+    // 启动通知按 scope 发；同一 chat 的两摊活只该通知一次。
+    expect(store.chats().sort()).toEqual(['oc_1', 'oc_2']);
+  });
+
   it('keeps the idle override on the scope across work sessions', async () => {
     const store = new WorkSessionStore(file);
     stores.push(store);
@@ -443,5 +513,31 @@ describe('WorkSessionStore v2', () => {
     await store.flush();
     const onDisk = JSON.parse(await readFile(file, 'utf8')) as { v: number };
     expect(onDisk.v).toBe(2);
+  });
+
+  it('backfills a missing scope link with the most recently active work session', async () => {
+    // 同一 scope 下有两摊活（/work 归档过），文件里没留下 scope 映射。
+    // 最近活跃的是 new；补链必须挑它，否则会静默绑到归档的旧活上。
+    await writeFileAtomic(file, JSON.stringify({
+      v: 2,
+      scopes: {},
+      workSessions: {
+        'sess-new': {
+          id: 'sess-new', scope: 'oc_1', cwd: '/repo', createdAtMs: 300, lastActiveAtMs: 300,
+          currentSegmentId: 'sess-new',
+          segments: [{ sessionId: 'sess-new', cwd: '/repo', startedAtMs: 300, lastActiveAtMs: 300 }],
+        },
+        'sess-old': {
+          id: 'sess-old', scope: 'oc_1', cwd: '/repo', createdAtMs: 100, lastActiveAtMs: 100,
+          currentSegmentId: 'sess-old',
+          segments: [{ sessionId: 'sess-old', cwd: '/repo', startedAtMs: 100, lastActiveAtMs: 100 }],
+        },
+      },
+    }));
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    await store.load();
+
+    expect(store.activeWorkSession('oc_1')?.id).toBe('sess-new');
   });
 });

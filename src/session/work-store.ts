@@ -47,7 +47,9 @@ export class WorkSessionStore {
 
   async load(): Promise<void> {
     try {
-      const raw = JSON.parse(await readFile(this.path, 'utf8')) as Record<string, unknown>;
+      // `?? {}`：文件内容是合法 JSON 的 `null` 时，JSON.parse 返回 null，
+      // 直接读 `raw.v` 会抛 TypeError（不是 SyntaxError，逃出下面的兜底）。
+      const raw = (JSON.parse(await readFile(this.path, 'utf8')) ?? {}) as Record<string, unknown>;
       this.scopes = {};
       this.workSessions = {};
       if (raw.v === 2) {
@@ -57,15 +59,23 @@ export class WorkSessionStore {
         for (const [scope, st] of Object.entries((raw.scopes ?? {}) as Record<string, ScopeStateV2>)) {
           this.scopes[scope] = st ?? {};
         }
-        // v2 里没有的 scope 但被工作会话引用着 → 补回（防止手工编辑丢映射）
+        // v2 里没有的 scope 但被工作会话引用着 → 补回（防止手工编辑丢映射）。
+        // 同一 scope 可能有多摊活（/work 归档过），补链必须选同 scope 下
+        // lastActiveAtMs 最大（最近活跃）的那条：随便挑一条可能把 chat 静默
+        // 绑到已归档的旧活上。
+        const newestByScope = new Map<string, WorkSession>();
         for (const ws of Object.values(this.workSessions)) {
           if (!ws.scope) continue;
-          const state = this.scopes[ws.scope];
+          const current = newestByScope.get(ws.scope);
+          if (!current || ws.lastActiveAtMs > current.lastActiveAtMs) newestByScope.set(ws.scope, ws);
+        }
+        for (const [scope, ws] of newestByScope) {
+          const state = this.scopes[scope];
           if (state === undefined) {
-            this.scopes[ws.scope] = { activeWorkSession: ws.id };
+            this.scopes[scope] = { activeWorkSession: ws.id };
           } else if (!this.workSessions[state.activeWorkSession ?? '']) {
-            // 指针指向的工作会话已不在文件里：改指这个仍被引用的。
-            this.scopes[ws.scope] = { ...state, activeWorkSession: ws.id };
+            // 指针指向的工作会话已不在文件里：改指这个 scope 最近活跃的。
+            this.scopes[scope] = { ...state, activeWorkSession: ws.id };
           }
         }
         return;
@@ -142,11 +152,13 @@ export class WorkSessionStore {
       ws.segments.some((s) => s.sessionId === sessionId));
   }
 
-  /** 启动通知用：有工作会话的 scope 列表。 */
+  /** 启动通知用：有工作会话的 scope 列表（去重——/work 归档后同一 chat 有多摊活）。 */
   chats(): string[] {
-    return Object.values(this.workSessions)
-      .map((ws) => ws.scope)
-      .filter((s): s is string => s !== null);
+    const scopes = new Set<string>();
+    for (const ws of Object.values(this.workSessions)) {
+      if (ws.scope !== null) scopes.add(ws.scope);
+    }
+    return [...scopes];
   }
 
   /**
@@ -174,14 +186,15 @@ export class WorkSessionStore {
     if (active) {
       const touched = touchSegment(active, seg, at);
       const idx = touched.segments.findIndex((s) => s.sessionId === sessionId);
-      // touchSegment 对已存在段取 Math.max，会把重跑的时间挡回去；这里按本次
-      // 运行时间覆盖，保证「重跑 = 时间前进」。
-      const segments = touched.segments.map((s, i) => (i === idx ? { ...s, lastActiveAtMs: at } : s));
+      // 段级，以及（touchSegment 里的）工作会话级都取 Math.max：普通重跑
+      // at = now 仍然向前推进，而 /resume、/history 继续对话带来的历史时间
+      // 不会把活跃时间拽回去。
+      const segments = touched.segments.map((s, i) =>
+        i === idx ? { ...s, lastActiveAtMs: Math.max(s.lastActiveAtMs, at) } : s);
       this.workSessions[active.id] = {
         ...touched,
         segments,
         currentSegmentId: sessionId,
-        lastActiveAtMs: at,
         ...(active.scope === null ? { scope } : {}),
       };
     } else {
@@ -217,7 +230,9 @@ export class WorkSessionStore {
    * 由下一摊活的第一段落地时落到它的 title 上。
    */
   startWorkSession(scope: string, title?: string): void {
-    const { activeWorkSession: _drop, ...rest } = this.scopes[scope] ?? {};
+    // 先无条件摘掉旧的 pendingTitle：/work 改主意（再 /work 不带名字）或
+    // /work 名字后又 /resume 旧活，旧名字都不能落到下一摊活上。
+    const { activeWorkSession: _drop, pendingTitle: _dropTitle, ...rest } = this.scopes[scope] ?? {};
     const pending = title?.trim();
     this.scopes[scope] = pending ? { ...rest, pendingTitle: pending } : rest;
     this.schedulePersist();

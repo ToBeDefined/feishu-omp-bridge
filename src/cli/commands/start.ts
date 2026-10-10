@@ -270,12 +270,11 @@ export async function runStart(opts: StartOptions): Promise<void> {
   // cloud-doc comments use `doc:<fileToken>` and topic chats use
   // `chatId:threadId` — sending to those fails every boot (N dead API calls).
   const notifyTargets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
-  // /restart requests a boot notice; /release suppresses the notice because
-  // its final progress card already says 「🚀 已发布上线」.
+  // /restart requests a boot notice; /release suppresses the entire boot
+  // fan-out because its final progress card already says 「🚀 已发布上线」.
   const notice = await takeOnlineNotice();
   if (notice?.mode === 'skip') {
-    const index = notifyTargets.indexOf(notice.chatId);
-    if (index >= 0) notifyTargets.splice(index, 1);
+    notifyTargets.length = 0;
   } else if (notice?.mode === 'notify' && !notifyTargets.includes(notice.chatId)) {
     notifyTargets.push(notice.chatId);
   }

@@ -4,6 +4,7 @@ import { formatIdleLine, reply } from '../shared';
 import { newSessionCard } from '../../card/templates';
 import { escapeMd } from '../../utils/text';
 import { createBoundChat, defaultChatName } from './group';
+import { loadSessionSummary } from './context';
 import { getOmpModel, getOmpThinking, getRunIdleTimeoutMs } from '../../config/schema';
 import { log } from '../../core/logger';
 
@@ -22,6 +23,9 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   }
 
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
+  // /new 只重置上下文，不换工作会话：名字（或最后一条用户消息）要带进卡片，
+  // 用户才知道自己还在同一摊活里。先取名字再丢当前段。
+  const workSessionName = await resolveWorkSessionName(ctx);
   ctx.workSessions.dropCurrentSegment(ctx.scope);
   // A new session invalidates any pending /ws undo: rolling back would also
   // clear the session the user just started.
@@ -37,13 +41,34 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     ),
     wasRunning,
     scopeNote: ctx.chatMode === 'topic' ? '话题独立会话' : undefined,
+    ...(workSessionName !== undefined ? { workSessionName } : {}),
   });
   try {
     await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
   } catch (err) {
     log.fail('command', err, { step: 'new-card' });
-    await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+    await reply(ctx, wasRunning ? '已中断当前任务并重置上下文。' : '已重置上下文。');
   }
+}
+
+/**
+ * 工作会话的显示名：`/rename` 起的名字优先，无名时回退到该工作会话最后一条
+ * 用户消息（沿 `segments` 从新到旧找，和 `displayName` 的口径一致）。两者都
+ * 拿不到时返回 undefined——卡片上不显示，绝不硬编码「未命名」。
+ */
+async function resolveWorkSessionName(ctx: CommandContext): Promise<string | undefined> {
+  const active = ctx.workSessions.activeWorkSession(ctx.scope);
+  if (!active) return undefined;
+  const named = active.title?.trim();
+  if (named) return named;
+  for (let i = active.segments.length - 1; i >= 0; i -= 1) {
+    const seg = active.segments[i];
+    if (!seg) continue;
+    const { lastMessage } = await loadSessionSummary(ctx, seg.sessionId);
+    const msg = lastMessage.trim();
+    if (msg) return msg;
+  }
+  return undefined;
 }
 
 async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {

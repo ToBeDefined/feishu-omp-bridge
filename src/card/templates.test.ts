@@ -542,7 +542,7 @@ describe('newSessionCard', () => {
     });
     const out = JSON.stringify(card);
     expect(card).toMatchObject({ schema: '2.0' });
-    expect(out).toContain('已中断当前任务并开始新会话');
+    expect(out).toContain('已中断当前任务并重置上下文');
     expect(out).toContain('/repo');
     expect(out).toContain('p/m');
     expect(out).toContain('high');
@@ -561,7 +561,33 @@ describe('newSessionCard', () => {
       }),
     );
     expect(out).not.toContain('已中断');
-    expect(out).toContain('已开始新会话');
+    expect(out).toContain('已重置上下文');
+  });
+
+  it('carries the work session name and says it is the same work session', () => {
+    const out = JSON.stringify(
+      newSessionCard({
+        cwd: '/repo',
+        idleLine: '全局 30 分钟',
+        wasRunning: false,
+        workSessionName: '修搜索',
+      }),
+    );
+    expect(out).toContain('🧵');
+    expect(out).toContain('修搜索');
+    expect(out).toContain('仍在同一工作会话');
+  });
+
+  it('omits the work-session line when the name is unknown (no placeholder)', () => {
+    const out = JSON.stringify(
+      newSessionCard({
+        cwd: '/repo',
+        idleLine: '全局 30 分钟',
+        wasRunning: false,
+      }),
+    );
+    expect(out).not.toContain('🧵');
+    expect(out).not.toContain('未命名');
   });
 
   it('carries the topic scope note when provided', () => {

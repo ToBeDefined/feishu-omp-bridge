@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import type { RunCard } from './run-renderer';
 import { formatAgoOr, formatClockOr } from '../utils/time';
-import { escapeCode, escapeMd } from '../utils/text';
+import { escapeCode, escapeMd, summarizeMd } from '../utils/text';
 
 /** Input for /context renders — gathered by commands/session/context.ts
  * (`collectContextInfo`) and consumed here, so the text renderer and the
@@ -734,19 +734,27 @@ export interface NewSessionInfo {
   wasRunning: boolean;
   /** Rendered under the heading, e.g. topic chats: 「话题独立会话」。 */
   scopeNote?: string;
+  /** 当前工作会话的显示名（名字，回退到最后一条用户消息）。`/new` 只重置
+   * 上下文、不换工作会话，带出这个名字用户才知道自己还在同一摊活里；拿不到
+   * 就不显示——绝不硬编码「未命名」之类占位。 */
+  workSessionName?: string;
 }
 
 /** Compact /new confirmation — deliberately NOT the full /context dump:
  * a fresh session has nothing to show for 「开始/最后对话」 yet. */
 export function newSessionCard(info: NewSessionInfo): object {
-  return shell('✅ 新会话已开始', [
+  const name = info.workSessionName?.trim();
+  return shell('✅ 上下文已重置', [
     md(
       info.wasRunning
-        ? '✅ **已中断当前任务并开始新会话**'
-        : '✅ **已开始新会话**',
+        ? '✅ **已中断当前任务并重置上下文**'
+        : '✅ **已重置上下文**',
       'heading',
     ),
     ...(info.scopeNote ? [md(`_${escapeMd(info.scopeNote)}_`, 'notation')] : []),
+    ...(name
+      ? [md(`🧵 **工作会话**: ${summarizeMd(name, 40)}（上下文已重置，仍在同一工作会话）`)]
+      : []),
     ...stackedPanels([
       panel([
         md('**🧩 环境**'),

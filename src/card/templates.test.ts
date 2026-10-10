@@ -85,6 +85,13 @@ describe('releaseCard', () => {
     expect(out).toContain('已发布上线');
   });
 });
+describe('restartCard', () => {
+  it('renders starting, done, and failed states as distinct headings', () => {
+    expect(JSON.stringify(restartCard('starting'))).toContain('正在重启');
+    expect(JSON.stringify(restartCard('done'))).toContain('重启完成');
+    expect(JSON.stringify(restartCard('failed', 'launchctl failed'))).toContain('launchctl failed');
+  });
+});
 
 describe('compactCard', () => {
   it('shows the size estimate while running', () => {

@@ -610,6 +610,26 @@ export function staleNoticeCard(): object {
     },
   };
 }
+/** /restart status card. A real launchd restart leaves the starting card in
+ * place; the new process supplies the separate boot confirmation. */
+export function restartCard(phase: 'starting' | 'done' | 'failed', error?: string): object {
+  if (phase === 'done') {
+    return shell('🚀 重启完成', [
+      md('🚀 **重启完成**', 'heading'),
+      md('_已重新连接，可以继续发送消息。_', 'notation'),
+    ]);
+  }
+  if (phase === 'failed') {
+    return shell('❌ 重启失败', [
+      md('❌ **重启失败**', 'heading'),
+      md(error ? escapeMd(error) : '_bot 仍在线，请稍后重试。_', 'notation'),
+    ]);
+  }
+  return shell('🔄 正在重启', [
+    md('🔄 **正在重启**', 'heading'),
+    md('_服务即将重启；重新上线后会继续接收消息。_', 'notation'),
+  ]);
+}
 
 /** Response card after an agent-authored choice button click: the choice,
  * frozen, no buttons. */

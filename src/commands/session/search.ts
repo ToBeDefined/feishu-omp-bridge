@@ -8,7 +8,7 @@ import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
 import { codeSpan } from '../../utils/text';
 import { extractUserInput, scanSessionFile } from './context';
 import { applyResume, listResumableSessions } from './resume';
-import { resolveWorkSessionDisplay } from './display';
+import { pickDisplaySegmentId, workSessionName } from './display';
 import {
   renderSearchContext,
   searchDetailCard,
@@ -69,6 +69,20 @@ interface WorkSessionIdentity {
   segmentCount: number;
 }
 
+/** One session file's matched pairs, before work-session identity is known. */
+interface RawHit {
+  /** File header's OMP session id, when it had one. */
+  sessionId?: string;
+  /** JSONL file name — the identity fallback for a headerless file. */
+  fileName: string;
+  workspace: string;
+  /** Newest matching pair in the segment — the representative snippet. */
+  messages: SearchHit[];
+  hitIndex: number;
+  /** Matched Q&A pairs within this segment. */
+  matchCount: number;
+}
+
 /** One session file's matched pairs, annotated with its work-session identity. */
 interface SegmentHit extends WorkSessionIdentity {
   /** OMP segment id (the file's header id), when it had one. */
@@ -83,27 +97,39 @@ interface SegmentHit extends WorkSessionIdentity {
 
 /**
  * Resolve a segment's work-session identity + display name, memoised by work
- * session id so a multi-segment work session pays `loadSessionSummary`'s
- * session-directory scan at most once. A segment no work session claims is its
- * own single-segment work session (identity = the segment), never named.
+ * session id so a multi-segment work session is resolved once.
+ *
+ * Unlike the /status-style helper, this never calls `loadSessionSummary`: both
+ * the name (title, zero IO) and the unnamed topic fallback come from the
+ * search's OWN scan — `aliveIds` (which segments are on disk) feeds the shared
+ * `pickDisplaySegmentId` rule, and `lastUserBySegment` supplies the picked
+ * segment's last user message. That avoids one full-directory scan per unnamed
+ * hit work session. A segment no work session claims is its own single-segment
+ * work session (identity = the segment), never named.
  */
 async function resolveSegmentIdentity(
   ctx: CommandContext,
   sessionId: string | undefined,
   fileName: string,
   cache: Map<string, WorkSessionIdentity>,
+  aliveIds: ReadonlySet<string>,
+  lastUserBySegment: ReadonlyMap<string, string>,
 ): Promise<WorkSessionIdentity> {
   const ws = sessionId !== undefined ? ctx.workSessions.workSessionForSegment(sessionId) : undefined;
   const workSessionId = ws?.id ?? sessionId ?? fileName;
   const cached = cache.get(workSessionId);
   if (cached) return cached;
-  // Name = /rename title; unnamed falls back to the current/latest segment's
-  // last user message (the shared display helper, same口径 as /history).
-  const display = await resolveWorkSessionDisplay(ctx, ws);
+  const title = workSessionName(ctx, ws);
+  let topic: string | undefined;
+  if (title === undefined && ws !== undefined) {
+    const activeId = pickDisplaySegmentId(ws, aliveIds);
+    const last = activeId !== undefined ? lastUserBySegment.get(activeId) : undefined;
+    topic = last?.trim() || undefined;
+  }
   const resolved: WorkSessionIdentity = {
     workSessionId,
-    ...(display.name !== undefined ? { title: display.name } : {}),
-    ...(display.topic !== undefined ? { topic: display.topic } : {}),
+    ...(title !== undefined ? { title } : {}),
+    ...(topic !== undefined ? { topic } : {}),
     segmentCount: ws?.segments.length ?? 1,
   };
   cache.set(workSessionId, resolved);
@@ -130,14 +156,22 @@ export async function searchSession(
   limit = 6,
 ): Promise<SearchContext[]> {
   const needle = keyword.toLowerCase();
+  const identityCache = new Map<string, WorkSessionIdentity>();
+  // Index built from search's OWN reads, so no per-work-session
+  // `loadSessionSummary` directory scan is needed:
+  //  - `aliveIds`: OMP session ids whose file is on disk (drives the shared
+  //    `pickDisplaySegmentId` rule, same口径 as /history);
+  //  - `lastUserBySegment`: each segment's last user message (the unnamed
+  //    work session's topic fallback).
+  const aliveIds = new Set<string>();
+  const lastUserBySegment = new Map<string, string>();
   let names: string[] = [];
   try {
     names = (await readdir(getOmpSessionDir(ctx.controls.cfg))).filter((n) => n.endsWith('.jsonl'));
   } catch {
     return [];
   }
-  const identityCache = new Map<string, WorkSessionIdentity>();
-  const results: SegmentHit[] = [];
+  const rawHits: RawHit[] = [];
   // Bound parallelism: session dirs can have hundreds of jsonl files;
   // unbounded Promise.all would spike RSS on a big history.
   const SCAN_CONCURRENCY = 8;
@@ -148,11 +182,33 @@ export async function searchSession(
         const idx = cursor++;
         if (idx >= names.length) break;
         const name = names[idx]!;
-        const found = await scanSessionHits(name, needle, ctx, identityCache);
-        if (found) results.push(found);
+        const found = await scanSessionHits(name, needle, ctx, aliveIds, lastUserBySegment);
+        if (found) rawHits.push(found);
       }
     }),
   );
+  // Resolve identity only AFTER the scan, once `aliveIds`/`lastUserBySegment`
+  // are complete — otherwise a concurrent worker could pick a segment before
+  // another worker has registered its file, giving a nondeterministic topic.
+  const results: SegmentHit[] = [];
+  for (const raw of rawHits) {
+    const identity = await resolveSegmentIdentity(
+      ctx,
+      raw.sessionId,
+      raw.fileName,
+      identityCache,
+      aliveIds,
+      lastUserBySegment,
+    );
+    results.push({
+      ...identity,
+      ...(raw.sessionId !== undefined ? { segmentId: raw.sessionId } : {}),
+      workspace: raw.workspace,
+      messages: raw.messages,
+      hitIndex: raw.hitIndex,
+      matchCount: raw.matchCount,
+    });
+  }
   // Newest hit first, so both the segment groups inside a work session and the
   // work-session rows themselves come out newest-first.
   results.sort((a, b) => newestHitMs(b) - newestHitMs(a));
@@ -191,21 +247,29 @@ async function scanSessionHits(
   name: string,
   needle: string,
   ctx: CommandContext,
-  identityCache: Map<string, WorkSessionIdentity>,
-): Promise<SegmentHit | undefined> {
+  aliveIds: Set<string>,
+  lastUserBySegment: Map<string, string>,
+): Promise<RawHit | undefined> {
   let text: string;
   try {
     text = await readFile(join(getOmpSessionDir(ctx.controls.cfg), name), 'utf8');
   } catch {
     return undefined;
   }
-  // Cheap prefilter: skip files that can't contain the keyword at all.
+  // Index EVERY readable file we read: presence (`aliveIds`) lets identity
+  // resolution pick the same active segment /history does, and the last user
+  // message is that segment's topic fallback — both sourced here so /search
+  // never re-scans the directory via loadSessionSummary.
+  const fileScan = scanSessionFile(text);
+  const sessionId = fileScan.meta?.id;
+  if (sessionId !== undefined) {
+    aliveIds.add(sessionId);
+    lastUserBySegment.set(sessionId, fileScan.lastUserMessage);
+  }
+  // Cheap prefilter: skip building hit pairs for files with no keyword.
   if (!text.toLowerCase().includes(needle)) return undefined;
 
-  const { meta } = scanSessionFile(text);
-  const sessionId = meta?.id;
-  const identity = await resolveSegmentIdentity(ctx, sessionId, name, identityCache);
-  const workspace = workspaceLabel(ctx, meta?.cwd || homedir());
+  const workspace = workspaceLabel(ctx, fileScan.meta?.cwd || homedir());
 
   const stream: SearchHit[] = [];
   for (const line of text.split('\n')) {
@@ -259,8 +323,8 @@ async function scanSessionHits(
   }
   if (!newest) return undefined;
   return {
-    ...identity,
-    ...(sessionId !== undefined ? { segmentId: sessionId } : {}),
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    fileName: name,
     workspace,
     messages: newest.messages,
     hitIndex: newest.hitIndex,

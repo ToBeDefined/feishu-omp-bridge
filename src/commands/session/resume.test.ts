@@ -6,6 +6,7 @@ import { paths } from '../../config/paths';
 import type { CommandContext } from '../index';
 import { applyResume, listResumableSessions } from './resume';
 import { listWorkSessions, pickActiveSegment } from './sessions';
+import { handleHistory } from './history';
 import { loadSessionSummary, renderContext } from './context';
 import { WorkSessionStore } from '../../session/work-store';
 
@@ -216,6 +217,73 @@ describe('applyResume adopting a work session', () => {
     expect(setCwd).not.toHaveBeenCalled();
     expect(interrupt).not.toHaveBeenCalled();
     expect(reply.mock.calls[0]![1]).toContain('占用');
+    await store.flush();
+  });
+
+  it('未认领的历史文件：bindSegment 保留会话文件的开始/最后活动时间', async () => {
+    const a = await dir('a');
+    await writeSession('legacy', a);
+    const store = await openStore(); // no work session claims 'legacy'
+    const { ctx, setCwd, interrupt } = makeCtx(store, { scope: 'oc_1' });
+
+    await applyResume(ctx, {
+      sessionId: 'legacy',
+      cwd: a,
+      timestamp: new Date(1000).toISOString(),
+      updatedAtMs: 4242,
+    });
+
+    const seg = store.activeWorkSession('oc_1')?.segments.at(-1);
+    expect(seg?.sessionId).toBe('legacy');
+    // Times come from the session file (match payload), not `now`.
+    expect(seg?.startedAtMs).toBe(1000);
+    expect(seg?.lastActiveAtMs).toBe(4242);
+    expect(setCwd).toHaveBeenCalledWith('oc_1', a);
+    expect(interrupt).toHaveBeenCalledWith('oc_1');
+    await store.flush();
+  });
+});
+
+describe('applyResume refuses a ghost work session (every segment file gone)', () => {
+  /** Store lists two segments, but neither OMP session file is written. */
+  async function ghostStore(): Promise<WorkSessionStore> {
+    const a = await dir('a');
+    const store = await openStore();
+    store.bindSegment('oc_1', 'seg-x', a, { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.bindSegment('oc_1', 'seg-y', a, { startedAtMs: 2, lastActiveAtMs: 2 }); // current = seg-y
+    store.startWorkSession('oc_1'); // archived: another chat may resume it
+    return store;
+  }
+
+  it('via /resume: refuses and does not adopt', async () => {
+    const store = await ghostStore();
+    const { ctx, setCwd, interrupt } = makeCtx(store, { scope: 'oc_2' });
+    reply.mockClear();
+
+    await applyResume(ctx, {
+      workSessionId: 'seg-x',
+      sessionId: 'seg-y',
+      cwd: store.workSessionById('seg-x')!.cwd,
+      timestamp: new Date(1).toISOString(),
+    });
+
+    expect(reply.mock.calls[0]![1]).toContain('会话文件已不存在');
+    expect(reply.mock.calls[0]![1]).toContain('无法恢复');
+    expect(store.activeWorkSession('oc_2')).toBeUndefined();
+    expect(setCwd).not.toHaveBeenCalled();
+    expect(interrupt).not.toHaveBeenCalled();
+    await store.flush();
+  });
+
+  it('via /history 继续对话: refuses and does not adopt', async () => {
+    const store = await ghostStore();
+    const { ctx } = makeCtx(store, { scope: 'oc_2' });
+    reply.mockClear();
+
+    await handleHistory('resume seg-x', ctx);
+
+    expect(reply.mock.calls[0]![1]).toContain('无法恢复');
+    expect(store.activeWorkSession('oc_2')).toBeUndefined();
     await store.flush();
   });
 });

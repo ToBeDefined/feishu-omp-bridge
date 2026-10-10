@@ -150,10 +150,14 @@ async function resolveSafeCwd(sessionCwd: string): Promise<string | null> {
 export async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<void> {
   // New payloads carry the work session id; older ones (or a bare
   // `/resume <sessionId>`) only carry an OMP session id.
-  const ws =
+  const foundWs =
     match.workSessionId !== undefined
       ? ctx.workSessions.workSessionById(match.workSessionId)
       : ctx.workSessions.workSessionForSegment(match.sessionId);
+  // A work session with zero declared segments is extreme dirty data (every
+  // segment dropped from the store). It has no segment to pick or own, so treat
+  // it like an unclaimed file and fall back to binding `match.sessionId` alone.
+  const ws = foundWs !== undefined && foundWs.segments.length > 0 ? foundWs : undefined;
 
   // Same segment rule as the /history row: current segment if alive, else the
   // latest surviving one. Its cwd is the directory the session actually ran in.
@@ -162,10 +166,18 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
   if (ws !== undefined) {
     const alive = new Set((await scanSessionFiles(ctx)).map((s) => s.sessionId));
     const picked = pickActiveSegment(ws, (id) => alive.has(id));
-    if (picked !== undefined) {
-      target = picked.sessionId;
-      segmentCwd = picked.cwd || segmentCwd;
+    if (picked === undefined) {
+      // Ghost work session: the store still lists segments but none of their
+      // files survive. Adopting it would silently point the chat at nothing.
+      log.warn('command', 'resume-ghost-work-session', {
+        scope: ctx.scope,
+        workSessionId: ws.id,
+      });
+      await reply(ctx, '❌ 这段工作的会话文件已不存在（可能被清理），无法恢复。');
+      return;
     }
+    target = picked.sessionId;
+    segmentCwd = picked.cwd || segmentCwd;
   }
 
   // Ownership guard: another chat must not be actively using a segment of

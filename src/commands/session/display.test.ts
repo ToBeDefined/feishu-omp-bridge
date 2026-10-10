@@ -105,6 +105,20 @@ describe('resolveWorkSessionDisplay', () => {
     expect(out.topic).toBeUndefined();
   });
 
+  it('传存活集合时跳过已删除的当前段（与 /history 口径一致）', async () => {
+    store.bindSegment('oc_1', 'sess-alive', root);
+    store.bindSegment('oc_1', 'sess-dead', root); // current = sess-dead, file absent
+    await writeSessionFile('sess-alive', '存活段的消息');
+    const ws = store.activeWorkSession('oc_1')!;
+
+    // 不传存活集合：只能「当前段 ?? 最新段」→ 指向已删的 sess-dead，取不到消息。
+    expect(await resolveWorkSessionDisplay(makeCtx(), ws)).toEqual({});
+    // 传存活集合：走 pickActiveSegment，跳过已删段，回退到存活的 sess-alive。
+    expect(await resolveWorkSessionDisplay(makeCtx(), ws, new Set(['sess-alive']))).toEqual({
+      topic: '存活段的消息',
+    });
+  });
+
   it('没有工作会话时返回空对象，不触碰会话目录', async () => {
     const spy = vi.spyOn(contextModule, 'loadSessionSummary');
 

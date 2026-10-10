@@ -1,12 +1,20 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommandContext } from '../index';
 import { paths } from '../../config/paths';
 import { searchSession, workspaceLabel } from './search';
+import { loadSessionSummary } from './context';
 import { renderSearchContext, searchResultsCard } from '../../card/search-card';
 import { WorkSessionStore } from '../../session/work-store';
+
+// Wrap loadSessionSummary so we can prove /search resolves identities from its
+// own scan instead of rescanning the session dir per work session.
+vi.mock('./context', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./context')>();
+  return { ...actual, loadSessionSummary: vi.fn(actual.loadSessionSummary) };
+});
 
 const origSessionsDir = paths.ompSessionsDir;
 let tmp: string | undefined;
@@ -308,6 +316,25 @@ describe('searchSession', () => {
     expect(hits).toHaveLength(1);
     expect(hits[0]!.title).toBeUndefined();
     expect(hits[0]!.topic).toBe('最后一条用户消息 codegraph');
+    await store.flush();
+  });
+
+  it('无名工作会话解析不触发额外目录扫描（不调 loadSessionSummary）', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    await writeSession(tmp, 'segA.jsonl', { id: 'segA', cwd: '/repo', ts: '2026-08-15T10:00:00.000Z' }, [
+      { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: 'codegraph 最后一条' }] },
+    ]);
+    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    await store.load();
+    store.bindSegment('oc_1', 'segA', '/repo');
+    vi.mocked(loadSessionSummary).mockClear();
+
+    const hits = await searchSession('codegraph', ctxFor({}, store));
+
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.topic).toBe('codegraph 最后一条');
+    expect(loadSessionSummary).not.toHaveBeenCalled();
     await store.flush();
   });
 

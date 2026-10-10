@@ -364,7 +364,7 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 | `/account` | 更换 bot app 凭据并重连。 |
 | `/context` | 查看当前会话上下文(scope/cwd/模型/探活等)。 |
 | `/rename <标题>` | 给当前会话起名;`/rename auto` 用 LLM 生成(≤20 字),`/rename clear` 清除。标题显示在 `/context`、`/status`、`/resume`、`/search`。 |
-| `/history [all]` | 对话历史清单，按最后活动时间倒序：默认只看**当前工作目录**，`all` 看全部工作目录；只读（要接着聊用 `/resume`），超过 8 条分页。admin 命令。 |
+| `/history [all]` | 对话历史清单，按最后活动时间倒序：默认只看**当前工作目录**，`all` 看全部工作目录。每行显示活动时间 / 轮数 / 标题或最后一条用户消息，并带「继续对话」按钮（当前会话行只标记「✅ 当前」）；超过 8 条分页。admin 命令。 |
 | `/status` | 查看当前 scope、cwd、session、agent。 |
 | `/stop` | 终止当前正在执行的 OMP run。 |
 | `/timeout [N|off|default]` | 设置当前 session 的 idle timeout，或关闭 / 恢复全局默认。 |

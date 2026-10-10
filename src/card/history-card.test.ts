@@ -13,12 +13,15 @@ function row(over: Partial<HistoryRow> = {}): HistoryRow {
   };
 }
 
-function buttonValues(card: object): Array<{ cmd: string; arg: string }> {
-  const found: Array<{ cmd: string; arg: string }> = [];
+function allButtons(card: object): Array<{ cmd: string; arg: string; label: string }> {
+  const found: Array<{ cmd: string; arg: string; label: string }> = [];
   const walk = (node: unknown): void => {
     if (!node || typeof node !== 'object') return;
     const o = node as Record<string, unknown>;
-    if (o.tag === 'button') found.push(o.value as { cmd: string; arg: string });
+    if (o.tag === 'button') {
+      const text = o.text as { content?: string } | undefined;
+      found.push({ ...(o.value as { cmd: string; arg: string }), label: text?.content ?? '' });
+    }
     for (const v of Object.values(o)) {
       if (Array.isArray(v)) v.forEach(walk);
       else if (typeof v === 'object') walk(v);
@@ -26,6 +29,13 @@ function buttonValues(card: object): Array<{ cmd: string; arg: string }> {
   };
   walk(card);
   return found;
+}
+
+/** Pager buttons only — row resume buttons are asserted separately. */
+function buttonValues(card: object): Array<{ cmd: string; arg: string }> {
+  return allButtons(card)
+    .filter((b) => b.cmd === 'history.page')
+    .map(({ cmd, arg }) => ({ cmd, arg }));
 }
 
 describe('historyCard', () => {
@@ -94,6 +104,48 @@ describe('historyCard', () => {
   it('has no pager on a single short page and says where to go instead', () => {
     const card = historyCard([row(), row({ sessionId: 's2' })], { mode: 'cwd', offset: 0, total: 2 });
     expect(buttonValues(card)).toEqual([]);
-    expect(JSON.stringify(card)).toContain('要接着聊用 `/resume`');
+    expect(JSON.stringify(card)).toContain('点「继续对话」接着聊');
+  });
+
+  it('gives every row a 继续对话 button carrying its full session id', () => {
+    const card = historyCard([row({ sessionId: '019f9432-b808-7000-8bf4-073defc52637' })], {
+      mode: 'cwd',
+      offset: 0,
+      total: 1,
+    });
+    const buttons = allButtons(card);
+    expect(buttons).toEqual([
+      {
+        cmd: 'history.resume',
+        arg: '019f9432-b808-7000-8bf4-073defc52637',
+        label: '继续对话',
+      },
+    ]);
+    // Row = weighted content column + auto button column: `width` only applies
+    // under flex_mode 'none', and weighted absorbs the slack so the button is
+    // neither stretched across the card nor squeezed.
+    const rowSet = (card as { body: { elements: Array<Record<string, unknown>> } }).body
+      .elements.filter((e) => e.tag === 'column_set')[0]!;
+    const cols = rowSet.columns as Array<Record<string, unknown>>;
+    expect(rowSet.flex_mode).toBe('none');
+    expect(cols.map((c) => c.width)).toEqual(['weighted', 'auto']);
+  });
+
+  it('marks the current session instead of offering a no-op resume', () => {
+    const current = '01a11d26-5f7a-7106-be95-17618cbbaf57';
+    const card = historyCard(
+      [row({ sessionId: current }), row({ sessionId: 'other-session-id-0000' })],
+      { mode: 'cwd', offset: 0, total: 2, currentSessionId: current },
+    );
+    const buttons = allButtons(card);
+    // Only the OTHER row can be resumed.
+    expect(buttons.map((b) => b.arg)).toEqual(['other-session-id-0000']);
+    expect(JSON.stringify(card)).toContain('✅ 当前');
+    // The current row is a single-column layout (no button column).
+    const sets = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements.filter(
+      (e) => e.tag === 'column_set',
+    );
+    expect((sets[0]!.columns as unknown[]).length).toBe(1);
+    expect((sets[1]!.columns as unknown[]).length).toBe(2);
   });
 });

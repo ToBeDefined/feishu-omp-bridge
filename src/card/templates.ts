@@ -29,7 +29,7 @@ export interface ButtonSpec {
   style?: 'primary' | 'danger' | 'default';
 }
 
-function button(spec: ButtonSpec): object {
+export function button(spec: ButtonSpec): object {
   return {
     tag: 'button',
     text: { tag: 'plain_text', content: spec.text },

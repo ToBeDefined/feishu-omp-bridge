@@ -1,4 +1,4 @@
-import { actions, shortPath } from './templates';
+import { actions, button, shortPath } from './templates';
 import { escapeMd, summarizeMd } from '../utils/text';
 import { formatAgo, formatClock } from '../utils/time';
 
@@ -33,6 +33,8 @@ export interface HistoryRow {
   topic?: string;
 }
 
+/** The scope's CURRENT session — its row is marked instead of offering a
+ * resume that would be a no-op. */
 export interface HistoryPage {
   /** 'cwd' = only the current workspace; 'all' = every workspace. */
   mode: 'cwd' | 'all';
@@ -40,6 +42,8 @@ export interface HistoryPage {
   cwd?: string;
   offset: number;
   total: number;
+  /** Session id the calling scope is already on, if any. */
+  currentSessionId?: string;
 }
 
 export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
@@ -67,6 +71,7 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
         : '_未命名会话_';
     elements.push({ tag: 'markdown', content: `**#${opts.offset + i + 1}** ${identity}` });
 
+    const isCurrent = opts.currentSessionId !== undefined && row.sessionId === opts.currentSessionId;
     const meta = [
       `🕘 ${formatClock(row.updatedAtMs)} · ${formatAgo(Date.now() - row.updatedAtMs)}`,
       `💬 ${row.turns} 轮`,
@@ -74,18 +79,51 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
       // row would be noise.
       ...(opts.mode === 'all' ? [`📁 ${escapeMd(row.workspace)}`] : []),
       `🆔 ${row.sessionId.slice(0, 8)}…`,
+      ...(isCurrent ? ['✅ 当前'] : []),
     ];
-    elements.push({ tag: 'markdown', content: meta.join(' · '), text_size: 'notation' });
 
+    const lines: object[] = [
+      { tag: 'markdown', content: `**#${opts.offset + i + 1}** ${identity}` },
+      { tag: 'markdown', content: meta.join(' · '), text_size: 'notation' },
+    ];
     // A named session still gets one detail line, so the title does not hide
     // what the conversation contained.
     if (row.title && row.topic) {
-      elements.push({
+      lines.push({
         tag: 'markdown',
         content: `💬 ${summarizeMd(row.topic, 48)}`,
         text_size: 'notation',
       });
     }
+    // Row layout: content in a weighted column, the resume button in an auto
+    // column — `width` is only honoured under `flex_mode: 'none'`, and the
+    // weighted column absorbs the slack so nothing is stretched or squeezed.
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: 'small',
+      columns: [
+        { tag: 'column', width: 'weighted', weight: 1, vertical_align: 'center', elements: lines },
+        // Resuming the session you are already on is a no-op, so that row
+        // carries a marker instead of a button.
+        ...(isCurrent
+          ? []
+          : [
+              {
+                tag: 'column',
+                width: 'auto',
+                vertical_align: 'center',
+                elements: [
+                  button({
+                    text: '继续对话',
+                    value: { cmd: 'history.resume', arg: row.sessionId },
+                    style: 'primary',
+                  }),
+                ],
+              },
+            ]),
+      ],
+    });
     if (i < page.length - 1) elements.push({ tag: 'hr' });
   });
 
@@ -109,7 +147,7 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
   if (pager.length > 0) elements.push(...actions(pager));
   elements.push({
     tag: 'markdown',
-    content: '_只读清单；要接着聊用 `/resume`，检索内容用 `/search`。_',
+    content: '_点「继续对话」接着聊（等同 `/resume <id>`），检索内容用 `/search`。_',
     text_size: 'notation',
   });
 

@@ -134,7 +134,14 @@ export function forgetManagedCard(messageId: string): void {
   void removeFromRunningCards(messageId);
 }
 
-const RUNNING_CARDS_MAX = 50;
+/**
+ * Cap on tracked in-flight cards. Must cover peak concurrency: every
+ * concurrent run (maxConcurrentRuns, default 10) can hold one streaming card,
+ * plus release/restart/OMP-form cards. 50 was pure headroom — 15 covers the
+ * default with margin while keeping the file tiny (entries are ~2KB typical,
+ * ≤26KB by the pagination budget).
+ */
+const RUNNING_CARDS_MAX = 15;
 
 /** Minimum gap between snapshot writes for one card (ms). */
 const SNAPSHOT_MIN_INTERVAL_MS = 2000;

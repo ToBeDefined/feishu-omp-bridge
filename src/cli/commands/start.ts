@@ -25,7 +25,7 @@ import {
 } from '../../config/store';
 import { gcOldLogs, log } from '../../core/logger';
 import { kickstart } from '../../daemon/launchd';
-import { takeOnlineNotify } from '../../bot/online-notify';
+import { takeOnlineNotice } from '../../bot/online-notify';
 import { gcMediaCache, MEDIA_GC_MAX_AGE_MS } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
 import {
@@ -270,12 +270,14 @@ export async function runStart(opts: StartOptions): Promise<void> {
   // cloud-doc comments use `doc:<fileToken>` and topic chats use
   // `chatId:threadId` — sending to those fails every boot (N dead API calls).
   const notifyTargets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
-  // A chat that just ran /release or /restart gets the confirmation even
-  // without a persisted session (its entry may have been cleared by /new,
-  // /cd, /ws).
-  const requestingChat = await takeOnlineNotify();
-  if (requestingChat && !notifyTargets.includes(requestingChat)) {
-    notifyTargets.push(requestingChat);
+  // /restart requests a boot notice; /release suppresses the notice because
+  // its final progress card already says 「🚀 已发布上线」.
+  const notice = await takeOnlineNotice();
+  if (notice?.mode === 'skip') {
+    const index = notifyTargets.indexOf(notice.chatId);
+    if (index >= 0) notifyTargets.splice(index, 1);
+  } else if (notice?.mode === 'notify' && !notifyTargets.includes(notice.chatId)) {
+    notifyTargets.push(notice.chatId);
   }
   for (const chatId of notifyTargets) {
     try {

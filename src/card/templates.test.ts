@@ -82,7 +82,7 @@ describe('releaseCard', () => {
         ],
       }),
     );
-    expect(out).toContain('正在重启加载新代码');
+    expect(out).toContain('已发布上线');
   });
 });
 

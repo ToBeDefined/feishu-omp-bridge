@@ -3,7 +3,7 @@ import type { Mock } from 'vitest';
 import type { CommandContext } from '../index';
 import { releaseHandlers } from './release';
 import { runRelease, type ReleaseResult } from '../../release/run';
-import { markOnlineNotify } from '../../bot/online-notify';
+import { markOnlineNotice } from '../../bot/online-notify';
 
 vi.mock('../../release/run', () => ({
   runRelease: vi.fn(),
@@ -14,7 +14,7 @@ vi.mock('../../release/run', () => ({
     { name: 'build', args: ['build'], timeoutMs: 120_000 },
   ],
 }));
-vi.mock('../../bot/online-notify', () => ({ markOnlineNotify: vi.fn(), clearOnlineNotify: vi.fn() }));
+vi.mock('../../bot/online-notify', () => ({ markOnlineNotice: vi.fn(), clearOnlineNotice: vi.fn() }));
 vi.mock('../../core/logger', () => ({
   log: { info: vi.fn(), fail: vi.fn(), warn: vi.fn() },
 }));
@@ -65,8 +65,8 @@ describe('/release', () => {
     const { ctx, sent, restartProcess } = makeCtx();
     await releaseHandlers['/release']!('', ctx);
     expect(sent[0]).toContain('正在发布');
-    expect(sent.at(-1)).toContain('构建成功');
-    expect(markOnlineNotify).toHaveBeenCalledWith('oc_1');
+    expect(sent.at(-1)).toContain('已发布上线');
+    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'skip');
     expect(restartProcess).toHaveBeenCalledTimes(1);
   });
 
@@ -81,7 +81,7 @@ describe('/release', () => {
     await releaseHandlers['/release']!('', ctx);
     expect(sent.at(-1)).toContain('发布失败于');
     expect(sent.at(-1)).toContain('2 failed');
-    expect(markOnlineNotify).not.toHaveBeenCalled();
+    expect(markOnlineNotice).not.toHaveBeenCalled();
     expect(restartProcess).not.toHaveBeenCalled();
   });
 

@@ -564,13 +564,13 @@ const STEP_MARK: Record<ReleaseStepState, string> = {
 };
 
 export function releaseCard(progress: ReleaseProgress): RunCard {
-  const icon = progress.phase === 'failed' ? '❌' : progress.phase === 'success' ? '✅' : '🔄';
+  const icon = progress.phase === 'failed' ? '❌' : progress.phase === 'success' ? '🚀' : '🔄';
   const title =
     progress.phase === 'failed'
-      ? `❌ **发布失败于 ${RELEASE_STEP_LABEL[progress.failStep ?? 'typecheck']}**`
+      ? `**发布失败于 ${RELEASE_STEP_LABEL[progress.failStep ?? 'typecheck']}**`
       : progress.phase === 'success'
-        ? '✅ **构建成功，正在重启加载新代码…**'
-        : '🔄 **正在发布**';
+        ? '**已发布上线**'
+        : '**正在发布**';
   const steps = progress.steps.map((s) =>
     md(`${STEP_MARK[s.status]} ${RELEASE_STEP_LABEL[s.name]}`),
   );
@@ -590,7 +590,7 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
     if (progress.failNote) elements.push(md(escapeMd(progress.failNote)));
     if (progress.output) elements.push(md(codeFence(progress.output)));
   } else if (progress.phase === 'success') {
-    elements.push(md('_完成后会发送上线通知。_', 'notation'));
+    elements.push(md('_进程已重启，本卡片即最终状态。_', 'notation'));
   } else {
     elements.push(md('_typecheck → test → build → 自动重启_', 'notation'));
   }

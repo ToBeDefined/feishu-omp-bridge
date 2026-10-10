@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { CommandContext } from '../index';
 import { restartHandlers } from './restart';
-import { clearOnlineNotify, markOnlineNotify } from '../../bot/online-notify';
+import { clearOnlineNotice, markOnlineNotice } from '../../bot/online-notify';
 
-vi.mock('../../bot/online-notify', () => ({ markOnlineNotify: vi.fn(), clearOnlineNotify: vi.fn() }));
+vi.mock('../../bot/online-notify', () => ({ markOnlineNotice: vi.fn(), clearOnlineNotice: vi.fn() }));
 vi.mock('../../core/logger', () => ({
   log: { info: vi.fn(), fail: vi.fn(), warn: vi.fn() },
 }));
@@ -34,8 +34,8 @@ describe('/restart command', () => {
     // The process dies mid-restart: no boot-time notice can be sent from here,
     // so the marker is what tells the relaunched daemon to confirm.
     expect(bodies.some((b) => b.includes('🚀'))).toBe(false);
-    expect(markOnlineNotify).toHaveBeenCalledWith('oc_1');
-    expect(clearOnlineNotify).not.toHaveBeenCalled();
+    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'notify');
+    expect(clearOnlineNotice).not.toHaveBeenCalled();
   });
 
   it('acks with 🚀 on the in-process fallback and drops the unconsumed marker', async () => {
@@ -45,7 +45,7 @@ describe('/restart command', () => {
     const bodies = sentBodies(ctx);
     expect(bodies.some((b) => b.includes('🔄'))).toBe(true);
     expect(bodies.some((b) => b.includes('🚀'))).toBe(true);
-    expect(clearOnlineNotify).toHaveBeenCalledTimes(1);
+    expect(clearOnlineNotice).toHaveBeenCalledTimes(1);
   });
 
   it('reports failure when restartProcess throws and drops the marker', async () => {
@@ -57,6 +57,6 @@ describe('/restart command', () => {
     await restartHandlers['/restart']!('', ctx);
     const bodies = sentBodies(ctx);
     expect(bodies.some((b) => b.includes('❌'))).toBe(true);
-    expect(clearOnlineNotify).toHaveBeenCalledTimes(1);
+    expect(clearOnlineNotice).toHaveBeenCalledTimes(1);
   });
 });

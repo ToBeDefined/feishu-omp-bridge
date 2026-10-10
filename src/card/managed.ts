@@ -10,6 +10,7 @@ interface ManagedEntry {
 
 interface PersistedRunningCard {
   messageId: string;
+  /** Empty for streaming cards (they patch via the message API, not cardkit). */
   cardId: string;
   chatId: string;
 }
@@ -108,13 +109,7 @@ export async function updateManagedCard(
 /** Drop the mapping; call after the card is recalled or the flow ends. */
 export function forgetManagedCard(messageId: string): void {
   byMessageId.delete(messageId);
-  void (async () => {
-    const list = await readRunningCards();
-    const next = list.filter((c) => c.messageId !== messageId);
-    if (next.length !== list.length) {
-      await writeFile(paths.runningCardsFile, JSON.stringify(next), 'utf8').catch(() => {});
-    }
-  })();
+  void removeFromRunningCards(messageId);
 }
 
 const RUNNING_CARDS_MAX = 50;
@@ -142,38 +137,68 @@ async function persistRunningCards(
   }
 }
 
+async function removeFromRunningCards(messageId: string): Promise<void> {
+  const list = await readRunningCards();
+  const next = list.filter((c) => c.messageId !== messageId);
+  if (next.length !== list.length) {
+    await writeFile(paths.runningCardsFile, JSON.stringify(next), 'utf8').catch(() => {});
+  }
+}
+
+function interruptedCard(): object {
+  return {
+    schema: '2.0',
+    config: { update_multi: true },
+    body: {
+      elements: [
+        { tag: 'markdown', content: '⚠️ **进程在回复期间重启，本条回复未完成。**' },
+      ],
+    },
+  };
+}
+
 /**
- * Called once at boot: managed cards still in-flight from the previous
- * process get finalized as interrupted, so crash-interrupted replies don't
- * linger with a live ⏹ button. Sequence uses a timestamp because the
- * previous process may have incremented the cardkit sequence arbitrarily far.
+ * Called once at boot: cards still in-flight from the previous process get
+ * finalized as interrupted, so crash-interrupted replies don't linger with a
+ * live ⏹ button. Managed cards (cardId set) update via cardkit; streaming
+ * cards (cardId empty) patch via the message API.
  */
 export async function finalizeInterruptedCards(channel: LarkChannel): Promise<void> {
   const leftovers = await readRunningCards();
   await unlink(paths.runningCardsFile).catch(() => {});
   for (const { messageId, cardId } of leftovers) {
     try {
-      await channel.rawClient.cardkit.v1.card.update({
-        path: { card_id: cardId },
-        data: {
-          card: {
-            type: 'card_json',
-            data: JSON.stringify({
-              schema: '2.0',
-              config: { update_multi: true },
-              body: {
-                elements: [
-                  { tag: 'markdown', content: '⚠️ **进程在回复期间重启，本条回复未完成。**' },
-                ],
-              },
-            }),
+      if (cardId) {
+        await channel.rawClient.cardkit.v1.card.update({
+          path: { card_id: cardId },
+          data: {
+            card: { type: 'card_json', data: JSON.stringify(interruptedCard()) },
+            sequence: Date.now(),
           },
-          sequence: Date.now(),
-        },
-      });
-      log.info('card', 'interrupted-finalized', { messageId, cardId });
+        });
+      } else {
+        await channel.rawClient.im.v1.message.patch({
+          path: { message_id: messageId },
+          data: { content: JSON.stringify(interruptedCard()) },
+        });
+      }
+      log.info('card', 'interrupted-finalized', { messageId });
     } catch (err) {
       log.warn('card', 'interrupted-finalize-failed', { messageId, err: String(err) });
     }
   }
+}
+
+/**
+ * Persist a streaming reply's messageId for crash recovery. Streaming cards
+ * use im.v1.message.patch (not cardkit), so they carry no cardId — the
+ * boot-time finalizer patches them via the message API instead.
+ */
+export function rememberStreamingCard(messageId: string, chatId: string): void {
+  void persistRunningCards([{ messageId, cardId: '', chatId }], { append: true });
+}
+
+/** Remove a streaming card from the crash-recovery persistence. */
+export function forgetStreamingCard(messageId: string): void {
+  void removeFromRunningCards(messageId);
 }

@@ -4,7 +4,7 @@ import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter, AgentEvent, AgentUiRequest } from '../agent/types';
 import type { ActiveRuns, RunClaim, RunHandle } from './active-runs';
 import { createFeishuHostIntegration } from './feishu-host';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
+import { forgetManagedCard, forgetStreamingCard, rememberStreamingCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { renderOmpUiRequestCard, renderOmpUiResultCard } from '../card/omp-ui';
 import { renderCard, type RunCard } from '../card/run-renderer';
 import { createTableBudget, splitByTableBudget } from '../card/tables';
@@ -747,6 +747,10 @@ async function runCardPage(
           pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
         ),
         producer: async (ctrl) => {
+          // Crash recovery: streaming cards don't go through the managed-card
+          // system, so persist their messageId for the boot-time finalizer.
+          void rememberStreamingCard(ctrl.messageId, chatId);
+          try {
           const q = coalesceLatest((card: object) => ctrl.update(card), {
             minIntervalMs: CARD_UPDATE_MIN_INTERVAL_MS,
           });
@@ -821,6 +825,9 @@ async function runCardPage(
             }
             await q.flush();
             // (reap happens once in streamCardPages' finally, after all pages)
+          }
+          } finally {
+            void forgetStreamingCard(ctrl.messageId);
           }
         },
       },

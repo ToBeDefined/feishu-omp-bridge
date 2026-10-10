@@ -80,6 +80,35 @@ export function backfillLegacyTitles(
   if (orphaned > 0) log.warn('session', 'legacy-titles-orphaned', { count: orphaned });
 }
 
+/**
+ * 按一组段推导工作会话的派生字段（`/work split` 切出新工作会话时用）：
+ * 起始 = 最早段的 `startedAtMs`，活跃 = 最新活动段，`cwd` 跟**当前段**（没有
+ * 当前段时退回最新活动段）——与 `touchSegment` 的 cwd 口径一致。
+ */
+function deriveWorkSession(
+  scope: string | null,
+  id: string,
+  segments: WorkSegment[],
+  currentSegmentId?: string,
+): WorkSession {
+  const first = segments.reduce((m, s) => (s.startedAtMs < m.startedAtMs ? s : m));
+  const latest = segments.reduce((m, s) => (s.lastActiveAtMs > m.lastActiveAtMs ? s : m));
+  const current =
+    currentSegmentId !== undefined
+      ? segments.find((s) => s.sessionId === currentSegmentId)
+      : undefined;
+  const ws: WorkSession = {
+    id,
+    scope,
+    cwd: current?.cwd ?? latest.cwd,
+    createdAtMs: first.startedAtMs,
+    lastActiveAtMs: latest.lastActiveAtMs,
+    segments,
+  };
+  if (currentSegmentId !== undefined) ws.currentSegmentId = currentSegmentId;
+  return ws;
+}
+
 export class WorkSessionStore {
   private scopes: Record<string, ScopeStateV2> = {};
   private workSessions: Record<string, WorkSession> = {};
@@ -90,7 +119,12 @@ export class WorkSessionStore {
     this.path = path;
   }
 
-  async load(): Promise<void> {
+  /**
+   * 读盘。`opts.persist === false` 时**不**把 v1 迁移结果写回：CLI 回填的
+   * dry-run 只借内存里的 v2 基线，落盘时机由它自己（备份后 `importSnapshot`
+   * + `flush`）决定，不能让一次读取就改写用户的 sessions.json。
+   */
+  async load(opts: { persist?: boolean } = {}): Promise<void> {
     try {
       // `?? {}`：文件内容是合法 JSON 的 `null` 时，JSON.parse 返回 null，
       // 直接读 `raw.v` 会抛 TypeError（不是 SyntaxError，逃出下面的兜底）。
@@ -126,8 +160,9 @@ export class WorkSessionStore {
         return;
       }
       this.migrateV1(raw);
-      // 迁移本身就是一次 schema 升级：立刻把 v2 写回，文件不会长期停在 v1。
-      this.schedulePersist();
+      // 迁移本身就是一次 schema 升级：默认立刻把 v2 写回，文件不会长期停在
+      // v1。dry-run 的调用方（persist:false）自己决定何时写。
+      if (opts.persist !== false) this.schedulePersist();
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'ENOENT') return;
@@ -189,6 +224,40 @@ export class WorkSessionStore {
   /** /history、/search、/resume 用：全部工作会话（含 scope: null 的历史）。 */
   allWorkSessions(): WorkSession[] {
     return Object.values(this.workSessions);
+  }
+
+  /**
+   * 当前内存状态的 v2 快照。CLI 回填把它当基线喂给 `backfillWorkSessions`：
+   * 读盘（可能带 v1→v2 迁移）与写盘之间不落盘，回填结果再经 `importSnapshot`
+   * 写回，dry-run 因此天然不碰文件。
+   */
+  snapshot(): SessionsFileV2 {
+    return { v: 2, scopes: this.scopes, workSessions: this.workSessions };
+  }
+
+  /**
+   * 用一份 v2 快照整体替换状态并排队落盘（CLI 回填的唯一写入口）。
+   *
+   * 最小校验后**早抛**：`v !== 2` 或任一带 key 的 ws 没有非空 `segments`
+   * 都是调用方的 bug，宁可拒绝也不要写出一份稍后加载时被静默丢弃的文件
+   * （`load` 会跳过无段的 ws）。
+   */
+  importSnapshot(v2: SessionsFileV2): void {
+    if (!v2 || v2.v !== 2) {
+      throw new Error('importSnapshot: expected a v2 sessions file');
+    }
+    const scopes: Record<string, ScopeStateV2> = {};
+    for (const [scope, state] of Object.entries(v2.scopes ?? {})) scopes[scope] = state ?? {};
+    const workSessions: Record<string, WorkSession> = {};
+    for (const [id, ws] of Object.entries(v2.workSessions ?? {})) {
+      if (!ws || !Array.isArray(ws.segments) || ws.segments.length === 0) {
+        throw new Error(`importSnapshot: work session ${id} has no segments`);
+      }
+      workSessions[id] = ws;
+    }
+    this.scopes = scopes;
+    this.workSessions = workSessions;
+    this.schedulePersist();
   }
 
   /** 这一 OMP 会话属于哪个工作会话。 */

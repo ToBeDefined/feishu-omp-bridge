@@ -2,7 +2,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { backfillLegacyTitles, WorkSessionStore } from './work-store';
+import { backfillLegacyTitles, WorkSessionStore, type SessionsFileV2 } from './work-store';
 import type { WorkSession } from './work-session';
 import { log } from '../core/logger';
 
@@ -636,5 +636,67 @@ describe('WorkSessionStore legacy flat titles', () => {
       workSession: 'sess-a', sessionId: 'sess-c',
     });
     expect(log.warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('WorkSessionStore importSnapshot / dry-run load', () => {
+  const v2: SessionsFileV2 = {
+    v: 2,
+    scopes: { oc_1: { activeWorkSession: 'sess-a' } },
+    workSessions: {
+      'sess-a': {
+        id: 'sess-a', scope: 'oc_1', cwd: '/repo', createdAtMs: 1, lastActiveAtMs: 2,
+        currentSegmentId: 'sess-a',
+        segments: [{ sessionId: 'sess-a', cwd: '/repo', startedAtMs: 1, lastActiveAtMs: 2 }],
+      },
+    },
+  };
+
+  it('replaces in-memory state and writes it on flush', async () => {
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    store.bindSegment('oc_other', 'old-seg', '/old');
+    await store.flush();
+
+    store.importSnapshot(v2);
+    await store.flush();
+
+    expect(store.activeWorkSession('oc_1')?.id).toBe('sess-a');
+    expect(store.activeWorkSession('oc_other')).toBeUndefined();
+    const onDisk = JSON.parse(await readFile(file, 'utf8')) as SessionsFileV2;
+    expect(onDisk.v).toBe(2);
+    expect(Object.keys(onDisk.workSessions)).toEqual(['sess-a']);
+  });
+
+  it('throws when the snapshot is not v2', () => {
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    // Deliberately mislabeled snapshot: the guard must reject it before any write.
+    const notV2 = { ...v2, v: 1 } as unknown as SessionsFileV2;
+    expect(() => store.importSnapshot(notV2)).toThrow(/v2/);
+  });
+
+  it('throws when a work session has no segments', () => {
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    // A segment-less ws would be silently dropped by `load`; the guard早抛 instead.
+    const bad = {
+      v: 2,
+      scopes: {},
+      workSessions: { 'sess-x': { id: 'sess-x', scope: null, cwd: '/r', createdAtMs: 1, lastActiveAtMs: 1, segments: [] } },
+    } as unknown as SessionsFileV2;
+    expect(() => store.importSnapshot(bad)).toThrow(/segments/);
+  });
+
+  it('load({ persist: false }) migrates v1 in memory without touching the file', async () => {
+    const original = JSON.stringify({ oc_1: { sessionId: 'sess-1', cwd: '/repo', createdAt: 1, updatedAt: 2 } });
+    await writeFileAtomic(file, original);
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+
+    await store.load({ persist: false });
+
+    expect(store.activeWorkSession('oc_1')?.id).toBe('sess-1');   // v2 baseline in memory
+    expect(await readFile(file, 'utf8')).toBe(original);          // file untouched
   });
 });

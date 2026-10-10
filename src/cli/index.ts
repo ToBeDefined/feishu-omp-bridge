@@ -17,6 +17,7 @@ import {
   runServiceUnregister,
 } from './commands/service';
 import { runStart } from './commands/start';
+import { runMigrateWorkSessionsCli } from './commands/work-sessions';
 
 const DEFAULT_COMMAND = 'run';
 
@@ -97,12 +98,23 @@ program
     await runServiceUnregister();
   });
 
-program
+const migrate = program
   .command('migrate')
   .description('Migrate legacy config paths/shape to the current layout (idempotent no-op when already migrated)')
   .option('-c, --config <path>', 'path to config file')
   .action(async (opts: { config?: string }) => {
     await runMigrate(opts);
+  });
+
+migrate
+  .command('work-sessions')
+  .description('Backfill work sessions from historical logs (dry-run by default; --apply backs up and writes)')
+  .option('--apply', 'write the backfilled v2 sessions file (default: dry-run, no writes)')
+  .option('--sessions <path>', 'path to sessions.json')
+  .option('--logs <dir>', 'path to the logs directory')
+  .option('--omp-sessions <dir>', 'path to the OMP sessions directory')
+  .action(async (opts: { apply?: boolean; sessions?: string; logs?: string; ompSessions?: string }) => {
+    await runMigrateWorkSessionsCli(opts);
   });
 const secrets = program
   .command('secrets')

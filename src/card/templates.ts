@@ -556,7 +556,7 @@ export function releaseCard(progress: ReleaseProgress): object {
   const elements: object[] = [
     md(`${icon} ${title}`, 'heading'),
     { tag: 'hr' },
-    ...steps,
+    panel(steps),
     { tag: 'hr' },
   ];
   if (progress.phase === 'failed') {
@@ -664,14 +664,20 @@ export function newSessionCard(info: NewSessionInfo): object {
 
 export function helpCard(): object {
   const elements: object[] = [md('💡 **命令速查**', 'heading')];
-  HELP_GROUPS.forEach((group, gi) => {
-    if (gi > 0) elements.push(HR);
-    elements.push(md(`**${group.title}**`));
-    for (const [cmd, desc] of group.items) {
-      elements.push(md(`\`${cmd}\` — ${desc}`));
-    }
+  // Each category collapses to one row — the card stays short; open a group
+  // to read its commands.
+  HELP_GROUPS.forEach((group) => {
+    elements.push(
+      collapsiblePanel({
+        title: `**${group.title}**`,
+        expanded: false,
+        border: 'grey',
+        elements: [
+          md(group.items.map(([cmd, desc]) => `\`${cmd}\` — ${desc}`).join('\n')),
+        ],
+      }),
+    );
   });
-  elements.push(HR);
   elements.push(md('_发送 `/help` 随时查看；其他内容直接交给 OMP。_', 'notation'));
   elements.push(
     actions([

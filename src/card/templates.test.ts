@@ -244,8 +244,9 @@ describe('statusCard', () => {
 });
 
 describe('helpCard', () => {
-  it('groups commands by category instead of one flat list', () => {
-    const out = JSON.stringify(helpCard());
+  it('groups commands into collapsible category panels', () => {
+    const card = helpCard();
+    const out = JSON.stringify(card);
     expect(out).toContain('会话管理');
     expect(out).toContain('偏好设置');
     expect(out).toContain('工作空间');
@@ -277,6 +278,9 @@ describe('helpCard', () => {
     ]) {
       expect(out).toContain(cmd);
     }
+    // One collapsible panel per category, all collapsed by default.
+    expect(out.match(/"tag":"collapsible_panel"/g)).toHaveLength(5);
+    expect(out.match(/"expanded":false/g)?.length).toBeGreaterThanOrEqual(5);
   });
 });
 

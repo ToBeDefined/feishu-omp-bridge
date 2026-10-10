@@ -55,7 +55,7 @@ describe('releaseCard', () => {
     expect(out).toContain('正在发布');
     expect(out).toContain('✅ 类型检查');
     expect(out).toContain('⏳ 测试');
-    expect(out).toContain('○ 构建');
+    expect(out).toContain('⭕️ 构建');
   });
 
   it('renders the failure tail when a step fails', () => {

@@ -559,7 +559,7 @@ export interface ReleaseProgress {
 }
 
 const STEP_MARK: Record<ReleaseStepState, string> = {
-  pending: '○',
+  pending: '⭕️',
   running: '⏳',
   ok: '✅',
   failed: '❌',

@@ -46,16 +46,32 @@
 - **`/exec` 直接执行命令**（别名 `/run`）：admin 在飞书里直接跑 shell 命令
   （`bash -c`，支持管道/重定向），当前 cwd 执行、30s 超时、输出截断
   1000 字符、禁交互、写审计日志。
+- **`/work [名字]` 命令**：开启一件新工作（**工作会话**），这是唯一的工作会话
+  边界；名字可空，为空时列表里回退显示该工作会话最后一条用户消息。
+- **`/history seg <workSessionId>`**：展开一个工作会话的各段，每段带「恢复这一段」
+  按钮，可单独恢复到某一段。
+- **`/work merge <keepId> [foldId]`、`/work split <wsId> <段序号>`**：手工修正
+  历史分段（按钮 `work.merge` / `work.split` 同步挂到 `/history` 行上）。
+- **`bridge migrate work-sessions`（CLI）**：按日志里的 `/new`/`/cd`/`/ws`
+  边界与各 OMP 会话文件回填工作会话；默认 **dry-run** 只打印计划，`--apply`
+  才先写 `sessions.json.v1.bak` 再落盘（幂等）。
 
 ### Fixed
+- **标题不再跟着 chat 跑（属工作会话）**：`/rename` 命名的对象从「某个 OMP
+  会话 / chat 条目」改为当前**工作会话**——OMP 换段（`/new`、`/cd`、漂移）后
+  名字仍在，`/ctx`、`/status`、`/history`、`/resume`、`/search` 都以工作会话
+  口径显示，不再张冠李戴。
+- **幽灵工作会话（段文件全被删）恢复被拒**：工作会话的段都指向已删除的 OMP
+  会话文件时，`/resume` / `/history 继续对话` 明确报错而不是恢复出一个空壳。
 - **`/rename` 的标题跟着 chat 跑，`/ctx` 与 `/history` 张冠李戴**：标题原先存在
   sessions.json 的 chat 条目上（`SessionEntry.title`），谁被绑定就显示谁 ——
   在 A 会话起的名字，`/resume` / `/history 继续对话` 到 B 会话后会在 B 的
   `/ctx` 与 `/history` 行上显示；`set()` 还会把上一个绑定的 `createdAt` 一起
-  带过来，恢复旧会话后「开始对话」显示的是上一次绑定的时间。现在标题按
-  session id 归属（换会话不继承、切回来仍在、`/new` 后仍留在 /history），
-  `/resume` 与「继续对话」写入被恢复会话自己的开始/最后活跃时间，`/rename`
-  在没有会话时明确报错；旧文件的 chat 级标题在加载时迁移到其绑定的会话。
+  带过来，恢复旧会话后「开始对话」显示的是上一次绑定的时间。修复先改为按
+  session id 归属，随后的工作会话重构把归属口径统一为**工作会话**（见上方
+  「标题不再跟着 chat 跑」）；`/resume` 与「继续对话」写入被恢复会话自己的
+  开始 / 最后活跃时间，`/rename` 在没有会话时明确报错；旧文件的 chat 级标题
+  在加载时迁移到其绑定的工作会话。
 - **卡片流式更新触发飞书频率限制（230020）**：卡片更新原先不限速，快速
   流式输出时对同一条消息的 patch 频率超限（"Update the single messages
   too frequently"），整轮回复被「⚠️ 卡片渲染中断」兜底卡取代。现在同卡
@@ -295,6 +311,17 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Changed
+
+- **持久化单位从「chat → OMP 会话」换成「工作会话」**：`sessions.json` 升到
+  v2（`{ v, scopes, workSessions }`），一个工作会话有序保存它的全部**段**
+  （段 = 一次 OMP 会话），工作会话 id = 它第一段的 OMP 会话 id；旧文件加载时
+  自动迁移（v1 自动写成 `sessions.json.v1.bak`）。
+- **`/new` 改为只重置上下文**：不再换工作会话、不再丢弃标题，只是在同一工作
+  会话里新起一段（下一条消息新建 OMP 会话）。
+- **`/history`、`/ctx`、`/status`、`/resume`、`/rename`、`/search` 全部以工作
+  会话为单位**：`/history` 一行 = 一个工作会话（含段数 / 轮数），`/resume`
+  恢复它的最新段，`/rename` 命名它，`/ctx`/`/status` 的身份从 OMP 会话 id 换
+  成工作会话 id；段数 / 目录数只在多段 / 多目录时标注。
 
 - **追加批次**：`/release` 进度卡（三步 ✅/⏳/○ 实时状态 + 失败详情，
   `runRelease` 新增 `onStep` 回调）；删除定时任务后自动刷新任务列表卡；

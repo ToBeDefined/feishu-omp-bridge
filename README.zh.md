@@ -11,8 +11,8 @@
 - 注册飞书原生 OMP host tools（`feishu_current_context`、`feishu_send_message`、`feishu_reply_message`、`feishu_get_message`），让 OMP 不经 `lark-cli` 也能直接使用飞书能力。
 - 注册只读 `feishu://` host URI scheme，例如 `feishu://current/context` 和 `feishu://message/<message_id>`。
 - OMP 运行中同一 chat/topic 再发消息会安全排队，当前 run 结束后合并进下一轮（不丢失）；消息以 `!` 开头则直接作为 `steer` 进入当前 run。
-- 每个 chat / topic 保存自己的 OMP session id，下一轮自动用 `omp --mode rpc --resume <session_id>` 继续。
-- 保留 bridge 命令：`/new`、`/cd`、`/ws`、`/status`、`/config`、`/stop`、`/timeout`、`/ps`、`/exit`、`/reconnect`、`/doctor`、`/rename`（给会话起名，`/rename auto` 用 LLM 生成）。
+- 每个 chat / topic 保存自己的**工作会话**，下一轮自动用 `omp --mode rpc --resume <session_id>` 继续最新的一段。
+- 保留 bridge 命令：`/work`、`/new`、`/cd`、`/ws`、`/status`、`/config`、`/stop`、`/timeout`、`/ps`、`/exit`、`/reconnect`、`/doctor`、`/context`、`/history`、`/rename`（给工作会话起名，`/rename auto` 用 LLM 生成）。
 - 图片 / 文件会下载到本地路径；图片会转成 OMP RPC image payload。
 - OMP 可以继续使用本机可用工具，例如 `lark-cli`、`git`、项目测试命令等。
 
@@ -64,6 +64,7 @@ feishu-omp-bridge run [-c <config>]     前台启动 bot
 feishu-omp-bridge ps                    列出本机所有正在跑的 bridge 进程
 feishu-omp-bridge kill <id|#>           kill 指定 bridge 进程
 feishu-omp-bridge secrets <subcommand>  管理本地加密 secret keystore
+feishu-omp-bridge migrate [cmd]         迁移旧布局（work-sessions 默认 dry-run 回填工作会话）
 feishu-omp-bridge --help                列出所有命令
 ```
 
@@ -87,15 +88,19 @@ feishu-omp-bridge unregister            删除 daemon 注册文件
 
 | 命令 | 作用 |
 | --- | --- |
-| `/new`、`/reset` | 清空当前 chat / topic 的 OMP session，下一条消息新建会话。 |
+| `/work [名字]` | 开启一件新工作（工作会话，唯一的分段边界）；`/work merge`/`/work split` 手工修正历史分段。 |
+| `/new`、`/reset` | 只重置上下文（同一工作会话里新起一段），不再换工作会话。 |
 | `/new chat [name]` | 新建群并拉你进去，继承当前 cwd。 |
-| `/cd <path>` | 切换当前 chat / topic 的工作目录；会重置 session。支持绝对路径、`~/xxx`、相对当前目录的路径（如 `src`、`../x`）。 |
+| `/cd <path>` | 切换当前 chat / topic 的工作目录（同一工作会话里新起一段，cwd 随段走）。支持绝对路径、`~/xxx`、相对当前目录的路径（如 `src`、`../x`）。 |
 | `/ws list` | 查看命名工作空间。 |
 | `/ws add <name> <path>` | 保存命名工作空间。 |
-| `/ws use <name>` | 切换到命名工作空间并重置 session。 |
+| `/ws use <name>` | 切换到命名工作空间（同一工作会话里新起一段）。 |
 | `/config` | 打开偏好设置卡片。 |
 | `/account` | 更换 bot app 凭据并重连。 |
-| `/status` | 查看当前 scope、cwd、session、agent。 |
+| `/status` | 查看当前 scope、cwd、工作会话、agent。 |
+| `/context` | 查看当前工作会话上下文（工作会话 id / 段数 / 当前段 / cwd / 模型 / 探活等）。 |
+| `/rename <标题>` | 给当前**工作会话**起名；`/rename auto` 用 LLM 生成（≤20 字），`/rename clear` 清除。 |
+| `/history [all]`、`/sessions` | 工作会话清单，按最后活动时间倒序；每行 = 一个工作会话（时间 / 轮数 / 段数 / 标题或最后一条用户消息），「继续对话」恢复最新段，`/history seg <id>` 列出各段并单独恢复。admin 命令。 |
 | `/stop` | 终止当前正在跑的 OMP 任务。 |
 | `/timeout [N|off|default]` | 设置当前 session 的 idle 探活分钟数，或关闭 / 恢复全局默认。 |
 | `/ps` | 列出本机所有 bot，并标识当前正在回复的进程。 |
@@ -108,13 +113,22 @@ feishu-omp-bridge unregister            删除 daemon 注册文件
 
 其他普通消息会直接交给 OMP。群聊默认需要 `@bot`；私聊不需要。
 
+## 工作会话
+
+一次工作由 `/work [名字]` 开启，这是**唯一**的会话边界。OMP 会话只是它的**段**：`/new`（只重置上下文）、`/cd`、`/ws use`、`/resume`、OMP 漂移、`/release` 重启都只在同一工作会话里追加 / 切换段，不新开工作。工作会话 id = 它**第一段**的 OMP 会话 id，段再多也不变。
+
+- 标题属于工作会话：`/rename` 命名它；没名字时 `/history`、`/search`、`/resume` 回退显示该工作会话最后一条用户消息。
+- `/history` 一行 = 一个工作会话（标注段数 / 轮数）；「继续对话」恢复最新段，`/history seg <id>` 展开各段、可单独恢复。
+- `/work merge`/`/work split` 手工修正历史分段。
+- 历史用 `feishu-omp-bridge migrate work-sessions`（默认 dry-run，`--apply` 落盘）按日志边界回填。
+
 ## 数据目录
 
 | 路径 | 用途 |
 | --- | --- |
 | `~/.feishu-omp-bridge/config.json` | App 凭据、secret refs、偏好配置。 |
 | `~/.feishu-omp-bridge/secrets.enc` | 本地加密 secret keystore。 |
-| `~/.feishu-omp-bridge/sessions.json` | 每个 chat / topic 的 OMP session id、cwd 和可选 timeout 覆盖。 |
+| `~/.feishu-omp-bridge/sessions.json` | v2：各 scope 的当前工作会话指针 + timeout 覆盖，以及全部工作会话（含各自有序的段）。旧文件自动迁移（v1 备份为 `sessions.json.v1.bak`）。 |
 | `~/.feishu-omp-bridge/omp-sessions/` | bridge 专用 OMP JSONL session 文件。 |
 | `~/.feishu-omp-bridge/workspaces.json` | 命名工作空间映射。 |
 | `~/.feishu-omp-bridge/processes.json` | 当前运行的 bridge 进程注册表。 |
@@ -173,7 +187,7 @@ bridge 还会注册只读 `feishu://` host URI：
 ## 故障排查
 
 - `run` 启动时报找不到 `omp`：确认 `omp --version` 可用，并先运行一次 `omp` 完成模型 / 认证配置。
-- OMP 没有继续上次对话：发 `/status` 查看 cwd 和 session；cwd 变化会让 bridge 自动新建 session。
+- OMP 没有继续上次对话：发 `/context` 查看工作会话与「当前段」；cwd 变化会让 bridge 在同一工作会话里新起一段。
 - 群聊没响应：确认消息里 `@bot`，或在 `/config` 里调整群聊 mention 策略。
 - 卡片长时间不动：可用 `/stop` 终止当前任务，或用 `/timeout 10` 为当前 session 开启 idle 探活。
 - OMP 等待选择 / 输入时：直接回复单独出现的“OMP 交互”卡片；该请求挂起期间 idle watchdog 会暂停。

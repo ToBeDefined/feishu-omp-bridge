@@ -263,21 +263,12 @@ export async function runStart(opts: StartOptions): Promise<void> {
     );
   }
 
-  // Startup notification: the bot is back online after any (re)start — tell
-  // every chat with a persisted session so the user isn't left guessing.
-  // Best-effort; failures (chat gone, no permission) are logged, never fatal.
-  // Only real chat ids are valid receive_ids. Session store keys are scopes:
-  // cloud-doc comments use `doc:<fileToken>` and topic chats use
-  // `chatId:threadId` — sending to those fails every boot (N dead API calls).
-  const notifyTargets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
-  // /restart requests a boot notice; /release suppresses the entire boot
-  // fan-out because its final progress card already says 「🚀 已发布上线」.
+  // Startup notices are opt-in. `/release` already leaves its final
+  // 「🚀 已发布上线」 card, so ordinary boots and release boots stay silent;
+  // only `/restart` writes mode=notify for its requesting chat.
+  const notifyTargets: string[] = [];
   const notice = await takeOnlineNotice();
-  if (notice?.mode === 'skip') {
-    notifyTargets.length = 0;
-  } else if (notice?.mode === 'notify' && !notifyTargets.includes(notice.chatId)) {
-    notifyTargets.push(notice.chatId);
-  }
+  if (notice?.mode === 'notify') notifyTargets.push(notice.chatId);
   for (const chatId of notifyTargets) {
     try {
       await bridge.channel.send(

@@ -30,6 +30,12 @@ export interface HistoryRow {
   /** Workspace label (named workspace or collapsed path). Only rendered in
    * 'all' mode, where a page mixes directories. */
   workspace: string;
+  /** Owning scope (chatId or chatId:threadId); `null` for a file no work
+   * session claims. merge/split 只在本 scope 的行上渲染。 */
+  scope: string | null;
+  /** The segment 继续对话 must restore (current-if-alive, else latest alive).
+   * Omitted when every segment file is gone — then the work-session id stands in. */
+  activeSegmentId?: string;
   /** User-assigned title (/rename). */
   title?: string;
   /** What the conversation was about — the last user message of its latest
@@ -48,6 +54,8 @@ export interface HistoryPage {
   total: number;
   /** Work session id the calling scope is already on, if any. */
   currentWorkSessionId?: string;
+  /** The calling scope — merge/split buttons render only on rows it owns. */
+  scope: string;
 }
 
 export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
@@ -112,21 +120,25 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
     // weighted column absorbs the slack so nothing is stretched or squeezed.
     //
     // Buttons: 继续对话 (unless this row is already current — a no-op resume),
-    // 与上一条合并 (only when there IS a row above: keep = that row, fold =
-    // this one), and 拆段 (only for multi-segment work sessions; the concrete
+    // 与上一条合并 (only when the row above exists AND both rows belong to the
+    // CALLING scope — merging across scopes is rejected by the command), and
+    // 拆段 (only for multi-segment work sessions the caller owns; the concrete
     // cut point is left to the command, the button seeds segment 2).
     const prev = i > 0 ? page[i - 1] : undefined;
+    // 归属判定：他 scope 的行、以及无归属（scope: null）的历史文件都不能点这些
+    // 修正按钮——点了必被 /work merge|split 的 scope 校验拒绝。
+    const owns = (r: HistoryRow): boolean => r.scope !== null && r.scope === opts.scope;
     const rowButtons: object[] = [];
     if (!isCurrent) {
       rowButtons.push(
         button({
           text: '继续对话',
-          value: { cmd: 'history.resume', arg: row.workSessionId },
+          value: { cmd: 'history.resume', arg: row.activeSegmentId ?? row.workSessionId },
           style: 'primary',
         }),
       );
     }
-    if (prev) {
+    if (prev && owns(prev) && owns(row)) {
       rowButtons.push(
         button({
           text: '与上一条合并',
@@ -134,7 +146,7 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
         }),
       );
     }
-    if (row.segmentCount > 1) {
+    if (owns(row) && row.segmentCount > 1) {
       rowButtons.push(
         button({
           text: '🗂 拆段',

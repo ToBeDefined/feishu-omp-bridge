@@ -332,6 +332,31 @@ export class WorkSessionStore {
   }
 
   /**
+   * 恢复不变量 `id === segments[0].sessionId`：`mergeWorkSessions` 合并后工作
+   * 会话的键可能还挂在 keep 的旧 id 上，而首段已换成更早的段——此后
+   * `/work split` 以首段为切点时 `fromSegmentId === wsId`，新工作会话会立刻被
+   * 旧键覆盖，整条尾巴丢失。
+   *
+   * 这里把工作会话改键到首段 id，并同步改指所有 `scopes[*].activeWorkSession`
+   * 上指向旧 id 的指针（不改指的话 `load` 的补链逻辑会当成"指针悬空"，另选一条
+   * 最近活跃的活来绑）。首段已是键、或工作会话无段时原样返回，不动任何状态。
+   */
+  private reIdToFirstSegment(ws: WorkSession): WorkSession {
+    const firstId = ws.segments[0]?.sessionId;
+    if (firstId === undefined || firstId === ws.id) return ws;
+    const oldId = ws.id;
+    const rekeyed: WorkSession = { ...ws, id: firstId };
+    delete this.workSessions[oldId];
+    this.workSessions[firstId] = rekeyed;
+    for (const [scope, state] of Object.entries(this.scopes)) {
+      if (state.activeWorkSession === oldId) {
+        this.scopes[scope] = { ...state, activeWorkSession: firstId };
+      }
+    }
+    return rekeyed;
+  }
+
+  /**
    * /work merge：把 `foldId` 这摊活并进 `keepId`（保留 keep 的身份与名字）。
    *
    * 段按 `startedAtMs` 升序拼接，并以 `sessionId` 去重（同一 OMP 会话在两边
@@ -368,7 +393,11 @@ export class WorkSessionStore {
           : keepCurrent.sessionId
         : keepCurrent?.sessionId ?? foldCurrent?.sessionId;
 
-    const title = keep.title?.trim() ? keep.title : fold.title;
+    // 纯空白名字当作没名字：否则一个空白的 keep.title 会挡住 fold 的真名字，
+    // 也会被当成有效标题写进合并结果。
+    const keepTitle = keep.title?.trim() ? keep.title : undefined;
+    const foldTitle = fold.title?.trim() ? fold.title : undefined;
+    const title = keepTitle ?? foldTitle;
     const merged: WorkSession = {
       ...keep,
       scope: keep.scope ?? fold.scope,
@@ -377,6 +406,7 @@ export class WorkSessionStore {
       segments,
     };
     if (title !== undefined) merged.title = title;
+    else delete merged.title;
     if (currentSegmentId !== undefined) merged.currentSegmentId = currentSegmentId;
     else delete merged.currentSegmentId;
 
@@ -389,6 +419,10 @@ export class WorkSessionStore {
         this.scopes[scope] = { ...state, activeWorkSession: keepId };
       }
     }
+    // keep 未必是最早的段：合并后键仍挂在 keep 的旧 id 上，`/work split` 若以
+    // 首段为切点就会撞键丢段。统一在这里恢复 `id === segments[0].sessionId`，
+    // 与 §0 的不变量一致（merged.id 总是最早段 id）。
+    this.reIdToFirstSegment(merged);
     this.schedulePersist();
     return true;
   }
@@ -403,8 +437,12 @@ export class WorkSessionStore {
    * 返回 undefined。段既不丢也不重复。
    */
   splitWorkSession(wsId: string, fromSegmentId: string): string | undefined {
-    const ws = this.workSessions[wsId];
-    if (!ws) return undefined;
+    const target = this.workSessions[wsId];
+    if (!target) return undefined;
+    // 防御手工编辑 / 旧数据：工作会话的键未必等于首段 id（merge 后的历史形态）。
+    // 不先恢复不变量，`fromSegmentId` 命中首段时两个键会相同，写新工作会话的那
+    // 一步立刻被旧键覆盖，整条尾巴丢失却回复"成功"。
+    const ws = this.reIdToFirstSegment(target);
     const idx = ws.segments.findIndex((s) => s.sessionId === fromSegmentId);
     if (idx <= 0) return undefined;
 
@@ -436,7 +474,7 @@ export class WorkSessionStore {
     else delete nextHead.currentSegmentId;
 
     this.workSessions[fromSegmentId] = created;
-    this.workSessions[wsId] = nextHead;
+    this.workSessions[ws.id] = nextHead;
     this.schedulePersist();
     return fromSegmentId;
   }

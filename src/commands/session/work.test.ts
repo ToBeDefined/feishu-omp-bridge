@@ -210,6 +210,18 @@ describe('/work merge', () => {
     expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('用法'));
   });
 
+  it('hints that merge/split are reserved when a work name is mistaken for an id', async () => {
+    await twoWorkSessions();
+    const { ctx } = makeCtx();
+
+    // `/work merge 联调` reads like naming a work session "merge 联调", but the
+    // first token is dispatched as the merge subcommand with id 联调.
+    await handleWork('merge 联调', ctx);
+
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('找不到工作会话'));
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('保留子命令'));
+  });
+
   it('asks for an active work session first', async () => {
     const { ctx } = makeCtx(); // fresh store: nothing bound
 
@@ -281,5 +293,15 @@ describe('/work split', () => {
     await handleWork('split a 2', ctx);
 
     expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('没有活跃的工作会话'));
+  });
+
+  it('lists merge/split as reserved words in the usage error', async () => {
+    await threeSegments();
+    const { ctx } = makeCtx();
+
+    await handleWork('split', ctx);
+
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('用法'));
+    expect(reply).toHaveBeenCalledWith(ctx, expect.stringMatching(/merge[\s\S]*split/));
   });
 });

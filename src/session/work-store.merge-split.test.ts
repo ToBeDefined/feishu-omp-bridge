@@ -113,6 +113,67 @@ describe('WorkSessionStore mergeWorkSessions', () => {
     expect(store.mergeWorkSessions('s1', 's1')).toBe(false);
     expect(store.workSessionById('s1')?.segments).toHaveLength(2);
   });
+
+  it('re-ids the survivor to the earliest segment, so a later split cannot collide (regression)', async () => {
+    // The card's default direction is keep = the NEWER row, fold = the older
+    // one: after the chronological sort the first segment is the folded (older)
+    // session, while the key stayed on the newer id. Before the fix, splitting
+    // at that newer segment (fromSegmentId === wsId) overwrote the new work
+    // session with the head and silently dropped the whole tail.
+    const older: WorkSession = {
+      id: 's-old',
+      scope: 'oc_1',
+      cwd: '/a',
+      createdAtMs: 1,
+      lastActiveAtMs: 1,
+      currentSegmentId: 's-old',
+      segments: [seg('s-old', '/a', 1)],
+    };
+    const newer: WorkSession = {
+      id: 's-new',
+      scope: 'oc_1',
+      cwd: '/b',
+      createdAtMs: 5,
+      lastActiveAtMs: 6,
+      currentSegmentId: 's-new2',
+      segments: [seg('s-new', '/b', 5), seg('s-new2', '/b', 6)],
+    };
+    const store = await seed(
+      { 's-old': older, 's-new': newer },
+      { oc_1: { activeWorkSession: 's-new' } },
+    );
+
+    expect(store.mergeWorkSessions('s-new', 's-old')).toBe(true);
+    // Invariant restored: id === segments[0].sessionId, no dangling old key.
+    expect(store.workSessionById('s-new')).toBeUndefined();
+    const merged = store.workSessionById('s-old');
+    expect(merged?.id).toBe('s-old');
+    expect(ids(merged)).toEqual(['s-old', 's-new', 's-new2']);
+    // Scope pointer followed the re-key.
+    expect(store.activeWorkSession('oc_1')?.id).toBe('s-old');
+
+    // Split at the segment whose id USED to be the key — the exact collision.
+    expect(store.splitWorkSession('s-old', 's-new')).toBe('s-new');
+    const head = store.workSessionById('s-old');
+    const tail = store.workSessionById('s-new');
+    expect(head?.id).not.toBe(tail?.id);
+    expect(ids(head)).toEqual(['s-old']);
+    expect(ids(tail)).toEqual(['s-new', 's-new2']);
+    // Nothing lost or duplicated across the two.
+    expect([...ids(head), ...ids(tail)].sort()).toEqual(['s-new', 's-new2', 's-old']);
+  });
+
+  it('treats a whitespace-only title as absent', async () => {
+    // A blank keep title must not block the fold's real name...
+    const named = await seed({ s1: { ...keep, title: '   ' }, s2: fold });
+    named.mergeWorkSessions('s1', 's2');
+    expect(named.workSessionById('s1')?.title).toBe('折叠名');
+
+    // ...and when neither side has a real name, the blank one is cleared.
+    const blanks = await seed({ s1: { ...keep, title: '  ' }, s2: { ...fold, title: '\t' } });
+    blanks.mergeWorkSessions('s1', 's2');
+    expect(blanks.workSessionById('s1')?.title).toBeUndefined();
+  });
 });
 
 describe('WorkSessionStore splitWorkSession', () => {
@@ -176,5 +237,37 @@ describe('WorkSessionStore splitWorkSession', () => {
     expect(store.splitWorkSession('s1', 's1')).toBeUndefined(); // first segment
     // Nothing changed while rejecting.
     expect(ids(store.workSessionById('s1'))).toEqual(['s1', 's2', 's3']);
+  });
+
+  it('repairs a dirty work session whose key is not its first segment before cutting', async () => {
+    // importSnapshot seeds exactly the hand-edited / legacy shape: the key
+    // drifted from segments[0].sessionId. Splitting must still lose nothing.
+    const store = track(new WorkSessionStore(file));
+    await store.load();
+    store.importSnapshot({
+      v: 2,
+      scopes: { oc_1: { activeWorkSession: 'wrong-key' } },
+      workSessions: {
+        'wrong-key': {
+          id: 'wrong-key',
+          scope: 'oc_1',
+          cwd: '/repo',
+          createdAtMs: 1,
+          lastActiveAtMs: 3,
+          currentSegmentId: 's3',
+          segments: [seg('s1', '/repo', 1), seg('s2', '/repo', 2), seg('s3', '/repo', 3)],
+        },
+      },
+    });
+
+    expect(store.splitWorkSession('wrong-key', 's2')).toBe('s2');
+    expect(store.workSessionById('wrong-key')).toBeUndefined();
+    const head = store.workSessionById('s1');
+    const tail = store.workSessionById('s2');
+    expect(ids(head)).toEqual(['s1']);
+    expect(ids(tail)).toEqual(['s2', 's3']);
+    expect([...ids(head), ...ids(tail)].sort()).toEqual(['s1', 's2', 's3']);
+    // Scope pointer was re-pointed to the repaired key.
+    expect(store.activeWorkSession('oc_1')?.id).toBe('s1');
   });
 });

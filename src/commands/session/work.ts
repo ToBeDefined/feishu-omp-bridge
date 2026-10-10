@@ -10,7 +10,12 @@ const NAME_MAX = 60;
 /** merge/split 都先要求本 scope 有活跃工作会话，否则无从谈起「修正」。 */
 const NO_ACTIVE_WORK_SESSION = '❌ 当前没有活跃的工作会话，无法合并 / 拆分。';
 
-const notFound = (id: string): string => `❌ 找不到工作会话 \`${codeSpan(id)}\`。`;
+/** merge/split 是首 token 命中才走的保留子命令；想用这些名字当工作名要绕开。 */
+const RESERVED_HINT =
+  '（`merge`/`split` 是保留子命令；想以此开头命名工作会话请先 `/rename`，或换个不以它们开头的名字）';
+
+const notFound = (id: string): string =>
+  `❌ 找不到工作会话 \`${codeSpan(id)}\`。${RESERVED_HINT}`;
 const notYours = (id: string): string => `❌ \`${codeSpan(id)}\` 不是当前会话的工作会话。`;
 
 /**
@@ -95,7 +100,7 @@ async function handleMerge(args: string, ctx: CommandContext): Promise<void> {
     }
     keepId = earlier.id;
   } else {
-    await reply(ctx, '❌ 用法：`/work merge <keepId> <foldId>` 或 `/work merge <id>`。');
+    await reply(ctx, '❌ 用法：`/work merge <keepId> <foldId>` 或 `/work merge <id>`（`merge`、`split` 是保留子命令）。');
     return;
   }
 
@@ -123,10 +128,19 @@ async function handleMerge(args: string, ctx: CommandContext): Promise<void> {
   }
 
   ctx.workSessions.mergeWorkSessions(keep.id, fold.id);
-  const merged = ctx.workSessions.workSessionById(keep.id);
+  // 合并会把 survivor 改键到最早段 id（keep 未必是最早创建的那条），其 id 可能
+  // 已不再是 keep.id；沿仍保留的段反查回来，回复里给出真实的 survivor id。
+  const anchor = keep.segments[0] ?? fold.segments[0];
+  const merged =
+    anchor !== undefined
+      ? ctx.workSessions
+          .allWorkSessions()
+          .find((w) => w.segments.some((s) => s.sessionId === anchor.sessionId))
+      : undefined;
+  const mergedId = merged?.id ?? keep.id;
   await reply(
     ctx,
-    `✅ 已把 \`${codeSpan(fold.id)}\` 并入 \`${codeSpan(keep.id)}\`` +
+    `✅ 已把 \`${codeSpan(fold.id)}\` 并入 \`${codeSpan(mergedId)}\`` +
       (merged ? `（共 ${merged.segments.length} 段）。` : '。'),
   );
 }
@@ -138,7 +152,7 @@ async function handleMerge(args: string, ctx: CommandContext): Promise<void> {
 async function handleSplit(args: string, ctx: CommandContext): Promise<void> {
   const [wsId, rawIndex] = args.split(/\s+/).filter(Boolean);
   if (!wsId || !rawIndex) {
-    await reply(ctx, '❌ 用法：`/work split <wsId> <段序号>`。');
+    await reply(ctx, '❌ 用法：`/work split <wsId> <段序号>`（`merge`、`split` 是保留子命令）。');
     return;
   }
   const ws = ctx.workSessions.allWorkSessions().find((w) => w.id === wsId);

@@ -454,6 +454,18 @@ describe('contextCard', () => {
     expect(out).not.toContain('"cmd":"resume"');
   });
 
+  it('stacks the panels full-width instead of laying them side by side', () => {
+    const out = contextCard(base) as { body: { elements: Array<Record<string, unknown>> } };
+    const sets = out.body.elements.filter((e) => e.tag === 'column_set');
+    // One single-column column_set per panel — stacked at every card width,
+    // unlike a multi-column row that goes side by side on a desktop card.
+    expect(sets).toHaveLength(3);
+    for (const set of sets) {
+      expect((set.columns as unknown[])).toHaveLength(1);
+    }
+    expect(JSON.stringify(out)).not.toContain('"flex_mode":"stretch"');
+  });
+
   it('drops the recent panel and placeholders when nothing to show', () => {
     const out = JSON.stringify(
       contextCard({

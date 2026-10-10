@@ -85,6 +85,20 @@ export function actions(buttons: ButtonSpec[]): object[] {
   return rows;
 }
 
+/**
+ * Stack info panels one per row, each FULL width.
+ *
+ * A single multi-column `column_set` (even with `flex_mode: 'stretch'`) lays
+ * its columns out side by side whenever the card is wide — i.e. on desktop,
+ * where two half-width text panels read worse than the same content flowing
+ * down the card. One single-column `column_set` per panel keeps them stacked
+ * at every width (a bare `column` outside a `column_set` is rejected by the
+ * card API).
+ */
+export function stackedPanels(panels: object[]): object[] {
+  return panels.map((p) => ({ tag: 'column_set', flex_mode: 'none', columns: [p] }));
+}
+
 const HR: object = { tag: 'hr' };
 
 interface PanelOpts {
@@ -268,14 +282,7 @@ export function statusCard(info: StatusInfo): object {
   return shell('📊 会话状态', [
     md('📊 **会话状态**', 'heading'),
     md(scopeLine, 'notation'),
-    {
-      tag: 'column_set',
-      // stretch: panels stack vertically on narrow (mobile) screens instead
-      // of squeezing side by side.
-      flex_mode: 'stretch',
-      horizontal_spacing: 'small',
-      columns: [panel(sessionPanel), panel(envPanel)],
-    },
+    ...stackedPanels([panel(sessionPanel), panel(envPanel)]),
     ...(info.sessionStale
       ? [md('⚠️ _session 来自旧 cwd，下一条消息将新建会话_', 'notation')]
       : []),
@@ -336,34 +343,29 @@ export function contextCard(
   return shell('🧾 会话上下文', [
     md('🧾 **会话上下文**', 'heading'),
     md(scopeLine, 'notation'),
-    {
-      tag: 'column_set',
-      flex_mode: 'stretch',
-      horizontal_spacing: 'small',
-      columns: [
-        panel([
-          md('**🗂 会话**'),
-          md(info.sessionTitle ? `🏷 ${escapeMd(info.sessionTitle)}` : '🏷 _未命名_'),
-          md(
-            info.sessionId
-              ? `🔗 \`${escapeCode(info.sessionId)}\``
-              : '🔗 _无，下条消息新建_',
-          ),
-          md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
-          md(`🕘 ${formatAgoOr(info.updatedAt, '新会话')}`),
-          md(info.running ? '🔄 任务执行中' : '✅ 空闲'),
-        ]),
-        panel([
-          md('**🧩 环境**'),
-          md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
-          md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
-          md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
-          md(`⏱ ${escapeMd(info.idleLine)}`),
-          md(`📂 ${wsLine}`),
-        ]),
-        ...recentPanel,
-      ],
-    },
+    ...stackedPanels([
+      panel([
+        md('**🗂 会话**'),
+        md(info.sessionTitle ? `🏷 ${escapeMd(info.sessionTitle)}` : '🏷 _未命名_'),
+        md(
+          info.sessionId
+            ? `🔗 \`${escapeCode(info.sessionId)}\``
+            : '🔗 _无，下条消息新建_',
+        ),
+        md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
+        md(`🕘 ${formatAgoOr(info.updatedAt, '新会话')}`),
+        md(info.running ? '🔄 任务执行中' : '✅ 空闲'),
+      ]),
+      panel([
+        md('**🧩 环境**'),
+        md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
+        md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
+        md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
+        md(`⏱ ${escapeMd(info.idleLine)}`),
+        md(`📂 ${wsLine}`),
+      ]),
+      ...recentPanel,
+    ]),
   ]);
 }
 
@@ -755,24 +757,19 @@ export function newSessionCard(info: NewSessionInfo): object {
       'heading',
     ),
     ...(info.scopeNote ? [md(`_${escapeMd(info.scopeNote)}_`, 'notation')] : []),
-    {
-      tag: 'column_set',
-      flex_mode: 'stretch',
-      horizontal_spacing: 'small',
-      columns: [
-        panel([
-          md('**🧩 环境**'),
-          md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
-          md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
-          md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
-        ]),
-        panel([
-          md('**⏱ 探活**'),
-          md(escapeMd(info.idleLine)),
-          md('_直接发消息即可开始，无需其他操作。_', 'notation'),
-        ]),
-      ],
-    },
+    ...stackedPanels([
+      panel([
+        md('**🧩 环境**'),
+        md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
+        md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
+        md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
+      ]),
+      panel([
+        md('**⏱ 探活**'),
+        md(escapeMd(info.idleLine)),
+        md('_直接发消息即可开始，无需其他操作。_', 'notation'),
+      ]),
+    ]),
   ]);
 }
 

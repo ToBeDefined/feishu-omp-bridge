@@ -364,11 +364,6 @@ export function contextCard(
         ...recentPanel,
       ],
     },
-    { tag: 'hr' },
-    ...actions([
-      { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
-      { text: '🕘 恢复会话', value: { cmd: 'resume' } },
-    ]),
   ]);
 }
 

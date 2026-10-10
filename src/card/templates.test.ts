@@ -445,6 +445,15 @@ describe('contextCard', () => {
     expect(out).toContain('全局 30 分钟');
   });
 
+  it('carries no action buttons — /ctx is informational, /status is the console', () => {
+    const out = JSON.stringify(contextCard(base));
+    expect(out).not.toContain('"tag":"button"');
+    // The buttons it used to carry were circular (状态 re-renders these same
+    // panels) / duplicated (/status already offers 恢复会话).
+    expect(out).not.toContain('"cmd":"status"');
+    expect(out).not.toContain('"cmd":"resume"');
+  });
+
   it('drops the recent panel and placeholders when nothing to show', () => {
     const out = JSON.stringify(
       contextCard({

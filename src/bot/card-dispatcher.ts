@@ -7,7 +7,7 @@ import { RESET_CONTEXT_COMMANDS } from './intake';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
 import { isChatAllowed, isUserAllowed } from '../config/schema';
 import { log } from '../core/logger';
-import type { SessionStore } from '../session/store';
+import type { WorkSessionStore } from '../session/work-store';
 import { AGENT_CALLBACK_MARKER } from '../card/agent-card';
 import { forgetManagedCard, updateManagedCard } from '../card/managed';
 import { agentSelectedCard } from '../card/templates';
@@ -24,7 +24,7 @@ import type { WorkspaceStore } from '../workspace/store';
 export interface CardDispatchDeps {
   channel: LarkChannel;
   evt: CardActionEvent;
-  sessions: SessionStore;
+  workSessions: WorkSessionStore;
   workspaces: WorkspaceStore;
   activeRuns: ActiveRuns;
   agent: AgentAdapter;
@@ -98,7 +98,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     msg: makeFakeMsg(deps.evt, threadId, mode),
     scope,
     chatMode: mode,
-    sessions: deps.sessions,
+    workSessions: deps.workSessions,
     workspaces: deps.workspaces,
     activeRuns: deps.activeRuns,
     agent: deps.agent,

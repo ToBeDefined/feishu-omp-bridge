@@ -25,9 +25,9 @@ const RESUME_PAGE_SIZE = 5;
  * `--resume` the same file and interleave their turns. */
 function boundScopeBySession(ctx: CommandContext): Map<string, string> {
   const map = new Map<string, string>();
-  for (const scope of ctx.sessions.chats()) {
-    const entry = ctx.sessions.getRaw(scope);
-    if (entry?.sessionId) map.set(entry.sessionId, scope);
+  for (const scope of ctx.workSessions.chats()) {
+    const segmentId = ctx.workSessions.activeWorkSession(scope)?.currentSegmentId;
+    if (segmentId) map.set(segmentId, scope);
   }
   return map;
 }
@@ -113,7 +113,7 @@ async function showResumePage(ctx: CommandContext, offset: number): Promise<void
     return;
   }
   const page = sessions.slice(offset, offset + RESUME_PAGE_SIZE);
-  const currentId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
+  const currentId = ctx.workSessions.activeWorkSession(ctx.scope)?.currentSegmentId;
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(
     ctx.channel,
@@ -166,7 +166,7 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
     );
     return;
   }
-  const currentId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
+  const currentId = ctx.workSessions.activeWorkSession(ctx.scope)?.currentSegmentId;
   const isCurrent = currentId !== undefined && match.sessionId === currentId;
   if (isCurrent) {
     log.info('command', 'resume-already-current', { scope: ctx.scope, sessionId: match.sessionId, cwd });
@@ -197,10 +197,10 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
   ctx.workspaces.setCwd(ctx.scope, cwd);
   // The resumed session brings its own history: report ITS start and last
   // activity, not the moment of the click.
-  const createdAtMs = Date.parse(match.timestamp);
-  ctx.sessions.set(ctx.scope, match.sessionId, cwd, {
-    ...(Number.isFinite(createdAtMs) && createdAtMs > 0 ? { createdAtMs } : {}),
-    ...(match.updatedAtMs !== undefined ? { updatedAtMs: match.updatedAtMs } : {}),
+  const startedAtMs = Date.parse(match.timestamp);
+  ctx.workSessions.bindSegment(ctx.scope, match.sessionId, cwd, {
+    ...(Number.isFinite(startedAtMs) && startedAtMs > 0 ? { startedAtMs } : {}),
+    ...(match.updatedAtMs !== undefined ? { lastActiveAtMs: match.updatedAtMs } : {}),
   });
   log.info('command', 'resume', { scope: ctx.scope, sessionId: match.sessionId, cwd });
   const summary = await loadSessionSummary(ctx, match.sessionId);

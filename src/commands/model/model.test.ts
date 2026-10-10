@@ -20,7 +20,7 @@ function makeCtx(overrides: {
     scope: 'oc_1',
     chatMode: 'p2p',
     workspaces: {},
-    sessions: {},
+    workSessions: {},
     activeRuns: {},
     agent: {},
     formValue: overrides.formValue,

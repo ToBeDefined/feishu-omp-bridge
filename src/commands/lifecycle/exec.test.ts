@@ -38,7 +38,7 @@ function makeCtx(): { ctx: CommandContext; sent: string[] } {
     msg: { chatId: 'oc_1', messageId: 'om_1', content: '' },
     scope: 'oc_1',
     chatMode: 'p2p',
-    sessions: {},
+    workSessions: {},
     workspaces: { cwdFor: () => '/home/proj' },
     agent: {},
     activeRuns: {},

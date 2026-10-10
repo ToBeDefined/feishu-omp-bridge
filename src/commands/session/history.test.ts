@@ -9,7 +9,7 @@ import { handleHistory } from './history';
 import { listSessions } from './sessions';
 import { applyResume } from './resume';
 import { renderContext } from './context';
-import { SessionStore } from '../../session/store';
+import { WorkSessionStore } from '../../session/work-store';
 
 const { reply, recallMessage, sendManagedCard } = vi.hoisted(() => ({
   reply: vi.fn(async (_ctx: unknown, _text: string) => {}),
@@ -79,7 +79,7 @@ async function writeSession(
 
 /** Captures the session/cwd the handler points the scope at. */
 interface ResumeSpy {
-  set: ReturnType<typeof vi.fn>;
+  bindSegment: ReturnType<typeof vi.fn>;
   setCwd: ReturnType<typeof vi.fn>;
   interrupt: ReturnType<typeof vi.fn>;
   currentSessionId: string | undefined;
@@ -90,7 +90,7 @@ function makeCtx(over: Partial<Record<string, unknown>> = {}): {
   spy: ResumeSpy;
 } {
   const spy: ResumeSpy = {
-    set: vi.fn(),
+    bindSegment: vi.fn(),
     setCwd: vi.fn(),
     interrupt: vi.fn(),
     currentSessionId: undefined,
@@ -102,12 +102,14 @@ function makeCtx(over: Partial<Record<string, unknown>> = {}): {
       listNamed: () => ({ bridge: tmp }),
       setCwd: spy.setCwd,
     },
-    sessions: {
-      titlesBySessionId: () => ({ s1: '命名的会话' }),
+    workSessions: {
+      // listSessions builds its segmentId→title map from this.
+      allWorkSessions: () => [{ title: '命名的会话', segments: [{ sessionId: 's1' }] }],
       titleFor: (id?: string) => (id === 's1' ? '命名的会话' : undefined),
-      getRaw: () => (spy.currentSessionId ? { sessionId: spy.currentSessionId } : undefined),
+      activeWorkSession: () =>
+        spy.currentSessionId ? { currentSegmentId: spy.currentSessionId, cwd: tmp } : undefined,
       chats: () => ['oc_1'],
-      set: spy.set,
+      bindSegment: spy.bindSegment,
       // renderContext reads the scope's idle-timeout override.
       getIdleTimeoutMinutes: () => undefined,
     },
@@ -239,9 +241,9 @@ describe('/history', () => {
     // that session's OWN start/last-active times (s3 = 2026-01-02, active two
     // minutes ago — not the moment of the click), and any in-flight run in
     // this scope interrupted.
-    expect(spy.set).toHaveBeenCalledWith('oc_1', 's3', tmp, {
-      createdAtMs: Date.parse('2026-01-02T00:00:00Z'),
-      updatedAtMs: expect.any(Number),
+    expect(spy.bindSegment).toHaveBeenCalledWith('oc_1', 's3', tmp, {
+      startedAtMs: Date.parse('2026-01-02T00:00:00Z'),
+      lastActiveAtMs: expect.any(Number),
     });
     expect(spy.setCwd).toHaveBeenCalledWith('oc_1', tmp);
     expect(spy.interrupt).toHaveBeenCalledWith('oc_1');
@@ -249,13 +251,13 @@ describe('/history', () => {
     expect(sendManagedCard).not.toHaveBeenCalled();
   });
 
-  it('binds a resumed session to its own title and times', async () => {
-    const store = new SessionStore(join(tmp, 'sessions.json'));
+  it('binds a resumed session to its own times on the active work session', async () => {
+    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
     await store.load();
-    store.set('oc_1', 's1', tmp);
+    store.bindSegment('oc_1', 's1', tmp);
     store.setTitle('oc_1', '被替换的会话名');
 
-    const { ctx } = makeCtx({ sessions: store });
+    const { ctx } = makeCtx({ workSessions: store });
     await applyResume(ctx, {
       sessionId: 's3',
       cwd: tmp,
@@ -264,17 +266,18 @@ describe('/history', () => {
       summary: '',
     });
 
-    // The resumed session reports its own history...
-    expect(store.getRaw('oc_1')).toMatchObject({
-      sessionId: 's3',
-      createdAt: Date.parse('2026-01-02T00:00:00Z'),
-      updatedAt: 1_700_000_000_000,
+    // The resumed session reports its own history, as a new segment of the
+    // SAME work session (resume does not start a new work session)...
+    const ws = store.activeWorkSession('oc_1');
+    expect(ws?.currentSegmentId).toBe('s3');
+    expect(ws?.segments.find((s) => s.sessionId === 's3')).toMatchObject({
+      startedAtMs: Date.parse('2026-01-02T00:00:00Z'),
+      lastActiveAtMs: 1_700_000_000_000,
     });
-    // ...and never wears the replaced session's name; that name stays with the
-    // session it was written for (so /history keeps labelling it correctly).
-    expect(store.titleFor('s3')).toBeUndefined();
-    expect(store.titleFor('s1')).toBe('被替换的会话名');
-    expect(renderContext(ctx, {})).not.toContain('被替换的会话名');
+    // ...and the name set before the resume names this work session, so it
+    // still applies (a work session keeps its name across its segments).
+    expect(store.titleFor('s3')).toBe('被替换的会话名');
+    expect(renderContext(ctx, {})).toContain('被替换的会话名');
     // Settle the store's async persist before afterEach removes tmp.
     await store.flush();
   });
@@ -282,7 +285,7 @@ describe('/history', () => {
   it('refuses a 继续对话 payload whose session is gone', async () => {
     const { ctx, spy } = makeCtx();
     await handleHistory('resume deleted-session', ctx);
-    expect(spy.set).not.toHaveBeenCalled();
+    expect(spy.bindSegment).not.toHaveBeenCalled();
     expect(reply.mock.calls[0]![1]).toContain('未找到会话');
   });
 

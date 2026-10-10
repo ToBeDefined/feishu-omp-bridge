@@ -28,6 +28,19 @@ export interface SessionRecord {
 }
 
 /**
+ * 段（OMP 会话 id）→ 工作会话名字。等价于旧 `titlesBySessionId()`：只收有名字
+ * 的工作会话，把它每个段都映射到该名字（Task 8/10 才会改成工作会话口径）。
+ */
+export function titlesBySegment(ctx: CommandContext): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const ws of ctx.workSessions.allWorkSessions()) {
+    if (ws.title === undefined) continue;
+    for (const seg of ws.segments) out[seg.sessionId] = ws.title;
+  }
+  return out;
+}
+
+/**
  * Every session file in the OMP session dir, NEWEST ACTIVITY FIRST.
  *
  * Reads each file's JSONL once and stats it for the activity time; files
@@ -36,7 +49,7 @@ export interface SessionRecord {
  */
 export async function listSessions(ctx: CommandContext): Promise<SessionRecord[]> {
   const dir = getOmpSessionDir(ctx.controls.cfg);
-  const titles = ctx.sessions.titlesBySessionId();
+  const titles = titlesBySegment(ctx);
   let names: string[];
   try {
     names = (await readdir(dir)).filter((n) => n.endsWith('.jsonl'));

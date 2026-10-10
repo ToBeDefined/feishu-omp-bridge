@@ -61,7 +61,7 @@ function makeDeps(overrides: Partial<IntakeDeps> = {}): IntakeDeps {
   return {
     channel: {} as never,
     agent: {} as never,
-    sessions: {} as never,
+    workSessions: {} as never,
     workspaces: {} as never,
     activeRuns: {
       has: vi.fn(() => false),

@@ -22,7 +22,7 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
   const title = args.trim();
 
   if (!title) {
-    const current = ctx.sessions.titleFor(ctx.sessions.getRaw(ctx.scope)?.sessionId);
+    const current = ctx.workSessions.titleFor(ctx.workSessions.activeWorkSession(ctx.scope)?.currentSegmentId);
     await reply(
       ctx,
       current
@@ -33,7 +33,7 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
   }
 
   if (title === 'clear') {
-    const removed = ctx.sessions.clearTitle(ctx.scope);
+    const removed = ctx.workSessions.clearTitle(ctx.scope);
     await reply(ctx, removed ? '✅ 已清除当前会话标题。' : '当前会话本就没有标题。');
     return;
   }
@@ -45,7 +45,7 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
       await reply(ctx, '❌ 无法生成标题（会话内容太少或生成失败），请手动 `/rename <标题>`。');
       return;
     }
-    if (!ctx.sessions.setTitle(ctx.scope, generated)) {
+    if (!ctx.workSessions.setTitle(ctx.scope, generated)) {
       await reply(ctx, '❌ 当前还没有会话，先发一条消息再命名。');
       return;
     }
@@ -58,7 +58,7 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
     return;
   }
 
-  if (!ctx.sessions.setTitle(ctx.scope, title)) {
+  if (!ctx.workSessions.setTitle(ctx.scope, title)) {
     await reply(ctx, '❌ 当前还没有会话，先发一条消息再命名。');
     return;
   }
@@ -76,10 +76,10 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
  * means the generation prompt never lands in the main session file or gets
  * echoed back by the bridge. */
 async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null> {
-  const sess = ctx.sessions.getRaw(ctx.scope);
-  if (!sess?.sessionId) return null;
+  const active = ctx.workSessions.activeWorkSession(ctx.scope);
+  if (!active?.currentSegmentId) return null;
 
-  const messages = await loadRecentUserMessages(ctx, sess.sessionId);
+  const messages = await loadRecentUserMessages(ctx, active.currentSegmentId);
   if (messages.length === 0) return null;
   const list = messages.map((m, i) => `${i + 1}. ${summarize(m, 200)}`).join('\n');
 

@@ -13,7 +13,13 @@ let tmp: string | undefined;
 function ctxFor(workspaces: Record<string, string> = {}, titles: Record<string, string> = {}): CommandContext {
   return {
     workspaces: { listNamed: () => workspaces },
-    sessions: { titlesBySessionId: () => titles },
+    workSessions: {
+      allWorkSessions: () =>
+        Object.entries(titles).map(([sessionId, title]) => ({
+          title,
+          segments: [{ sessionId }],
+        })),
+    },
     controls: { cfg: {} },
   } as CommandContext;
 }

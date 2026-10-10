@@ -70,7 +70,7 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
     ...(s.lastMessage ?? s.summary ? { topic: s.lastMessage ?? s.summary } : {}),
   }));
 
-  const currentSessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
+  const currentSessionId = ctx.workSessions.activeWorkSession(ctx.scope)?.currentSegmentId;
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(
     ctx.channel,

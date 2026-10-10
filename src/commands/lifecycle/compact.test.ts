@@ -29,7 +29,7 @@ function makeCtx(overrides: {
     scope: 'oc_1',
     chatMode: 'p2p',
     workspaces: { cwdFor: () => overrides.cwd ?? '/repo' },
-    sessions: { resumeFor: () => overrides.sessionId },
+    workSessions: { resumeFor: () => overrides.sessionId },
     activeRuns: overrides.activeRuns ?? new ActiveRuns(),
     agent: { compactSession: overrides.compactSession },
     controls: {
@@ -198,7 +198,7 @@ describe('/compact command', () => {
     const compactSession = vi.fn(async () => undefined);
     let sessionId: string | undefined = 's1';
     const ctx = makeCtx({ activeRuns, compactSession, sessionId: 's1' });
-    ctx.sessions = { resumeFor: () => sessionId } as unknown as CommandContext['sessions'];
+    ctx.workSessions = { resumeFor: () => sessionId } as unknown as CommandContext['workSessions'];
     const run = { events: (async function* () {})(), stop: async () => {}, waitForExit: async () => true };
     activeRuns.register('oc_1', run);
 

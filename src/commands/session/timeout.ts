@@ -15,7 +15,7 @@ async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
     globalMinutes > 0 ? `${globalMinutes} 分钟` : '未启用';
 
   if (!trimmed) {
-    const scopeMinutes = ctx.sessions.getIdleTimeoutMinutes(ctx.scope);
+    const scopeMinutes = ctx.workSessions.getIdleTimeoutMinutes(ctx.scope);
     const usage =
       '\n\n用法:\n- `/timeout 15` 当前 session 设 15 分钟\n- `/timeout off` 当前 session 关闭探活\n- `/timeout default` 清除 session 覆盖,回退全局\n\n_注:`/new` 会清掉当前 session 的覆盖,回到全局_';
     if (scopeMinutes !== undefined) {
@@ -29,7 +29,7 @@ async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
   }
 
   if (trimmed === 'default') {
-    const cleared = ctx.sessions.clearIdleTimeoutOverride(ctx.scope);
+    const cleared = ctx.workSessions.clearIdleTimeoutOverride(ctx.scope);
     log.info('command', 'timeout-clear', { scope: ctx.scope, cleared });
     await reply(
       ctx,
@@ -41,7 +41,7 @@ async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
   }
 
   if (trimmed === 'off' || trimmed === '0') {
-    ctx.sessions.setIdleTimeoutMinutes(ctx.scope, 0);
+    ctx.workSessions.setIdleTimeoutMinutes(ctx.scope, 0);
     log.info('command', 'timeout-off', { scope: ctx.scope });
     await reply(ctx, '✅ 已关闭当前 session 的探活。');
     return;
@@ -52,7 +52,7 @@ async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
     await reply(ctx, '❌ 用法:`/timeout <1-120>` / `/timeout off` / `/timeout default`');
     return;
   }
-  ctx.sessions.setIdleTimeoutMinutes(ctx.scope, n);
+  ctx.workSessions.setIdleTimeoutMinutes(ctx.scope, n);
   log.info('command', 'timeout-set', { scope: ctx.scope, minutes: n });
   await reply(ctx, `✅ 当前 session 探活已设为 ${n} 分钟。`);
 }

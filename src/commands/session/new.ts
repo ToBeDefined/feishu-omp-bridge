@@ -22,7 +22,7 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   }
 
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
-  ctx.sessions.clear(ctx.scope);
+  ctx.workSessions.dropCurrentSegment(ctx.scope);
   // A new session invalidates any pending /ws undo: rolling back would also
   // clear the session the user just started.
   ctx.workspaces.clearUndo(ctx.scope);
@@ -32,7 +32,7 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     model: getOmpModel(ctx.controls.cfg),
     thinking: getOmpThinking(ctx.controls.cfg),
     idleLine: formatIdleLine(
-      ctx.sessions.getIdleTimeoutMinutes(ctx.scope),
+      ctx.workSessions.getIdleTimeoutMinutes(ctx.scope),
       globalMs ? Math.round(globalMs / 60_000) : 0,
     ),
     wasRunning,

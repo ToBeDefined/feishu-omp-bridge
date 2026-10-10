@@ -3,7 +3,7 @@ import type { LarkChannel } from '@larksuiteoapi/node-sdk';
 import { streamCardPages } from './batch';
 import type { AgentEvent } from '../agent/types';
 import type { RunHandle } from './active-runs';
-import type { SessionStore } from '../session/store';
+import type { WorkSessionStore } from '../session/work-store';
 import { countTables } from '../card/tables';
 
 /** A 2-column GFM table tagged so tests can tell tables apart. */
@@ -69,7 +69,7 @@ describe('streamCardPages', () => {
     ];
 
     await streamCardPages(
-      channel, 'oc_x', {}, fakeHandle(events), {} as unknown as SessionStore, 'oc_x', '/tmp',
+      channel, 'oc_x', {}, fakeHandle(events), {} as unknown as WorkSessionStore, 'oc_x', '/tmp',
       undefined, undefined, (s) => s,
     );
 
@@ -110,7 +110,7 @@ describe('streamCardPages', () => {
     ];
 
     await streamCardPages(
-      channel, 'oc_x', {}, fakeHandle(events), {} as unknown as SessionStore, 'oc_x', '/tmp',
+      channel, 'oc_x', {}, fakeHandle(events), {} as unknown as WorkSessionStore, 'oc_x', '/tmp',
       undefined, undefined, (s) => s,
     );
 

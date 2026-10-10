@@ -2,6 +2,24 @@ import { describe, expect, it } from 'vitest';
 import type { CommandContext } from './index';
 import { extractUserInput, renderContext } from './session';
 
+const ULID = '019f0000-0000-7000-0000-000000000000';
+
+/** A WorkSession stub with the current segment set (what /ctx reads). */
+function workSession(
+  over: { sessionId?: string; cwd?: string; createdAtMs?: number; lastActiveAtMs?: number } = {},
+): Record<string, unknown> {
+  const sessionId = over.sessionId ?? ULID;
+  return {
+    id: sessionId,
+    scope: 'oc_1',
+    cwd: over.cwd ?? '/x',
+    ...(over.createdAtMs !== undefined ? { createdAtMs: over.createdAtMs } : {}),
+    ...(over.lastActiveAtMs !== undefined ? { lastActiveAtMs: over.lastActiveAtMs } : {}),
+    currentSegmentId: sessionId,
+    segments: [],
+  };
+}
+
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
   return {
     channel: {} as never,
@@ -21,8 +39,8 @@ function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
     },
     scope: 'oc_1',
     chatMode: 'p2p',
-    sessions: {
-      getRaw: () => ({ sessionId: '019f0000-0000-7000-0000-000000000000', cwd: '/x', updatedAt: 0 }),
+    workSessions: {
+      activeWorkSession: () => workSession(),
       titleFor: () => undefined,
       getIdleTimeoutMinutes: () => undefined,
     } as never,
@@ -91,8 +109,8 @@ describe('renderContext', () => {
   it('shows the session title when set', () => {
     const titled = renderContext(
       makeCtx({
-        sessions: {
-          getRaw: () => ({ sessionId: 's1', cwd: '/x', updatedAt: 0 }),
+        workSessions: {
+          activeWorkSession: () => workSession({ sessionId: 's1' }),
           titleFor: (id?: string) => (id === 's1' ? '修搜索' : undefined),
           getIdleTimeoutMinutes: () => undefined,
         } as never,
@@ -109,8 +127,8 @@ describe('renderContext', () => {
     expect(recent).toContain('最后对话');
     const fresh = renderContext(
       makeCtx({
-        sessions: {
-          getRaw: () => ({ sessionId: '019f0000-0000-7000-0000-000000000000', cwd: '/x', updatedAt: Date.now() }),
+        workSessions: {
+          activeWorkSession: () => workSession({ lastActiveAtMs: Date.now() }),
           titleFor: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
@@ -120,8 +138,8 @@ describe('renderContext', () => {
     // No session → new conversation
     const none = renderContext(
       makeCtx({
-        sessions: {
-          getRaw: () => undefined,
+        workSessions: {
+          activeWorkSession: () => undefined,
           titleFor: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
@@ -133,13 +151,8 @@ describe('renderContext', () => {
   it('shows conversation start time', () => {
     const started = renderContext(
       makeCtx({
-        sessions: {
-          getRaw: () => ({
-            sessionId: '019f0000-0000-7000-0000-000000000000',
-            cwd: '/x',
-            updatedAt: Date.now(),
-            createdAt: Date.now(),
-          }),
+        workSessions: {
+          activeWorkSession: () => workSession({ lastActiveAtMs: Date.now(), createdAtMs: Date.now() }),
           titleFor: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,

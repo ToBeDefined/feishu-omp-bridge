@@ -49,7 +49,7 @@ async function compactIdle(
 
   try {
     const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
-    const sessionId = ctx.sessions.resumeFor(ctx.scope, cwd);
+    const sessionId = ctx.workSessions.resumeFor(ctx.scope, cwd);
     if (!sessionId) {
       if (!opts.silentIfMissing) {
         await reply(ctx, '⚠️ 当前没有可压缩的会话（先发起一次对话）。');

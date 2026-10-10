@@ -8,6 +8,7 @@ import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
 import { codeSpan } from '../../utils/text';
 import { extractUserInput, scanSessionFile } from './context';
 import { applyResume, listResumableSessions } from './resume';
+import { titlesBySegment } from './sessions';
 import {
   renderSearchContext,
   searchDetailCard,
@@ -68,7 +69,7 @@ export async function searchSession(
 ): Promise<SearchContext[]> {
   const needle = keyword.toLowerCase();
   const contexts: Array<SearchContext & { groupKey: string }> = [];
-  const sessionTitles = ctx.sessions?.titlesBySessionId?.() ?? {};
+  const sessionTitles = titlesBySegment(ctx);
   let names: string[] = [];
   try {
     names = (await readdir(getOmpSessionDir(ctx.controls.cfg))).filter((n) => n.endsWith('.jsonl'));
@@ -220,14 +221,14 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       await applyResume(ctx, match);
       return;
     }
-    const sess = ctx.sessions.getRaw(ctx.scope);
-    if (!sess?.sessionId) {
+    const active = ctx.workSessions.activeWorkSession(ctx.scope);
+    if (!active?.currentSegmentId) {
       await reply(ctx, '当前没有可继续的会话。');
       return;
     }
     await applyResume(ctx, {
-      sessionId: sess.sessionId,
-      cwd: sess.cwd ?? homedir(),
+      sessionId: active.currentSegmentId,
+      cwd: active.cwd || homedir(),
       timestamp: '',
     });
     return;

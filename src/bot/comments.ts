@@ -4,7 +4,7 @@ import type { AgentAdapter } from '../agent/types';
 import type { AppConfig } from '../config/schema';
 import { isUserAllowed } from '../config/schema';
 import { log } from '../core/logger';
-import type { SessionStore } from '../session/store';
+import type { WorkSessionStore } from '../session/work-store';
 import type { WorkspaceStore } from '../workspace/store';
 import { addCommentReaction, removeCommentReaction } from './reaction';
 
@@ -12,7 +12,7 @@ export interface CommentDeps {
   channel: LarkChannel;
   evt: CommentEvent;
   agent: AgentAdapter;
-  sessions: SessionStore;
+  workSessions: WorkSessionStore;
   workspaces: WorkspaceStore;
   cfg: AppConfig;
 }
@@ -70,7 +70,7 @@ interface CommentContext {
  * a reply in the same comment thread.
  */
 export async function handleCommentMention(deps: CommentDeps): Promise<void> {
-  const { channel, evt, agent, sessions, workspaces } = deps;
+  const { channel, evt, agent, workSessions, workspaces } = deps;
   // Log every comment event we receive, regardless of whether we'll act on it.
   // `mentionedBot` and `replyId` here let us tell apart top-level comments
   // from thread replies (the latter requires SDK ≥ 1.65.0-alpha.0).
@@ -139,7 +139,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   let reactionAdded = false;
   try {
     const cwd = workspaces.cwdFor(synthChatId) ?? homedir();
-    const resumeFrom = sessions.resumeFor(synthChatId, cwd);
+    const resumeFrom = workSessions.resumeFor(synthChatId, cwd);
     log.info('comment', 'session', { synthChatId, resumeFrom: resumeFrom ?? null, cwd });
 
     // Cloud-doc comments have no streaming UI — the user just sees their
@@ -163,7 +163,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
           case 'system':
             if (e.sessionId) {
               const effectiveCwd = e.cwd ?? cwd;
-              sessions.set(synthChatId, e.sessionId, effectiveCwd);
+              workSessions.bindSegment(synthChatId, e.sessionId, effectiveCwd);
             }
             break;
           case 'error':

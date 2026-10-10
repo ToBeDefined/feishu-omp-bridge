@@ -23,21 +23,21 @@ export function collectContextInfo(
   summary: { lastMessage?: string; lastReply?: string } = {},
 ): ContextInfo {
   const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
-  const sess = ctx.sessions.getRaw(ctx.scope);
+  const active = ctx.workSessions.activeWorkSession(ctx.scope);
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
   return {
     scope: ctx.scope,
     chatMode: ctx.chatMode,
     cwd,
-    sessionId: sess?.sessionId,
-    sessionTitle: ctx.sessions.titleFor(sess?.sessionId),
-    createdAt: sess?.createdAt,
-    updatedAt: sess?.updatedAt,
+    sessionId: active?.currentSegmentId,
+    sessionTitle: ctx.workSessions.titleFor(active?.currentSegmentId),
+    createdAt: active?.createdAtMs,
+    updatedAt: active?.lastActiveAtMs,
     running: ctx.activeRuns.has(ctx.scope),
     model: getOmpModel(ctx.controls.cfg),
     thinking: getOmpThinking(ctx.controls.cfg),
     idleLine: formatIdleLine(
-      ctx.sessions.getIdleTimeoutMinutes(ctx.scope),
+      ctx.workSessions.getIdleTimeoutMinutes(ctx.scope),
       globalMs ? Math.round(globalMs / 60_000) : 0,
     ),
     wsNames: Object.entries(ctx.workspaces.listNamed())
@@ -53,11 +53,11 @@ export function renderContext(
 ): string {
   const info = collectContextInfo(ctx, summary);
   const cwd = info.cwd;
-  const sess = ctx.sessions.getRaw(ctx.scope);
+  const active = ctx.workSessions.activeWorkSession(ctx.scope);
   const running = info.running;
   const scopeLine =
     ctx.chatMode === 'topic' ? `\`${ctx.scope}\`（话题独立会话）` : `\`${ctx.scope}\``;
-  const sessionLine = sess?.sessionId ? `\`${sess.sessionId}\`` : '（无，下条消息新建）';
+  const sessionLine = active?.currentSegmentId ? `\`${active.currentSegmentId}\`` : '（无，下条消息新建）';
   const runningLine = running ? '有任务正在执行' : '空闲，等待指令';
   const modelLine = info.model ? `\`${info.model}\`` : '跟随 OMP 默认';
   const thinkingLine = info.thinking ? `\`${info.thinking}\`` : '跟随 OMP 默认';
@@ -80,8 +80,8 @@ export function renderContext(
     `📁 **工作目录**: \`${cwd}\``,
     `🧠 **会话 ID**: ${sessionLine}`,
     info.sessionTitle ? `🏷 **标题**: \`${info.sessionTitle}\`` : '',
-    `🕒 **开始对话**: ${formatClockOr(sess?.createdAt, '（无，新会话）')}`,
-    `🕘 **最后对话**: ${formatAgoOr(sess?.updatedAt, '（无，新会话）')}`,
+    `🕒 **开始对话**: ${formatClockOr(active?.createdAtMs, '（无，新会话）')}`,
+    `🕘 **最后对话**: ${formatAgoOr(active?.lastActiveAtMs, '（无，新会话）')}`,
     lastMsgLine,
     lastReplyLine,
     `⚙️ **任务状态**: ${runningLine}`,
@@ -190,10 +190,10 @@ export async function loadSessionSummary(
 }
 
 async function handleContext(_args: string, ctx: CommandContext): Promise<void> {
-  const sess = ctx.sessions.getRaw(ctx.scope);
+  const active = ctx.workSessions.activeWorkSession(ctx.scope);
   let summary = { lastMessage: '', lastReply: '' };
-  if (sess?.sessionId) {
-    summary = await loadSessionSummary(ctx, sess.sessionId);
+  if (active?.currentSegmentId) {
+    summary = await loadSessionSummary(ctx, active.currentSegmentId);
   }
   const card = contextCard(collectContextInfo(ctx, summary));
   await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });

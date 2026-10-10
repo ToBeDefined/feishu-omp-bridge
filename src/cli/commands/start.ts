@@ -25,7 +25,6 @@ import {
 } from '../../config/store';
 import { gcOldLogs, log } from '../../core/logger';
 import { kickstart } from '../../daemon/launchd';
-import { restartCard } from '../../card/templates';
 import { finalizeInterruptedCards, updateManagedCard } from '../../card/managed';
 import { takeOnlineNotice } from '../../bot/online-notify';
 import { gcMediaCache, MEDIA_GC_MAX_AGE_MS } from '../../media/cache';
@@ -267,40 +266,25 @@ export async function runStart(opts: StartOptions): Promise<void> {
 
   // Startup notices are opt-in. `/release` already leaves its final
   // 「🚀 已发布上线」 card, so ordinary boots and release boots stay silent;
-  // only `/restart` writes mode=notify for its requesting chat.
+  // only `/restart` requests one, and even then the tracked restart card is
+  // finalized below — the text notice is just the no-card fallback.
   const notice = await takeOnlineNotice();
-  const notifyTargets: string[] =
-    notice?.mode === 'notify' ? [notice.chatId] : [];
 
-  // Crash recovery: managed cards left in-flight by the previous process get
-  // finalized so interrupted replies don't linger with a ⏹ button. The
-  // /restart card is EXCLUDED — it has its own recovery path below.
-  await finalizeInterruptedCards(bridge.channel, notice?.messageId).catch((err) =>
-    log.warn('notify', 'interrupted-finalize-failed', { err: String(err) }),
-  );
+  // Crash/restart recovery: every card the previous process left in flight is
+  // finalized ACCORDING TO ITS KIND (restart → 「重启完成」, streaming reply →
+  // content preserved + interruption note, release → interrupted, form →
+  // expired).
+  const finalizedRestart = await finalizeInterruptedCards(bridge.channel).catch((err) => {
+    log.warn('notify', 'interrupted-finalize-failed', { err: String(err) });
+    return false;
+  });
 
-  if (notice?.mode === 'notify' && notice.messageId) {
-    // /restart: patch the restart card in place via message.patch (works even
-    // though the new process has no byMessageId entry for it).
-    try {
-      await bridge.channel.rawClient.im.v1.message.patch({
-        path: { message_id: notice.messageId },
-        data: { content: JSON.stringify(restartCard('done')) },
-      });
-      log.info('notify', 'restart-card-updated', { chatId: notice.chatId, messageId: notice.messageId });
-    } catch (err) {
-      log.warn('notify', 'restart-card-update-failed', { messageId: notice.messageId, err: String(err) });
-      await bridge.channel.send(notice.chatId, { markdown: '🚀 **已上线**' }, {});
-    }
-  } else {
-    for (const chatId of notifyTargets) {
-      try {
-        await bridge.channel.send(chatId, { markdown: '🚀 **已上线**' }, {});
-        log.info('notify', 'online', { chatId });
-      } catch (err) {
-        log.warn('notify', 'online-failed', { chatId, err: err instanceof Error ? err.message : String(err) });
-      }
-    }
+  if (notice?.mode === 'notify' && !finalizedRestart) {
+    // /restart requested a notice but no restart card was recovered (e.g. the
+    // card was never created) — fall back to a text confirmation.
+    await bridge.channel.send(notice.chatId, { markdown: '🚀 **已上线**' }, {}).catch((err) => {
+      log.warn('notify', 'online-failed', { chatId: notice.chatId, err: String(err) });
+    });
   }
   process.on('SIGINT', () => void stop('SIGINT'));
   process.on('SIGTERM', () => void stop('SIGTERM'));

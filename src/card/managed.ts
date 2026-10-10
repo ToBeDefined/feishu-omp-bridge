@@ -2,11 +2,19 @@ import type { LarkChannel } from '@larksuiteoapi/node-sdk';
 import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
+import { restartCard } from './templates';
 
 interface ManagedEntry {
   cardId: string;
   sequence: number;
 }
+
+/**
+ * What the card was for. Recorded so the next boot can decide how to finish
+ * it: a `/restart` card must become「重启完成」, a streaming reply must keep
+ * its content and be marked interrupted, etc.
+ */
+export type RunningCardKind = 'stream' | 'release' | 'restart' | 'form';
 
 /**
  * Card left in-flight when the process died. `card` is the LAST rendered
@@ -19,6 +27,7 @@ interface PersistedRunningCard {
   /** Empty for streaming cards (they patch via the message API, not cardkit). */
   cardId: string;
   chatId: string;
+  kind: RunningCardKind;
   card?: object;
 }
 
@@ -53,7 +62,7 @@ export async function sendManagedCard(
   chatId: string,
   card: object,
   replyTo?: string,
-  opts: { track?: boolean } = {},
+  opts: { track?: boolean; kind?: RunningCardKind } = {},
 ): Promise<ManagedCardSendResult> {
   const created = await channel.rawClient.cardkit.v1.card.create({
     data: { type: 'card_json', data: JSON.stringify(card) },
@@ -85,7 +94,7 @@ export async function sendManagedCard(
   byMessageId.set(messageId, { cardId, sequence: 0 });
   if (opts.track) {
     tracked.add(messageId);
-    void upsertRunningCard({ messageId, cardId, chatId, card });
+    void upsertRunningCard({ messageId, cardId, chatId, kind: opts.kind ?? 'form', card });
   }
   // ponytail: cap at 200; streaming run cards don't use this map. Forms
   // forget on settle; leftovers are abandoned clicks / agent cards.
@@ -202,31 +211,50 @@ async function removeFromRunningCards(messageId: string): Promise<void> {
 }
 
 /**
- * Called once at boot: cards still in-flight from the previous process get
- * finalized as interrupted, so crash-interrupted replies don't linger with a
- * live ⏹ button. The LAST PERSISTED SNAPSHOT is replayed with its
- * running-state chrome stripped — everything the user already saw survives.
+ * Called once at boot: cards still in-flight from the previous process are
+ * finalized according to their KIND —
+ *   restart → 「🚀 重启完成」(the restart we were asked to perform finished)
+ *   stream  → replay the last snapshot minus running chrome + interruption note
+ *   release → 「⚠️ 发布被中断」
+ *   form    → 「此卡片已过期」
+ * Returns true when a `/restart` card was finalized (the caller then skips the
+ * separate「已上线」text notice).
  */
-export async function finalizeInterruptedCards(
-  channel: LarkChannel,
-  excludeMessageId?: string,
-): Promise<void> {
+export async function finalizeInterruptedCards(channel: LarkChannel): Promise<boolean> {
   const leftovers = await readRunningCards();
   await unlink(paths.runningCardsFile).catch(() => {});
-  for (const { messageId, card } of leftovers) {
-    if (messageId === excludeMessageId) continue;
+  let finalizedRestart = false;
+  for (const { messageId, kind, card } of leftovers) {
     if (!messageId || messageId === 'om_sent' || !messageId.startsWith('om_')) continue;
     try {
-      const finalCard = card ? stripRunningState(card) : interruptedCard();
+      const finalCard = finalizeByKind(kind, card);
       await channel.rawClient.im.v1.message.patch({
         path: { message_id: messageId },
         data: { content: JSON.stringify(finalCard) },
       });
-      log.info('card', 'interrupted-finalized', { messageId, hadSnapshot: Boolean(card) });
+      if (kind === 'restart') finalizedRestart = true;
+      log.info('card', 'interrupted-finalized', { messageId, kind, hadSnapshot: Boolean(card) });
     } catch (err) {
-      log.warn('card', 'interrupted-finalize-failed', { messageId, err: String(err) });
+      log.warn('card', 'interrupted-finalize-failed', { messageId, kind, err: String(err) });
     }
   }
+  return finalizedRestart;
+}
+
+/** Terminal card for a leftover entry, by kind. */
+export function finalizeByKind(kind: RunningCardKind, card: object | undefined): object {
+  if (kind === 'restart') return restartCard('done');
+  if (kind === 'release') return noteCard('⚠️ **发布被中断，进程在构建/重启期间退出。**');
+  if (kind === 'form') return noteCard('_⚠️ 此卡片已过期，请使用最新发出的卡片。_');
+  return card ? stripRunningState(card) : noteCard('⚠️ **进程在回复期间重启，本条回复未完成。**');
+}
+
+function noteCard(content: string): object {
+  return {
+    schema: '2.0',
+    config: { update_multi: true },
+    body: { elements: [{ tag: 'markdown', content }] },
+  };
 }
 
 /**
@@ -256,24 +284,12 @@ function isRunningStateElement(el: unknown): boolean {
   return json.includes('"cmd":"stop"') || json.includes('⏹') || /正在(思考|调用工具|输出)/.test(json);
 }
 
-function interruptedCard(): object {
-  return {
-    schema: '2.0',
-    config: { update_multi: true },
-    body: {
-      elements: [
-        { tag: 'markdown', content: '⚠️ **进程在回复期间重启，本条回复未完成。**' },
-      ],
-    },
-  };
-}
-
 /**
  * Register a streaming reply card (created via channel.stream) for crash
  * recovery. Streaming cards patch via the message API, so cardId stays empty.
  */
 export function rememberStreamingCard(messageId: string, chatId: string, card?: object): void {
-  void upsertRunningCard({ messageId, cardId: '', chatId, ...(card ? { card } : {}) });
+  void upsertRunningCard({ messageId, cardId: '', chatId, kind: 'stream', ...(card ? { card } : {}) });
 }
 
 /** Refresh a streaming card's persisted snapshot (called on every render). */

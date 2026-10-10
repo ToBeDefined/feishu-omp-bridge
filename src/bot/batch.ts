@@ -111,7 +111,7 @@ function createUiHooks(opts: {
           chatId,
           renderOmpUiRequestCard(request, scope),
           replyToMessageId,
-          { track: true },
+          { track: true, kind: 'form' },
         );
         cards.set(request.id, { messageId: sent.messageId, title: request.title });
         // Auto-cancel on timeout: while OMP waits for UI input the idle

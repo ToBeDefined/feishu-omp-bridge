@@ -37,6 +37,7 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
     if (!messageId) {
       const sent = await sendManagedCard(ctx.channel, ctx.msg.chatId, card, ctx.msg.messageId, {
         track: true,
+        kind: 'release',
       });
       messageId = sent.messageId;
     } else {

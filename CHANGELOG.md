@@ -48,6 +48,14 @@
   1000 字符、禁交互、写审计日志。
 
 ### Fixed
+- **`/rename` 的标题跟着 chat 跑，`/ctx` 与 `/history` 张冠李戴**：标题原先存在
+  sessions.json 的 chat 条目上（`SessionEntry.title`），谁被绑定就显示谁 ——
+  在 A 会话起的名字，`/resume` / `/history 继续对话` 到 B 会话后会在 B 的
+  `/ctx` 与 `/history` 行上显示；`set()` 还会把上一个绑定的 `createdAt` 一起
+  带过来，恢复旧会话后「开始对话」显示的是上一次绑定的时间。现在标题按
+  session id 归属（换会话不继承、切回来仍在、`/new` 后仍留在 /history），
+  `/resume` 与「继续对话」写入被恢复会话自己的开始/最后活跃时间，`/rename`
+  在没有会话时明确报错；旧文件的 chat 级标题在加载时迁移到其绑定的会话。
 - **卡片流式更新触发飞书频率限制（230020）**：卡片更新原先不限速，快速
   流式输出时对同一条消息的 patch 频率超限（"Update the single messages
   too frequently"），整轮回复被「⚠️ 卡片渲染中断」兜底卡取代。现在同卡

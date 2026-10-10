@@ -158,8 +158,11 @@ function renderProcessRun(items: ProcessItem[], tables: TableBudget): object {
     0,
   );
   const suffix = failed > 0 ? `（${failed} 失败）` : '';
+  // The failure count belongs to the tool calls, so it must sit right after
+  // their count — trailing it after the thinking count read as if the
+  // reasoning had failed.
   return collapsiblePanel({
-    title: `🛠 **工具调用** ×${toolCount} · 🧠 **思考过程** ×${thinkingCount}${suffix}`,
+    title: `🛠 **工具调用** ×${toolCount}${suffix} · 🧠 **思考过程** ×${thinkingCount}`,
     expanded: false,
     border: failed > 0 ? 'red' : 'grey',
     elements: items.flatMap((it) =>

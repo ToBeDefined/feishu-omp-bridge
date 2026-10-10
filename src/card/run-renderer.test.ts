@@ -146,7 +146,8 @@ describe('renderCard', () => {
       expanded: false,
       border: { color: 'red' },
       header: {
-        title: { content: expect.stringContaining('工具调用** ×3 · 🧠 **思考过程** ×1') },
+        // The failure count trails the TOOL count, not the thinking count.
+        title: { content: '🛠 **工具调用** ×3（1 失败） · 🧠 **思考过程** ×1' },
       },
       elements: [
         // Chronological inside: the thinking segment came before the calls.
@@ -156,7 +157,6 @@ describe('renderCard', () => {
         { tag: 'collapsible_panel', header: { title: { content: expect.stringContaining('⏳ **Bash**') } } },
       ],
     });
-    expect(JSON.stringify(panels[0])).toContain('（1 失败）');
     // Inner calls keep their merged single-layer body (input + output together;
     // the failed call renders its **Error** fence).
     const groupJson = JSON.stringify(panels[0]);

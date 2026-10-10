@@ -6,7 +6,7 @@ import { paths } from '../../config/paths';
 import { shortPath } from '../../card/templates';
 import type { CommandContext } from '../index';
 import { handleHistory } from './history';
-import { listSessions } from './sessions';
+import { listWorkSessions, scanSessionFiles } from './sessions';
 import { applyResume } from './resume';
 import { renderContext } from './context';
 import { WorkSessionStore } from '../../session/work-store';
@@ -103,11 +103,24 @@ function makeCtx(over: Partial<Record<string, unknown>> = {}): {
       setCwd: spy.setCwd,
     },
     workSessions: {
-      // listSessions builds its segmentId→title map from this.
-      allWorkSessions: () => [{ title: '命名的会话', segments: [{ sessionId: 's1' }] }],
+      // listWorkSessions folds each work session's segments into one row; the
+      // raw scanSessionFiles still maps segmentId→title from here.
+      allWorkSessions: () => [
+        {
+          id: 's1',
+          scope: 'oc_1',
+          title: '命名的会话',
+          cwd: tmp,
+          createdAtMs: 0,
+          lastActiveAtMs: 0,
+          segments: [{ sessionId: 's1', cwd: tmp, startedAtMs: 0, lastActiveAtMs: 0 }],
+        },
+      ],
       titleFor: (id?: string) => (id === 's1' ? '命名的会话' : undefined),
       activeWorkSession: () =>
-        spy.currentSessionId ? { currentSegmentId: spy.currentSessionId, cwd: tmp } : undefined,
+        spy.currentSessionId
+          ? { id: spy.currentSessionId, currentSegmentId: spy.currentSessionId, cwd: tmp }
+          : undefined,
       chats: () => ['oc_1'],
       bindSegment: spy.bindSegment,
       // renderContext reads the scope's idle-timeout override.
@@ -139,7 +152,7 @@ function cardJson(): string {
   return JSON.stringify(sentCard());
 }
 
-describe('listSessions', () => {
+describe('scanSessionFiles', () => {
   it('reads every session, counts real turns, and sorts by activity', async () => {
     await writeSession('a.jsonl', { id: 's1', cwd: '/repo/a', ts: '2026-01-01T00:00:00Z' }, 3, Date.now() - 7_200_000);
     await writeSession('b.jsonl', { id: 's2', cwd: '/repo/b', ts: '2026-02-01T00:00:00Z' }, 1, Date.now() - 60_000);
@@ -147,7 +160,7 @@ describe('listSessions', () => {
     await writeFile(join(tmp, 'broken.jsonl'), '{"type":"session"}\n', 'utf8');
     await writeFile(join(tmp, 'notes.txt'), 'ignored', 'utf8');
 
-    const sessions = await listSessions(makeCtx().ctx);
+    const sessions = await scanSessionFiles(makeCtx().ctx);
     expect(sessions.map((s) => s.sessionId)).toEqual(['s2', 's1']);
     expect(sessions.find((s) => s.sessionId === 's1')).toMatchObject({
       cwd: '/repo/a',
@@ -157,6 +170,72 @@ describe('listSessions', () => {
       summary: '回答 2',
       lastMessage: 'A 问题 2',
     });
+  });
+});
+
+describe('listWorkSessions', () => {
+  it('aggregates a 3-segment work session into one row (turns summed)', async () => {
+    await writeSession('g1.jsonl', { id: 'ws-1', cwd: tmp, ts: '2026-03-01T00:00:00Z' }, 2, Date.now() - 300_000);
+    await writeSession('g2.jsonl', { id: 'seg-2', cwd: tmp, ts: '2026-03-02T00:00:00Z' }, 3, Date.now() - 200_000);
+    await writeSession('g3.jsonl', { id: 'seg-3', cwd: tmp, ts: '2026-03-03T00:00:00Z' }, 4, Date.now() - 100_000);
+    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    await store.load();
+    store.bindSegment('oc_1', 'ws-1', tmp, { startedAtMs: 1_000, lastActiveAtMs: 1_000 });
+    store.bindSegment('oc_1', 'seg-2', tmp, { startedAtMs: 2_000, lastActiveAtMs: 2_000 });
+    store.bindSegment('oc_1', 'seg-3', tmp, { startedAtMs: 3_000, lastActiveAtMs: 3_000 });
+
+    const rows = await listWorkSessions(makeCtx({ workSessions: store }).ctx);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ workSessionId: 'ws-1', segmentCount: 3, turns: 9 });
+    expect(rows[0]!.segments.map((s) => s.sessionId)).toEqual(['ws-1', 'seg-2', 'seg-3']);
+    // 最后活动 = max（工作会话自身、各段文件 mtime）
+    expect(rows[0]!.lastActiveAtMs).toBeGreaterThanOrEqual(Date.now() - 300_000);
+    await store.flush();
+  });
+
+  it('gives a file no work session claims its own row (workSessionId = sessionId)', async () => {
+    await writeSession('orphan.jsonl', { id: 'orphan-1', cwd: tmp, ts: '2026-04-01T00:00:00Z' }, 5, Date.now() - 50_000);
+    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    await store.load();
+
+    const rows = await listWorkSessions(makeCtx({ workSessions: store }).ctx);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      workSessionId: 'orphan-1',
+      segmentCount: 1,
+      turns: 5,
+      cwd: tmp,
+      scope: null,
+    });
+    await store.flush();
+  });
+
+  it('sorts rows by last activity, newest first', async () => {
+    await writeSession('old.jsonl', { id: 'old-ws', cwd: tmp, ts: '2026-01-01T00:00:00Z' }, 1, Date.now() - 900_000);
+    await writeSession('new.jsonl', { id: 'new-ws', cwd: tmp, ts: '2026-01-02T00:00:00Z' }, 1, Date.now() - 10_000);
+    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    await store.load();
+    store.bindSegment('oc_1', 'old-ws', tmp, { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.startWorkSession('oc_1'); // /work: the next segment opens a new work session
+    store.bindSegment('oc_1', 'new-ws', tmp, { startedAtMs: 2, lastActiveAtMs: 2 });
+
+    const rows = await listWorkSessions(makeCtx({ workSessions: store }).ctx);
+    expect(rows.map((r) => r.workSessionId)).toEqual(['new-ws', 'old-ws']);
+    await store.flush();
+  });
+
+  it("keeps a work session's declared segment count when a segment file is gone", async () => {
+    await writeSession('keep.jsonl', { id: 'ws-k', cwd: tmp, ts: '2026-05-01T00:00:00Z' }, 2, Date.now() - 100_000);
+    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    await store.load();
+    store.bindSegment('oc_1', 'ws-k', tmp, { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.bindSegment('oc_1', 'gone-seg', tmp, { startedAtMs: 2, lastActiveAtMs: 2 });
+
+    const rows = await listWorkSessions(makeCtx({ workSessions: store }).ctx);
+    const row = rows.find((r) => r.workSessionId === 'ws-k');
+    expect(row).toMatchObject({ segmentCount: 2, turns: 2 });
+    expect(row!.segments.map((s) => s.sessionId)).toEqual(['ws-k']);
+    await store.flush();
   });
 });
 
@@ -194,6 +273,26 @@ describe('/history', () => {
       'oc_1',
       expect.anything(),
     );
+  });
+
+  it('filters by the work session cwd, not an older segment cwd', async () => {
+    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    await store.load();
+    // Cross-directory work session: an old segment lived in /repo/old, the
+    // latest one lives in the current workspace (tmp).
+    store.bindSegment('oc_1', 'cross-ws', '/repo/old', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.bindSegment('oc_1', 'seg-new', tmp, { startedAtMs: 2, lastActiveAtMs: 2 });
+    await writeSession('cross1.jsonl', { id: 'cross-ws', cwd: '/repo/old', ts: '2026-01-01T00:00:00Z' }, 1, Date.now() - 100_000, 'OLD');
+    await writeSession('cross2.jsonl', { id: 'seg-new', cwd: tmp, ts: '2026-01-02T00:00:00Z' }, 2, Date.now() - 50_000, 'NEW');
+
+    await handleHistory('', makeCtx({ workSessions: store }).ctx);
+    const card = cardJson();
+    // The cross-dir work session is kept (its LATEST segment is here) even
+    // though its first segment's cwd is elsewhere...
+    expect(card).toContain('🧵 2 段');
+    expect(card).toContain('NEW 问题 1');
+    expect(card).not.toContain('OLD 问题 0');
+    await store.flush();
   });
 
   it('lists every workspace with /history all, labelled per row', async () => {
@@ -291,7 +390,7 @@ describe('/history', () => {
 
   it('marks the scope own session in the listing', async () => {
     const { ctx, spy } = makeCtx();
-    // currentSessionId is what the card uses to skip a no-op resume button.
+    // currentWorkSessionId is what the card uses to skip a no-op resume button.
     spy.currentSessionId = 's3';
     await handleHistory('all', ctx);
     expect(cardJson()).toContain('✅ 当前');

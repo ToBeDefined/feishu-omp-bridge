@@ -5,9 +5,10 @@ const NOW = Date.now();
 
 function row(over: Partial<HistoryRow> = {}): HistoryRow {
   return {
-    sessionId: '019f9432-b808-7000-8bf4-073defc52637',
+    workSessionId: '019f9432-b808-7000-8bf4-073defc52637',
     updatedAtMs: NOW - 3_600_000,
     turns: 12,
+    segmentCount: 1,
     workspace: 'bridge',
     ...over,
   };
@@ -73,7 +74,7 @@ describe('historyCard', () => {
     // inside the row's column, so every row showed its title twice.
     const rows = [
       row({ title: '会话 UI 优化' }),
-      row({ sessionId: 'x'.repeat(26), topic: '看下 FC1 在做什么' }),
+      row({ workSessionId: 'x'.repeat(26), topic: '看下 FC1 在做什么' }),
     ];
     const card = historyCard(rows, { mode: 'all', offset: 0, total: 2 });
     const text = JSON.stringify(card);
@@ -85,7 +86,7 @@ describe('historyCard', () => {
   });
 
   it("shows each row's workspace only in all-mode", () => {
-    const rows = [row({ workspace: 'bridge' }), row({ sessionId: 's2', workspace: '/tmp/other' })];
+    const rows = [row({ workspace: 'bridge' }), row({ workSessionId: 's2', workspace: '/tmp/other' })];
     const all = JSON.stringify(historyCard(rows, { mode: 'all', offset: 0, total: 2 }));
     expect(all).toContain('📁 bridge');
     expect(all).toContain('📁 /tmp/other');
@@ -94,7 +95,7 @@ describe('historyCard', () => {
 
   it('pages 8 rows per card and points the pager at the right offset', () => {
     const rows = Array.from({ length: 20 }, (_, i) =>
-      row({ sessionId: `019f9432-0000-7000-8bf4-${String(i).padStart(12, '0')}` }),
+      row({ workSessionId: `019f9432-0000-7000-8bf4-${String(i).padStart(12, '0')}` }),
     );
     const first = historyCard(rows, { mode: 'all', offset: 0, total: 20 });
     expect(buttonValues(first)).toEqual([{ cmd: 'history.page', arg: `all ${HISTORY_PAGE_SIZE}` }]);
@@ -118,13 +119,13 @@ describe('historyCard', () => {
   });
 
   it('has no pager on a single short page and says where to go instead', () => {
-    const card = historyCard([row(), row({ sessionId: 's2' })], { mode: 'cwd', offset: 0, total: 2 });
+    const card = historyCard([row(), row({ workSessionId: 's2' })], { mode: 'cwd', offset: 0, total: 2 });
     expect(buttonValues(card)).toEqual([]);
     expect(JSON.stringify(card)).toContain('点「继续对话」接着聊');
   });
 
   it('gives every row a 继续对话 button carrying its full session id', () => {
-    const card = historyCard([row({ sessionId: '019f9432-b808-7000-8bf4-073defc52637' })], {
+    const card = historyCard([row({ workSessionId: '019f9432-b808-7000-8bf4-073defc52637' })], {
       mode: 'cwd',
       offset: 0,
       total: 1,
@@ -150,8 +151,8 @@ describe('historyCard', () => {
   it('marks the current session instead of offering a no-op resume', () => {
     const current = '01a11d26-5f7a-7106-be95-17618cbbaf57';
     const card = historyCard(
-      [row({ sessionId: current, title: 'bridge UI 调整' }), row({ sessionId: 'other-session-id-0000' })],
-      { mode: 'cwd', offset: 0, total: 2, currentSessionId: current },
+      [row({ workSessionId: current, title: 'bridge UI 调整' }), row({ workSessionId: 'other-session-id-0000' })],
+      { mode: 'cwd', offset: 0, total: 2, currentWorkSessionId: current },
     );
     const buttons = allButtons(card);
     // Only the OTHER row can be resumed.
@@ -169,5 +170,16 @@ describe('historyCard', () => {
     );
     expect((sets[0]!.columns as unknown[]).length).toBe(1);
     expect((sets[1]!.columns as unknown[]).length).toBe(2);
+  });
+
+  it('shows the segment count only when a row spans more than one segment', () => {
+    const multi = JSON.stringify(
+      historyCard([row({ segmentCount: 3, turns: 9 })], { mode: 'cwd', offset: 0, total: 1 }),
+    );
+    expect(multi).toContain('🧵 3 段');
+    expect(multi).toContain('💬 9 轮');
+
+    const single = JSON.stringify(historyCard([row({ segmentCount: 1 })], { mode: 'cwd', offset: 0, total: 1 }));
+    expect(single).not.toContain('🧵');
   });
 });

@@ -10,7 +10,7 @@ import {
 import type { CommandContext, Handler } from '../index';
 import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
 import { renderContext, loadSessionSummary } from './context';
-import { listSessions } from './sessions';
+import { scanSessionFiles } from './sessions';
 import { log } from '../../core/logger';
 
 export const resumeHandlers: Record<string, Handler> = {
@@ -36,7 +36,7 @@ export async function listResumableSessions(ctx: CommandContext): Promise<Resume
   const bound = boundScopeBySession(ctx);
   // Newest session first by START time (the picker's historical order), not
   // by last activity: the shared lister is activity-sorted for /history.
-  return (await listSessions(ctx))
+  return (await scanSessionFiles(ctx))
     .filter((s) => {
       // Never offer a session another scope already owns.
       const owner = bound.get(s.sessionId);

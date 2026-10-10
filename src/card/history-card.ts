@@ -19,21 +19,25 @@ import { formatAgo, formatClock } from '../utils/time';
 export const HISTORY_PAGE_SIZE = 8;
 
 export interface HistoryRow {
-  sessionId: string;
+  /** Work session id — the row's identity and the 继续对话 payload. */
+  workSessionId: string;
   /** Last activity (ms epoch) — the sort key and the displayed time. */
   updatedAtMs: number;
-  /** Real user turns in the session. */
+  /** Σ real user turns across the work session's surviving segments. */
   turns: number;
+  /** Declared segment count; `🧵 N 段` is shown only when it exceeds 1. */
+  segmentCount: number;
   /** Workspace label (named workspace or collapsed path). Only rendered in
    * 'all' mode, where a page mixes directories. */
   workspace: string;
   /** User-assigned title (/rename). */
   title?: string;
-  /** What the conversation was about — the LAST user message. */
+  /** What the conversation was about — the last user message of its latest
+   * (else current) segment. */
   topic?: string;
 }
 
-/** The scope's CURRENT session — its row is marked instead of offering a
+/** The scope's CURRENT work session — its row is marked instead of offering a
  * resume that would be a no-op. */
 export interface HistoryPage {
   /** 'cwd' = only the current workspace; 'all' = every workspace. */
@@ -42,8 +46,8 @@ export interface HistoryPage {
   cwd?: string;
   offset: number;
   total: number;
-  /** Session id the calling scope is already on, if any. */
-  currentSessionId?: string;
+  /** Work session id the calling scope is already on, if any. */
+  currentWorkSessionId?: string;
 }
 
 export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
@@ -71,14 +75,18 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
         ? `**${summarizeMd(row.topic, 24)}**`
         : '_未命名会话_';
 
-    const isCurrent = opts.currentSessionId !== undefined && row.sessionId === opts.currentSessionId;
+    const isCurrent =
+      opts.currentWorkSessionId !== undefined && row.workSessionId === opts.currentWorkSessionId;
     const meta = [
       `🕘 ${formatClock(row.updatedAtMs)} · ${formatAgo(Date.now() - row.updatedAtMs)}`,
+      // Multi-segment work sessions advertise the fact; a single segment would
+      // just be noise.
+      ...(row.segmentCount > 1 ? [`🧵 ${row.segmentCount} 段`] : []),
       `💬 ${row.turns} 轮`,
       // Every 'cwd'-mode row shares the header's directory — repeating it per
       // row would be noise.
       ...(opts.mode === 'all' ? [`📁 ${escapeMd(row.workspace)}`] : []),
-      `🆔 ${row.sessionId.slice(0, 8)}…`,
+      `🆔 ${row.workSessionId.slice(0, 8)}…`,
     ];
 
     // The current-session marker rides on the identity line — right behind the
@@ -120,7 +128,7 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
                 elements: [
                   button({
                     text: '继续对话',
-                    value: { cmd: 'history.resume', arg: row.sessionId },
+                    value: { cmd: 'history.resume', arg: row.workSessionId },
                     style: 'primary',
                   }),
                 ],

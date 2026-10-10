@@ -144,11 +144,11 @@ async function removeFromRunningCards(messageId: string): Promise<void> {
     await writeFile(paths.runningCardsFile, JSON.stringify(next), 'utf8').catch(() => {});
   }
 }
-export async function finalizeInterruptedCards(channel: LarkChannel): Promise<void> {
+export async function finalizeInterruptedCards(channel: LarkChannel, excludeMessageId?: string): Promise<void> {
   const leftovers = await readRunningCards();
   await unlink(paths.runningCardsFile).catch(() => {});
   for (const { messageId } of leftovers) {
-    // Skip invalid entries (test data, empty ids).
+    if (messageId === excludeMessageId) continue;
     if (!messageId || messageId === 'om_sent' || !messageId.startsWith('om_')) continue;
     try {
       // Fetch the current card content so partial output survives the

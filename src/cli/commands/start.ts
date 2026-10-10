@@ -268,17 +268,25 @@ export async function runStart(opts: StartOptions): Promise<void> {
   // Startup notices are opt-in. `/release` already leaves its final
   // 「🚀 已发布上线」 card, so ordinary boots and release boots stay silent;
   // only `/restart` writes mode=notify for its requesting chat.
-  const notifyTargets: string[] = [];
   const notice = await takeOnlineNotice();
-  if (notice?.mode === 'notify') notifyTargets.push(notice.chatId);
+  const notifyTargets: string[] =
+    notice?.mode === 'notify' ? [notice.chatId] : [];
+
   // Crash recovery: managed cards left in-flight by the previous process get
-  // finalized so interrupted replies don't linger with a ⏹ button.
-  await finalizeInterruptedCards(bridge.channel).catch((err) =>
+  // finalized so interrupted replies don't linger with a ⏹ button. The
+  // /restart card is EXCLUDED — it has its own recovery path below.
+  await finalizeInterruptedCards(bridge.channel, notice?.messageId).catch((err) =>
     log.warn('notify', 'interrupted-finalize-failed', { err: String(err) }),
   );
+
   if (notice?.mode === 'notify' && notice.messageId) {
+    // /restart: patch the restart card in place via message.patch (works even
+    // though the new process has no byMessageId entry for it).
     try {
-      await updateManagedCard(bridge.channel, notice.messageId, restartCard('done'));
+      await bridge.channel.rawClient.im.v1.message.patch({
+        path: { message_id: notice.messageId },
+        data: { content: JSON.stringify(restartCard('done')) },
+      });
       log.info('notify', 'restart-card-updated', { chatId: notice.chatId, messageId: notice.messageId });
     } catch (err) {
       log.warn('notify', 'restart-card-update-failed', { messageId: notice.messageId, err: String(err) });

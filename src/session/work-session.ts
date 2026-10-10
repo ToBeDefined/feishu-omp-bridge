@@ -21,7 +21,9 @@ export interface WorkSession {
   scope: string | null;
   /** /rename 起的名字；空/缺省时显示回退到最后一条用户消息。 */
   title?: string;
-  /** 当前段的 cwd（/history 行的"工作目录"；/cd 之后同一工作会话里会有不同 cwd 的段）。 */
+  /** 当前段的 cwd —— 实现上跟随**被 touch 那一段**（即当前段），不是数组末段：
+   * /cd 之后同一工作会话里会有不同 cwd 的段，/resume 回到较早段时两者不能矛盾。
+   * 也是 /history 行的「工作目录」。 */
   cwd: string;
   createdAtMs: number;
   lastActiveAtMs: number;

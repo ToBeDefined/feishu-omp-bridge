@@ -255,8 +255,8 @@ describe('/history', () => {
     expect(card).toContain('· 2 个会话');
     // Header shows the (length-capped) workspace path.
     expect(card).toContain(shortPath(tmp));
-    expect(card).toContain('💬 5 轮');
-    expect(card).toContain('💬 3 轮');
+    expect(card).toContain('🔁 5 轮');
+    expect(card).toContain('🔁 3 轮');
     // Newer activity (#1 = s3) leads; an unnamed session is identified by the
     // message it ENDED on (last real user turn).
     expect(card.indexOf('#1')).toBeLessThan(card.indexOf('#2'));

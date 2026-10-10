@@ -3,29 +3,27 @@ import type { CommandContext, Handler } from '../index';
 import { statusCard } from '../../card/templates';
 import { getOmpModel, getOmpThinking, getRunIdleTimeoutMs } from '../../config/schema';
 import { formatIdleLine } from '../shared';
-import { loadSessionSummary, sampleSegmentId } from './context';
+import { resolveWorkSessionDisplay } from './display';
 
 export const statusHandlers: Record<string, Handler> = {
   '/status': handleStatus,
 };
 
 async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
-  // 身份 = 当前工作会话：cwd 取它最新段，段数/目录数描述规模；OMP 会话 id 只在
-  // 「当前段」里出现。没有工作会话时给「无，下条消息新建」而不是崩。
+  // 身份 = 当前工作会话：cwd 取它**当前段**（被 touch 那一段），段数/目录数描述
+  // 规模；OMP 会话 id 只在「当前段」里出现。没有工作会话时给「无，下条消息新建」
+  // 而不是崩。
   const scopeCwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
   const active = ctx.workSessions.activeWorkSession(ctx.scope);
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
-  const sampleId = sampleSegmentId(active);
-  const summary =
-    sampleId !== undefined
-      ? await loadSessionSummary(ctx, sampleId)
-      : { lastMessage: '', lastReply: '' };
+  // 名字解析收敛到共享助手：有 title 时零 IO，不再为了显示名字空扫会话目录。
+  const { name, topic } = await resolveWorkSessionDisplay(ctx, active);
+  const displayName = name ?? topic;
   const segments = active?.segments ?? [];
-  const name = active?.title?.trim() || summary.lastMessage?.trim() || undefined;
   const card = statusCard({
     cwd: active?.cwd ?? scopeCwd,
     ...(active !== undefined ? { workSessionId: active.id } : {}),
-    ...(name !== undefined ? { workSessionName: name } : {}),
+    ...(displayName !== undefined ? { workSessionName: displayName } : {}),
     segmentCount: segments.length,
     cwdCount: new Set(segments.map((s) => s.cwd)).size,
     ...(active?.currentSegmentId !== undefined

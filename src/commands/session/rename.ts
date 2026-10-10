@@ -8,6 +8,7 @@ import { codeSpan, summarizeMd } from '../../utils/text';
 import { extractUserInput } from './context';
 import { summarize } from '../../utils/text';
 import { latestSegment, type WorkSession } from '../../session/work-session';
+import { resolveWorkSessionDisplay } from './display';
 
 export const renameHandlers: Record<string, Handler> = {
   '/rename': handleRename,
@@ -33,10 +34,12 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
   }
 
   if (!title) {
-    // 名字优先；无名时回退工作会话最新段的最后一条用户消息做展示。回退消息是
-    // 原始用户输入，必须与其它展示处一致地截断 + 转义，不能裸插进代码段
-    //（否则长消息撑爆消息体，`*`/`` ` `` 还能把代码段提前闭合）。
-    const display = active.title?.trim() || (await lastUserMessage(ctx, active));
+    // 名字优先（同步、零 IO）；无名时回退取样段（当前段优先，否则最新段）的最后
+    // 一条用户消息做展示。回退消息是原始用户输入，必须与其它展示处一致地截断 +
+    // 转义，不能裸插进代码段（否则长消息撑爆消息体，`*`/`` ` `` 还能把代码段提前
+    // 闭合）。名字解析收敛在 resolveWorkSessionDisplay 里。
+    const { name, topic } = await resolveWorkSessionDisplay(ctx, active);
+    const display = name ?? topic;
     await reply(
       ctx,
       display
@@ -80,14 +83,6 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
 
   ctx.workSessions.setTitle(ctx.scope, title);
   await reply(ctx, `✅ 已设置当前工作会话标题：\`${codeSpan(title)}\``);
-}
-
-/** 工作会话最新段的最后一条用户消息（未命名时的展示回退）。 */
-async function lastUserMessage(ctx: CommandContext, ws: WorkSession): Promise<string | undefined> {
-  const seg = latestSegment(ws);
-  if (!seg) return undefined;
-  const messages = await loadRecentUserMessages(ctx, seg.sessionId, 1);
-  return messages[messages.length - 1];
 }
 
 /** Ask the agent to title the session from the user's recent messages. A

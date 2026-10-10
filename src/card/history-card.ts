@@ -82,7 +82,7 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
       // Multi-segment work sessions advertise the fact; a single segment would
       // just be noise.
       ...(row.segmentCount > 1 ? [`🧵 ${row.segmentCount} 段`] : []),
-      `💬 ${row.turns} 轮`,
+      `🔁 ${row.turns} 轮`,
       // Every 'cwd'-mode row shares the header's directory — repeating it per
       // row would be noise.
       ...(opts.mode === 'all' ? [`📁 ${escapeMd(row.workspace)}`] : []),

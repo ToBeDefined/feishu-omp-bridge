@@ -50,7 +50,7 @@ describe('historyCard', () => {
       }),
     );
     expect(card).toContain('🏷 **会话 UI 优化**');
-    expect(card).toContain('💬 12 轮');
+    expect(card).toContain('🔁 12 轮');
     expect(card).toContain('🆔 019f9432…');
     // A named session still shows what the conversation contained.
     expect(card).toContain('按钮在电脑上很奇怪');
@@ -177,7 +177,7 @@ describe('historyCard', () => {
       historyCard([row({ segmentCount: 3, turns: 9 })], { mode: 'cwd', offset: 0, total: 1 }),
     );
     expect(multi).toContain('🧵 3 段');
-    expect(multi).toContain('💬 9 轮');
+    expect(multi).toContain('🔁 9 轮');
 
     const single = JSON.stringify(historyCard([row({ segmentCount: 1 })], { mode: 'cwd', offset: 0, total: 1 }));
     expect(single).not.toContain('🧵');

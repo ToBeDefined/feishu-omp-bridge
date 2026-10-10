@@ -13,6 +13,7 @@ import { summarizeMd } from '../../utils/text';
 import { contextCard, type ContextInfo } from '../../card/templates';
 import { formatAgo, formatAgoOr, formatClockOr } from '../../utils/time';
 import type { WorkSession } from '../../session/work-session';
+import { workSessionName } from './display';
 
 export const contextHandlers: Record<string, Handler> = {
   '/context': handleContext,
@@ -22,6 +23,11 @@ export const contextHandlers: Record<string, Handler> = {
 /**
  * 给工作会话取样「最后一条用户消息」的段：当前段优先，没有当前段（/new 之后，
  * 新段还没落地）就退回最新段。用来做无名工作会话的标题回退。
+ *
+ * 代价与调用方约束：这里只挑一个 id，真正取消息要调 `loadSessionSummary`——它是
+ * O(会话目录文件数) 的全目录扫描（会话文件可能数 MB）。所以**有 title 的调用方
+ * 不该走到这里**（名字已在手上，扫目录纯属浪费），并且逐段回退被有意拒绝：历史段
+ * 越多开销越大，只取这一个段。共享入口见 `resolveWorkSessionDisplay`。
  */
 export function sampleSegmentId(active: WorkSession | undefined): string | undefined {
   if (!active) return undefined;
@@ -35,11 +41,13 @@ export function collectContextInfo(
   const scopeCwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
   const active = ctx.workSessions.activeWorkSession(ctx.scope);
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
-  // 身份 = 工作会话，不再是某个 OMP 会话：cwd 取工作会话最新段，段数/目录数
-  // 描述这摊活的规模，当前 OMP id 只在「当前段」里出现。
+  // 身份 = 工作会话，不再是某个 OMP 会话：cwd 取工作会话的**当前段**（被 touch
+  // 那一段），段数/目录数描述这摊活的规模，当前 OMP id 只在「当前段」里出现。
   const segments = active?.segments ?? [];
   const cwd = active?.cwd ?? scopeCwd;
-  const name = active?.title?.trim() || summary.lastMessage?.trim() || undefined;
+  // 名字解析收敛到共享助手：title 优先（同步、零 IO），无名时用调用方已取到的
+  // 取样段最后一条用户消息（handleContext 里由 sampleSegmentId 定位的那一段）。
+  const name = workSessionName(ctx, active) ?? (summary.lastMessage?.trim() || undefined);
   const currentSegmentId = active?.currentSegmentId;
   const currentSegment =
     currentSegmentId !== undefined

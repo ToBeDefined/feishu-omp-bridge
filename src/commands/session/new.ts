@@ -4,7 +4,7 @@ import { formatIdleLine, reply } from '../shared';
 import { newSessionCard } from '../../card/templates';
 import { escapeMd } from '../../utils/text';
 import { createBoundChat, defaultChatName } from './group';
-import { loadSessionSummary } from './context';
+import { resolveWorkSessionDisplay } from './display';
 import { getOmpModel, getOmpThinking, getRunIdleTimeoutMs } from '../../config/schema';
 import { log } from '../../core/logger';
 
@@ -25,7 +25,11 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
   // /new 只重置上下文，不换工作会话：名字（或最后一条用户消息）要带进卡片，
   // 用户才知道自己还在同一摊活里。先取名字再丢当前段。
-  const workSessionName = await resolveWorkSessionName(ctx);
+  const { name, topic } = await resolveWorkSessionDisplay(
+    ctx,
+    ctx.workSessions.activeWorkSession(ctx.scope),
+  );
+  const workSessionName = name ?? topic;
   ctx.workSessions.dropCurrentSegment(ctx.scope);
   // A new session invalidates any pending /ws undo: rolling back would also
   // clear the session the user just started.
@@ -49,24 +53,6 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     log.fail('command', err, { step: 'new-card' });
     await reply(ctx, wasRunning ? '已中断当前任务并重置上下文。' : '已重置上下文。');
   }
-}
-
-/**
- * 工作会话的显示名：`/rename` 起的名字优先，无名时回退到该工作会话**最近一段**
- * 的最后一条用户消息。两者都拿不到时返回 undefined——卡片上不显示，绝不硬编码
- * 「未命名」。只试最近 1 个段：`loadSessionSummary` 每次都全目录扫描，逐段回退
- * 在大工作会话上开销线性放大，而最近一段就是用户最可能记得的那条消息。
- */
-async function resolveWorkSessionName(ctx: CommandContext): Promise<string | undefined> {
-  const active = ctx.workSessions.activeWorkSession(ctx.scope);
-  if (!active) return undefined;
-  const named = active.title?.trim();
-  if (named) return named;
-  const seg = active.segments[active.segments.length - 1];
-  if (!seg) return undefined;
-  const { lastMessage } = await loadSessionSummary(ctx, seg.sessionId);
-  const msg = lastMessage.trim();
-  return msg || undefined;
 }
 
 async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void> {

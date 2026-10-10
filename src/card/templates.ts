@@ -46,21 +46,23 @@ export function md(content: string, size?: 'heading' | 'notation'): object {
 }
 
 /**
- * Quick-action buttons: one wrapping row of NATURAL-width buttons.
+ * Quick-action buttons, one per row (full width).
  *
- * `width: 'auto'` keeps each button at its label's size (a weighted column
- * stretches it across half the card — fine on a phone, a giant bar on
- * desktop), and `flex_mode: 'flow'` wraps the overflow onto the next line.
- * Wrapping is what keeps labels readable: with `flex_mode: 'none'` a row that
- * does not fit is *compressed* instead, squeezing the text together. This is
- * the same layout the form submit/cancel rows already use.
+ * `flex_mode: 'stretch'` turns each column into its own full-width row, so a
+ * button row can never be laid out badly:
+ * - `auto`/`weighted` column widths are only honoured by `flex_mode: 'none'`,
+ *   which *compresses* the row on narrow screens — that is what squeezed the
+ *   labels together on a phone;
+ * - `flow` ignores `width` entirely and spreads the columns to both edges of a
+ *   wide (desktop) card — the「继续对话 …… 完成」look.
+ * Stretch is the only mode that behaves the same at every card width.
  */
 export function actions(buttons: ButtonSpec[]): object[] {
   // Schema 2.0 has no `action` container — buttons ride in a column_set row.
   return [
     {
       tag: 'column_set',
-      flex_mode: 'flow',
+      flex_mode: 'stretch',
       horizontal_spacing: 'small',
       columns: buttons.map((spec) => ({
         tag: 'column',

@@ -211,21 +211,17 @@ describe('shared card kit', () => {
     });
   });
 
-  it('keeps buttons at their natural width in one wrapping row', () => {
+  it('stacks each button on its own full-width row', () => {
     const rows = actions(
       ['a', 'b', 'c', 'd'].map((t) => ({ text: t, value: { cmd: t } })),
     );
-    // ONE flow row, auto-width columns: no weighted stretching (a half-card
-    // button is a giant bar on desktop) and no 'none' row (which compresses
-    // labels instead of wrapping them onto the next line).
+    // ONE column_set in stretch mode: every column becomes its own 100%-wide
+    // row. `none` compresses the labels on a narrow screen and `flow` ignores
+    // `width` (spreading columns to both card edges on desktop).
     expect(rows).toHaveLength(1);
     const row = rows[0] as { flex_mode: string; columns: Array<Record<string, unknown>> };
-    expect(row.flex_mode).toBe('flow');
+    expect(row.flex_mode).toBe('stretch');
     expect(row.columns).toHaveLength(4);
-    for (const col of row.columns) {
-      expect(col).toMatchObject({ width: 'auto' });
-      expect(col).not.toHaveProperty('weight');
-    }
     // Every button survives the re-layout.
     expect(JSON.stringify(rows)).toContain('"cmd":"d"');
   });

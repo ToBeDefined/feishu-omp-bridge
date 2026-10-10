@@ -9,32 +9,13 @@ import {
 } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
 import { formatIdleLine, summarizeMd } from '../shared';
-import { contextCard } from '../../card/templates';
+import { contextCard, type ContextInfo } from '../../card/templates';
 import { formatAgoOr, formatClockOr } from '../../utils/time';
 
 export const contextHandlers: Record<string, Handler> = {
   '/context': handleContext,
   '/ctx': handleContext,
 };
-
-/** Data for /context renders — shared by the text renderer and the card so
- * the two cannot drift apart. */
-export interface ContextInfo {
-  scope: string;
-  chatMode: 'p2p' | 'group' | 'topic';
-  cwd: string;
-  sessionId?: string;
-  sessionTitle?: string;
-  createdAt?: number;
-  updatedAt?: number;
-  running: boolean;
-  model?: string;
-  thinking?: string;
-  idleLine: string;
-  /** Named workspaces pointing at the current cwd. */
-  wsNames: string[];
-  summary: { lastMessage?: string; lastReply?: string };
-}
 
 export function collectContextInfo(
   ctx: CommandContext,

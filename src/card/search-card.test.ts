@@ -1,19 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import type { CommandContext } from '../commands';
 import {
   renderSearchContext,
   searchDetailCard,
   searchEmptyCard,
   searchResultsCard,
-  workspaceLabel,
   type SearchContext,
 } from './search-card';
-
-function ctxFor(workspaces: Record<string, string> = {}): CommandContext {
-  return {
-    workspaces: { listNamed: () => workspaces },
-  } as unknown as CommandContext;
-}
 
 function sampleContext(over: Partial<SearchContext> = {}): SearchContext {
   return {
@@ -107,18 +99,6 @@ describe('renderSearchContext', () => {
       hitIndex: 0,
     });
     expect(out).toContain('\\> 嵌套引用');
-  });
-});
-
-describe('workspaceLabel', () => {
-  it('returns the named workspace when cwd matches', () => {
-    const ctx = ctxFor({ bridge: '/Users/tbd/bridge' });
-    expect(workspaceLabel(ctx, '/Users/tbd/bridge')).toBe('bridge');
-  });
-
-  it('returns raw cwd when no named workspace matches', () => {
-    const ctx = ctxFor({ other: '/tmp/x' });
-    expect(workspaceLabel(ctx, '/Users/tbd/code')).toBe('/Users/tbd/code');
   });
 });
 

@@ -12,9 +12,17 @@ import {
   searchDetailCard,
   searchEmptyCard,
   searchResultsCard,
-  workspaceLabel,
+  type SearchContext,
+  type SearchHit,
 } from '../../card/search-card';
-import type { SearchContext, SearchHit } from '../../card/search-card';
+
+/** Named-workspace label for a cwd, falling back to the path itself. */
+export function workspaceLabel(ctx: CommandContext, cwd: string): string {
+  for (const [name, path] of Object.entries(ctx.workspaces.listNamed())) {
+    if (path === cwd) return name;
+  }
+  return cwd;
+}
 
 export const searchHandlers: Record<string, Handler> = {
   '/search': handleSearch,

@@ -1,6 +1,25 @@
 import { homedir } from 'node:os';
-import type { ContextInfo } from '../commands/session/context';
 import { formatAgoOr, formatClockOr } from '../utils/time';
+
+/** Input for /context renders — gathered by commands/session/context.ts
+ * (`collectContextInfo`) and consumed here, so the text renderer and the
+ * card cannot drift apart. */
+export interface ContextInfo {
+  scope: string;
+  chatMode: 'p2p' | 'group' | 'topic';
+  cwd: string;
+  sessionId?: string;
+  sessionTitle?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  running: boolean;
+  model?: string;
+  thinking?: string;
+  idleLine: string;
+  /** Named workspaces pointing at the current cwd. */
+  wsNames: string[];
+  summary: { lastMessage?: string; lastReply?: string };
+}
 
 interface ButtonSpec {
   text: string;

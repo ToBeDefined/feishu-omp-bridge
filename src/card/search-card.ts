@@ -1,5 +1,4 @@
 import { codeSpan, summarize } from '../commands/shared';
-import type { CommandContext } from '../commands';
 import { escapeMd } from './templates';
 import { formatAgoOr } from '../utils/time';
 
@@ -96,13 +95,6 @@ function escapeSearchContent(text: string): string {
     .split('\n')
     .map((line) => (line.startsWith('#') || line.startsWith('>') ? `\\${line}` : line))
     .join('\n');
-}
-
-export function workspaceLabel(ctx: CommandContext, cwd: string): string {
-  for (const [name, path] of Object.entries(ctx.workspaces.listNamed())) {
-    if (path === cwd) return name;
-  }
-  return cwd;
 }
 
 const SEARCH_PAGE_SIZE = 6;

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CommandContext } from '../index';
 import { paths } from '../../config/paths';
-import { searchSession } from './search';
+import { searchSession, workspaceLabel } from './search';
 import { renderSearchContext } from '../../card/search-card';
 
 const origSessionsDir = paths.ompSessionsDir;
@@ -17,6 +17,18 @@ function ctxFor(workspaces: Record<string, string> = {}, titles: Record<string, 
     controls: { cfg: {} },
   } as CommandContext;
 }
+
+describe('workspaceLabel', () => {
+  it('returns the named workspace when cwd matches', () => {
+    const ctx = ctxFor({ bridge: '/Users/tbd/bridge' });
+    expect(workspaceLabel(ctx, '/Users/tbd/bridge')).toBe('bridge');
+  });
+
+  it('returns raw cwd when no named workspace matches', () => {
+    const ctx = ctxFor({ other: '/tmp/x' });
+    expect(workspaceLabel(ctx, '/Users/tbd/code')).toBe('/Users/tbd/code');
+  });
+});
 
 /** Write a minimal session file: session frame + a few message frames. */
 async function writeSession(

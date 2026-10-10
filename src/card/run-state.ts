@@ -185,7 +185,7 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
       return {
         ...state,
         blocks: [
-          ...closeStreamingText(state.blocks),
+          ...deactivateTrailingThinking(closeStreamingText(state.blocks)),
           {
             kind: 'text',
             content: `🧩 OMP 需要用户交互：**${evt.request.title}**\n\n已发送交互卡片，请在那里完成操作。`,

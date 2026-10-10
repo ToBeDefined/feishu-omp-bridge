@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { resumeCard, type ResumeOption } from './model-card';
+import type { RunCard } from './run-renderer';
 import {
   actions,
   compactCard,
@@ -19,17 +20,36 @@ import {
 } from './templates';
 
 describe('releaseCard', () => {
+  function assertNoBareColumns(card: RunCard): void {
+    // cardkit 11310: 裸 column（父级不是 column_set）会被整卡拒收。递归扫
+    // 全部层级，按父级 tag 判断合法性。
+    const walk = (elements: unknown[], parent: string): void => {
+      for (const el of elements) {
+        if (typeof el !== 'object' || el === null) continue;
+        const tag = 'tag' in el ? String(el.tag) : '';
+        if (tag === 'column' && parent !== 'column_set') {
+          throw new Error('bare column outside column_set');
+        }
+        const nested = 'elements' in el && Array.isArray(el.elements) ? el.elements : [];
+        const cols = 'columns' in el && Array.isArray(el.columns) ? el.columns : [];
+        walk(cols, tag === 'column_set' ? 'column_set' : tag || parent);
+        walk(nested, tag || parent);
+      }
+    };
+    walk(card.body.elements, 'body');
+  }
+
   it('shows per-step states while running', () => {
-    const out = JSON.stringify(
-      releaseCard({
-        phase: 'running',
-        steps: [
-          { name: 'typecheck', status: 'ok' },
-          { name: 'test', status: 'running' },
-          { name: 'build', status: 'pending' },
-        ],
-      }),
-    );
+    const card = releaseCard({
+      phase: 'running',
+      steps: [
+        { name: 'typecheck', status: 'ok' },
+        { name: 'test', status: 'running' },
+        { name: 'build', status: 'pending' },
+      ],
+    });
+    assertNoBareColumns(card);
+    const out = JSON.stringify(card);
     expect(out).toContain('正在发布');
     expect(out).toContain('✅ 类型检查');
     expect(out).toContain('⏳ 测试');

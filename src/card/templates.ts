@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import type { RunCard } from './run-renderer';
 import { formatAgoOr, formatClockOr } from '../utils/time';
 import { escapeCode, escapeMd } from '../utils/text';
 
@@ -98,7 +99,7 @@ function digest(text: string, max = 80): string {
 }
 
 /** Schema 2.0 card shell: `summary` is the notification/condensed preview. */
-export function shell(summary: string, elements: object[]): object {
+export function shell(summary: string, elements: object[]): RunCard {
   return {
     schema: '2.0',
     config: { summary: { content: summary } },
@@ -562,7 +563,7 @@ const STEP_MARK: Record<ReleaseStepState, string> = {
   failed: '❌',
 };
 
-export function releaseCard(progress: ReleaseProgress): object {
+export function releaseCard(progress: ReleaseProgress): RunCard {
   const icon = progress.phase === 'failed' ? '❌' : progress.phase === 'success' ? '✅' : '🔄';
   const title =
     progress.phase === 'failed'
@@ -576,7 +577,13 @@ export function releaseCard(progress: ReleaseProgress): object {
   const elements: object[] = [
     md(`${icon} ${title}`, 'heading'),
     { tag: 'hr' },
-    panel(steps),
+    // column 必须包在 column_set 里（cardkit 11310 "unsupported type of
+    // block: column"）——与 statusCard 的双面板同构。
+    {
+      tag: 'column_set',
+      flex_mode: 'none',
+      columns: [panel(steps)],
+    },
     { tag: 'hr' },
   ];
   if (progress.phase === 'failed') {

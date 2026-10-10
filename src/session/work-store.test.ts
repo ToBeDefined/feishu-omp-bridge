@@ -491,6 +491,25 @@ describe('WorkSessionStore v2', () => {
     expect(store.titleFor('sess-b')).toBeUndefined();
   });
 
+  it('adopting a work session detaches every other scope pointing at it', async () => {
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    await store.load();
+    store.bindSegment('oc_a', 'sess-a', '/repo');      // A 拥有 sess-a
+    store.adoptWorkSession('oc_b', 'sess-a', '/repo'); // B 也认领同一条
+    expect(store.activeWorkSession('oc_b')?.id).toBe('sess-a');
+    // B 的认领把 A 的休眠指针摘掉，避免两边互写 currentSegmentId。
+    expect(store.activeWorkSession('oc_a')).toBeUndefined();
+
+    // 反向：A 再认领，B 的指针被摘。
+    store.adoptWorkSession('oc_a', 'sess-a', '/repo');
+    expect(store.activeWorkSession('oc_a')?.id).toBe('sess-a');
+    expect(store.activeWorkSession('oc_b')).toBeUndefined();
+    // 认领只挪指针：工作会话与它的段不受损。
+    expect(store.workSessionForSegment('sess-a')?.id).toBe('sess-a');
+    expect(store.workSessionById('sess-a')?.segments.map((s) => s.sessionId)).toEqual(['sess-a']);
+  });
+
   it('lists a scope once even after /work archived earlier sessions', async () => {
     const store = new WorkSessionStore(file);
     stores.push(store);

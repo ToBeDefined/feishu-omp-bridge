@@ -10,12 +10,14 @@ vi.mock('../core/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), fail: vi
 let dir: string;
 let file: string;
 let stores: WorkSessionStore[];
+let seedSeq: number;
 
 beforeEach(async () => {
   vi.clearAllMocks();
   dir = await mkdtemp(join(tmpdir(), 'work-store-ms-'));
   file = join(dir, 'sessions.json');
   stores = [];
+  seedSeq = 0;
 });
 afterEach(async () => {
   await Promise.all(stores.map((s) => s.flush()));
@@ -36,8 +38,11 @@ async function seed(
   workSessions: Record<string, WorkSession>,
   scopes: Record<string, { activeWorkSession?: string }> = {},
 ): Promise<WorkSessionStore> {
-  await writeFile(file, JSON.stringify({ v: 2, scopes, workSessions }), 'utf8');
-  const store = track(new WorkSessionStore(file));
+  // One file per seed: a second seed within the same test must not race the
+  // first store's chained async persist overwriting it after writeFile.
+  const seedFile = join(dir, `sessions-${(seedSeq += 1)}.json`);
+  await writeFile(seedFile, JSON.stringify({ v: 2, scopes, workSessions }), 'utf8');
+  const store = track(new WorkSessionStore(seedFile));
   await store.load();
   return store;
 }

@@ -513,6 +513,15 @@ export class WorkSessionStore {
       segmentId !== undefined
         ? ws.segments.find((s) => s.sessionId === segmentId) ?? latestSegment(ws)
         : latestSegment(ws);
+    // A work session belongs to the chat that last claimed it: drop any other
+    // scope's pointer to it, otherwise two chats would keep steering the same
+    // `currentSegmentId` back and forth. The evicted chat naturally starts a
+    // fresh segment / work session on its next message.
+    for (const [otherScope, state] of Object.entries(this.scopes)) {
+      if (otherScope === scope || state.activeWorkSession !== ws.id) continue;
+      const { activeWorkSession: _drop, ...rest } = state;
+      this.scopes[otherScope] = rest;
+    }
     this.scopes[scope] = { ...this.scopes[scope], activeWorkSession: ws.id };
     this.workSessions[ws.id] = {
       ...ws,

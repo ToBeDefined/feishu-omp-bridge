@@ -131,7 +131,7 @@ describe('intakeMessage mid-run routing', () => {
   });
 
   it('a context-resetting command (/new, /cd, /ws) drops queued messages', async () => {
-    for (const cmd of ['/new', '/reset', '/cd', '/ws']) {
+    for (const cmd of ['/new', '/reset', '/cd', '/ws', '/resume', '/session']) {
       vi.clearAllMocks();
       const deps = makeDeps();
       deps.msg = makeMsg(cmd);
@@ -139,6 +139,30 @@ describe('intakeMessage mid-run routing', () => {
 
       await intakeMessage(deps);
       expect(deps.pending.cancel).toHaveBeenCalledWith('oc_1');
+    }
+  });
+
+  it('starting a new work session drops queued messages, named or not', async () => {
+    for (const content of ['/work', '/work my new task']) {
+      vi.clearAllMocks();
+      const deps = makeDeps();
+      deps.msg = makeMsg(content);
+      tryHandleCommand.mockResolvedValue(true);
+
+      await intakeMessage(deps);
+      expect(deps.pending.cancel).toHaveBeenCalledWith('oc_1');
+    }
+  });
+
+  it('the /work merge and split subcommands keep queued messages', async () => {
+    for (const content of ['/work merge ws-a', '/work split ws-a 2']) {
+      vi.clearAllMocks();
+      const deps = makeDeps();
+      deps.msg = makeMsg(content);
+      tryHandleCommand.mockResolvedValue(true);
+
+      await intakeMessage(deps);
+      expect(deps.pending.cancel).not.toHaveBeenCalled();
     }
   });
 

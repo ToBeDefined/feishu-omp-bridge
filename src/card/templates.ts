@@ -590,7 +590,7 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
     if (progress.failNote) elements.push(md(escapeMd(progress.failNote)));
     if (progress.output) elements.push(md(codeFence(progress.output)));
   } else if (progress.phase === 'success') {
-    elements.push(md('_进程已重启，本卡片即最终状态。_', 'notation'));
+    elements.push(md('_进程已发布并重启。_', 'notation'));
   } else {
     elements.push(md('_typecheck → test → build → 自动重启_', 'notation'));
   }

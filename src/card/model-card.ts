@@ -448,7 +448,7 @@ export function resumeCard(
       content: `第 ${offset + 1}-${offset + pageSize} 条 / 共 ${total} 条`,
       text_size: 'notation',
     },
-    // 2-per-row equal columns — 3 auto columns squeezed the labels together.
+    // Natural-width buttons in one wrapping row (see actions()).
     ...actions(footer),
   );
   return {

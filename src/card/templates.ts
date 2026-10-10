@@ -45,44 +45,31 @@ export function md(content: string, size?: 'heading' | 'notation'): object {
     : { tag: 'markdown', content, text_size: size };
 }
 
-/** Labels longer than this get a full-width button row (see `actions`). */
-const LONG_LABEL_MAX = 8;
-
 /**
- * Quick-action buttons, 2 per row with EQUAL widths.
+ * Quick-action buttons: one wrapping row of NATURAL-width buttons.
  *
- * `width: 'auto'` columns size to their own label, so a 3–4 button row
- * overflows the card and every label gets squeezed into a sliver — on a phone
- * they wrap onto each other. Equal `weighted` halves give each label room, and
- * a lone trailing button spans the row (no empty column: an empty one renders
- * as a stray grey box).
+ * `width: 'auto'` keeps each button at its label's size (a weighted column
+ * stretches it across half the card — fine on a phone, a giant bar on
+ * desktop), and `flex_mode: 'flow'` wraps the overflow onto the next line.
+ * Wrapping is what keeps labels readable: with `flex_mode: 'none'` a row that
+ * does not fit is *compressed* instead, squeezing the text together. This is
+ * the same layout the form submit/cancel rows already use.
  */
 export function actions(buttons: ButtonSpec[]): object[] {
   // Schema 2.0 has no `action` container — buttons ride in a column_set row.
-  const rows: object[] = [];
-  for (let i = 0; i < buttons.length; ) {
-    // Half a phone card holds ~8 CJK chars; a longer label (e.g. the
-    // pagination rows'「↓ 更早（剩 128）」) would wrap INSIDE its button, so it
-    // takes a full-width row of its own. Both labels must fit to share a row.
-    const fits = (spec: ButtonSpec | undefined): boolean =>
-      spec !== undefined && spec.text.length <= LONG_LABEL_MAX;
-    const take = fits(buttons[i]) && fits(buttons[i + 1]) ? 2 : 1;
-    const slice = buttons.slice(i, i + take);
-    i += slice.length;
-    rows.push({
+  return [
+    {
       tag: 'column_set',
-      flex_mode: 'none',
+      flex_mode: 'flow',
       horizontal_spacing: 'small',
-      columns: slice.map((spec) => ({
+      columns: buttons.map((spec) => ({
         tag: 'column',
-        width: 'weighted',
-        weight: 1,
+        width: 'auto',
         vertical_align: 'center',
         elements: [button(spec)],
       })),
-    });
-  }
-  return rows;
+    },
+  ];
 }
 
 /** 8-char session-id handle. Singular "this is your session" lines show the

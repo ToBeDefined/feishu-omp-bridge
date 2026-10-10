@@ -211,51 +211,25 @@ describe('shared card kit', () => {
     });
   });
 
-  it('lays quick actions out 2 per row with equal (weighted) columns', () => {
+  it('keeps buttons at their natural width in one wrapping row', () => {
     const rows = actions(
       ['a', 'b', 'c', 'd'].map((t) => ({ text: t, value: { cmd: t } })),
     );
-    // 4 buttons → 2 rows; no row exceeds 2 auto-sized columns, which is what
-    // squeezed the labels together on a phone.
-    expect(rows).toHaveLength(2);
-    for (const row of rows) {
-      const columns = (row as { columns: Array<Record<string, unknown>> }).columns;
-      expect(columns).toHaveLength(2);
-      for (const col of columns) {
-        expect(col).toMatchObject({ width: 'weighted', weight: 1 });
-      }
+    // ONE flow row, auto-width columns: no weighted stretching (a half-card
+    // button is a giant bar on desktop) and no 'none' row (which compresses
+    // labels instead of wrapping them onto the next line).
+    expect(rows).toHaveLength(1);
+    const row = rows[0] as { flex_mode: string; columns: Array<Record<string, unknown>> };
+    expect(row.flex_mode).toBe('flow');
+    expect(row.columns).toHaveLength(4);
+    for (const col of row.columns) {
+      expect(col).toMatchObject({ width: 'auto' });
+      expect(col).not.toHaveProperty('weight');
     }
-    // Odd count: the trailing button gets its own full-width row.
-    const odd = actions(['a', 'b', 'c'].map((t) => ({ text: t, value: { cmd: t } })));
-    expect(odd).toHaveLength(2);
-    expect((odd[1] as { columns: unknown[] }).columns).toHaveLength(1);
     // Every button survives the re-layout.
     expect(JSON.stringify(rows)).toContain('"cmd":"d"');
   });
 
-  it('gives a long label its own full-width row instead of half of one', () => {
-    const rows = actions([
-      { text: '↑ 上一页', value: { cmd: 'prev' } },
-      { text: '↓ 下一页（剩 128）', value: { cmd: 'next' } },
-      { text: '完成', value: { cmd: 'done' } },
-    ]);
-    // The 11-char label cannot share a 50% column, and it must not drag a
-    // short button into a cramped row either.
-    expect(rows.map((r) => (r as { columns: unknown[] }).columns.length)).toEqual([1, 1, 1]);
-    for (const row of rows) {
-      expect((row as { columns: Array<Record<string, unknown>> }).columns[0]).toMatchObject({
-        width: 'weighted',
-        weight: 1,
-      });
-    }
-    // Two short labels still pair up.
-    expect(
-      actions([
-        { text: '↑ 上一页', value: { cmd: 'prev' } },
-        { text: '完成', value: { cmd: 'done' } },
-      ]).map((r) => (r as { columns: unknown[] }).columns.length),
-    ).toEqual([2]);
-  });
 });
 
 function statusFixture(extra: Partial<Parameters<typeof statusCard>[0]> = {}) {

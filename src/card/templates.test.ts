@@ -206,9 +206,31 @@ describe('shared card kit', () => {
     });
     expect(md('x', 'notation')).toMatchObject({ text_size: 'notation' });
     expect(panel([md('k')])).toMatchObject({ tag: 'column', background_style: 'grey' });
-    expect(actions([{ text: 'go', value: { cmd: 'x' } }])).toMatchObject({
+    expect(actions([{ text: 'go', value: { cmd: 'x' } }])[0]).toMatchObject({
       tag: 'column_set',
     });
+  });
+
+  it('lays quick actions out 2 per row with equal (weighted) columns', () => {
+    const rows = actions(
+      ['a', 'b', 'c', 'd'].map((t) => ({ text: t, value: { cmd: t } })),
+    );
+    // 4 buttons → 2 rows; no row exceeds 2 auto-sized columns, which is what
+    // squeezed the labels together on a phone.
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      const columns = (row as { columns: Array<Record<string, unknown>> }).columns;
+      expect(columns).toHaveLength(2);
+      for (const col of columns) {
+        expect(col).toMatchObject({ width: 'weighted', weight: 1 });
+      }
+    }
+    // Odd count: the trailing button gets its own full-width row.
+    const odd = actions(['a', 'b', 'c'].map((t) => ({ text: t, value: { cmd: t } })));
+    expect(odd).toHaveLength(2);
+    expect((odd[1] as { columns: unknown[] }).columns).toHaveLength(1);
+    // Every button survives the re-layout.
+    expect(JSON.stringify(rows)).toContain('"cmd":"d"');
   });
 });
 

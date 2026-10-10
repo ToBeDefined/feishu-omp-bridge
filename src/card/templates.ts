@@ -45,19 +45,33 @@ export function md(content: string, size?: 'heading' | 'notation'): object {
     : { tag: 'markdown', content, text_size: size };
 }
 
-export function actions(buttons: ButtonSpec[]): object {
+/**
+ * Quick-action buttons, 2 per row with EQUAL widths.
+ *
+ * `width: 'auto'` columns size to their own label, so a 3–4 button row
+ * overflows the card and every label gets squeezed into a sliver — on a phone
+ * they wrap onto each other. Equal `weighted` halves give each label room, and
+ * a lone trailing button spans the row (no empty column: an empty one renders
+ * as a stray grey box).
+ */
+export function actions(buttons: ButtonSpec[]): object[] {
   // Schema 2.0 has no `action` container — buttons ride in a column_set row.
-  return {
-    tag: 'column_set',
-    flex_mode: 'none',
-    horizontal_spacing: 'small',
-    columns: buttons.map((spec) => ({
-      tag: 'column',
-      width: 'auto',
-      vertical_align: 'center',
-      elements: [button(spec)],
-    })),
-  };
+  const rows: object[] = [];
+  for (let i = 0; i < buttons.length; i += 2) {
+    rows.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: 'small',
+      columns: buttons.slice(i, i + 2).map((spec) => ({
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        vertical_align: 'center',
+        elements: [button(spec)],
+      })),
+    });
+  }
+  return rows;
 }
 
 const HR: object = { tag: 'hr' };
@@ -181,7 +195,7 @@ export function workspacesCard(current: string | undefined, named: Record<string
   }
 
   elements.push(HR);
-  elements.push(actions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
+  elements.push(...actions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
 
   return shell('📂 工作空间', elements);
 }
@@ -260,7 +274,7 @@ export function statusCard(info: StatusInfo): object {
       ? [md('⚠️ _session 来自旧 cwd，下一条消息将新建会话_', 'notation')]
       : []),
     HR,
-    actions([
+    ...actions([
       { text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' },
       { text: '🕘 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
@@ -278,7 +292,7 @@ export function cwdChangedCard(cwd: string, scopeNote?: string): object {
     md(`新的 cwd：\`${escapeCode(tildePath(cwd))}\``),
     md('_session 已重置，下一条消息在新目录开始。_', 'notation'),
     { tag: 'hr' },
-    actions([
+    ...actions([
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
       { text: '📊 状态', value: { cmd: 'status' } },
     ]),
@@ -345,7 +359,7 @@ export function contextCard(
       ],
     },
     { tag: 'hr' },
-    actions([
+    ...actions([
       { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
       { text: '🕘 恢复会话', value: { cmd: 'resume' } },
     ]),
@@ -779,7 +793,7 @@ export function helpCard(): object {
   });
   elements.push(md('_发送 `/help` 随时查看；其他内容直接交给 OMP。_', 'notation'));
   elements.push(
-    actions([
+    ...actions([
       { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
       { text: '🕘 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },

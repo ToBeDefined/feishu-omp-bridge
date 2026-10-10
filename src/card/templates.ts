@@ -29,7 +29,7 @@ export interface ButtonSpec {
   style?: 'primary' | 'danger' | 'default';
 }
 
-function button(spec: ButtonSpec): object {
+export function button(spec: ButtonSpec): object {
   return {
     tag: 'button',
     text: { tag: 'plain_text', content: spec.text },
@@ -685,6 +685,7 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
       ['/status', '当前会话 / 环境状态卡片'],
       ['/context · /ctx', '会话上下文详情'],
       ['/search <关键词> · /s', '跨会话历史检索'],
+      ['/history [all] · /sessions', '工作目录 / 全部的对话历史清单'],
     ],
   },
   {

@@ -61,8 +61,29 @@ describe('command dispatch', () => {
     expect(await tryHandleCommand(ctx)).toBe(false);
   });
 
+  it('routes slash-command aliases to the same handler', async () => {
+    // /sessions is /history's alias, /session is /resume's, /s is /search's.
+    const aliases: Array<[string, string]> = [
+      ['/sessions', '/history'],
+      ['/session', '/resume'],
+      ['/s', '/search'],
+    ];
+    for (const [alias, canonical] of aliases) {
+      const sent: string[] = [];
+      const ctx = makeCtx({
+        msg: { ...makeCtx().msg, content: alias },
+        channel: { send: async (id: string, msg: { markdown: string }) => void sent.push(msg.markdown) } as never,
+        sessions: { chats: () => [], getRaw: () => undefined, titlesBySessionId: () => ({}) } as never,
+        workspaces: { cwdFor: () => '/tmp', listNamed: () => ({}) } as never,
+      });
+      // Both spellings must be recognized (never "unknown command"), i.e. they
+      // resolve to a registered handler rather than falling through to OMP.
+      expect(await tryHandleCommand(ctx), `${alias} → ${canonical}`).toBe(true);
+    }
+  });
+
   it('denies admin commands for non-admin senders', async () => {
-    for (const cmd of ['/config', '/release', '/exec', '/run']) {
+    for (const cmd of ['/config', '/release', '/exec', '/run', '/sessions']) {
       let sent = false;
       const ctx = makeCtx({
         msg: { ...makeCtx().msg, content: cmd, senderId: 'ou_other' },

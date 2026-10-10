@@ -103,6 +103,8 @@ export interface SessionScan {
   meta?: SessionMeta;
   lastAssistant: string;
   lastUserMessage: string;
+  /** Real user turns (bridge_context stripped) — the /history row's 「N 轮」. */
+  turns: number;
 }
 
 /** Parse one session JSONL file: leading session frame + last non-empty
@@ -111,6 +113,7 @@ export function scanSessionFile(text: string): SessionScan {
   let meta: SessionMeta | undefined;
   let lastAssistant = '';
   let lastUserMessage = '';
+  let turns = 0;
   for (const line of text.split('\n')) {
     if (!meta && line.includes('"type":"session"')) {
       try {
@@ -135,13 +138,16 @@ export function scanSessionFile(text: string): SessionScan {
         if (textPart.trim()) lastAssistant = textPart.trim();
       } else if (msg.role === 'user') {
         const real = extractUserInput(textPart);
-        if (real) lastUserMessage = real;
+        if (real) {
+          lastUserMessage = real;
+          turns += 1;
+        }
       }
     } catch {
       /* skip malformed */
     }
   }
-  return { meta, lastAssistant, lastUserMessage };
+  return { meta, lastAssistant, lastUserMessage, turns };
 }
 
 export function extractUserInput(text: string): string {

@@ -1,7 +1,5 @@
 import { homedir } from 'node:os';
-import { readdir, readFile, stat } from 'node:fs/promises';
-import { join } from 'node:path';
-import { getOmpSessionDir } from '../../config/schema';
+import { stat } from 'node:fs/promises';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import {
   resumeCard,
@@ -11,7 +9,8 @@ import {
 } from '../../card/model-card';
 import type { CommandContext, Handler } from '../index';
 import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
-import { renderContext, loadSessionSummary, scanSessionFile } from './context';
+import { renderContext, loadSessionSummary } from './context';
+import { listSessions } from './sessions';
 import { log } from '../../core/logger';
 
 export const resumeHandlers: Record<string, Handler> = {
@@ -34,39 +33,24 @@ function boundScopeBySession(ctx: CommandContext): Map<string, string> {
 }
 
 export async function listResumableSessions(ctx: CommandContext): Promise<ResumeOption[]> {
-  const dir = getOmpSessionDir(ctx.controls.cfg);
-  const titles = ctx.sessions.titlesBySessionId();
   const bound = boundScopeBySession(ctx);
-  const out: ResumeOption[] = [];
-  try {
-    const entries = await readdir(dir);
-    for (const name of entries) {
-      if (!name.endsWith('.jsonl')) continue;
-      try {
-        const text = await readFile(join(dir, name), 'utf8');
-        const { meta, lastAssistant, lastUserMessage } = scanSessionFile(text);
-        if (!meta?.id || !meta.cwd) continue;
-        // Never offer a session another scope already owns.
-        const owner = bound.get(meta.id);
-        if (owner !== undefined && owner !== ctx.scope) continue;
-        const title = titles[meta.id];
-        out.push({
-          sessionId: meta.id,
-          cwd: meta.cwd,
-          timestamp: meta.timestamp ?? name,
-          ...(title !== undefined ? { title } : {}),
-          summary: lastAssistant,
-          lastMessage: lastUserMessage,
-        });
-      } catch {
-        continue;
-      }
-    }
-  } catch {
-    return [];
-  }
-  out.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-  return out;
+  // Newest session first by START time (the picker's historical order), not
+  // by last activity: the shared lister is activity-sorted for /history.
+  return (await listSessions(ctx))
+    .filter((s) => {
+      // Never offer a session another scope already owns.
+      const owner = bound.get(s.sessionId);
+      return owner === undefined || owner === ctx.scope;
+    })
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+    .map((s) => ({
+      sessionId: s.sessionId,
+      cwd: s.cwd,
+      timestamp: s.startedAt,
+      ...(s.title !== undefined ? { title: s.title } : {}),
+      summary: s.summary ?? '',
+      lastMessage: s.lastMessage,
+    }));
 }
 
 async function handleResume(args: string, ctx: CommandContext): Promise<void> {

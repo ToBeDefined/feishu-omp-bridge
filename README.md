@@ -300,7 +300,7 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 | `ompBinary` | `omp` | OMP 可执行文件名或绝对路径。 |
 | `ompModel` | 未设置 | 传给 `omp --model`；留空由 OMP 自身配置决定。 |
 | `ompThinking` | 未设置 | 传给 `omp --thinking`。 |
-| `ompSessionDir` | `~/.feishu-omp-bridge/omp-sessions` | bridge 专用 OMP session 目录（支持 `~` 展开）。运行与 `/resume`、`/ctx`、`/search`、`/rename` 等历史命令都读这里。 |
+| `ompSessionDir` | `~/.feishu-omp-bridge/omp-sessions` | bridge 专用 OMP session 目录（支持 `~` 展开）。运行与 `/resume`、`/ctx`、`/search`、`/history`、`/rename` 等历史命令都读这里。 |
 | `ompTools` | 未设置 | 传给 `omp --tools` 的逗号分隔工具白名单；留空使用 OMP 默认工具集。 |
 | `messageReply` | `markdown` | `card`、`markdown` 或 `text`。推荐使用 `card` 以获得完整交互。 |
 | `showToolCalls` | `true` | 是否展示工具调用过程。 |
@@ -332,7 +332,7 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 - `allowedChats` 空或未设置：允许所有 chat。
 - `admins` 空或未设置：所有允许用户都可执行管理员命令。
 - `owner` 未设置：回退到 `admins[0]`；两者都未设置时，高危命令对所有人拒绝。
-- 管理员命令（`admins`）：`/account`、`/config`、`/model`、`/thinking`、`/restart`、`/context`、`/resume`、`/session`、`/every`、`/search`、`/diff`、`/exit`、`/reconnect`、`/doctor`、`/cd`、`/ws`。
+- 管理员命令（`admins`）：`/account`、`/config`、`/model`、`/thinking`、`/restart`、`/context`、`/resume`、`/session`、`/every`、`/search`、`/history`、`/sessions`、`/diff`、`/exit`、`/reconnect`、`/doctor`、`/cd`、`/ws`。
 - 归属者命令（`owner`，比 admins 更严）：`/release`、`/exec`、`/run` —— 只有 owner 能跑，协作者拿 admin 也无法执行 shell。
 
 ## 数据目录
@@ -364,6 +364,7 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 | `/account` | 更换 bot app 凭据并重连。 |
 | `/context` | 查看当前会话上下文(scope/cwd/模型/探活等)。 |
 | `/rename <标题>` | 给当前会话起名;`/rename auto` 用 LLM 生成(≤20 字),`/rename clear` 清除。标题显示在 `/context`、`/status`、`/resume`、`/search`。 |
+| `/history [all]`、`/sessions` | 对话历史清单，按最后活动时间倒序：默认只看**当前工作目录**，`all` 看全部工作目录。每行显示活动时间 / 轮数 / 标题或最后一条用户消息，并带「继续对话」按钮（当前会话行只标记「✅ 当前」）；超过 8 条分页。admin 命令。 |
 | `/status` | 查看当前 scope、cwd、session、agent。 |
 | `/stop` | 终止当前正在执行的 OMP run。 |
 | `/timeout [N|off|default]` | 设置当前 session 的 idle timeout，或关闭 / 恢复全局默认。 |

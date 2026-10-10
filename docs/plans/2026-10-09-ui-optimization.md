@@ -272,3 +272,19 @@ it('annotates results with relative time and highlights the keyword', () => {
 2. **人工顺序执行**：按任务序号直接做，每个任务独立提交。
 
 选定后开始执行 Task 1。
+
+---
+
+## 状态：已执行完成（2026-10-11 结项）
+
+Task 1–11 均已落地：`src/card/templates.ts` 导出共享套件，`/new` `/cd` `/context`
+`/diff` `/exec` `/ps` `/every` `/compact` `/search` 的 handler 全部改为卡片输出
+（各命令文件均引用 `src/card/`），同步记录在 CHANGELOG `[Unreleased]`。
+
+同日增量（已在 main）：
+- `/history`（别名 `/sessions`）对话历史清单卡：每行「继续对话」按钮，
+  当前会话行标 `✅ 当前`（紧跟行号）
+- 修复 `/history` 每行身份被渲染两遍（残留的顶层 `elements.push`）
+
+**UI 改造到此暂停**（用户决定，后续是否继续另行确认）。发布（`/release`）尚未执行，
+运行中的 bridge 仍是改动前的 `dist`。

@@ -150,13 +150,19 @@ describe('historyCard', () => {
   it('marks the current session instead of offering a no-op resume', () => {
     const current = '01a11d26-5f7a-7106-be95-17618cbbaf57';
     const card = historyCard(
-      [row({ sessionId: current }), row({ sessionId: 'other-session-id-0000' })],
+      [row({ sessionId: current, title: 'bridge UI 调整' }), row({ sessionId: 'other-session-id-0000' })],
       { mode: 'cwd', offset: 0, total: 2, currentSessionId: current },
     );
     const buttons = allButtons(card);
     // Only the OTHER row can be resumed.
     expect(buttons.map((b) => b.arg)).toEqual(['other-session-id-0000']);
-    expect(JSON.stringify(card)).toContain('✅ 当前');
+    // The marker sits right behind the row number, not in the small meta line.
+    expect(JSON.stringify(card)).toContain('**#1** ✅ 当前 · 🏷 **bridge UI 调整**');
+    const markdown = [...JSON.stringify(card).matchAll(/"tag":"markdown","content":"((?:[^"\\]|\\.)*)"/g)].map(
+      (m) => m[1]!,
+    );
+    expect(markdown.some((c) => c.includes('✅ 当前'))).toBe(true);
+    expect(markdown.some((c) => c.includes('🆔') && c.includes('✅ 当前'))).toBe(false);
     // The current row is a single-column layout (no button column).
     const sets = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements.filter(
       (e) => e.tag === 'column_set',

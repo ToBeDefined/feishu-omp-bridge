@@ -79,11 +79,15 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
       // row would be noise.
       ...(opts.mode === 'all' ? [`📁 ${escapeMd(row.workspace)}`] : []),
       `🆔 ${row.sessionId.slice(0, 8)}…`,
-      ...(isCurrent ? ['✅ 当前'] : []),
     ];
 
+    // The current-session marker rides on the identity line — right behind the
+    // row number, where it is actually noticed (it was buried in the meta line).
     const lines: object[] = [
-      { tag: 'markdown', content: `**#${opts.offset + i + 1}** ${identity}` },
+      {
+        tag: 'markdown',
+        content: `**#${opts.offset + i + 1}**${isCurrent ? ' ✅ 当前 ·' : ''} ${identity}`,
+      },
       { tag: 'markdown', content: meta.join(' · '), text_size: 'notation' },
     ];
     // A named session still gets one detail line, so the title does not hide

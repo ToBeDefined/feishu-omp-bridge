@@ -589,12 +589,17 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
     md(`${icon} ${title}`, 'heading'),
     { tag: 'hr' },
     // column 必须包在 column_set 里（cardkit 11310 "unsupported type of
-    // block: column"）——与 statusCard 的双面板同构。
-    {
-      tag: 'column_set',
-      flex_mode: 'none',
-      columns: [panel(steps)],
-    },
+    // block: column"）——与 statusCard 的双面板同构。空 steps 时整个面板
+    // 省略：空 column 会渲染成一个空的灰框。
+    ...(steps.length > 0
+      ? [
+          {
+            tag: 'column_set',
+            flex_mode: 'none',
+            columns: [panel(steps)],
+          } as object,
+        ]
+      : []),
     { tag: 'hr' },
   ];
   if (progress.phase === 'failed') {

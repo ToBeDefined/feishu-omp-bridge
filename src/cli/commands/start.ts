@@ -28,6 +28,7 @@ import { kickstart } from '../../daemon/launchd';
 import { finalizeInterruptedCards, updateManagedCard } from '../../card/managed';
 import { clearOnlineNotice, takeOnlineNotice } from '../../bot/online-notify';
 import { onlineCard, releaseCard, restartCard } from '../../card/templates';
+import { RELEASE_STEPS } from '../../release/run';
 import { gcMediaCache, MEDIA_GC_MAX_AGE_MS } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
 import {
@@ -294,7 +295,13 @@ export async function runStart(opts: StartOptions): Promise<void> {
   // process is actually up.
   if (notice?.messageId) {
     const terminal =
-      notice.mode === 'skip' ? releaseCard({ steps: [], phase: 'success' }) : restartCard('done');
+      notice.mode === 'skip'
+        ? // Build succeeded (that's why we bounced): all steps are done.
+          releaseCard({
+            steps: RELEASE_STEPS.map((s) => ({ name: s.name, status: 'ok' as const })),
+            phase: 'success',
+          })
+        : restartCard('done');
     await bridge.channel.rawClient.im.v1
       .message.patch({
         path: { message_id: notice.messageId },

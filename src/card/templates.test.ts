@@ -520,3 +520,22 @@ describe('releaseCard restarting phase', () => {
     expect(JSON.stringify(releaseCard({ steps: [], phase: 'success' }))).toContain('已发布上线');
   });
 });
+
+describe('releaseCard empty steps', () => {
+  it('omits the panel entirely instead of rendering an empty grey box', () => {
+    const card = releaseCard({ steps: [], phase: 'success' });
+    const json = JSON.stringify(card);
+    expect(json).toContain('已发布上线');
+    expect(json).not.toContain('"elements":[]');
+    // 无步骤时不应出现 column_set（空 column 会渲染成空灰框）。
+    expect(json).not.toContain('column_set');
+  });
+
+  it('keeps the panel when steps exist', () => {
+    const json = JSON.stringify(
+      releaseCard({ steps: [{ name: 'build', status: 'ok' }], phase: 'success' }),
+    );
+    expect(json).toContain('column_set');
+    expect(json).toContain('✅ 构建');
+  });
+});

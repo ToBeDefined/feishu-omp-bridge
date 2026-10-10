@@ -1,6 +1,7 @@
-import { summarizeMd } from '../commands/shared';
+import { summarizeMd } from '../utils/text';
 import { isOmpThinkingLevel, OMP_THINKING_LEVELS } from '../config/schema';
-import { escapeCode, escapeMd, shortPath } from './templates';
+import { actions, shortPath, shortSessionId, type ButtonSpec } from './templates';
+import { escapeCode, escapeMd } from '../utils/text';
 import { formatAgo } from '../utils/time';
 
 /** Form value meaning "clear ompThinking / follow OMP default". */
@@ -71,10 +72,8 @@ export function modelProviderCard(
   thinking?: string,
 ): object {
   const lines = [
-    '🎛️ **切换模型**',
-    '',
-    `当前模型:` + formatCurrent(current),
-    `思考强度:` + formatCurrent(thinking),
+    `当前模型：` + formatCurrent(current),
+    `思考强度：` + formatCurrent(thinking),
   ];
   const commonButtons = modelCommonButtons(current, commons);
   const commonBlock: object[] =
@@ -109,6 +108,7 @@ export function modelProviderCard(
     config: { summary: { content: '切换模型' } },
     body: {
       elements: [
+        { tag: 'markdown', content: '🎛 **切换模型**', text_size: 'heading' },
         { tag: 'markdown', content: lines.join('\n') },
         ...commonBlock,
         ...recentBlock,
@@ -144,10 +144,11 @@ export function modelSelectCard(
       elements: [
         {
           tag: 'markdown',
+          text_size: 'heading',
           content:
-            `🎛️ **${provider} 模型**\n` +
-            `当前模型:` + formatCurrent(current) +
-            `\n思考强度:` + formatCurrent(thinking),
+            `🎛 **${provider} 模型**\n` +
+            `当前模型：` + formatCurrent(current) +
+            `\n思考强度：` + formatCurrent(thinking),
         },
         { tag: 'hr' },
         {
@@ -204,13 +205,18 @@ export function modelSelectCard(
 
 /** Post-set confirmation card. Shows the new model and current thinking. */
 export function modelSavedCard(model: string, thinking?: string): object {
-  const lines = [`✅ **模型已设为** \`${model}\``];
-  lines.push(`🧠 **思考强度**:${thinking ? `\`${thinking}\`` : '_跟随 OMP 默认_'}`);
-  lines.push('', '下一条消息生效。');
   return {
     schema: '2.0',
     config: { summary: { content: '模型已切换' } },
-    body: { elements: [{ tag: 'markdown', content: lines.join('\n') }] },
+    body: {
+      elements: [
+        { tag: 'markdown', content: `✅ **模型已设为** \`${model}\``, text_size: 'heading' },
+        {
+          tag: 'markdown',
+          content: `🧠 **思考强度**：${thinking ? `\`${thinking}\`` : '_跟随 OMP 默认_'}\n\n_下一条消息生效。_`,
+        },
+      ],
+    },
   };
 }
 
@@ -233,9 +239,10 @@ export function thinkingCard(current?: string): object {
       elements: [
         {
           tag: 'markdown',
+          text_size: 'heading',
           content:
             `🧠 **思考强度**\n` +
-            `当前:` + (current ? `\`${current}\`` : '_跟随 OMP 默认_') +
+            `当前：` + (current ? `\`${current}\`` : '_跟随 OMP 默认_') +
             `\n\n_只作用于当前模型,不影响模型切换_`,
         },
         { tag: 'hr' },
@@ -298,7 +305,12 @@ export function thinkingSavedCard(level: string): object {
     config: { summary: { content: '思考强度已切换' } },
     body: {
       elements: [
-        { tag: 'markdown', content: `✅ **思考强度已设为** \`${level}\`\n\n下一条消息生效。` },
+        {
+          tag: 'markdown',
+          content: `✅ **思考强度已设为** \`${level}\``,
+          text_size: 'heading',
+        },
+        { tag: 'markdown', content: '_下一条消息生效。_', text_size: 'notation' },
       ],
     },
   };
@@ -326,11 +338,6 @@ export interface ResumeOption {
   lastMessage?: string;
 }
 
-/** First 8 chars of a session id — the `/resume <prefix>` handle. */
-function shortId(id: string): string {
-  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
-}
-
 /** Session picker card for `/resume`. One compact row per session:
  * title/summary + time · cwd · id on the left, a one-click 恢复 button
  * on the right. */
@@ -347,7 +354,7 @@ export function resumeCard(
       tag: 'markdown',
       content:
         '当前：' +
-        (current ? `\`${escapeCode(shortId(current))}\`` : '_无_') +
+        (current ? `\`${escapeCode(current)}\`` : '_无_') +
         ' · 点击右侧按钮一键恢复',
       text_size: 'notation',
     },
@@ -368,7 +375,7 @@ export function resumeCard(
     const metaParts = [
       Number.isFinite(tsMs) ? formatAgo(Date.now() - tsMs) : '',
       `\`${escapeCode(shortPath(s.cwd))}\``,
-      escapeMd(shortId(s.sessionId)),
+      escapeMd(shortSessionId(s.sessionId)),
     ].filter(Boolean);
     const details: object[] = [
       { tag: 'markdown', content: heading },
@@ -420,29 +427,20 @@ export function resumeCard(
 
   const remaining = Math.max(0, total - (offset + sessions.length));
   const pageSize = sessions.length;
-  const footer: object[] = [];
+  const footer: ButtonSpec[] = [];
   if (offset > 0) {
     footer.push({
-      tag: 'button',
-      text: { tag: 'plain_text', content: '↑ 较新的会话' },
-      type: 'default',
+      text: '↑ 较新的会话',
       value: { cmd: 'resume.back', arg: String(Math.max(0, offset - pageSize)) },
     });
   }
   if (remaining > 0) {
     footer.push({
-      tag: 'button',
-      text: { tag: 'plain_text', content: `↓ 更早（剩 ${remaining}）` },
-      type: 'default',
+      text: `↓ 更早（剩 ${remaining}）`,
       value: { cmd: 'resume.more', arg: String(offset + sessions.length) },
     });
   }
-  footer.push({
-    tag: 'button',
-    text: { tag: 'plain_text', content: '取消' },
-    type: 'default',
-    value: { cmd: 'resume.cancel', arg: '' },
-  });
+  footer.push({ text: '取消', value: { cmd: 'resume.cancel', arg: '' } });
   elements.push(
     { tag: 'hr' },
     {
@@ -450,18 +448,8 @@ export function resumeCard(
       content: `第 ${offset + 1}-${offset + pageSize} 条 / 共 ${total} 条`,
       text_size: 'notation',
     },
-    // Schema 2.0 has no `action` container — buttons ride in a column_set row.
-    {
-      tag: 'column_set',
-      flex_mode: 'none',
-      horizontal_spacing: 'small',
-      columns: footer.map((b) => ({
-        tag: 'column',
-        width: 'auto',
-        vertical_align: 'center',
-        elements: [b],
-      })),
-    },
+    // Natural-width buttons in one wrapping row (see actions()).
+    ...actions(footer),
   );
   return {
     schema: '2.0',
@@ -487,7 +475,7 @@ export function resumeSavedCard(
     { tag: 'markdown', content: '✅ **会话已恢复**', text_size: 'heading' },
     {
       tag: 'markdown',
-      content: `🔗 \`${escapeCode(shortId(sessionId))}\` · 📁 \`${escapeCode(shortPath(cwd))}\``,
+      content: `🔗 \`${escapeCode(sessionId)}\` · 📁 \`${escapeCode(shortPath(cwd))}\``,
     },
     { tag: 'markdown', content: '_下一条消息从该会话继续。_', text_size: 'notation' },
   ];

@@ -1,22 +1,22 @@
 import type { Block, FooterStatus, RunState, SubagentEntry, ToolEntry, UiState } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 import { createTableBudget, type TableBudget } from './tables';
-import { codeFence, escapeMd } from './templates';
+import { codeFence, collapsiblePanel } from './templates';
+import { escapeMd } from '../utils/text';
 
 /** Max chars per reasoning body — reasoning is auxiliary, truncation is fine. */
 const REASONING_MAX = 1500;
 /** Cap for the OMP UI panel body (widget/status text). */
 const UI_PANEL_MAX = 2500;
 
-interface ToolGroup {
-  kind: 'tools';
-  tools: ToolEntry[];
-}
-interface TextGroup {
-  kind: 'text';
-  content: string;
-}
-type Group = ToolGroup | TextGroup;
+/** One process element inside a contiguous tool/thinking stretch. */
+type ProcessItem =
+  | { kind: 'tools'; tools: ToolEntry[] }
+  | { kind: 'thinking'; content: string; active: boolean };
+
+/** A render op: answer text, or a contiguous process stretch (no text
+ *  between its elements) that collapses into one outer row. */
+type RenderOp = { kind: 'text'; content: string } | { kind: 'process'; items: ProcessItem[] };
 
 /** Per-page markers for the card pagination flow (see batch.ts streamCardPages). */
 export interface CardPageOptions {
@@ -42,25 +42,20 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   // chatty thinking block can never push the answer's tables into code blocks.
   const tables = createTableBudget();
 
-  // Consecutive tool calls share ONE collapsible「🛠 工具调用」group row —
-  // the run's body stays mostly answer text; open the group to see each call
-  // (each call keeps its own header + merged body, as before).
+  // Answer text renders inline; a contiguous stretch of process elements
+  // (tool runs + thinking segments with no text in between) collapses into
+  // ONE outer row —「🛠 工具调用 ×N · 🧠 思考过程 ×M」when both kinds are
+  // present, or the plain tool/thinking row when only one kind is.
   const bodyElements: object[] = [];
-  for (const group of groupBlocks(state.blocks)) {
-    if (group.kind === 'text') {
-      if (group.content.trim()) {
-        bodyElements.push(markdown(tables(group.content)));
-      }
-    } else {
-      bodyElements.push(toolGroupPanel(group.tools));
-    }
+  for (const op of collectOps(state.blocks)) {
+    bodyElements.push(
+      op.kind === 'text'
+        ? markdown(tables(op.content))
+        : renderProcessRun(op.items, tables),
+    );
   }
 
   if (opts?.topNote) elements.push(noteMd(opts.topNote));
-
-  if (hasReasoningSubstance(state.reasoning.content)) {
-    elements.push(reasoningPanel(state.reasoning.content, state.reasoning.active, tables));
-  }
 
   const ui = uiContextPanel(state.ui, tables);
   if (ui) elements.push(ui);
@@ -80,6 +75,8 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   }
 
   if (state.terminal === 'running') {
+    // 分割线把控制区（状态 + ⏹）和正文隔开。
+    elements.push({ tag: 'hr' });
     if (state.footer) {
       elements.push(runningFooter(state.footer));
     } else {
@@ -102,20 +99,78 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   };
 }
 
-function* groupBlocks(blocks: Block[]): Generator<Group> {
+/**
+ * Fold the chronological blocks into render ops: text stays text; a
+ * contiguous stretch of tools and/or thinking collapses into ONE process op
+ * (consecutive tool blocks are one run; thinking segments join the same op).
+ * Blank text and substance-less thinking (a bare ".") drop out here, so the
+ * op's counts match what is actually rendered.
+ */
+function collectOps(blocks: Block[]): RenderOp[] {
+  const ops: RenderOp[] = [];
   let toolBuf: ToolEntry[] = [];
+  const pushProcess = (item: ProcessItem): void => {
+    const last = ops[ops.length - 1];
+    if (last?.kind === 'process') last.items.push(item);
+    else ops.push({ kind: 'process', items: [item] });
+  };
+  const flushTools = (): void => {
+    if (toolBuf.length === 0) return;
+    pushProcess({ kind: 'tools', tools: toolBuf });
+    toolBuf = [];
+  };
   for (const b of blocks) {
     if (b.kind === 'tool') {
       toolBuf.push(b.tool);
-    } else {
-      if (toolBuf.length > 0) {
-        yield { kind: 'tools', tools: toolBuf };
-        toolBuf = [];
-      }
-      yield { kind: 'text', content: b.content };
+      continue;
     }
+    flushTools();
+    if (b.kind === 'thinking') {
+      if (hasReasoningSubstance(b.content)) {
+        pushProcess({ kind: 'thinking', content: b.content, active: b.active });
+      }
+      continue;
+    }
+    if (b.content.trim()) ops.push({ kind: 'text', content: b.content });
   }
-  if (toolBuf.length > 0) yield { kind: 'tools', tools: toolBuf };
+  flushTools();
+  return ops;
+}
+
+/**
+ * Render one process stretch as a single outer row.
+ *
+ * Single kind → the plain row (「🛠 工具调用 ×N」/「🧠 思考过程」), unchanged.
+ * Both kinds → one merged row titled「🛠 工具调用 ×N · 🧠 思考过程 ×M」whose
+ * children are the individual calls and thinking segments IN CHRONOLOGICAL
+ * ORDER (so tool,thinking,tool reads top-to-bottom inside one group instead
+ * of stacking three separate rows).
+ */
+function renderProcessRun(items: ProcessItem[], tables: TableBudget): object {
+  const only = items.length === 1 ? items[0] : undefined;
+  if (only?.kind === 'tools') return toolGroupPanel(only.tools);
+  if (only?.kind === 'thinking') return reasoningPanel(only.content, only.active, tables);
+
+  const toolCount = items.reduce((n, it) => (it.kind === 'tools' ? n + it.tools.length : n), 0);
+  const thinkingCount = items.reduce((n, it) => (it.kind === 'thinking' ? n + 1 : n), 0);
+  const failed = items.reduce(
+    (n, it) => (it.kind === 'tools' ? n + it.tools.filter((t) => t.status === 'error').length : n),
+    0,
+  );
+  const suffix = failed > 0 ? `（${failed} 失败）` : '';
+  // Thinking first, tools last: the stretch usually opens with reasoning, and
+  // trailing the tool count lets its failure count sit at the end of the
+  // title instead of dangling next to an unrelated count.
+  return collapsiblePanel({
+    title: `🧠 **思考** ×${thinkingCount} · 🛠 **工具** ×${toolCount}${suffix}`,
+    expanded: false,
+    border: failed > 0 ? 'red' : 'grey',
+    elements: items.flatMap((it) =>
+      it.kind === 'tools'
+        ? it.tools.map((t) => toolPanel(t))
+        : [reasoningPanel(it.content, it.active, tables)],
+    ),
+  });
 }
 
 /** Some models emit a bare "." as an empty thinking slot — reasoning panels
@@ -173,40 +228,6 @@ function toolPanel(tool: ToolEntry): object {
     border: tool.status === 'error' ? 'red' : 'grey',
     body: toolBodyMd(tool) || '_无输出_',
   });
-}
-
-interface PanelOpts {
-  title: string;
-  expanded: boolean;
-  border: 'grey' | 'red' | 'blue';
-  /** Markdown body — ignored when `elements` is provided. */
-  body?: string;
-  /** Prebuilt panel elements — overrides `body` (used for nested panels). */
-  elements?: object[];
-}
-
-function collapsiblePanel(opts: PanelOpts): object {
-  return {
-    tag: 'collapsible_panel',
-    expanded: opts.expanded,
-    header: panelHeader(opts.title),
-    border: { color: opts.border, corner_radius: '5px' },
-    vertical_spacing: '8px',
-    padding: '8px 8px 8px 8px',
-    elements:
-      opts.elements ?? [{ tag: 'markdown', content: opts.body, text_size: 'notation' }],
-  };
-}
-
-function panelHeader(titleMd: string): object {
-  return {
-    title: { tag: 'markdown', content: titleMd },
-    vertical_align: 'center',
-    // Collapsed = ▸ (points right); rotates 90° clockwise to ▾ when expanded.
-    icon: { tag: 'standard_icon', token: 'right-small-ccm_outlined', size: '16px 16px' },
-    icon_position: 'follow_text',
-    icon_expanded_angle: 90,
-  };
 }
 
 function markdown(content: string): object {

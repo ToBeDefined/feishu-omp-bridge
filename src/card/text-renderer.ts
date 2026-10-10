@@ -1,6 +1,6 @@
 import type { Block, RunState, ToolEntry, UiState } from './run-state';
 import { toolHeaderText } from './tool-render';
-import { escapeMd } from './templates';
+import { escapeMd } from '../utils/text';
 
 /**
  * Render `RunState` as plain markdown text — used in `messageReply: 'text'`
@@ -37,6 +37,12 @@ export function renderText(state: RunState): string {
 }
 
 function renderBlock(block: Block): string {
+  if (block.kind === 'thinking') {
+    // Text mode intentionally omits thinking — no place to fold it and it
+    // would bury the answer (matches the renderer's collapsed-by-default
+    // stance, just stricter).
+    return '';
+  }
   if (block.kind === 'text') {
     return block.content.trim();
   }

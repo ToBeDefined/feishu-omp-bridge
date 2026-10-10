@@ -1,7 +1,29 @@
 import { homedir } from 'node:os';
+import type { RunCard } from './run-renderer';
 import { formatAgoOr, formatClockOr } from '../utils/time';
+import { escapeCode, escapeMd } from '../utils/text';
 
-interface ButtonSpec {
+/** Input for /context renders — gathered by commands/session/context.ts
+ * (`collectContextInfo`) and consumed here, so the text renderer and the
+ * card cannot drift apart. */
+export interface ContextInfo {
+  scope: string;
+  chatMode: 'p2p' | 'group' | 'topic';
+  cwd: string;
+  sessionId?: string;
+  sessionTitle?: string;
+  createdAt?: number;
+  updatedAt?: number;
+  running: boolean;
+  model?: string;
+  thinking?: string;
+  idleLine: string;
+  /** Named workspaces pointing at the current cwd. */
+  wsNames: string[];
+  summary: { lastMessage?: string; lastReply?: string };
+}
+
+export interface ButtonSpec {
   text: string;
   value: Record<string, unknown>;
   style?: 'primary' | 'danger' | 'default';
@@ -17,31 +39,101 @@ function button(spec: ButtonSpec): object {
 }
 
 /** JSON 2.0 markdown element; `size` shrinks ('notation') or enlarges ('heading'). */
-function md(content: string, size?: 'heading' | 'notation'): object {
+export function md(content: string, size?: 'heading' | 'notation'): object {
   return size === undefined
     ? { tag: 'markdown', content }
     : { tag: 'markdown', content, text_size: size };
 }
 
-function actions(buttons: ButtonSpec[]): object {
+/**
+ * Quick-action buttons, one per row (full width).
+ *
+ * `flex_mode: 'stretch'` turns each column into its own full-width row, so a
+ * button row can never be laid out badly:
+ * - `auto`/`weighted` column widths are only honoured by `flex_mode: 'none'`,
+ *   which *compresses* the row on narrow screens — that is what squeezed the
+ *   labels together on a phone;
+ * - `flow` ignores `width` entirely and spreads the columns to both edges of a
+ *   wide (desktop) card — the「继续对话 …… 完成」look.
+ * Stretch is the only mode that behaves the same at every card width.
+ */
+export function actions(buttons: ButtonSpec[]): object[] {
   // Schema 2.0 has no `action` container — buttons ride in a column_set row.
-  return {
-    tag: 'column_set',
-    flex_mode: 'none',
-    horizontal_spacing: 'small',
-    columns: buttons.map((spec) => ({
-      tag: 'column',
-      width: 'auto',
-      vertical_align: 'center',
-      elements: [button(spec)],
-    })),
-  };
+  return [
+    {
+      tag: 'column_set',
+      flex_mode: 'stretch',
+      horizontal_spacing: 'small',
+      columns: buttons.map((spec) => ({
+        tag: 'column',
+        width: 'auto',
+        vertical_align: 'center',
+        elements: [button(spec)],
+      })),
+    },
+  ];
+}
+
+/** 8-char session-id handle. Singular "this is your session" lines show the
+ * id in full (26-36 chars); lists need only enough to tell rows apart. */
+export function shortSessionId(id: string): string {
+  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+}
+
+/**
+ * Stack info panels one per row, each FULL width.
+ *
+ * A single multi-column `column_set` (even with `flex_mode: 'stretch'`) lays
+ * its columns out side by side whenever the card is wide — i.e. on desktop,
+ * where two half-width text panels read worse than the same content flowing
+ * down the card. One single-column `column_set` per panel keeps them stacked
+ * at every width (a bare `column` outside a `column_set` is rejected by the
+ * card API).
+ */
+export function stackedPanels(panels: object[]): object[] {
+  return panels.map((p) => ({ tag: 'column_set', flex_mode: 'none', columns: [p] }));
 }
 
 const HR: object = { tag: 'hr' };
 
+interface PanelOpts {
+  title: string;
+  expanded: boolean;
+  border: 'grey' | 'red' | 'blue';
+  /** Markdown body — ignored when `elements` is provided. */
+  body?: string;
+  /** Prebuilt panel elements — overrides `body` (used for nested panels). */
+  elements?: object[];
+}
+
+/** Collapsed-by-default ▸ panel; expanding rotates the arrow to ▾. */
+export function collapsiblePanel(opts: PanelOpts): object {
+  return {
+    tag: 'collapsible_panel',
+    expanded: opts.expanded,
+    header: {
+      title: { tag: 'markdown', content: opts.title },
+      vertical_align: 'center',
+      icon: { tag: 'standard_icon', token: 'right-small-ccm_outlined', size: '16px 16px' },
+      icon_position: 'follow_text',
+      icon_expanded_angle: 90,
+    },
+    border: { color: opts.border, corner_radius: '5px' },
+    vertical_spacing: '8px',
+    padding: '8px 8px 8px 8px',
+    elements:
+      opts.elements ?? [{ tag: 'markdown', content: opts.body, text_size: 'notation' }],
+  };
+}
+
+/** Collapsed, markdown-safe one-line digest of user/assistant content. */
+function digest(text: string, max = 80): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  return escapeMd(flat.length > max ? `${flat.slice(0, max)}…` : flat);
+}
+
 /** Schema 2.0 card shell: `summary` is the notification/condensed preview. */
-function shell(summary: string, elements: object[]): object {
+export function shell(summary: string, elements: object[]): RunCard {
   return {
     schema: '2.0',
     config: { summary: { content: summary } },
@@ -50,7 +142,7 @@ function shell(summary: string, elements: object[]): object {
 }
 
 /** Grey info panel column (the rounded stat-card look). */
-function panel(elements: object[]): object {
+export function panel(elements: object[]): object {
   return {
     tag: 'column',
     width: 'weighted',
@@ -123,7 +215,7 @@ export function workspacesCard(current: string | undefined, named: Record<string
   }
 
   elements.push(HR);
-  elements.push(actions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
+  elements.push(...actions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
 
   return shell('📂 工作空间', elements);
 }
@@ -151,11 +243,6 @@ export interface StatusInfo {
   running: boolean;
 }
 
-/** First 8 chars of a session id — enough for `/resume <prefix>` matching. */
-function shortId(id: string): string {
-  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
-}
-
 export function statusCard(info: StatusInfo): object {
   const scopeLine =
     info.chatMode === 'topic'
@@ -171,7 +258,7 @@ export function statusCard(info: StatusInfo): object {
     ),
     md(
       info.sessionId
-        ? `🔗 \`${escapeCode(shortId(info.sessionId))}\``
+        ? `🔗 \`${escapeCode(info.sessionId)}\``
         : '🔗 _无，下条消息新建_',
     ),
     md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
@@ -190,28 +277,403 @@ export function statusCard(info: StatusInfo): object {
   return shell('📊 会话状态', [
     md('📊 **会话状态**', 'heading'),
     md(scopeLine, 'notation'),
-    {
-      tag: 'column_set',
-      // stretch: panels stack vertically on narrow (mobile) screens instead
-      // of squeezing side by side.
-      flex_mode: 'stretch',
-      horizontal_spacing: 'small',
-      columns: [panel(sessionPanel), panel(envPanel)],
-    },
+    ...stackedPanels([panel(sessionPanel), panel(envPanel)]),
     ...(info.sessionStale
       ? [md('⚠️ _session 来自旧 cwd，下一条消息将新建会话_', 'notation')]
       : []),
-    HR,
-    actions([
-      { text: '🆕 新会话', value: { cmd: 'new' }, style: 'primary' },
-      { text: '🕘 恢复会话', value: { cmd: 'resume' } },
+  ]);
+}
+
+/** /cd success card: the new cwd, the session-reset consequence, and the
+ * two most likely follow-ups (workspace list, status). */
+export function cwdChangedCard(cwd: string, scopeNote?: string): object {
+  return shell('📁 已切换工作目录', [
+    md('📁 **已切换工作目录**', 'heading'),
+    ...(scopeNote ? [md(`_${escapeMd(scopeNote)}_`, 'notation')] : []),
+    md(`新的 cwd：\`${escapeCode(tildePath(cwd))}\``),
+    md('_session 已重置，下一条消息在新目录开始。_', 'notation'),
+    { tag: 'hr' },
+    ...actions([
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
-      { text: '💡 帮助', value: { cmd: 'help' } },
+      { text: '📊 状态', value: { cmd: 'status' } },
     ]),
   ]);
 }
 
-/** Help groups follow the article's cheat-sheet categories. */
+/** /context card — same data as the /status panels plus the recent
+ * message/reply digest, from the shared ContextInfo gatherer
+ * (commands/session/context.ts). Type-only import: no runtime cycle. */
+export function contextCard(
+  info: ContextInfo,
+): object {
+  const hasRecent = Boolean(info.summary.lastMessage || info.summary.lastReply);
+  const recentPanel = hasRecent
+    ? [
+        panel([
+          md('**💬 最近内容**'),
+          ...(info.summary.lastMessage
+            ? [md(`💬 ${digest(info.summary.lastMessage, 80)}`)]
+            : []),
+          ...(info.summary.lastReply
+            ? [md(`📝 ${digest(info.summary.lastReply, 80)}`)]
+            : []),
+        ]),
+      ]
+    : [];
+  const scopeLine =
+    info.chatMode === 'topic'
+      ? `窗口 \`${escapeCode(info.scope)}\` _（话题独立会话）_`
+      : `窗口 \`${escapeCode(info.scope)}\``;
+  const wsLine =
+    info.wsNames.length > 0
+      ? info.wsNames.map((n) => `\`${escapeCode(n)}\``).join(' ')
+      : '_（当前目录无快捷方式）_';
+  return shell('🧾 会话上下文', [
+    md('🧾 **会话上下文**', 'heading'),
+    md(scopeLine, 'notation'),
+    ...stackedPanels([
+      panel([
+        md('**🗂 会话**'),
+        md(info.sessionTitle ? `🏷 ${escapeMd(info.sessionTitle)}` : '🏷 _未命名_'),
+        md(
+          info.sessionId
+            ? `🔗 \`${escapeCode(info.sessionId)}\``
+            : '🔗 _无，下条消息新建_',
+        ),
+        md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
+        md(`🕘 ${formatAgoOr(info.updatedAt, '新会话')}`),
+        md(info.running ? '🔄 任务执行中' : '✅ 空闲'),
+      ]),
+      panel([
+        md('**🧩 环境**'),
+        md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
+        md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
+        md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
+        md(`⏱ ${escapeMd(info.idleLine)}`),
+        md(`📂 ${wsLine}`),
+      ]),
+      ...recentPanel,
+    ]),
+  ]);
+}
+
+/** /diff card: stat fence up top, the full diff collapsed in one panel. */
+export function diffCard(cwd: string, stat: string, diff: string): object {
+  const DIFF_MAX = 4000;
+  const truncated =
+    diff.length > DIFF_MAX
+      ? `${diff.slice(0, DIFF_MAX)}\n…（diff 已截断，完整内容看本机）`
+      : diff;
+  const elements: object[] = [
+    md('📦 **git diff**', 'heading'),
+    md(`_\`${escapeCode(tildePath(cwd))}\` 工作区未提交改动_`, 'notation'),
+  ];
+  if (stat) elements.push(md(codeFence(stat)));
+  elements.push(
+    collapsiblePanel({
+      title: '📄 **改动内容**',
+      expanded: false,
+      border: 'grey',
+      body: codeFence(truncated, 'diff'),
+    }),
+  );
+  if (diff.length > DIFF_MAX) {
+    elements.push(md('_⚠️ diff 已截断_', 'notation'));
+  }
+  return shell('📦 git diff', elements);
+}
+
+export interface ExecResultInfo {
+  cmd: string;
+  exitCode: number | null;
+  output: string;
+  timedOut: boolean;
+  /** For the timeout title, e.g. 30. */
+  timeoutSeconds: number;
+}
+
+/** /exec result: outcome heading + the command + collapsed output panel. */
+export function execResultCard(info: ExecResultInfo): object {
+  const ok = !info.timedOut && info.exitCode === 0;
+  const title = info.timedOut
+    ? `⏱ **执行超时**（${info.timeoutSeconds}s），已终止`
+    : info.exitCode === null
+      ? '❌ **无法执行**'
+      : ok
+        ? '✅ **命令执行完成**'
+        : `❌ **命令失败**（退出码 ${info.exitCode}）`;
+  const elements: object[] = [
+    md(title, 'heading'),
+    md(`\`$ ${escapeCode(info.cmd)}\``, 'notation'),
+  ];
+  if (info.output.trim()) {
+    elements.push(
+      collapsiblePanel({
+        title: '📄 **输出**',
+        expanded: !ok,
+        border: ok ? 'grey' : 'red',
+        body: codeFence(info.output),
+      }),
+    );
+  } else {
+    elements.push(md('_（无输出）_', 'notation'));
+  }
+  return shell('🖥 命令执行', elements);
+}
+
+/** /ps card: one row per running bot, current one starred, each with an
+ * inline 退出 button (admin gate enforced by the dispatcher). */
+export interface PsRow {
+  id: string;
+  appId: string;
+  botName?: string;
+  startedAgo: string;
+  isCurrent: boolean;
+}
+
+export function psCard(rows: PsRow[]): object {
+  const blocks: object[] = [md(`🖥 **Bot 进程** ×${rows.length}`, 'heading')];
+  rows.forEach((row, i) => {
+    const label = row.botName ?? row.appId;
+    blocks.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: 'small',
+      columns: [
+        {
+          tag: 'column',
+          width: 'weighted',
+          weight: 1,
+          vertical_align: 'center',
+          elements: [
+            md(
+              `**#${i + 1}** ${escapeMd(label)}${row.isCurrent ? ' ⭐ 当前' : ''}`,
+            ),
+            md(`_\`${escapeCode(row.id)}\` · ${escapeMd(row.appId)} · ${escapeMd(row.startedAgo)}启动_`, 'notation'),
+          ],
+        },
+        {
+          tag: 'column',
+          width: 'auto',
+          vertical_align: 'center',
+          elements: [
+            button({ text: '退出', value: { cmd: 'exit', arg: row.id }, style: 'danger' }),
+          ],
+        },
+      ],
+    });
+  });
+  blocks.push(
+    { tag: 'hr' },
+    md('_用 /exit <id|#> 关掉某一个；⭐ 为当前正在回复你的进程。_', 'notation'),
+  );
+  return shell('🖥 Bot 进程', blocks);
+}
+
+/** /every list card: one collapsible per scheduled task with an inline
+ * 删除 button. */
+export interface EveryRow {
+  id: string;
+  interval: string;
+  nextRun: string;
+  prompt: string;
+}
+
+export function everyCard(rows: EveryRow[]): object {
+  if (rows.length === 0) {
+    return shell('📅 定时任务', [
+      md('📅 **定时任务**', 'heading'),
+      md('暂无定时任务。'),
+      md('_发 `/every <间隔> <指令>` 添加，间隔如 `30m`/`2h`/`1d`。_', 'notation'),
+    ]);
+  }
+  const elements: object[] = [md(`📅 **定时任务** ×${rows.length}`, 'heading')];
+  rows.forEach((row, i) => {
+    elements.push(
+      collapsiblePanel({
+        title: `⏱ **每 ${escapeMd(row.interval)}** · ${escapeMd(row.nextRun)} — ${escapeMd(row.prompt.slice(0, 40))}`,
+        expanded: false,
+        border: 'grey',
+        elements: [
+          md(codeFence(row.prompt)),
+          button({ text: '🗑 删除', value: { cmd: 'every.rm', arg: row.id }, style: 'danger' }),
+        ],
+      }),
+    );
+    if (i < rows.length - 1) elements.push({ tag: 'hr' });
+  });
+  elements.push(md('_发 `/every rm <id>` 也可以删除任务。_', 'notation'));
+  return shell('📅 定时任务', elements);
+}
+
+/** /compact progress card. `tokensK`/`mb`/`eta`/`cap` are preformatted by the
+ * caller (they own the estimation math); omit them when no estimate exists. */
+export interface CompactInfo {
+  phase: 'started' | 'done' | 'failed';
+  tokensK?: string;
+  mb?: string;
+  eta?: string;
+  cap?: string;
+  error?: string;
+}
+
+export function compactCard(info: CompactInfo): object {
+  if (info.phase === 'started') {
+    const sizeLine =
+      info.tokensK !== undefined
+        ? md(
+            `📏 会话 ≈${info.tokensK}k token / ${info.mb} MB\n⏳ 预计 ≈${info.eta}（上限 ${info.cap}）`,
+          )
+        : md('_（无法估算会话大小，耐心等待…）_', 'notation');
+    return shell('🫧 压缩会话', [
+      md('🫧 **正在压缩会话上下文**', 'heading'),
+      md('_完成后会在这里通知你。_', 'notation'),
+      sizeLine,
+    ]);
+  }
+  if (info.phase === 'failed') {
+    return shell('❌ 压缩失败', [
+      md('❌ **压缩失败**', 'heading'),
+      ...(info.error ? [md(codeFence(info.error))] : []),
+    ]);
+  }
+  return shell('✅ 压缩完成', [
+    md('✅ **会话上下文已压缩**', 'heading'),
+    md('_下条消息生效。_', 'notation'),
+  ]);
+}
+
+/** /release progress card: per-step ✅/⏳/○ states with a failure tail. */
+export type ReleaseStepName = 'typecheck' | 'test' | 'build';
+export type ReleaseStepState = 'pending' | 'running' | 'ok' | 'failed';
+const RELEASE_STEP_LABEL: Record<ReleaseStepName, string> = {
+  typecheck: '类型检查',
+  test: '测试',
+  build: '构建',
+};
+
+export interface ReleaseProgress {
+  steps: Array<{ name: ReleaseStepName; status: ReleaseStepState }>;
+  /** `restarting` is the pre-boot state: build succeeded, process is being
+   * bounced. The NEW process flips it to `success` once it is actually up. */
+  phase: 'running' | 'restarting' | 'success' | 'failed';
+  /** Failure details from the failing step. */
+  failStep?: ReleaseStepName;
+  failNote?: string;
+  output?: string;
+}
+
+const STEP_MARK: Record<ReleaseStepState, string> = {
+  pending: '⭕️',
+  running: '⏳',
+  ok: '✅',
+  failed: '❌',
+};
+
+export function releaseCard(progress: ReleaseProgress): RunCard {
+  const icon =
+    progress.phase === 'failed'
+      ? '❌'
+      : progress.phase === 'success'
+        ? '🚀'
+        : progress.phase === 'restarting'
+          ? '🚀'
+          : '🔄';
+  const title =
+    progress.phase === 'failed'
+      ? `**发布失败于 ${RELEASE_STEP_LABEL[progress.failStep ?? 'typecheck']}**`
+      : progress.phase === 'success'
+        ? '**已发布上线**'
+        : progress.phase === 'restarting'
+          ? '**构建完成，正在重启加载新产物**'
+          : '**正在发布**';
+  const steps = progress.steps.map((s) =>
+    md(`${STEP_MARK[s.status]} ${RELEASE_STEP_LABEL[s.name]}`),
+  );
+  const elements: object[] = [
+    md(`${icon} ${title}`, 'heading'),
+    { tag: 'hr' },
+    // column 必须包在 column_set 里（cardkit 11310 "unsupported type of
+    // block: column"）——与 statusCard 的双面板同构。空 steps 时整个面板
+    // 省略：空 column 会渲染成一个空的灰框。
+    ...(steps.length > 0
+      ? [
+          {
+            tag: 'column_set',
+            flex_mode: 'none',
+            columns: [panel(steps)],
+          } as object,
+        ]
+      : []),
+    { tag: 'hr' },
+  ];
+  if (progress.phase === 'failed') {
+    if (progress.failNote) elements.push(md(escapeMd(progress.failNote)));
+    if (progress.output) elements.push(md(codeFence(progress.output)));
+  } else if (progress.phase === 'success') {
+    elements.push(md('_进程已发布并重启。_', 'notation'));
+  } else if (progress.phase === 'restarting') {
+    elements.push(md('_新进程启动后会确认上线。_', 'notation'));
+  } else {
+    elements.push(md('_typecheck → test → build → 自动重启_', 'notation'));
+  }
+  return shell(`${icon} 发布`, elements);
+}
+
+/** Replacement card for a recall that failed — no buttons, so a stale
+ * interactive surface cannot be clicked after its flow moved on. */
+export function staleNoticeCard(): object {
+  return {
+    schema: '2.0',
+    config: { update_multi: true },
+    body: {
+      elements: [
+        { tag: 'markdown', content: '_⚠️ 此卡片已过期，请使用最新发出的卡片。_' },
+      ],
+    },
+  };
+}
+/** /restart status card. A real launchd restart leaves the starting card in
+ * place; the new process supplies the separate boot confirmation. */
+export function restartCard(phase: 'starting' | 'done' | 'failed', error?: string): object {
+  if (phase === 'done') {
+    return shell('🚀 重启完成', [
+      md('🚀 **重启完成**', 'heading'),
+      md('_已重新连接，可以继续发送消息。_', 'notation'),
+    ]);
+  }
+  if (phase === 'failed') {
+    return shell('❌ 重启失败', [
+      md('❌ **重启失败**', 'heading'),
+      md(error ? escapeMd(error) : '_bot 仍在线，请稍后重试。_', 'notation'),
+    ]);
+  }
+  return shell('🔄 正在重启', [
+    md('🔄 **正在重启**', 'heading'),
+    md('_服务即将重启；重新上线后会继续接收消息。_', 'notation'),
+  ]);
+}
+
+/** Response card after an agent-authored choice button click: the choice,
+ * frozen, no buttons. */
+export function agentSelectedCard(label: string): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: `✅ 已选择 ${label}` } },
+    body: { elements: [{ tag: 'markdown', content: `✅ 已选择：**${escapeMd(label)}**` }] },
+  };
+}
+
+/** Boot confirmation for an ORDINARY start (crash recovery, manual launch):
+ * nobody asked for the bounce, so the bot announces it came back. `/release`
+ * and `/restart` are covered by their own command cards. */
+export function onlineCard(): RunCard {
+  return shell('🚀 已上线', [
+    md('🚀 **已上线**', 'heading'),
+    md('_服务已重新启动，可以继续发送消息。_', 'notation'),
+  ]);
+}
+
 const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',
@@ -262,31 +724,68 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   },
 ];
 
+export interface NewSessionInfo {
+  cwd: string;
+  model?: string;
+  thinking?: string;
+  idleLine: string;
+  wasRunning: boolean;
+  /** Rendered under the heading, e.g. topic chats: 「话题独立会话」。 */
+  scopeNote?: string;
+}
+
+/** Compact /new confirmation — deliberately NOT the full /context dump:
+ * a fresh session has nothing to show for 「开始/最后对话」 yet. */
+export function newSessionCard(info: NewSessionInfo): object {
+  return shell('✅ 新会话已开始', [
+    md(
+      info.wasRunning
+        ? '✅ **已中断当前任务并开始新会话**'
+        : '✅ **已开始新会话**',
+      'heading',
+    ),
+    ...(info.scopeNote ? [md(`_${escapeMd(info.scopeNote)}_`, 'notation')] : []),
+    ...stackedPanels([
+      panel([
+        md('**🧩 环境**'),
+        md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
+        md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
+        md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
+      ]),
+      panel([
+        md('**⏱ 探活**'),
+        md(escapeMd(info.idleLine)),
+        md('_直接发消息即可开始，无需其他操作。_', 'notation'),
+      ]),
+    ]),
+  ]);
+}
+
 export function helpCard(): object {
   const elements: object[] = [md('💡 **命令速查**', 'heading')];
-  HELP_GROUPS.forEach((group, gi) => {
-    if (gi > 0) elements.push(HR);
-    elements.push(md(`**${group.title}**`));
-    for (const [cmd, desc] of group.items) {
-      elements.push(md(`\`${cmd}\` — ${desc}`));
-    }
+  // Each category collapses to one row — the card stays short; open a group
+  // to read its commands.
+  HELP_GROUPS.forEach((group) => {
+    elements.push(
+      collapsiblePanel({
+        title: `**${group.title}**`,
+        expanded: false,
+        border: 'grey',
+        elements: [
+          md(group.items.map(([cmd, desc]) => `\`${cmd}\` — ${desc}`).join('\n')),
+        ],
+      }),
+    );
   });
-  elements.push(HR);
   elements.push(md('_发送 `/help` 随时查看；其他内容直接交给 OMP。_', 'notation'));
   elements.push(
-    actions([
+    ...actions([
       { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
       { text: '🕘 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
     ]),
   );
   return shell('💡 命令速查', elements);
-}
-
-export function escapeMd(s: string): string {
-  // `[ ] ( ) !` are included so untrusted content cannot forge a link or image
-  // (`[x](url)` / `![](url)`) inside card markdown.
-  return s.replace(/([*_`\\[\]()!])/g, '\\$1');
 }
 
 /**
@@ -298,14 +797,4 @@ export function codeFence(content: string, lang?: string): string {
   const longest = (content.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
   const fence = '`'.repeat(Math.max(3, longest + 1));
   return `${fence}${lang ?? ''}\n${content}\n${fence}`;
-}
-
-/**
- * Neutralise content that goes INSIDE an inline code span. Backslash escapes
- * are not processed inside a code span, so `escapeMd` there renders visible
- * backslashes (`src/a\(b\).ts`); the span itself already suppresses markdown,
- * only the delimiter needs handling.
- */
-export function escapeCode(s: string): string {
-  return s.replace(/`/g, "'");
 }

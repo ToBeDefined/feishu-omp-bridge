@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
-import { codeFence } from '../../card/templates';
+import { execResultCard } from '../../card/templates';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
 import { log } from '../../core/logger';
@@ -105,18 +105,18 @@ async function handleExec(args: string, ctx: CommandContext): Promise<void> {
     exitCode: result.exitCode,
     timedOut: result.timedOut,
   });
-  const body = result.output.trim() ? `\n${codeFence(result.output)}` : '';
-  if (result.timedOut) {
-    await reply(ctx, `⏱ 执行超时（${EXEC_TIMEOUT_MS / 1000}s），已终止。${body}`);
-    return;
-  }
-  if (result.exitCode === null) {
-    await reply(ctx, `❌ 无法执行${body}`);
-    return;
-  }
-  if (result.exitCode === 0) {
-    await reply(ctx, `✅ 退出码 0${body}`);
-  } else {
-    await reply(ctx, `❌ 退出码 ${result.exitCode}${body}`);
-  }
+  const body = result.output.trim();
+  await ctx.channel.send(
+    ctx.msg.chatId,
+    {
+      card: execResultCard({
+        cmd,
+        exitCode: result.exitCode,
+        output: body,
+        timedOut: result.timedOut,
+        timeoutSeconds: EXEC_TIMEOUT_MS / 1000,
+      }),
+    },
+    { replyTo: ctx.msg.messageId },
+  );
 }

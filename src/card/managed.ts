@@ -1,14 +1,47 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
+import { readFile, unlink, writeFile } from 'node:fs/promises';
+import { paths } from '../config/paths';
 import { log } from '../core/logger';
+import { restartCard } from './templates';
 
 interface ManagedEntry {
   cardId: string;
   sequence: number;
 }
 
+/**
+ * What the card was for. Recorded so the next boot can decide how to finish
+ * it: a `/restart` card must become「重启完成」, a streaming reply must keep
+ * its content and be marked interrupted, etc.
+ */
+export type RunningCardKind = 'stream' | 'release' | 'restart' | 'form';
+
+/**
+ * Card left in-flight when the process died. `card` is the LAST rendered
+ * snapshot — Feishu's message-get API only returns a card reference
+ * ("请升级至最新版本客户端"), never the content, so the content must be
+ * persisted locally to survive a restart.
+ */
+interface PersistedRunningCard {
+  messageId: string;
+  /** Empty for streaming cards (they patch via the message API, not cardkit). */
+  cardId: string;
+  chatId: string;
+  kind: RunningCardKind;
+  card?: object;
+}
+
 // Module-local because state is per-process. Lost on restart, which is fine —
 // a new run of /account will mint a fresh card.
 const byMessageId = new Map<string, ManagedEntry>();
+
+/**
+ * messageIds whose card can be left mid-flight (streaming replies, progress
+ * cards, forms). ONLY these are snapshotted to disk — fire-and-forget info
+ * cards complete within one request and need no crash recovery, so tracking
+ * them would just accumulate dead entries.
+ */
+const tracked = new Set<string>();
 
 export interface ManagedCardSendResult {
   messageId: string;
@@ -29,6 +62,7 @@ export async function sendManagedCard(
   chatId: string,
   card: object,
   replyTo?: string,
+  opts: { track?: boolean; kind?: RunningCardKind } = {},
 ): Promise<ManagedCardSendResult> {
   const created = await channel.rawClient.cardkit.v1.card.create({
     data: { type: 'card_json', data: JSON.stringify(card) },
@@ -58,6 +92,10 @@ export async function sendManagedCard(
   }
 
   byMessageId.set(messageId, { cardId, sequence: 0 });
+  if (opts.track) {
+    tracked.add(messageId);
+    void upsertRunningCard({ messageId, cardId, chatId, kind: opts.kind ?? 'form', card });
+  }
   // ponytail: cap at 200; streaming run cards don't use this map. Forms
   // forget on settle; leftovers are abandoned clicks / agent cards.
   if (byMessageId.size > 200) {
@@ -94,9 +132,180 @@ export async function updateManagedCard(
     log.fail('card', err, { step: 'managed-update', cardId: entry.cardId, seq: entry.sequence });
     throw err;
   }
+  if (tracked.has(messageId)) void snapshotThrottled(messageId, card);
 }
 
 /** Drop the mapping; call after the card is recalled or the flow ends. */
 export function forgetManagedCard(messageId: string): void {
   byMessageId.delete(messageId);
+  tracked.delete(messageId);
+  lastSnapshotAt.delete(messageId);
+  void removeFromRunningCards(messageId);
+}
+
+/**
+ * Cap on tracked in-flight cards. Must cover peak concurrency: every
+ * concurrent run (maxConcurrentRuns, default 10) can hold one streaming card,
+ * plus release/restart/OMP-form cards. 50 was pure headroom — 15 covers the
+ * default with margin while keeping the file tiny (entries are ~2KB typical,
+ * ≤26KB by the pagination budget).
+ */
+const RUNNING_CARDS_MAX = 15;
+
+/** Minimum gap between snapshot writes for one card (ms). */
+const SNAPSHOT_MIN_INTERVAL_MS = 2000;
+
+/** Per-card write throttle: a burst of updates must not rewrite the whole
+ * file each time. */
+const lastSnapshotAt = new Map<string, number>();
+
+function snapshotThrottled(messageId: string, card: object): Promise<void> | false {
+  const now = Date.now();
+  if (now - (lastSnapshotAt.get(messageId) ?? 0) < SNAPSHOT_MIN_INTERVAL_MS) return false;
+  lastSnapshotAt.set(messageId, now);
+  return updateRunningCardSnapshot(messageId, card);
+}
+
+async function readRunningCards(): Promise<PersistedRunningCard[]> {
+  try {
+    const parsed: unknown = JSON.parse(await readFile(paths.runningCardsFile, 'utf8'));
+    return Array.isArray(parsed) ? (parsed as PersistedRunningCard[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Serialize writes so concurrent snapshot updates can't lose each other. */
+let writeChain: Promise<void> = Promise.resolve();
+
+async function writeRunningCards(list: PersistedRunningCard[]): Promise<void> {
+  const next = writeChain.then(() =>
+    writeFile(paths.runningCardsFile, JSON.stringify(list.slice(-RUNNING_CARDS_MAX)), 'utf8'),
+  );
+  writeChain = next.catch(() => {});
+  await next.catch((err) => {
+    log.warn('card', 'running-cards-persist-failed', { err: String(err) });
+  });
+}
+
+/** Insert or replace the entry for a card still in flight. */
+async function upsertRunningCard(entry: PersistedRunningCard): Promise<void> {
+  const list = await readRunningCards();
+  const next = [...list.filter((c) => c.messageId !== entry.messageId), entry];
+  await writeRunningCards(next);
+}
+
+/** Refresh the persisted snapshot for one card (called on every render). */
+async function updateRunningCardSnapshot(messageId: string, card: object): Promise<void> {
+  const list = await readRunningCards();
+  const entry = list.find((c) => c.messageId === messageId);
+  if (!entry) return;
+  entry.card = card;
+  await writeRunningCards(list);
+}
+
+async function removeFromRunningCards(messageId: string): Promise<void> {
+  const list = await readRunningCards();
+  const next = list.filter((c) => c.messageId !== messageId);
+  if (next.length !== list.length) await writeRunningCards(next);
+}
+
+/**
+ * Called once at boot: cards still in-flight from the previous process are
+ * finalized according to their KIND —
+ *   restart → 「🚀 重启完成」(the restart we were asked to perform finished)
+ *   stream  → replay the last snapshot minus running chrome + interruption note
+ *   release → 「⚠️ 发布被中断」
+ *   form    → 「此卡片已过期」
+ * Returns true when a `/restart` card was finalized (the caller then skips the
+ * separate「已上线」text notice).
+ */
+export async function finalizeInterruptedCards(
+  channel: LarkChannel,
+  excludeMessageId?: string,
+): Promise<boolean> {
+  const leftovers = await readRunningCards();
+  await unlink(paths.runningCardsFile).catch(() => {});
+  let finalizedRestart = false;
+  for (const { messageId, kind, card } of leftovers) {
+    // Cards claimed by the boot-notice marker are finished by the caller
+    // instead (the new process confirms /release and /restart themselves).
+    if (messageId === excludeMessageId) continue;
+    if (!messageId || messageId === 'om_sent' || !messageId.startsWith('om_')) continue;
+    try {
+      const finalCard = finalizeByKind(kind, card);
+      await channel.rawClient.im.v1.message.patch({
+        path: { message_id: messageId },
+        data: { content: JSON.stringify(finalCard) },
+      });
+      if (kind === 'restart') finalizedRestart = true;
+      log.info('card', 'interrupted-finalized', { messageId, kind, hadSnapshot: Boolean(card) });
+    } catch (err) {
+      log.warn('card', 'interrupted-finalize-failed', { messageId, kind, err: String(err) });
+    }
+  }
+  return finalizedRestart;
+}
+
+/** Terminal card for a leftover entry, by kind. */
+export function finalizeByKind(kind: RunningCardKind, card: object | undefined): object {
+  if (kind === 'restart') return restartCard('done');
+  if (kind === 'release') return noteCard('⚠️ **发布被中断，进程在构建/重启期间退出。**');
+  if (kind === 'form') return noteCard('_⚠️ 此卡片已过期，请使用最新发出的卡片。_');
+  return card
+    ? stripRunningState(card)
+    : noteCard('⚠️ **进程中断，本条回复未完成**');
+}
+
+function noteCard(content: string): object {
+  return {
+    schema: '2.0',
+    config: { update_multi: true },
+    body: { elements: [{ tag: 'markdown', content }] },
+  };
+}
+
+/**
+ * Replay a persisted card with running-state chrome removed: stop buttons and
+ * the status footer row go away, and an interruption note is appended. All
+ * content the user already saw is kept.
+ */
+export function stripRunningState(card: object): object {
+  const elements = (card as { body?: { elements?: unknown[] } }).body?.elements;
+  const kept = (Array.isArray(elements) ? elements : []).filter((el) => !isRunningStateElement(el));
+  kept.push({ tag: 'markdown', content: '---', text_size: 'notation' });
+  kept.push({
+    tag: 'markdown',
+    content: '⚠️ **进程中断，以上为已输出的部分内容**',
+    text_size: 'notation',
+  });
+  return { schema: '2.0', config: { update_multi: true }, body: { elements: kept } };
+}
+
+/** Stop buttons, their action rows, and the「正在…」footer row. */
+function isRunningStateElement(el: unknown): boolean {
+  if (typeof el !== 'object' || el === null || !('tag' in el)) return false;
+  const tag = String(el.tag);
+  if (tag === 'button' || tag === 'action') return true;
+  if (tag !== 'column_set') return false;
+  const json = JSON.stringify(el);
+  return json.includes('"cmd":"stop"') || json.includes('⏹') || /正在(思考|调用工具|输出)/.test(json);
+}
+
+/**
+ * Register a streaming reply card (created via channel.stream) for crash
+ * recovery. Streaming cards patch via the message API, so cardId stays empty.
+ */
+export function rememberStreamingCard(messageId: string, chatId: string, card?: object): void {
+  void upsertRunningCard({ messageId, cardId: '', chatId, kind: 'stream', ...(card ? { card } : {}) });
+}
+
+/** Refresh a streaming card's persisted snapshot (called on every render). */
+export function snapshotStreamingCard(messageId: string, card: object): void {
+  void updateRunningCardSnapshot(messageId, card);
+}
+
+/** Remove a streaming card from the crash-recovery persistence. */
+export function forgetStreamingCard(messageId: string): void {
+  void removeFromRunningCards(messageId);
 }

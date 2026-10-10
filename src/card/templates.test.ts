@@ -1,6 +1,232 @@
 import { describe, expect, it } from 'vitest';
-import { helpCard, statusCard, workspacesCard } from './templates';
-import { resumeCard, type ResumeOption } from './model-card';
+import { resumeCard, resumeSavedCard, type ResumeOption } from './model-card';
+import type { RunCard } from './run-renderer';
+import {
+  actions,
+  compactCard,
+  contextCard,
+  cwdChangedCard,
+  everyCard,
+  execResultCard,
+  helpCard,
+  md,
+  newSessionCard,
+  psCard,
+  panel,
+  onlineCard,
+  releaseCard,
+  restartCard,
+  shell,
+  statusCard,
+  workspacesCard,
+} from './templates';
+
+describe('releaseCard', () => {
+  function assertNoBareColumns(card: RunCard): void {
+    // cardkit 11310: 裸 column（父级不是 column_set）会被整卡拒收。递归扫
+    // 全部层级，按父级 tag 判断合法性。
+    const walk = (elements: unknown[], parent: string): void => {
+      for (const el of elements) {
+        if (typeof el !== 'object' || el === null) continue;
+        const tag = 'tag' in el ? String(el.tag) : '';
+        if (tag === 'column' && parent !== 'column_set') {
+          throw new Error('bare column outside column_set');
+        }
+        const nested = 'elements' in el && Array.isArray(el.elements) ? el.elements : [];
+        const cols = 'columns' in el && Array.isArray(el.columns) ? el.columns : [];
+        walk(cols, tag === 'column_set' ? 'column_set' : tag || parent);
+        walk(nested, tag || parent);
+      }
+    };
+    walk(card.body.elements, 'body');
+  }
+
+  it('shows per-step states while running', () => {
+    const card = releaseCard({
+      phase: 'running',
+      steps: [
+        { name: 'typecheck', status: 'ok' },
+        { name: 'test', status: 'running' },
+        { name: 'build', status: 'pending' },
+      ],
+    });
+    assertNoBareColumns(card);
+    const out = JSON.stringify(card);
+    expect(out).toContain('正在发布');
+    expect(out).toContain('✅ 类型检查');
+    expect(out).toContain('⏳ 测试');
+    expect(out).toContain('⭕️ 构建');
+  });
+
+  it('renders the failure tail when a step fails', () => {
+    const out = JSON.stringify(
+      releaseCard({
+        phase: 'failed',
+        steps: [{ name: 'typecheck', status: 'failed' }],
+        failStep: 'typecheck',
+        failNote: '退出码 2',
+        output: 'error TS1234: x',
+      }),
+    );
+    expect(out).toContain('发布失败于 类型检查');
+    expect(out).toContain('退出码 2');
+    expect(out).toContain('error TS1234: x');
+  });
+
+  it('renders the success phase', () => {
+    const out = JSON.stringify(
+      releaseCard({
+        phase: 'success',
+        steps: [
+          { name: 'typecheck', status: 'ok' },
+          { name: 'test', status: 'ok' },
+          { name: 'build', status: 'ok' },
+        ],
+      }),
+    );
+    expect(out).toContain('已发布上线');
+  });
+});
+describe('restartCard', () => {
+  it('renders starting, done, and failed states as distinct headings', () => {
+    expect(JSON.stringify(restartCard('starting'))).toContain('正在重启');
+    expect(JSON.stringify(restartCard('done'))).toContain('重启完成');
+    expect(JSON.stringify(restartCard('failed', 'launchctl failed'))).toContain('launchctl failed');
+  });
+});
+
+describe('compactCard', () => {
+  it('shows the size estimate while running', () => {
+    const out = JSON.stringify(
+      compactCard({ phase: 'started', tokensK: '690', mb: '10.0', eta: '15分30秒', cap: '46分' }),
+    );
+    expect(out).toContain('正在压缩会话上下文');
+    expect(out).toContain('690k token');
+    expect(out).toContain('10.0 MB');
+    expect(out).toContain('15分30秒');
+    expect(out).toContain('46分');
+  });
+
+  it('omits the size line without an estimate', () => {
+    const out = JSON.stringify(compactCard({ phase: 'started' }));
+    expect(out).not.toContain('k token');
+    expect(out).toContain('无法估算');
+  });
+
+  it('renders done and failed phases', () => {
+    const done = JSON.stringify(compactCard({ phase: 'done' }));
+    expect(done).toContain('会话上下文已压缩');
+    const failed = JSON.stringify(compactCard({ phase: 'failed', error: 'killed' }));
+    expect(failed).toContain('压缩失败');
+    expect(failed).toContain('killed');
+  });
+});
+
+describe('everyCard', () => {
+  it('lists tasks with delete buttons and the full prompt', () => {
+    const out = JSON.stringify(
+      everyCard([
+        { id: 't1', interval: '30 分钟', nextRun: '14:00', prompt: '检查 CI 状态并汇报' },
+        { id: 't2', interval: '1 天', nextRun: '09:00', prompt: 'daily standup 摘要' },
+      ]),
+    );
+    expect(out).toContain('×2');
+    expect(out).toContain('30 分钟');
+    expect(out).toContain('14:00');
+    expect(out).toContain('检查 CI 状态并汇报');
+    expect(out).toContain('"arg":"t1"');
+    expect(out).toContain('"arg":"t2"');
+  });
+
+  it('renders the empty state hint when no tasks', () => {
+    const out = JSON.stringify(everyCard([]));
+    expect(out).not.toContain('×');
+    expect(out).toContain('暂无定时任务');
+  });
+});
+
+describe('psCard', () => {
+  it('marks the current process and wires exit buttons per row', () => {
+    const out = JSON.stringify(
+      psCard([
+        { id: 'p1', appId: 'cli_a', botName: '尼莫', startedAgo: '3 小时前', isCurrent: true },
+        { id: 'p2', appId: 'cli_b', startedAgo: '2 分钟前', isCurrent: false },
+      ]),
+    );
+    expect(out).toContain('×2');
+    expect(out).toContain('⭐ 当前');
+    expect(out).toContain('尼莫');
+    expect(out).toContain('"arg":"p2"');
+    expect(out).toContain('"arg":"p1"');
+    expect(out).toContain('3 小时前');
+  });
+
+  it('renders a single process without the count noise', () => {
+    const out = JSON.stringify(
+      psCard([{ id: 'p1', appId: 'cli_a', startedAgo: '刚刚', isCurrent: true }]),
+    );
+    expect(out).toContain('×1');
+  });
+});
+
+describe('execResultCard', () => {
+  it('renders success with collapsed output and the command line', () => {
+    const out = JSON.stringify(
+      execResultCard({ cmd: 'pnpm test', exitCode: 0, output: 'all green', timedOut: false, timeoutSeconds: 30 }),
+    );
+    expect(out).toContain('命令执行完成');
+    expect(out).toContain('$ pnpm test');
+    expect(out).toContain('"expanded":false');
+    expect(out).toContain('all green');
+  });
+
+  it('expands output and marks failure on non-zero exit', () => {
+    const out = JSON.stringify(
+      execResultCard({ cmd: 'boom', exitCode: 2, output: 'err', timedOut: false, timeoutSeconds: 30 }),
+    );
+    expect(out).toContain('命令失败**（退出码 2）');
+    expect(out).toContain('"expanded":true');
+    expect(out).toContain('"color":"red"');
+  });
+
+  it('marks timeouts and empty output', () => {
+    const out = JSON.stringify(
+      execResultCard({ cmd: 'sleep 100', exitCode: null, output: '', timedOut: true, timeoutSeconds: 30 }),
+    );
+    expect(out).toContain('执行超时**（30s）');
+    expect(out).toContain('无输出');
+  });
+});
+
+describe('shared card kit', () => {
+  it('exports the 2.0 kit pieces for other card modules', () => {
+    expect(shell('预览', [md('正文')])).toMatchObject({
+      schema: '2.0',
+      config: { summary: { content: '预览' } },
+    });
+    expect(md('x', 'notation')).toMatchObject({ text_size: 'notation' });
+    expect(panel([md('k')])).toMatchObject({ tag: 'column', background_style: 'grey' });
+    expect(actions([{ text: 'go', value: { cmd: 'x' } }])[0]).toMatchObject({
+      tag: 'column_set',
+    });
+  });
+
+  it('stacks each button on its own full-width row', () => {
+    const rows = actions(
+      ['a', 'b', 'c', 'd'].map((t) => ({ text: t, value: { cmd: t } })),
+    );
+    // ONE column_set in stretch mode: every column becomes its own 100%-wide
+    // row. `none` compresses the labels on a narrow screen and `flow` ignores
+    // `width` (spreading columns to both card edges on desktop).
+    expect(rows).toHaveLength(1);
+    const row = rows[0] as { flex_mode: string; columns: Array<Record<string, unknown>> };
+    expect(row.flex_mode).toBe('stretch');
+    expect(row.columns).toHaveLength(4);
+    // Every button survives the re-layout.
+    expect(JSON.stringify(rows)).toContain('"cmd":"d"');
+  });
+
+});
 
 function statusFixture(extra: Partial<Parameters<typeof statusCard>[0]> = {}) {
   return {
@@ -53,18 +279,61 @@ describe('statusCard', () => {
     expect(out).toContain('旧 cwd');
   });
 
-  it('keeps the quick actions, including one-click resume', () => {
+  it('is informational — no action buttons', () => {
     const out = JSON.stringify(statusCard(statusFixture()));
-    expect(out).toContain('"cmd":"new"');
-    expect(out).toContain('"cmd":"resume"');
-    expect(out).toContain('"cmd":"ws.list"');
-    expect(out).toContain('"cmd":"help"');
+    // The four quick actions were noise: every one of them is a typed command
+    // documented in /help, and /help is the card that carries the shortcuts.
+    expect(out).not.toContain('"tag":"button"');
+    for (const cmd of ['new', 'resume', 'ws.list', 'help']) {
+      expect(out).not.toContain(`"cmd":"${cmd}"`);
+    }
+    // No dangling divider where the button row used to be.
+    expect(out).not.toContain('"tag":"hr"');
+  });
+});
+
+describe('session id rendering', () => {
+  const ULID = '01J8Z9K2ABCDEFGHJKLMNPQRST';
+
+  it('shows the full session id on the status/context cards', () => {
+    expect(JSON.stringify(statusCard(statusFixture({ sessionId: ULID })))).toContain(ULID);
+    const ctx = contextCard({
+      scope: 'oc_x',
+      chatMode: 'p2p',
+      cwd: '/repo',
+      sessionId: ULID,
+      running: false,
+      idleLine: '探活：跟随全局',
+      wsNames: [],
+      summary: {},
+    } as never);
+    expect(JSON.stringify(ctx)).toContain(ULID);
+    // No truncated form leaks through.
+    expect(JSON.stringify(ctx)).not.toContain('01J8Z9K2…');
+  });
+
+  it('shows the full id on the singular /resume lines but a short handle per row', () => {
+    const saved = resumeSavedCard(ULID, '/repo/sub');
+    expect(JSON.stringify(saved)).toContain(ULID);
+
+    const card = JSON.stringify(
+      resumeCard(ULID, [
+        { sessionId: ULID, cwd: '/repo', timestamp: new Date().toISOString(), summary: '当前会话' },
+        { sessionId: '01J8Z9K2ZZZZZZZZZZZZZZZZZZ', cwd: '/repo', timestamp: new Date().toISOString(), summary: '另一个' },
+      ]),
+    );
+    // Header: full id, so you can copy it or match it with /resume.
+    expect(card).toContain('当前：`' + ULID + '`');
+    // Rows: 8-char handle only (the summary is the identity).
+    expect(card).toContain('01J8Z9K2…');
+    expect(card).not.toContain('ZZZZZZZZZZZZZZZZZZZZ');
   });
 });
 
 describe('helpCard', () => {
-  it('groups commands by category instead of one flat list', () => {
-    const out = JSON.stringify(helpCard());
+  it('groups commands into collapsible category panels', () => {
+    const card = helpCard();
+    const out = JSON.stringify(card);
     expect(out).toContain('会话管理');
     expect(out).toContain('偏好设置');
     expect(out).toContain('工作空间');
@@ -96,6 +365,9 @@ describe('helpCard', () => {
     ]) {
       expect(out).toContain(cmd);
     }
+    // One collapsible panel per category, all collapsed by default.
+    expect(out.match(/"tag":"collapsible_panel"/g)).toHaveLength(5);
+    expect(out.match(/"expanded":false/g)?.length).toBeGreaterThanOrEqual(5);
   });
 });
 
@@ -114,6 +386,78 @@ describe('workspacesCard', () => {
     const out = JSON.stringify(workspacesCard(undefined, {}));
     expect(out).toContain('暂无命名工作空间');
     expect(out).toContain('/ws save');
+  });
+});
+
+describe('contextCard', () => {
+  const base = {
+    scope: 'oc_1',
+    chatMode: 'p2p' as const,
+    cwd: '/repo',
+    sessionId: '019f3a2b-7c8d-73e1-9f2a-4b5c6d7e8f90',
+    sessionTitle: '修搜索',
+    createdAt: Date.now() - 86_400_000,
+    updatedAt: Date.now() - 120_000,
+    running: false,
+    model: 'p/m',
+    thinking: 'high',
+    idleLine: '全局 30 分钟',
+    wsNames: ['bridge'],
+    summary: { lastMessage: '你好  abc', lastReply: '答完了' },
+  };
+
+  it('renders the three panels with digested recent content', () => {
+    const out = JSON.stringify(contextCard(base));
+    expect(out).toContain('会话');
+    expect(out).toContain('环境');
+    expect(out).toContain('最近内容');
+    expect(out).toContain('修搜索');
+    expect(out).toContain('019f3a2b-7c8d-73e1-9f2a-4b5c6d7e8f90');
+    expect(out).toContain('你好 abc');
+    expect(out).toContain('答完了');
+    expect(out).toContain('bridge');
+    expect(out).toContain('全局 30 分钟');
+  });
+
+  it('carries no action buttons — /ctx is informational, /status is the console', () => {
+    const out = JSON.stringify(contextCard(base));
+    expect(out).not.toContain('"tag":"button"');
+    // The buttons it used to carry were circular (状态 re-renders these same
+    // panels) / duplicated (/status already offers 恢复会话).
+    expect(out).not.toContain('"cmd":"status"');
+    expect(out).not.toContain('"cmd":"resume"');
+  });
+
+  it('stacks the panels full-width instead of laying them side by side', () => {
+    const out = contextCard(base) as { body: { elements: Array<Record<string, unknown>> } };
+    const sets = out.body.elements.filter((e) => e.tag === 'column_set');
+    // One single-column column_set per panel — stacked at every card width,
+    // unlike a multi-column row that goes side by side on a desktop card.
+    expect(sets).toHaveLength(3);
+    for (const set of sets) {
+      expect((set.columns as unknown[])).toHaveLength(1);
+    }
+    expect(JSON.stringify(out)).not.toContain('"flex_mode":"stretch"');
+  });
+
+  it('drops the recent panel and placeholders when nothing to show', () => {
+    const out = JSON.stringify(
+      contextCard({
+        ...base,
+        sessionId: undefined,
+        sessionTitle: undefined,
+        createdAt: undefined,
+        updatedAt: undefined,
+        model: undefined,
+        thinking: undefined,
+        wsNames: [],
+        summary: {},
+      }),
+    );
+    expect(out).not.toContain('最近内容');
+    expect(out).toContain('未命名');
+    expect(out).toContain('跟随默认');
+    expect(out).toContain('（当前目录无快捷方式）');
   });
 });
 
@@ -168,5 +512,109 @@ describe('resumeCard', () => {
     expect(out).toContain('第 6-10 条 / 共 12 条');
     expect(out).toContain('"cmd":"resume.back","arg":"0"');
     expect(out).toContain('"cmd":"resume.more","arg":"10"');
+  });
+});
+
+describe('cwdChangedCard', () => {
+  it('renders the new cwd with workspace and status shortcuts', () => {
+    const out = JSON.stringify(cwdChangedCard('/repo/src'));
+    expect(out).toContain('已切换工作目录');
+    expect(out).toContain('/repo/src');
+    expect(out).toContain('session 已重置');
+    expect(out).toContain('"cmd":"ws.list"');
+    expect(out).toContain('"cmd":"status"');
+  });
+
+  it('carries the topic scope note when provided', () => {
+    const out = JSON.stringify(cwdChangedCard('/repo/src', '话题独立会话'));
+    expect(out).toContain('话题独立会话');
+  });
+});
+
+describe('newSessionCard', () => {
+  it('renders a compact confirmation without the full context dump', () => {
+    const card = newSessionCard({
+      cwd: '/repo',
+      model: 'p/m',
+      thinking: 'high',
+      idleLine: '全局 30 分钟',
+      wasRunning: true,
+    });
+    const out = JSON.stringify(card);
+    expect(card).toMatchObject({ schema: '2.0' });
+    expect(out).toContain('已中断当前任务并开始新会话');
+    expect(out).toContain('/repo');
+    expect(out).toContain('p/m');
+    expect(out).toContain('high');
+    expect(out).toContain('全局 30 分钟');
+    // 不再整段渲染 /context：不应出现占位字段
+    expect(out).not.toContain('开始对话');
+    expect(out).not.toContain('最后对话');
+  });
+
+  it('marks a clean start when nothing was running', () => {
+    const out = JSON.stringify(
+      newSessionCard({
+        cwd: '/repo',
+        idleLine: '未启用（不自动中断任务）',
+        wasRunning: false,
+      }),
+    );
+    expect(out).not.toContain('已中断');
+    expect(out).toContain('已开始新会话');
+  });
+
+  it('carries the topic scope note when provided', () => {
+    const out = JSON.stringify(
+      newSessionCard({
+        cwd: '/repo',
+        idleLine: '全局 30 分钟',
+        wasRunning: false,
+        scopeNote: '话题独立会话',
+      }),
+    );
+    expect(out).toContain('话题独立会话');
+  });
+});
+
+describe('onlineCard', () => {
+  it('announces the boot with heading and note, no buttons', () => {
+    const out = JSON.stringify(onlineCard());
+    expect(out).toContain('已上线');
+    expect(out).toContain('服务已重新启动');
+    expect(out).not.toContain('"button"');
+    expect(out).not.toContain('column');
+  });
+});
+
+describe('releaseCard restarting phase', () => {
+  it('announces the bounce without claiming success', () => {
+    const out = JSON.stringify(releaseCard({ steps: [], phase: 'restarting' }));
+    expect(out).toContain('构建完成，正在重启加载新产物');
+    expect(out).toContain('新进程启动后会确认上线');
+    expect(out).not.toContain('已发布上线');
+  });
+
+  it('claims success only in the success phase', () => {
+    expect(JSON.stringify(releaseCard({ steps: [], phase: 'success' }))).toContain('已发布上线');
+  });
+});
+
+describe('releaseCard empty steps', () => {
+  it('omits the panel entirely instead of rendering an empty grey box', () => {
+    const card = releaseCard({ steps: [], phase: 'success' });
+    const json = JSON.stringify(card);
+    expect(json).toContain('已发布上线');
+    expect(json).not.toContain('"elements":[]');
+    // 无步骤时不应出现 column_set（空 column 会渲染成空灰框）。
+    expect(json).not.toContain('column_set');
+  });
+
+  it('keeps the panel when steps exist', () => {
+    const json = JSON.stringify(
+      releaseCard({ steps: [{ name: 'build', status: 'ok' }], phase: 'success' }),
+    );
+    expect(json).toContain('column_set');
+    expect(json).toContain('✅ 构建');
   });
 });

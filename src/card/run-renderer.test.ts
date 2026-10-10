@@ -17,7 +17,6 @@ function longRunState(count: number, terminal: RunState['terminal'] = 'running')
     ...initialState,
     subagents: [],
     blocks,
-    reasoning: { content: '', active: false },
     footer: 'streaming',
     terminal,
     ui: { statuses: {}, widgets: {} },
@@ -108,14 +107,15 @@ describe('renderCard', () => {
 
   it('collapses thinking and tool groups by default, with a right-arrow expand icon', () => {
     const state = longRunState(3);
-    state.reasoning = { content: '先看调用链', active: true };
+    state.blocks.push({ kind: 'thinking', content: '先看调用链', active: true });
     const elements = cardElements(renderCard(state));
     const panels = elements.filter(
       (e): e is Record<string, unknown> =>
         typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'collapsible_panel',
     );
-    // 3 single-tool groups + 1 reasoning panel — all start collapsed.
-    expect(panels).toHaveLength(4);
+    // interleaved text/tool ×3 then a trailing thinking segment: the last
+    // tool run + that thinking merge into ONE row, so 3 top-level panels.
+    expect(panels).toHaveLength(3);
     for (const panel of panels) {
       expect(panel).toMatchObject({ expanded: false });
     }
@@ -128,9 +128,9 @@ describe('renderCard', () => {
     });
   });
 
-  it('groups consecutive tool calls under one 工具调用 row with failure count', () => {
+  it('merges a tool+thinking stretch into one row with both counts', () => {
     const state = longRunState(0);
-    state.reasoning = { content: '有实质内容', active: false };
+    state.blocks.push({ kind: 'thinking', content: '有实质内容', active: false });
     state.blocks.push({ kind: 'tool', tool: tool(1) });
     state.blocks.push({ kind: 'tool', tool: { ...tool(2), status: 'error', output: 'boom' } });
     state.blocks.push({ kind: 'tool', tool: { ...tool(3), status: 'running' } });
@@ -139,14 +139,19 @@ describe('renderCard', () => {
       (e): e is Record<string, unknown> =>
         typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'collapsible_panel',
     );
-    // One group for the 3-call burst + 1 reasoning panel (reasoning renders
-    // first in the card body, so the group is panels[1]).
-    expect(panels).toHaveLength(2);
-    expect(panels[1]).toMatchObject({
+    // One merged row: thinking segment + 3-call burst share a single outer row
+    // (no text between them), so the card has exactly one top-level panel.
+    expect(panels).toHaveLength(1);
+    expect(panels[0]).toMatchObject({
       expanded: false,
       border: { color: 'red' },
-      header: { title: { content: expect.stringContaining('×3（1 失败）') } },
+      header: {
+        // Merged title: thinking first, tools last (failure count at the end).
+        title: { content: '🧠 **思考** ×1 · 🛠 **工具** ×3（1 失败）' },
+      },
       elements: [
+        // Chronological inside: the thinking segment came before the calls.
+        { tag: 'collapsible_panel', header: { title: { content: expect.stringContaining('🧠') } } },
         { tag: 'collapsible_panel', header: { title: { content: expect.stringContaining('✅ **Bash**') } } },
         { tag: 'collapsible_panel', border: { color: 'red' }, header: { title: { content: expect.stringContaining('❌ **Bash**') } } },
         { tag: 'collapsible_panel', header: { title: { content: expect.stringContaining('⏳ **Bash**') } } },
@@ -154,9 +159,34 @@ describe('renderCard', () => {
     });
     // Inner calls keep their merged single-layer body (input + output together;
     // the failed call renders its **Error** fence).
-    const groupJson = JSON.stringify(panels[1]);
+    const groupJson = JSON.stringify(panels[0]);
     expect(groupJson).toContain('Command');
     expect(groupJson).toContain('**Error**');
+  });
+
+  it('keeps a tools-only burst and a thinking-only run in their original shapes', () => {
+    const panelsOf = (blocks: RunState['blocks']): string[] =>
+      cardElements(
+        renderCard({ ...longRunState(0), terminal: 'done', footer: null, blocks }),
+      )
+        .filter(
+          (e): e is Record<string, unknown> =>
+            typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'collapsible_panel',
+        )
+        .map((p) => JSON.stringify(p));
+
+    const toolsOnly = panelsOf([
+      { kind: 'tool', tool: tool(1) },
+      { kind: 'tool', tool: tool(2) },
+    ]);
+    expect(toolsOnly).toHaveLength(1);
+    expect(toolsOnly[0]).toContain('工具调用** ×2');
+    expect(toolsOnly[0]).not.toContain('思考过程');
+
+    const thinkingOnly = panelsOf([{ kind: 'thinking', content: '只有一个思考段', active: false }]);
+    expect(thinkingOnly).toHaveLength(1);
+    expect(thinkingOnly[0]).toContain('思考过程');
+    expect(thinkingOnly[0]).not.toContain('工具调用');
   });
 
   it('renders a long text block in full (no silent truncation — reduce splits it first)', () => {
@@ -215,22 +245,55 @@ describe('renderCard', () => {
     );
     expect(footerRow).toBeDefined();
     expect(JSON.stringify(footerRow)).toContain('正在输出');
+    // 正文与控制区之间有分割线。
+    expect(elements[elements.length - 2]).toMatchObject({ tag: 'hr' });
   });
 
-  it('skips the reasoning panel when thinking is a bare placeholder (e.g. ".")', () => {
+  it('skips the thinking panel when thinking is a bare placeholder (e.g. ".")', () => {
     const state = longRunState(0);
-    state.reasoning = { content: '.', active: false };
+    state.blocks.push({ kind: 'thinking', content: '.', active: false });
     state.blocks.push({ kind: 'text', content: 'real answer', streaming: false });
     const elements = cardElements(renderCard({ ...state, terminal: 'done' }));
     expect(countByTag(elements, 'collapsible_panel')).toBe(0);
     expect(longMarkdown(elements, 'real')).toBe('real answer');
   });
 
-  it('keeps the reasoning panel when thinking has actual substance', () => {
+  it('keeps the thinking panel when thinking has actual substance', () => {
     const state = longRunState(0);
-    state.reasoning = { content: '先核对数字，再追触发方', active: false };
+    state.blocks.push({ kind: 'thinking', content: '先核对数字，再追触发方', active: false });
     const elements = cardElements(renderCard({ ...state, terminal: 'done' }));
     expect(countByTag(elements, 'collapsible_panel')).toBe(1);
+  });
+
+  it('renders thinking segments interleaved at their chronological positions', () => {
+    const state: RunState = { ...longRunState(0), terminal: 'done', footer: null };
+    state.blocks.push({ kind: 'thinking', content: '先看A', active: false });
+    state.blocks.push({ kind: 'text', content: 'A 的结论', streaming: false });
+    state.blocks.push({ kind: 'tool', tool: tool(1) });
+    state.blocks.push({ kind: 'thinking', content: '再看B', active: true });
+    state.blocks.push({ kind: 'text', content: 'B 的结论', streaming: false });
+    const elements = cardElements(renderCard(state));
+    // Timeline: 🧠 ×1 → text → 🛠 group → 🧠 ×2 (active) → text.
+    const shape = elements
+      .filter((e) => typeof e === 'object' && e !== null && 'tag' in e)
+      .map((e) => String(e.tag))
+      .join(',');
+    // thinking · text · (tools+thinking merged) · text
+    expect(shape).toBe('collapsible_panel,markdown,collapsible_panel,markdown');
+    const panelTitles = elements
+      .filter(
+        (e): e is Record<string, unknown> =>
+          typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'collapsible_panel',
+      )
+      .map((p) => {
+        const header = p.header as { title: { content: string } };
+        return header.title.content;
+      });
+    // [0] the standalone thinking segment; [1] the merged tools+thinking row.
+    expect(panelTitles[0]).toContain('思考过程');
+    expect(panelTitles[1]).toContain('🧠 **思考** ×1 · 🛠 **工具** ×1');
+    expect(longMarkdown(elements, 'A 的结论')).toBeDefined();
+    expect(longMarkdown(elements, 'B 的结论')).toBeDefined();
   });
 
   it('renders subagent lifecycle lines', () => {
@@ -255,7 +318,11 @@ describe('renderCard', () => {
       content: Array.from({ length: 8 }, (_, i) => table(i)).join('\n\n'),
       streaming: false,
     });
-    state.reasoning = { content: `thinking\n\n${table(9)}`, active: false };
+    state.blocks.push({
+      kind: 'thinking',
+      content: `thinking\n\n${table(9)}`,
+      active: false,
+    });
     const elements = cardElements(renderCard({ ...state, terminal: 'done' }));
     // Every markdown source of the card, panels included: Feishu counts the
     // table components of the whole card.

@@ -28,6 +28,7 @@ export interface ToolEntry {
 
 export type Block =
   | { kind: 'text'; content: string; streaming: boolean }
+  | { kind: 'thinking'; content: string; active: boolean }
   | { kind: 'tool'; tool: ToolEntry };
 
 export interface UiState {
@@ -52,8 +53,9 @@ export interface SubagentEntry {
 export interface RunState {
   /** Subagent lifecycle entries, ordered by first appearance. */
   subagents: SubagentEntry[];
+  /** Chronological content blocks — thinking/text/tools interleave in the
+   * order the model produced them, so the rendered card reads like a log. */
   blocks: Block[];
-  reasoning: { content: string; active: boolean };
   footer: FooterStatus;
   terminal: Terminal;
   ui: UiState;
@@ -66,7 +68,6 @@ export interface RunState {
 export const initialState: RunState = {
   blocks: [],
   subagents: [],
-  reasoning: { content: '', active: false },
   footer: 'thinking',
   terminal: 'running',
   ui: { statuses: {}, widgets: {} },
@@ -76,6 +77,13 @@ function closeStreamingText(blocks: Block[]): Block[] {
   return blocks.map((b) =>
     b.kind === 'text' && b.streaming ? { ...b, streaming: false } : b,
   );
+}
+
+/** A following text/tool event means the current thinking segment ended. */
+function deactivateTrailingThinking(blocks: Block[]): Block[] {
+  const last = blocks[blocks.length - 1];
+  if (!last || last.kind !== 'thinking' || !last.active) return blocks;
+  return [...blocks.slice(0, -1), { ...last, active: false }];
 }
 
 export function reduce(state: RunState, evt: AgentEvent): RunState {
@@ -89,8 +97,8 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
           // RunState between deltas, so copying `blocks` every token
           // is wasted.
           last.content = merged;
-          if (state.footer === 'streaming' && !state.reasoning.active) return state;
-          return { ...state, reasoning: { ...state.reasoning, active: false }, footer: 'streaming' };
+          if (state.footer === 'streaming') return state;
+          return { ...state, footer: 'streaming' };
         }
         // Block full: close it and start a fresh block with this delta. The
         // accumulated content stays in the closed block — nothing dropped.
@@ -101,26 +109,35 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
             { ...last, streaming: false },
             { kind: 'text', content: evt.delta, streaming: true },
           ],
-          reasoning: { ...state.reasoning, active: false },
           footer: 'streaming',
         };
       }
       return {
         ...state,
-        blocks: [...state.blocks, { kind: 'text', content: evt.delta, streaming: true }],
-        reasoning: { ...state.reasoning, active: false },
+        blocks: [
+          ...deactivateTrailingThinking(state.blocks),
+          { kind: 'text', content: evt.delta, streaming: true },
+        ],
         footer: 'streaming',
       };
     }
 
     case 'thinking': {
-      if (state.reasoning.active && state.footer === 'thinking') {
-        state.reasoning.content += evt.delta;
-        return state;
+      const last = state.blocks[state.blocks.length - 1];
+      if (last && last.kind === 'thinking') {
+        // Hot path: append in place — the thinking segment continues.
+        last.content += evt.delta;
+        if (state.footer === 'thinking') return state;
+        return { ...state, footer: 'thinking' };
       }
+      // A text/tool event closed the previous segment (or there was none):
+      // this delta opens a NEW thinking block at this point in the timeline.
       return {
         ...state,
-        reasoning: { content: state.reasoning.content + evt.delta, active: true },
+        blocks: [
+          ...deactivateTrailingThinking(state.blocks),
+          { kind: 'thinking', content: evt.delta, active: true },
+        ],
         footer: 'thinking',
       };
     }
@@ -134,8 +151,7 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
       };
       return {
         ...state,
-        blocks: [...closeStreamingText(state.blocks), { kind: 'tool', tool }],
-        reasoning: { ...state.reasoning, active: false },
+        blocks: [...deactivateTrailingThinking(closeStreamingText(state.blocks)), { kind: 'tool', tool }],
         footer: 'tool_running',
       };
     }
@@ -169,7 +185,7 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
       return {
         ...state,
         blocks: [
-          ...closeStreamingText(state.blocks),
+          ...deactivateTrailingThinking(closeStreamingText(state.blocks)),
           {
             kind: 'text',
             content: `🧩 OMP 需要用户交互：**${evt.request.title}**\n\n已发送交互卡片，请在那里完成操作。`,
@@ -245,8 +261,7 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
     case 'done': {
       return {
         ...state,
-        blocks: closeStreamingText(state.blocks),
-        reasoning: { ...state.reasoning, active: false },
+        blocks: deactivateTrailingThinking(closeStreamingText(state.blocks)),
         terminal: 'done',
         footer: null,
       };
@@ -279,8 +294,7 @@ function updateWidget(widgets: Record<string, AgentUiWidget>, widget: AgentUiWid
 export function markInterrupted(state: RunState): RunState {
   return {
     ...state,
-    blocks: closeStreamingText(state.blocks),
-    reasoning: { ...state.reasoning, active: false },
+    blocks: deactivateTrailingThinking(closeStreamingText(state.blocks)),
     terminal: 'interrupted',
     footer: null,
   };
@@ -289,8 +303,7 @@ export function markInterrupted(state: RunState): RunState {
 export function markIdleTimeout(state: RunState, minutes: number): RunState {
   return {
     ...state,
-    blocks: closeStreamingText(state.blocks),
-    reasoning: { ...state.reasoning, active: false },
+    blocks: deactivateTrailingThinking(closeStreamingText(state.blocks)),
     terminal: 'idle_timeout',
     footer: null,
     idleTimeoutMinutes: minutes,
@@ -301,8 +314,7 @@ export function finalizeIfRunning(state: RunState): RunState {
   if (state.terminal !== 'running') return state;
   return {
     ...state,
-    blocks: closeStreamingText(state.blocks),
-    reasoning: { ...state.reasoning, active: false },
+    blocks: deactivateTrailingThinking(closeStreamingText(state.blocks)),
     terminal: 'done',
     footer: null,
   };

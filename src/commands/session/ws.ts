@@ -1,5 +1,6 @@
 import type { CommandContext, Handler } from '../index';
-import { codeSpan, recallMessage, reply } from '../shared';
+import { recallMessage, reply } from '../shared';
+import { codeSpan } from '../../utils/text';
 import { workspacesCard } from '../../card/templates';
 import { log } from '../../core/logger';
 

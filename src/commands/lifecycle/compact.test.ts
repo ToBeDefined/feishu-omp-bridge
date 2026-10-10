@@ -46,7 +46,10 @@ interface SendCall {
 
 function sentBodies(ctx: CommandContext): string[] {
   const send = ctx.channel.send as unknown as { mock: { calls: Array<[unknown, SendCall]> } };
-  return send.mock.calls.map((c) => c[1].markdown ?? '');
+  return send.mock.calls.map((c) => {
+    const payload = c[1] as { markdown?: string; card?: object };
+    return payload.markdown ?? (payload.card ? JSON.stringify(payload.card) : '');
+  });
 }
 
 afterEach(() => {

@@ -1,5 +1,6 @@
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
+import { everyCard } from '../../card/templates';
 
 export const everyHandlers: Record<string, Handler> = {
   '/every': handleEvery,
@@ -37,20 +38,42 @@ async function handleEvery(args: string, ctx: CommandContext): Promise<void> {
       await reply(ctx, '当前没有定时任务。用法：`/every <间隔> <要定期执行的指令>`\n间隔如 `30m`/`2h`/`1d`。');
       return;
     }
-    const lines = tasks.map((t, i) => {
-      const interval = formatInterval(t.intervalMs);
+    const rows = tasks.map((t) => {
       const next = new Date(t.nextRunAt);
       const hhmm = `${String(next.getHours()).padStart(2, '0')}:${String(next.getMinutes()).padStart(2, '0')}`;
-      return `${i + 1}. \`${t.id}\` 每 ${interval} · 下次 ${hhmm} · ${t.prompt.slice(0, 40)}`;
+      return {
+        id: t.id,
+        interval: formatInterval(t.intervalMs),
+        nextRun: hhmm,
+        prompt: t.prompt,
+      };
     });
-    await reply(ctx, `📅 **定时任务** (${tasks.length})\n\n${lines.join('\n')}\n\n发 \`/every rm <id>\` 删除某个任务。`);
+    await ctx.channel.send(
+      ctx.msg.chatId,
+      { card: everyCard(rows) },
+      { replyTo: ctx.msg.messageId },
+    );
     return;
   }
 
   if (sub === 'rm' || sub === 'remove') {
     const id = parts[1] ?? '';
     const removed = await scheduler.remove(id);
-    await reply(ctx, removed ? `✅ 已删除定时任务 \`${id}\`` : `❌ 未找到定时任务 \`${id}\``);
+    if (!removed) {
+      await reply(ctx, `❌ 未找到定时任务 \`${id}\``);
+      return;
+    }
+    // Refresh the list card so the remaining tasks stay visible in place.
+    const rows = scheduler.list().map((t) => {
+      const next = new Date(t.nextRunAt);
+      const hhmm = `${String(next.getHours()).padStart(2, '0')}:${String(next.getMinutes()).padStart(2, '0')}`;
+      return { id: t.id, interval: formatInterval(t.intervalMs), nextRun: hhmm, prompt: t.prompt };
+    });
+    await ctx.channel.send(
+      ctx.msg.chatId,
+      { card: everyCard(rows) },
+      { replyTo: ctx.msg.messageId },
+    );
     return;
   }
 

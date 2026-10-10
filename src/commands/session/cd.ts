@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { CommandContext, Handler } from '../index';
 import { expandTilde, reply } from '../shared';
+import { cwdChangedCard } from '../../card/templates';
 
 export const cdHandlers: Record<string, Handler> = {
   '/cd': handleCd,
@@ -41,5 +42,14 @@ async function handleCd(args: string, ctx: CommandContext): Promise<void> {
   // user back to a directory they already left (and wipe the new session).
   ctx.workspaces.clearUndo(ctx.scope);
   ctx.sessions.clear(ctx.scope);
-  await reply(ctx, `✅ 已切换 cwd 到 \`${absolute}\`\n（session 已重置）`);
+  await ctx.channel.send(
+    ctx.msg.chatId,
+    {
+      card: cwdChangedCard(
+        absolute,
+        ctx.chatMode === 'topic' ? '话题独立会话' : undefined,
+      ),
+    },
+    { replyTo: ctx.msg.messageId },
+  );
 }

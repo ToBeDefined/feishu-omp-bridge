@@ -3,21 +3,44 @@ import type { Mock } from 'vitest';
 import type { CommandContext } from '../index';
 import { releaseHandlers } from './release';
 import { runRelease, type ReleaseResult } from '../../release/run';
-import { markOnlineNotify } from '../../bot/online-notify';
+import { markOnlineNotice } from '../../bot/online-notify';
 
-vi.mock('../../release/run', () => ({ runRelease: vi.fn(), repoRoot: vi.fn(() => '/repo') }));
-vi.mock('../../bot/online-notify', () => ({ markOnlineNotify: vi.fn(), clearOnlineNotify: vi.fn() }));
+vi.mock('../../release/run', () => ({
+  runRelease: vi.fn(),
+  repoRoot: vi.fn(() => '/repo'),
+  RELEASE_STEPS: [
+    { name: 'typecheck', args: ['typecheck'], timeoutMs: 60_000 },
+    { name: 'test', args: ['test'], timeoutMs: 120_000 },
+    { name: 'build', args: ['build'], timeoutMs: 120_000 },
+  ],
+}));
+vi.mock('../../bot/online-notify', () => ({ markOnlineNotice: vi.fn(), clearOnlineNotice: vi.fn() }));
 vi.mock('../../core/logger', () => ({
   log: { info: vi.fn(), fail: vi.fn(), warn: vi.fn() },
 }));
 
+// Managed-card path (sendManagedCard / updateManagedCard) records into the
+// same array as channel.send so assertions cover both text and card output.
+const h = vi.hoisted(() => ({ sent: [] as string[] }));
+vi.mock('../../card/managed', () => ({
+  sendManagedCard: async (...args: unknown[]) => {
+    h.sent.push(JSON.stringify(args[2]));
+    return { messageId: 'om_card' };
+  },
+  updateManagedCard: async (...args: unknown[]) => {
+    h.sent.push(JSON.stringify(args[2]));
+    return {};
+  },
+  forgetManagedCard: async () => {},
+}));
+
 function makeCtx(): { ctx: CommandContext; sent: string[]; restartProcess: Mock } {
-  const sent: string[] = [];
+  h.sent.length = 0;
   const restartProcess = vi.fn(async () => true);
   const ctx = {
     channel: {
       send: async (_chatId: string, payload: { markdown?: string }) => {
-        sent.push(payload.markdown ?? '');
+        h.sent.push(payload.markdown ?? '');
       },
     },
     msg: { chatId: 'oc_1', messageId: 'om_1', content: '' },
@@ -29,7 +52,7 @@ function makeCtx(): { ctx: CommandContext; sent: string[]; restartProcess: Mock 
     activeRuns: {},
     controls: { restartProcess },
   } as unknown as CommandContext;
-  return { ctx, sent, restartProcess };
+  return { ctx, sent: h.sent, restartProcess };
 }
 
 describe('/release', () => {
@@ -41,9 +64,11 @@ describe('/release', () => {
     vi.mocked(runRelease).mockResolvedValue({ ok: true });
     const { ctx, sent, restartProcess } = makeCtx();
     await releaseHandlers['/release']!('', ctx);
-    expect(sent[0]).toContain('开始发布');
-    expect(sent[1]).toContain('构建成功');
-    expect(markOnlineNotify).toHaveBeenCalledWith('oc_1');
+    expect(sent[0]).toContain('正在发布');
+    // Pre-boot state must NOT claim success — the new process confirms it.
+    expect(sent.at(-1)).toContain('构建完成，正在重启加载新产物');
+    expect(sent.at(-1)).not.toContain('已发布上线');
+    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'skip', undefined, 'om_card');
     expect(restartProcess).toHaveBeenCalledTimes(1);
   });
 
@@ -56,9 +81,9 @@ describe('/release', () => {
     });
     const { ctx, sent, restartProcess } = makeCtx();
     await releaseHandlers['/release']!('', ctx);
-    expect(sent[1]).toContain('发布失败于');
-    expect(sent[1]).toContain('2 failed');
-    expect(markOnlineNotify).not.toHaveBeenCalled();
+    expect(sent.at(-1)).toContain('发布失败于');
+    expect(sent.at(-1)).toContain('2 failed');
+    expect(markOnlineNotice).not.toHaveBeenCalled();
     expect(restartProcess).not.toHaveBeenCalled();
   });
 
@@ -66,7 +91,7 @@ describe('/release', () => {
     vi.mocked(runRelease).mockResolvedValue({ ok: false, step: 'typecheck', pnpmMissing: true });
     const { ctx, sent } = makeCtx();
     await releaseHandlers['/release']!('', ctx);
-    expect(sent[1]).toContain('找不到 `pnpm`');
+    expect(sent.at(-1)).toContain('找不到 pnpm');
   });
 
   it('falls back to in-process reconnect when not under launchd', async () => {

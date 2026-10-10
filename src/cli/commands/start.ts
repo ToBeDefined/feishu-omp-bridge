@@ -25,7 +25,10 @@ import {
 } from '../../config/store';
 import { gcOldLogs, log } from '../../core/logger';
 import { kickstart } from '../../daemon/launchd';
-import { takeOnlineNotify } from '../../bot/online-notify';
+import { finalizeInterruptedCards, updateManagedCard } from '../../card/managed';
+import { clearOnlineNotice, takeOnlineNotice } from '../../bot/online-notify';
+import { onlineCard, releaseCard, restartCard } from '../../card/templates';
+import { RELEASE_STEPS } from '../../release/run';
 import { gcMediaCache, MEDIA_GC_MAX_AGE_MS } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
 import {
@@ -235,10 +238,17 @@ export async function runStart(opts: StartOptions): Promise<void> {
           const fallback = setTimeout(() => {
             if (stopping) return; // SIGTERM landed; graceful stop is in flight
             log.warn('restart', 'kickstart-ambiguous-survived');
+            // No boot is coming after all: drop the boot-notice marker here
+            // (callers now treat this path as "restart in flight" and keep it).
+            void clearOnlineNotice();
             void restartInProcess();
           }, 3000);
           fallback.unref();
-          return false;
+          // Report TRUE: the relaunch is in flight. Returning false used to
+          // make /release and /restart clear the online-notice marker and send
+          // a spurious reconnect ack, so the rebooting process saw no marker
+          // and announced itself with an ordinary-boot 「已上线」 card.
+          return true;
         }
         log.warn('restart', 'kickstart-failed', {
           stderr: result.stderr.slice(0, 200),
@@ -263,36 +273,69 @@ export async function runStart(opts: StartOptions): Promise<void> {
     );
   }
 
-  // Startup notification: the bot is back online after any (re)start — tell
-  // every chat with a persisted session so the user isn't left guessing.
-  // Best-effort; failures (chat gone, no permission) are logged, never fatal.
-  // Only real chat ids are valid receive_ids. Session store keys are scopes:
-  // cloud-doc comments use `doc:<fileToken>` and topic chats use
-  // `chatId:threadId` — sending to those fails every boot (N dead API calls).
-  const notifyTargets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
-  // A chat that just ran /release or /restart gets the confirmation even
-  // without a persisted session (its entry may have been cleared by /new,
-  // /cd, /ws).
-  const requestingChat = await takeOnlineNotify();
-  if (requestingChat && !notifyTargets.includes(requestingChat)) {
-    notifyTargets.push(requestingChat);
-  }
-  for (const chatId of notifyTargets) {
-    try {
-      await bridge.channel.send(
-        chatId,
-        { markdown: '🚀 **已上线**' },
-        {},
+  // Startup notices are opt-in. `/release` already leaves its final
+  // 「🚀 已发布上线」 card, so ordinary boots and release boots stay silent;
+  // only `/restart` requests one, and even then the tracked restart card is
+  // finalized below — the text notice is just the no-card fallback.
+  const notice = await takeOnlineNotice();
+
+  // Crash/restart recovery: every card the previous process left in flight is
+  // finalized ACCORDING TO ITS KIND (restart → 「重启完成」, streaming reply →
+  // content preserved + interruption note, release → interrupted, form →
+  // expired).
+  const finalizedRestart = await finalizeInterruptedCards(bridge.channel, notice?.messageId).catch(
+    (err) => {
+      log.warn('notify', 'interrupted-finalize-failed', { err: String(err) });
+      return false;
+    },
+  );
+
+  // The command that bounced us confirms its own card NOW, from the new
+  // process — a card must not claim「已发布上线」/「重启完成」before the new
+  // process is actually up.
+  if (notice?.messageId) {
+    const terminal =
+      notice.mode === 'skip'
+        ? // Build succeeded (that's why we bounced): all steps are done.
+          releaseCard({
+            steps: RELEASE_STEPS.map((s) => ({ name: s.name, status: 'ok' as const })),
+            phase: 'success',
+          })
+        : restartCard('done');
+    await bridge.channel.rawClient.im.v1
+      .message.patch({
+        path: { message_id: notice.messageId },
+        data: { content: JSON.stringify(terminal) },
+      })
+      .then(() => log.info('notify', 'command-card-confirmed', { chatId: notice.chatId, mode: notice.mode }))
+      .catch((err) =>
+        log.warn('notify', 'command-card-confirm-failed', {
+          messageId: notice.messageId,
+          err: String(err),
+        }),
       );
-      log.info('notify', 'online', { chatId });
-    } catch (err) {
-      log.warn('notify', 'online-failed', {
-        chatId,
-        err: err instanceof Error ? err.message : String(err),
-      });
+  } else if (notice?.mode === 'notify' && !finalizedRestart) {
+    // /restart requested a notice but no restart card was recovered (e.g. the
+    // card was never created) — fall back to a text confirmation.
+    await bridge.channel.send(notice.chatId, { markdown: '🚀 **已上线**' }, {}).catch((err) => {
+      log.warn('notify', 'online-failed', { chatId: notice.chatId, err: String(err) });
+    });
+  } else if (!notice) {
+    // ORDINARY boot (crash recovery, manual start, launchd relaunch): nobody
+    // requested the bounce, so announce the bot is back to every chat with a
+    // persisted session. `/release` (skip) and `/restart` (notify) cover
+    // themselves with their own command cards.
+    // Only real chat ids are valid receive_ids: session keys are scopes, and
+    // cloud-doc comments (`doc:…`) / topic chats (`chatId:threadId`) would
+    // fail every boot.
+    const targets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
+    for (const chatId of targets) {
+      await bridge.channel
+        .send(chatId, { card: onlineCard() }, {})
+        .then(() => log.info('notify', 'online', { chatId }))
+        .catch((err) => log.warn('notify', 'online-failed', { chatId, err: String(err) }));
     }
   }
-
   process.on('SIGINT', () => void stop('SIGINT'));
   process.on('SIGTERM', () => void stop('SIGTERM'));
   // Last-ditch sync unregister in case something exits without going through

@@ -111,7 +111,8 @@ describe('modelSelectCard', () => {
 describe('modelProviderCard', () => {
   it('shows the current model and thinking on the provider chooser', () => {
     const md = cardMarkdown(modelProviderCard('p/a', [{ provider: 'p', count: 1 }], [], [], 'medium'));
-    expect(md).toContain('当前模型:`p/a`');
-    expect(md).toContain('思考强度:`medium`');
+    expect(md).toContain('当前模型：`p/a`');
+    expect(md).toContain('思考强度：`medium`');
+    expect(md).toContain('切换模型');
   });
 });

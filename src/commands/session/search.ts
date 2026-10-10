@@ -4,11 +4,26 @@ import { join } from 'node:path';
 import { getOmpSessionDir } from '../../config/schema';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, codeSpan, recallMessage, reply } from '../shared';
+import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { codeSpan } from '../../utils/text';
 import { extractUserInput, scanSessionFile } from './context';
 import { applyResume, listResumableSessions } from './resume';
-import { renderSearchContext, searchDetailCard, searchResultsCard, workspaceLabel } from '../../card/search-card';
-import type { SearchContext, SearchHit } from '../../card/search-card';
+import {
+  renderSearchContext,
+  searchDetailCard,
+  searchEmptyCard,
+  searchResultsCard,
+  type SearchContext,
+  type SearchHit,
+} from '../../card/search-card';
+
+/** Named-workspace label for a cwd, falling back to the path itself. */
+export function workspaceLabel(ctx: CommandContext, cwd: string): string {
+  for (const [name, path] of Object.entries(ctx.workspaces.listNamed())) {
+    if (path === cwd) return name;
+  }
+  return cwd;
+}
 
 export const searchHandlers: Record<string, Handler> = {
   '/search': handleSearch,
@@ -17,6 +32,8 @@ export const searchHandlers: Record<string, Handler> = {
 
 /** In-memory cache of recent search results, keyed by a short query id. */
 const searchCache = new Map<string, SearchContext[]>();
+/** Keyword per cached query id, for re-rendering pages of the same search. */
+const searchKeywords = new Map<string, string>();
 const SEARCH_CACHE_MAX = 20;
 
 /** Extract the real conversational text for a message frame. */
@@ -171,6 +188,24 @@ async function scanSessionHits(
 async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   const [sub, ...rest] = args.trim().split(/\s+/);
 
+  if (sub === 'page') {
+    // 卡片翻页：args = page <queryId> <offset>。cache 未命中则回退为
+    // 关键词检索（queryId 是内部格式，正常不会撞词）。
+    const queryId = rest[0] ?? '';
+    const offset = Number.parseInt(rest[1] ?? '', 10);
+    const cached = searchCache.get(queryId);
+    const keyword = searchKeywords.get(queryId) ?? '';
+    if (cached && Number.isFinite(offset) && offset >= 0) {
+      if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+      await sendManagedCard(
+        ctx.channel,
+        ctx.msg.chatId,
+        searchResultsCard(keyword, cached, queryId, true, offset),
+      );
+      return;
+    }
+  }
+
   if (sub === 'resume') {
     // 卡片按钮带目标 sessionId（命中会话）。没有 arg 时保持旧语义：
     // 提示当前会话状态（直接发 `/s resume` 的场景）。
@@ -271,14 +306,19 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   }
   const contexts = await searchSession(keyword, ctx);
   if (contexts.length === 0) {
-    await reply(ctx, `未找到包含 \`${codeSpan(keyword)}\` 的消息。`);
+    if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, searchEmptyCard(keyword));
     return;
   }
   const queryId = `s${Date.now().toString(36)}`;
   searchCache.set(queryId, contexts);
+  searchKeywords.set(queryId, keyword);
   if (searchCache.size > SEARCH_CACHE_MAX) {
     const oldest = searchCache.keys().next().value;
-    if (oldest) searchCache.delete(oldest);
+    if (oldest) {
+      searchCache.delete(oldest);
+      searchKeywords.delete(oldest);
+    }
   }
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(

@@ -6,7 +6,7 @@ import { OMP_UI_MARKER } from './omp-ui';
  * Marker key on a button's `value` object that flags the cardAction as a
  * callback that should be forwarded back to the agent instead of dispatched
  * to a built-in command handler. Must match the constant the dispatcher
- * checks in `card/dispatcher.ts`.
+ * checks in `bot/card-dispatcher.ts`.
  */
 export const AGENT_CALLBACK_MARKER = '__codex_cb';
 

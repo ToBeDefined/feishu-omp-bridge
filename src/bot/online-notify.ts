@@ -2,34 +2,48 @@ import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { paths } from '../config/paths';
 
 /**
- * Boot-notice marker. `/release` and `/restart` write the requesting chat id
- * right before the process bounces; the freshly booted process reads-and-clears
- * it and includes that chat in the "🚀 已上线" startup notification.
+ * Boot-notice marker. Written right before the process bounces
+ * (`/release`, `/restart`) and read-and-cleared by the freshly booted
+ * process.
  *
- * Why this exists: the boot notification otherwise only targets chats with a
- * persisted session entry — but `/new`, `/cd` and `/ws` all clear the entry, so
- * a bounce issued right after them used to restart silently and leave the user
- * thinking the bot never came back.
+ * - `notify`: the requesting chat gets the 「🚀 已上线」 confirmation even
+ *   without a persisted session (its entry may have been cleared by /new,
+ *   /cd, /ws) — used by `/restart`, whose card cannot claim the outcome.
+ * - `skip`: the requesting chat is EXCLUDED from the fan-out 「已上线」 —
+ *   used by `/release`, whose progress card already ends in
+ *   「🚀 已发布上线」; a second notice would be noise.
+ *
+ * Why the marker exists at all: the boot notification otherwise only
+ * targets chats with a persisted session entry.
  */
-export async function markOnlineNotify(
+export type OnlineNoticeMode = 'notify' | 'skip';
+
+export async function markOnlineNotice(
   chatId: string,
+  mode: OnlineNoticeMode,
   path: string = paths.onlineNotifyFile,
+  messageId?: string,
 ): Promise<void> {
-  await writeFile(path, `${JSON.stringify({ chatId })}\n`, 'utf8');
+  await writeFile(path, `${JSON.stringify({ chatId, mode, messageId })}\n`, 'utf8');
+}
+export interface OnlineNotice {
+  chatId: string;
+  mode: OnlineNoticeMode;
+  messageId?: string;
 }
 
 /** Drop a marker that no boot will consume (in-process reconnect, failed
- *  restart) so it cannot surface as a stale "已上线" on a later boot. */
-export async function clearOnlineNotify(path: string = paths.onlineNotifyFile): Promise<void> {
+ *  restart) so it cannot surface as a stale notice on a later boot. */
+export async function clearOnlineNotice(path: string = paths.onlineNotifyFile): Promise<void> {
   await unlink(path).catch(() => {});
 }
 
 /** Read-and-clear the marker. Undefined when absent or corrupt — boot must
  *  never fail over a notification. */
-export async function takeOnlineNotify(
+export async function takeOnlineNotice(
   path: string = paths.onlineNotifyFile,
   legacyPath: string = paths.legacyOnlineNotifyFile,
-): Promise<string | undefined> {
+): Promise<OnlineNotice | undefined> {
   // A bounce that deploys this rename is performed by the previous build,
   // which still writes the legacy filename. Consume it once so the first
   // boot after the upgrade is not silent; droppable once that release is out.
@@ -42,8 +56,13 @@ export async function takeOnlineNotify(
     }
     await unlink(candidate).catch(() => {});
     try {
-      const parsed = JSON.parse(raw) as { chatId?: unknown };
-      if (typeof parsed.chatId === 'string' && parsed.chatId) return parsed.chatId;
+      const parsed = JSON.parse(raw) as { chatId?: unknown; mode?: unknown; messageId?: unknown };
+      if (typeof parsed.chatId === 'string' && parsed.chatId) {
+        const chatId = parsed.chatId;
+        const mode = parsed.mode === 'skip' ? 'skip' : 'notify';
+        const messageId = typeof parsed.messageId === 'string' ? parsed.messageId : undefined;
+        return { chatId, mode, ...(messageId ? { messageId } : {}) };
+      }
     } catch {
       /* corrupt marker: dropped above, keep looking */
     }

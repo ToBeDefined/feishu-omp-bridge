@@ -31,8 +31,8 @@ function makeCtx(): { ctx: CommandContext; sent: string[] } {
   const sent: string[] = [];
   const ctx = {
     channel: {
-      send: async (_chatId: string, payload: { markdown?: string }) => {
-        sent.push(payload.markdown ?? '');
+      send: async (_chatId: string, payload: { markdown?: string; card?: object }) => {
+        sent.push(payload.markdown ?? (payload.card ? JSON.stringify(payload.card) : ''));
       },
     },
     msg: { chatId: 'oc_1', messageId: 'om_1', content: '' },
@@ -145,7 +145,7 @@ describe('/exec', () => {
     child.stdout.emit('data', Buffer.from('hi'));
     child.emit('close', 0);
     await p;
-    expect(sent[0]).toContain('退出码 0');
+    expect(sent[0]).toContain('命令执行完成');
     expect(sent[0]).toContain('hi');
   });
 

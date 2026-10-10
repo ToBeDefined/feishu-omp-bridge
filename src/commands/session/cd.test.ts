@@ -38,8 +38,8 @@ function makeCtx(cwd: string): {
   const sent: string[] = [];
   const ctx = {
     channel: {
-      send: async (_chatId: string, payload: { markdown?: string }) => {
-        sent.push(payload.markdown ?? '');
+      send: async (_chatId: string, payload: { markdown?: string; card?: object }) => {
+        sent.push(payload.markdown ?? (payload.card ? JSON.stringify(payload.card) : ''));
       },
     } as never,
     msg: {

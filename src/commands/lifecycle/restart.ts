@@ -1,7 +1,9 @@
 import type { CommandContext, Handler } from '../index';
-import { reply } from '../shared';
+import { RESTART_FLUSH_GRACE_MS, reply } from '../shared';
 import { log } from '../../core/logger';
-import { clearOnlineNotify, markOnlineNotify } from '../../bot/online-notify';
+import { clearOnlineNotice, markOnlineNotice } from '../../bot/online-notify';
+import { restartCard } from '../../card/templates';
+import { sendManagedCard, updateManagedCard } from '../../card/managed';
 
 export const restartHandlers: Record<string, Handler> = {
   '/restart': handleRestart,
@@ -9,27 +11,45 @@ export const restartHandlers: Record<string, Handler> = {
 
 async function handleRestart(_args: string, ctx: CommandContext): Promise<void> {
   log.info('command', 'restart', { scope: ctx.scope });
-  await reply(ctx, `🔄 正在重启…`);
+  let messageId: string | undefined;
   try {
-    // Record the requester before the process dies: the boot notice otherwise
-    // only reaches chats with a persisted session, and /new, /cd and /ws all
-    // clear the entry — a restart right after them used to look like a crash.
-    await markOnlineNotify(ctx.msg.chatId);
+    const sent = await sendManagedCard(
+      ctx.channel,
+      ctx.msg.chatId,
+      restartCard('starting'),
+      ctx.msg.messageId,
+      { track: true, kind: 'restart' },
+    );
+    messageId = sent.messageId;
+  } catch (err) {
+    log.fail('command', err, { step: 'restart-card' });
+    await reply(ctx, '🔄 正在重启…');
+  }
+  try {
+    // The new process sends the boot confirmation for a real launchd restart.
+    await markOnlineNotice(ctx.msg.chatId, 'notify', undefined, messageId);
+    await new Promise((resolve) => setTimeout(resolve, RESTART_FLUSH_GRACE_MS));
     const realRestart = await ctx.controls.restartProcess();
-    // True restart (launchd kickstart -k): this process is about to die and
-    // the daemon relaunches with newly built code — no "done" ack can be
-    // sent from here. Fallback (not under launchd): in-process reconnect,
-    // which can ack.
     if (!realRestart) {
-      // No boot will consume the marker — drop it rather than leak a stale
-      // "已上线" into some later boot.
-      await clearOnlineNotify();
-      await reply(ctx, '🚀 重启完成，已重新连接。');
+      await clearOnlineNotice();
+      if (messageId) {
+        await updateManagedCard(ctx.channel, messageId, restartCard('done')).catch(() => {});
+      } else {
+        await reply(ctx, '🚀 重启完成，已重新连接。');
+      }
     }
     log.info('command', 'restart-ok', { realRestart });
   } catch (err) {
     log.fail('command', err, { step: 'restart' });
-    await clearOnlineNotify();
-    await reply(ctx, '❌ 重启失败，bot 仍在线。');
+    await clearOnlineNotice();
+    if (messageId) {
+      await updateManagedCard(
+        ctx.channel,
+        messageId,
+        restartCard('failed', err instanceof Error ? err.message : String(err)),
+      ).catch(() => {});
+    } else {
+      await reply(ctx, '❌ 重启失败，bot 仍在线。');
+    }
   }
 }

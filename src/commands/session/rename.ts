@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { getAgentStopGraceMs, getOmpModel, getOmpSessionDir } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
-import { codeSpan } from '../../utils/text';
+import { codeSpan, summarizeMd } from '../../utils/text';
 import { extractUserInput } from './context';
 import { summarize } from '../../utils/text';
 import { latestSegment, type WorkSession } from '../../session/work-session';
@@ -33,12 +33,14 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
   }
 
   if (!title) {
-    // 名字优先；无名时回退工作会话最新段的最后一条用户消息做展示。
+    // 名字优先；无名时回退工作会话最新段的最后一条用户消息做展示。回退消息是
+    // 原始用户输入，必须与其它展示处一致地截断 + 转义，不能裸插进代码段
+    //（否则长消息撑爆消息体，`*`/`` ` `` 还能把代码段提前闭合）。
     const display = active.title?.trim() || (await lastUserMessage(ctx, active));
     await reply(
       ctx,
       display
-        ? `当前工作会话标题：\`${display}\`\n\n发 \`/rename <新标题>\` 修改，\`/rename auto\` 用 LLM 生成，\`/rename clear\` 清除。`
+        ? `当前工作会话标题：\`${codeSpan(summarizeMd(display, 40))}\`\n\n发 \`/rename <新标题>\` 修改，\`/rename auto\` 用 LLM 生成，\`/rename clear\` 清除。`
         : '当前工作会话未命名（也没有可显示的历史消息）。\n\n用法：`/rename <标题>` — 给当前工作会话起名，`/rename auto` 用 LLM 生成，`/rename clear` 清除。',
     );
     return;
@@ -51,13 +53,22 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
   }
 
   if (title === 'auto') {
+    // 记下目标工作会话 id：生成是异步的，期间 /work（摘掉当前指针）或 /resume
+    //（切到别的工作会话）都会让 active 变样。名字必须落在发起时那个活上。
+    const target = active.id;
     await reply(ctx, '🤖 正在用 LLM 生成标题…');
     const generated = await generateTitleWithLlm(ctx, active);
     if (!generated) {
       await reply(ctx, '❌ 无法生成标题（工作会话内容太少或生成失败），请手动 `/rename <标题>`。');
       return;
     }
-    ctx.workSessions.setTitle(ctx.scope, generated);
+    if (!ctx.workSessions.setTitleById(target, generated)) {
+      await reply(
+        ctx,
+        '❌ 生成完成但目标工作会话已不存在（可能被执行了 /work 或 /resume），名字未保存。',
+      );
+      return;
+    }
     await reply(ctx, `✅ 已自动生成工作会话标题：\`${codeSpan(generated)}\``);
     return;
   }

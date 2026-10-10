@@ -302,7 +302,21 @@ export class WorkSessionStore {
   setTitle(scope: string, title: string): boolean {
     const active = this.activeWorkSession(scope);
     if (!active) return false;
-    this.workSessions[active.id] = { ...active, title };
+    // 复用按 id 写入的路径，两者不会各自维护一套「设标题 + 落盘」逻辑。
+    this.setTitleById(active.id, title);
+    return true;
+  }
+
+  /**
+   * /rename auto 用：按 id 给指定工作会话起名。生成标题是异步的，期间用户可能
+   * 执行 /work（当前指针被摘掉）或 /resume（切到别的工作会话）——按 id 写入才能
+   * 保证名字落在**发起时**那个工作会话上，而不是名字没落地或落到别的活上。
+   * 工作会话已不存在时返回 false（调用方据此提示未保存）。
+   */
+  setTitleById(workSessionId: string, title: string): boolean {
+    const ws = this.workSessions[workSessionId];
+    if (!ws) return false;
+    this.workSessions[workSessionId] = { ...ws, title };
     this.schedulePersist();
     return true;
   }

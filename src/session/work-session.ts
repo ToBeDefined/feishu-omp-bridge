@@ -75,7 +75,13 @@ export function touchSegment(ws: WorkSession, seg: WorkSegment, nowMs = Date.now
   };
 }
 
-/** 行/标题上的名字：用户起的名字优先，否则回退该工作会话最后一条用户消息。 */
+/** 行/标题上的名字：用户起的名字优先，否则回退该工作会话最后一条用户消息。
+ *
+ * `lastUserMessageBySegment` 由调用方喂入，**只包含最新/当前段**的最后一条用户
+ * 消息——这是有意为之：逐段回退要为每个历史段扫一遍整个会话目录
+ * （`loadSessionSummary` 是 O(目录) 的），工作会话越长开销越大，而最新段就是用户
+ * 最可能记得的那条消息。所以下面的跨段回退**只在调用方真的提供了多个段的消息时
+ * 才发生**，不是默认行为。 */
 export function displayName(
   ws: WorkSession,
   lastUserMessageBySegment: Record<string, string | undefined>,

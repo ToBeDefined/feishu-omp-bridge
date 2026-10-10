@@ -87,6 +87,38 @@ describe('WorkSessionStore title', () => {
     await store.flush();
   });
 
+  it('sets a title by id without consulting the active pointer', async () => {
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    store.bindSegment('oc_1', 'sess-1', '/repo');
+    const id = store.activeWorkSession('oc_1')!.id;
+
+    // 生成标题期间 /work 摘掉了当前指针：按 id 仍能写到原工作会话上。
+    store.startWorkSession('oc_1');
+    expect(store.activeWorkSession('oc_1')).toBeUndefined();
+    expect(store.setTitleById(id, '按 id 命名')).toBe(true);
+    expect(store.titleFor('sess-1')).toBe('按 id 命名');
+
+    // 工作会话不存在时返回 false，不新建、不改动任何东西。
+    expect(store.setTitleById('ws-missing', '没有这个活')).toBe(false);
+    expect(store.workSessionById('ws-missing')).toBeUndefined();
+    expect(store.titleFor('sess-1')).toBe('按 id 命名');
+    await store.flush();
+  });
+
+  it('persists a by-id title across load', async () => {
+    const store = new WorkSessionStore(file);
+    stores.push(store);
+    store.bindSegment('oc_1', 'sess-1', '/repo');
+    const id = store.activeWorkSession('oc_1')!.id;
+    expect(store.setTitleById(id, '按 id 持久化')).toBe(true);
+    await store.flush();
+
+    const reloaded = new WorkSessionStore(file);
+    await reloaded.load();
+    expect(reloaded.titleFor('sess-1')).toBe('按 id 持久化');
+  });
+
   it('persists titles across load', async () => {
     const store = new WorkSessionStore(file);
     stores.push(store);

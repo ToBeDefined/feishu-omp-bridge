@@ -4,10 +4,19 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommandContext } from '../index';
 import { paths } from '../../config/paths';
-import { searchSession, workspaceLabel } from './search';
+import { searchSession, searchHandlers, workspaceLabel } from './search';
 import { loadSessionSummary } from './context';
 import { renderSearchContext, searchResultsCard } from '../../card/search-card';
 import { WorkSessionStore } from '../../session/work-store';
+
+const { reply } = vi.hoisted(() => ({
+  reply: vi.fn(async (_ctx: unknown, _text: string) => {}),
+}));
+
+vi.mock('../shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../shared')>();
+  return { ...actual, reply, recallMessage: vi.fn(async () => {}) };
+});
 
 // Wrap loadSessionSummary so we can prove /search resolves identities from its
 // own scan instead of rescanning the session dir per work session.
@@ -424,5 +433,28 @@ describe('searchSession', () => {
       '第二处 codegraph 追问',
       '第二处 codegraph 回答',
     ]);
+  });
+});
+
+describe('/search done with an expired cache', () => {
+  it('asks the user to re-search instead of resuming the current session', async () => {
+    const ctx = {
+      scope: 'oc_1',
+      msg: { chatId: 'oc_1', messageId: 'om_1' },
+      fromCardAction: true,
+      channel: { send: async () => {} },
+      workSessions: { activeWorkSession: vi.fn() },
+      controls: { cfg: {} },
+    } as unknown as CommandContext;
+    reply.mockClear();
+
+    // The query id is not in the (module-level) cache — evicted or lost on restart.
+    await searchHandlers['/search']!('done s-expired 1', ctx);
+
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(reply.mock.calls[0]![1]).toContain('过期');
+    expect(reply.mock.calls[0]![1]).toContain('/search');
+    // Never falls through to adopting the current chat session.
+    expect(ctx.workSessions.activeWorkSession).not.toHaveBeenCalled();
   });
 });

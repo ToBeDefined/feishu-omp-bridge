@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { paths } from '../../config/paths';
 import type { CommandContext } from '../index';
-import { applyResume, listResumableSessions } from './resume';
+import { applyResume, listResumableSessions, resumeHandlers } from './resume';
 import { listWorkSessions, pickActiveSegment } from './sessions';
 import { handleHistory } from './history';
 import { loadSessionSummary, renderContext } from './context';
@@ -366,6 +366,37 @@ describe('renderContext', () => {
     vi.mocked(loadSessionSummary).mockClear();
     renderContext(ctx, { lastMessage: '外部传入', lastReply: '外部回复' });
     expect(loadSessionSummary).not.toHaveBeenCalled();
+    await store.flush();
+  });
+});
+
+describe('/resume a non-active segment id', () => {
+  it('points at /history seg instead of reporting the segment not found', async () => {
+    const a = await dir('a');
+    const b = await dir('b');
+    const c = await dir('c');
+    await writeSession('seg-a', a);
+    await writeSession('seg-b', b);
+    await writeSession('seg-c', c);
+    const store = await openStore();
+    store.bindSegment('oc_1', 'seg-a', a, { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.bindSegment('oc_1', 'seg-b', b, { startedAtMs: 2, lastActiveAtMs: 2 });
+    store.bindSegment('oc_1', 'seg-c', c, { startedAtMs: 3, lastActiveAtMs: 3 }); // current
+    store.startWorkSession('oc_1'); // archived: resumable from another chat
+
+    const { ctx } = makeCtx(store, { scope: 'oc_9' });
+    reply.mockClear();
+    // seg-b is a middle segment: not the work session's active one, so it is
+    // absent from the /resume picker.
+    await resumeHandlers['/resume']!('seg-b', ctx);
+
+    expect(reply).toHaveBeenCalledTimes(1);
+    const text = reply.mock.calls[0]![1];
+    expect(text).toContain('历史段');
+    expect(text).toContain('seg-a'); // the owning work session id
+    expect(text).toContain('/history seg');
+    // Nothing was silently resumed.
+    expect(store.activeWorkSession('oc_9')).toBeUndefined();
     await store.flush();
   });
 });

@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   backfillWorkSessions, parseLogLine,
   type LogEvent, type SegmentMeta,
 } from './backfill';
 import type { SessionsFileV2 } from './work-store';
+
+const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
+vi.mock('../core/logger', () => ({
+  log: { warn, info: vi.fn(), fail: vi.fn(), error: vi.fn() },
+}));
 
 const seg = (sessionId: string, cwd: string, startedAtMs: number, lastActiveAtMs: number): SegmentMeta =>
   ({ sessionId, cwd, startedAtMs, lastActiveAtMs });
@@ -92,6 +97,32 @@ describe('backfillWorkSessions', () => {
     expect(out.workSessions['A']?.segments.map((s) => s.lastActiveAtMs)).toEqual([100, 300]);
   });
 
+  it('does not fold a bare-chatId bind into a topic chat, and reports it once', () => {
+    warn.mockClear();
+    const out = backfillWorkSessions(
+      empty(),
+      [
+        bind(1, 'oc_1', 'A'),              // bare chatId — no thread info
+        boundary(2, 'oc_1:th_1', '/new'),  // topic thread boundary
+        bind(3, 'oc_1:th_1', 'B'),         // properly scoped bind
+      ],
+      [seg('A', '/repo', 1, 10), seg('B', '/repo', 3, 30)],
+    );
+    // The bare-chatId segment becomes its own scope:null history work session…
+    expect(out.workSessions['A']).toMatchObject({ scope: null, cwd: '/repo' });
+    // …never folded into a bogus `oc_1` work session, and no pointer is written
+    // for the ambiguous bare chatId (its real identity is one of the threads).
+    expect(out.scopes['oc_1']).toBeUndefined();
+    // The properly scoped bind keeps its thread scope.
+    expect(out.workSessions['B']?.scope).toBe('oc_1:th_1');
+    expect(out.scopes['oc_1:th_1']?.activeWorkSession).toBe('B');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith('session', 'backfill-scope-ambiguous', {
+      chatId: 'oc_1',
+      count: 1,
+    });
+  });
+
   it('points the scope at the tail-bound work session without clobbering a live pointer', () => {
     const out = backfillWorkSessions(
       empty(),
@@ -120,6 +151,18 @@ describe('parseLogLine', () => {
       .toEqual({ ts: Date.parse(iso), kind: 'bind', scope: 'oc_1', sessionId: 'A' });
     expect(parseLogLine(JSON.stringify({ ts: iso, phase: 'session', event: 'resume', chatId: 'oc_1', sessionId: 'B' })))
       .toEqual({ ts: Date.parse(iso), kind: 'bind', scope: 'oc_1', sessionId: 'B' });
+  });
+
+  it('prefers the log-line scope over chatId for bind and boundary', () => {
+    const iso = '2026-10-11T01:02:03.000Z';
+    // bind: explicit scope (chatId:threadId) wins over the bare chatId.
+    expect(
+      parseLogLine(JSON.stringify({ ts: iso, phase: 'session', event: 'set', chatId: 'oc_1', scope: 'oc_1:th_1', sessionId: 'A' })),
+    ).toEqual({ ts: Date.parse(iso), kind: 'bind', scope: 'oc_1:th_1', sessionId: 'A' });
+    // boundary: scope missing → falls back to chatId.
+    expect(
+      parseLogLine(JSON.stringify({ ts: 5, phase: 'intake', event: 'command-reset', chatId: 'oc_1', cmd: '/new' })),
+    ).toEqual({ ts: 5, kind: 'boundary', scope: 'oc_1', cmd: '/new' });
   });
 
   it('parses /new|/cd|/ws command-reset lines as boundaries', () => {

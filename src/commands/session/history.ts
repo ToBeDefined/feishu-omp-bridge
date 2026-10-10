@@ -5,6 +5,7 @@ import { recallMessage, reply } from '../shared';
 import { sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
 import { applyResume } from './resume';
+import { pickDisplaySegmentId } from './display';
 import { listWorkSessions, scanSessionFiles } from './sessions';
 
 export const historyHandlers: Record<string, Handler> = {
@@ -79,12 +80,14 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
       return;
     }
     const byId = new Map((await scanSessionFiles(ctx)).map((f) => [f.sessionId, f]));
-    const currentSegmentId = ctx.workSessions.activeWorkSession(ctx.scope)?.currentSegmentId;
-    // Unnamed work session: fall back to the active segment's last user message,
-    // so the header is not just "未命名".
-    const topic = byId.get(
-      currentSegmentId ?? ws.segments[ws.segments.length - 1]?.sessionId ?? '',
-    )?.lastMessage;
+    // 展示口径看的是**被展示的 ws 自己**：topic 与 ✅ 都取它自己的取样段
+    // （与主列表 listWorkSessions 一致），而不是调用方活跃工作会话的当前段 ——
+    // 否则看另一个工作会话时会显示错误的 topic / 错误的 ✅。
+    const wsIsCurrent = ctx.workSessions.activeWorkSession(ctx.scope)?.id === ws.id;
+    const displaySegmentId = pickDisplaySegmentId(ws, new Set(byId.keys()));
+    // Unnamed work session: fall back to its own display segment's last user
+    // message, so the header is not just "未命名".
+    const topic = displaySegmentId !== undefined ? byId.get(displaySegmentId)?.lastMessage : undefined;
     if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
     await sendManagedCard(
       ctx.channel,
@@ -104,7 +107,10 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
         }),
         ...(ws.title !== undefined ? { title: ws.title } : {}),
         ...(topic !== undefined ? { topic } : {}),
-        ...(currentSegmentId !== undefined ? { currentSegmentId } : {}),
+        // ✅ 只看「被展示的 ws 是不是调用方的活跃工作会话」，标在它自己的取样段上。
+        ...(wsIsCurrent && displaySegmentId !== undefined
+          ? { currentSegmentId: displaySegmentId }
+          : {}),
       }),
     );
     return;

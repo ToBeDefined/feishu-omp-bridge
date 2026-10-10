@@ -107,6 +107,21 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
     (s) => s.sessionId.startsWith(sub) || (s.workSessionId?.startsWith(sub) ?? false),
   );
   if (!match) {
+    // The id may be a segment of a work session that is NOT its current/active
+    // one — /resume only offers the active segment, so it is not in the picker.
+    // Don't fail silently: point the caller at /history seg to pick the段.
+    const owner =
+      ctx.workSessions.workSessionForSegment(sub) ??
+      ctx.workSessions
+        .allWorkSessions()
+        .find((ws) => ws.segments.some((s) => s.sessionId.startsWith(sub)));
+    if (owner !== undefined) {
+      await reply(
+        ctx,
+        `这是工作会话 \`${owner.id}\` 的一个历史段，用 \`/history seg ${owner.id}\` 选段恢复。`,
+      );
+      return;
+    }
     await reply(ctx, `❌ 未找到会话 \`${sub}\`。发 \`/resume\` 查看可恢复的会话列表。`);
     return;
   }

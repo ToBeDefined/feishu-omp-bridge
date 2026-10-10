@@ -13,6 +13,7 @@ import {
   type WorkSegment, type WorkSession,
 } from './work-session';
 import type { SessionsFileV2 } from './work-store';
+import { log as logger } from '../core/logger';
 
 /**
  * 日志里能用的两类事件（解析后）。
@@ -70,9 +71,9 @@ export function parseLogLine(line: string): LogEvent | undefined {
   const event = rec['event'];
 
   if (phase === 'session' && (event === 'set' || event === 'resume')) {
-    // bind 的 scope 来自随日志上下文自动带上的 chatId（session 事件的 scope
-    // 就是 chat）。
-    const scope = nonEmptyString(rec['chatId']);
+    // bind 的 scope 优先取日志行里显式的 `scope`（topic 群是 chatId:threadId），
+    // 早期日志行没有 scope，只有随上下文自动带上的 chatId（= 裸 chat）时回退。
+    const scope = nonEmptyString(rec['scope']) ?? nonEmptyString(rec['chatId']);
     const sessionId = nonEmptyString(rec['sessionId']);
     if (scope === undefined || sessionId === undefined) return undefined;
     return { ts, kind: 'bind', scope, sessionId };
@@ -80,7 +81,8 @@ export function parseLogLine(line: string): LogEvent | undefined {
 
   if (event === 'command-reset' && typeof phase === 'string' && RESET_PHASES[phase] === true) {
     const cmd = nonEmptyString(rec['cmd']);
-    const scope = nonEmptyString(rec['scope']);
+    // 同 bind：scope 优先，缺失时回退 chatId。
+    const scope = nonEmptyString(rec['scope']) ?? nonEmptyString(rec['chatId']);
     if (cmd === undefined || scope === undefined || BOUNDARY_COMMANDS[cmd] !== true) return undefined;
     return { ts, kind: 'boundary', scope, cmd };
   }
@@ -99,8 +101,12 @@ export function parseLogLine(line: string): LogEvent | undefined {
  *  - 日志里出现过、但 `segments` 里没有的 sessionId 忽略（不凭日志造段）。
  *  - `base.workSessions` 里已被认领的段不重认领、不改动。
  *  - 无日志覆盖的段 → 各自一个 `scope: null` 的工作会话（id = 段 id）。
+ *  - **归属不明**的段（topic 群里裸 chatId 的 bind，见下）→ 也各自一个 `scope:
+ *    null` 的工作会话，并 `logger.warn('session','backfill-scope-ambiguous',…)` 报数。
  *  - `scopes.activeWorkSession` 只在日志里**最后一次 bind** 所属工作会话存在时
  *    更新，且绝不覆盖一个仍指向存活工作会话的指针。
+ *
+ * 唯一副作用是那条 warn（模块本身不读盘）。
  */
 export function backfillWorkSessions(
   base: SessionsFileV2,
@@ -122,6 +128,13 @@ export function backfillWorkSessions(
   }
   for (const list of boundaries.values()) list.sort((a, b) => a - b);
 
+  // 该 chatId 下存在 `chatId:<threadId>` 形式的线程边界 —— 说明它是 topic 群。
+  const threadChats = new Set<string>();
+  for (const scope of boundaries.keys()) {
+    const colon = scope.indexOf(':');
+    if (colon > 0) threadChats.add(scope.slice(0, colon));
+  }
+
   // 每个 sessionId 的**首次**绑定（ts 升序；同 ts 保序）。
   const ordered = [...log].sort((a, b) => a.ts - b.ts);
   const firstBinding = new Map<string, { ts: number; scope: string }>();
@@ -133,15 +146,23 @@ export function backfillWorkSessions(
   const byStart = [...segments].sort((a, b) => a.startedAtMs - b.startedAtMs);
   // 区间 → 该区间首个段的 id（= 工作会话 id）。
   const groupOwner = new Map<string, string>();
+  // chatId → 无法定归属的段数（只报一次数）。
+  const ambiguous = new Map<string, number>();
   for (const seg of byStart) {
     if (claimed.has(seg.sessionId)) continue;
     const seen = firstBinding.get(seg.sessionId);
     let scope: string | null = null;
     let key = `#${seg.sessionId}`;
     if (seen) {
-      scope = seen.scope;
-      const idx = (boundaries.get(seen.scope) ?? []).filter((t) => t < seen.ts).length;
-      key = `${seen.scope}#${idx}`;
+      // topic 群里裸 chatId 的 bind 没有 thread 信息，不能猜它属于哪个线程：
+      // 该段降级为 scope:null 的独立历史工作会话（仍可恢复、仍可 merge）。
+      if (threadChats.has(seen.scope)) {
+        ambiguous.set(seen.scope, (ambiguous.get(seen.scope) ?? 0) + 1);
+      } else {
+        scope = seen.scope;
+        const idx = (boundaries.get(seen.scope) ?? []).filter((t) => t < seen.ts).length;
+        key = `${seen.scope}#${idx}`;
+      }
     }
     const ownerId = groupOwner.get(key) ?? seg.sessionId;
     groupOwner.set(key, ownerId);
@@ -152,13 +173,17 @@ export function backfillWorkSessions(
       : beginWorkSession(scope, segment);
     claimed.add(seg.sessionId);
   }
+  for (const [chatId, count] of ambiguous) {
+    logger.warn('session', 'backfill-scope-ambiguous', { chatId, count });
+  }
 
   // 当前工作会话：日志里最后一次 bind 的那段所归属的工作会话。
   const scopes = { ...base.scopes };
   const tailBind = ordered.filter(
     (e): e is Extract<LogEvent, { kind: 'bind' }> => e.kind === 'bind',
   ).pop();
-  if (tailBind) {
+  // 归属不明的裸 chatId 不写指针（它可能根本不是真实 scope，真身是某个线程）。
+  if (tailBind && !threadChats.has(tailBind.scope)) {
     const owner = Object.values(workSessions).find((ws) =>
       ws.segments.some((s) => s.sessionId === tailBind.sessionId),
     );

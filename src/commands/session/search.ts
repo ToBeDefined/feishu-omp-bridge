@@ -388,6 +388,14 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     const queryRef = rest.join(' ').trim();
     const [queryId, idxStr] = queryRef.split(/\s+/);
     const contexts = searchCache.get(queryId ?? '');
+    // Cache expired (LRU eviction / restart): the detail card can no longer be
+    // rebuilt, and its 继续对话 arg would be empty — an empty target must NEVER
+    // fall through to resuming the current chat session. Tell the user to
+    // search again instead.
+    if (contexts === undefined) {
+      await reply(ctx, '搜索结果已过期，请重新 `/search`。');
+      return;
+    }
     if (ctx.fromCardAction) {
       const msgId = ctx.msg.messageId;
       void (async () => {

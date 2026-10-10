@@ -542,4 +542,34 @@ describe('/history seg', () => {
     expect(card).toContain('文件缺失');
     await store.flush();
   });
+
+  it('topics the displayed ws, not the caller’s active one', async () => {
+    const store = await threeSegments();
+    // Archive seg-a's work session and open a DIFFERENT one on oc_1.
+    store.startWorkSession('oc_1');
+    await writeSession('other.jsonl', { id: 'other', cwd: a, ts: '2026-02-01T00:00:00Z' }, 1, Date.now(), 'OTHER');
+    store.bindSegment('oc_1', 'other', a, { startedAtMs: 5_000, lastActiveAtMs: 5_000 });
+    expect(store.activeWorkSession('oc_1')?.id).toBe('other');
+
+    await handleHistory('seg seg-a', makeCtx({ workSessions: store }).ctx);
+    const card = cardJson();
+    // Header topic = seg-a ws's OWN display segment (seg-c), not the active ws.
+    expect(card).toContain('**C 问题 3**');
+    expect(card).not.toContain('OTHER');
+    // Displayed ws ≠ caller's active ws → no ✅ marker anywhere.
+    expect(card).not.toContain('✅ 当前');
+    await store.flush();
+  });
+
+  it('marks ✅ on the displayed ws’s own fallback segment when its current file is gone', async () => {
+    const store = await threeSegments();
+    await rm(join(tmp, 'seg-c.jsonl')); // ws seg-a's currentSegmentId is seg-c
+    await handleHistory('seg seg-a', makeCtx({ workSessions: store }).ctx);
+
+    const card = cardJson();
+    // Display falls back to the latest alive segment (#2 = seg-b), not the dead #3.
+    expect(card).toContain('**#2** ✅ 当前');
+    expect(card).not.toContain('**#3** ✅ 当前');
+    await store.flush();
+  });
 });

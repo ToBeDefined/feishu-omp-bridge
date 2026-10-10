@@ -49,6 +49,7 @@ async function writeSession(
   session: { id: string; cwd: string; ts: string },
   turns: number,
   timeMs: number,
+  label = 'A',
 ): Promise<void> {
   const lines = [
     JSON.stringify({ type: 'session', id: session.id, cwd: session.cwd, timestamp: session.ts }),
@@ -58,7 +59,7 @@ async function writeSession(
       JSON.stringify({
         type: 'message',
         timestamp: `t${i}`,
-        message: { role: 'user', content: [{ type: 'text', text: `问题 ${i}` }] },
+        message: { role: 'user', content: [{ type: 'text', text: `${label} 问题 ${i}` }] },
       }),
       JSON.stringify({
         type: 'message',
@@ -148,7 +149,7 @@ describe('listSessions', () => {
       startedAt: '2026-01-01T00:00:00Z',
       title: '命名的会话',
       summary: '回答 2',
-      lastMessage: '问题 2',
+      lastMessage: 'A 问题 2',
     });
   });
 });
@@ -159,7 +160,8 @@ describe('/history', () => {
     await writeSession('a1.jsonl', { id: 's1', cwd: tmp, ts: '2026-01-01T00:00:00Z' }, 3, Date.now() - 7_200_000);
     await writeSession('a2.jsonl', { id: 's3', cwd: tmp, ts: '2026-01-02T00:00:00Z' }, 5, Date.now() - 120_000);
     // Another workspace: must NOT show up in the scoped listing.
-    await writeSession('b1.jsonl', { id: 's2', cwd: '/repo/b', ts: '2026-01-03T00:00:00Z' }, 1, Date.now() - 60_000);
+    await writeSession('b1.jsonl', { id: 's2', cwd: '/repo/b', ts: '2026-01-03T00:00:00Z' }, 1, Date.now() - 60_000, '另一个工作区');
+    // Its identity must not leak into the scoped listing.
   });
 
   it('lists only the current workspace, newest activity first', async () => {
@@ -170,15 +172,15 @@ describe('/history', () => {
     expect(card).toContain(shortPath(tmp));
     expect(card).toContain('💬 5 轮');
     expect(card).toContain('💬 3 轮');
-    // Newer activity (#1 = s3) leads, and an unnamed session is identified by
-    // its last real user message.
+    // Newer activity (#1 = s3) leads; an unnamed session is identified by the
+    // message it ENDED on (last real user turn).
     expect(card.indexOf('#1')).toBeLessThan(card.indexOf('#2'));
-    expect(card.slice(card.indexOf('#1'))).toContain('问题 4');
+    expect(card.slice(card.indexOf('#1'))).toContain('A 问题 4');
     // The titled row keeps the title AND still shows its topic.
     expect(card).toContain('🏷 **命名的会话**');
-    expect(card).toContain('问题 2');
+    expect(card).toContain('💬 A 问题 2');
     // The other workspace's session is filtered out.
-    expect(card).not.toContain('问题 0');
+    expect(card).not.toContain('另一个工作区');
     // Rows do not repeat the header's directory.
     expect(card).not.toContain('📁');
     expect(sendManagedCard).toHaveBeenCalledWith(
@@ -207,7 +209,7 @@ describe('/history', () => {
 
   it('clamps a stale offset instead of rendering an empty page', async () => {
     await handleHistory('all 99', makeCtx().ctx);
-    expect(cardJson()).toContain('问题 0');
+    expect(cardJson()).toContain('另一个工作区 问题 0');
   });
 
   it('rejects unknown arguments with usage', async () => {

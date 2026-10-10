@@ -29,7 +29,7 @@ export interface HistoryRow {
   workspace: string;
   /** User-assigned title (/rename). */
   title?: string;
-  /** What the conversation was about — the last real user message. */
+  /** What the conversation was about — the LAST user message. */
   topic?: string;
 }
 
@@ -63,13 +63,13 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
   ];
 
   page.forEach((row, i) => {
-    // Identity: the name you gave it, else what the conversation was about.
+    // Identity: the name you gave it, else what the conversation was about —
+    // the last user message.
     const identity = row.title
       ? `🏷 **${escapeMd(row.title)}**`
       : row.topic
         ? `**${summarizeMd(row.topic, 24)}**`
         : '_未命名会话_';
-    elements.push({ tag: 'markdown', content: `**#${opts.offset + i + 1}** ${identity}` });
 
     const isCurrent = opts.currentSessionId !== undefined && row.sessionId === opts.currentSessionId;
     const meta = [

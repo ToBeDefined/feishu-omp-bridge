@@ -68,6 +68,22 @@ describe('historyCard', () => {
     expect(bare).toContain('未命名会话');
   });
 
+  it('renders each row identity exactly ONCE', () => {
+    // Regression: the identity was pushed as a top-level element AND again
+    // inside the row's column, so every row showed its title twice.
+    const rows = [
+      row({ title: '会话 UI 优化' }),
+      row({ sessionId: 'x'.repeat(26), topic: '看下 FC1 在做什么' }),
+    ];
+    const card = historyCard(rows, { mode: 'all', offset: 0, total: 2 });
+    const text = JSON.stringify(card);
+    expect(text.match(/会话 UI 优化/g)?.length).toBe(1);
+    expect(text.match(/看下 FC1 在做什么/g)?.length).toBe(1);
+    // Exactly one row container per row.
+    const elements = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements;
+    expect(elements.filter((e) => e.tag === 'column_set' && e.flex_mode === 'none')).toHaveLength(2);
+  });
+
   it("shows each row's workspace only in all-mode", () => {
     const rows = [row({ workspace: 'bridge' }), row({ sessionId: 's2', workspace: '/tmp/other' })];
     const all = JSON.stringify(historyCard(rows, { mode: 'all', offset: 0, total: 2 }));

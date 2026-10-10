@@ -9,20 +9,14 @@ const REASONING_MAX = 1500;
 /** Cap for the OMP UI panel body (widget/status text). */
 const UI_PANEL_MAX = 2500;
 
-interface ToolGroup {
-  kind: 'tools';
-  tools: ToolEntry[];
-}
-interface TextGroup {
-  kind: 'text';
-  content: string;
-}
-interface ThinkingGroup {
-  kind: 'thinking';
-  content: string;
-  active: boolean;
-}
-type Group = ToolGroup | TextGroup | ThinkingGroup;
+/** One process element inside a contiguous tool/thinking stretch. */
+type ProcessItem =
+  | { kind: 'tools'; tools: ToolEntry[] }
+  | { kind: 'thinking'; content: string; active: boolean };
+
+/** A render op: answer text, or a contiguous process stretch (no text
+ *  between its elements) that collapses into one outer row. */
+type RenderOp = { kind: 'text'; content: string } | { kind: 'process'; items: ProcessItem[] };
 
 /** Per-page markers for the card pagination flow (see batch.ts streamCardPages). */
 export interface CardPageOptions {
@@ -48,25 +42,17 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   // chatty thinking block can never push the answer's tables into code blocks.
   const tables = createTableBudget();
 
-  // Consecutive tool calls share ONE collapsible「🛠 工具调用」group row —
-  // the run's body stays mostly answer text; open the group to see each call
-  // (each call keeps its own header + merged body, as before).
+  // Answer text renders inline; a contiguous stretch of process elements
+  // (tool runs + thinking segments with no text in between) collapses into
+  // ONE outer row —「🛠 工具调用 ×N · 🧠 思考过程 ×M」when both kinds are
+  // present, or the plain tool/thinking row when only one kind is.
   const bodyElements: object[] = [];
-  for (const group of groupBlocks(state.blocks)) {
-    if (group.kind === 'text') {
-      if (group.content.trim()) {
-        bodyElements.push(markdown(tables(group.content)));
-      }
-    } else if (group.kind === 'thinking') {
-      // Thinking segments render collapsed at their chronological position.
-      if (hasReasoningSubstance(group.content)) {
-        bodyElements.push(
-          reasoningPanel(group.content, group.active, tables),
-        );
-      }
-    } else {
-      bodyElements.push(toolGroupPanel(group.tools));
-    }
+  for (const op of collectOps(state.blocks)) {
+    bodyElements.push(
+      op.kind === 'text'
+        ? markdown(tables(op.content))
+        : renderProcessRun(op.items, tables),
+    );
   }
 
   if (opts?.topNote) elements.push(noteMd(opts.topNote));
@@ -113,24 +99,75 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   };
 }
 
-function* groupBlocks(blocks: Block[]): Generator<Group> {
+/**
+ * Fold the chronological blocks into render ops: text stays text; a
+ * contiguous stretch of tools and/or thinking collapses into ONE process op
+ * (consecutive tool blocks are one run; thinking segments join the same op).
+ * Blank text and substance-less thinking (a bare ".") drop out here, so the
+ * op's counts match what is actually rendered.
+ */
+function collectOps(blocks: Block[]): RenderOp[] {
+  const ops: RenderOp[] = [];
   let toolBuf: ToolEntry[] = [];
+  const pushProcess = (item: ProcessItem): void => {
+    const last = ops[ops.length - 1];
+    if (last?.kind === 'process') last.items.push(item);
+    else ops.push({ kind: 'process', items: [item] });
+  };
+  const flushTools = (): void => {
+    if (toolBuf.length === 0) return;
+    pushProcess({ kind: 'tools', tools: toolBuf });
+    toolBuf = [];
+  };
   for (const b of blocks) {
     if (b.kind === 'tool') {
       toolBuf.push(b.tool);
-    } else {
-      if (toolBuf.length > 0) {
-        yield { kind: 'tools', tools: toolBuf };
-        toolBuf = [];
-      }
-      if (b.kind === 'thinking') {
-        yield { kind: 'thinking', content: b.content, active: b.active };
-      } else {
-        yield { kind: 'text', content: b.content };
-      }
+      continue;
     }
+    flushTools();
+    if (b.kind === 'thinking') {
+      if (hasReasoningSubstance(b.content)) {
+        pushProcess({ kind: 'thinking', content: b.content, active: b.active });
+      }
+      continue;
+    }
+    if (b.content.trim()) ops.push({ kind: 'text', content: b.content });
   }
-  if (toolBuf.length > 0) yield { kind: 'tools', tools: toolBuf };
+  flushTools();
+  return ops;
+}
+
+/**
+ * Render one process stretch as a single outer row.
+ *
+ * Single kind → the plain row (「🛠 工具调用 ×N」/「🧠 思考过程」), unchanged.
+ * Both kinds → one merged row titled「🛠 工具调用 ×N · 🧠 思考过程 ×M」whose
+ * children are the individual calls and thinking segments IN CHRONOLOGICAL
+ * ORDER (so tool,thinking,tool reads top-to-bottom inside one group instead
+ * of stacking three separate rows).
+ */
+function renderProcessRun(items: ProcessItem[], tables: TableBudget): object {
+  const only = items.length === 1 ? items[0] : undefined;
+  if (only?.kind === 'tools') return toolGroupPanel(only.tools);
+  if (only?.kind === 'thinking') return reasoningPanel(only.content, only.active, tables);
+
+  const toolCount = items.reduce((n, it) => (it.kind === 'tools' ? n + it.tools.length : n), 0);
+  const thinkingCount = items.reduce((n, it) => (it.kind === 'thinking' ? n + 1 : n), 0);
+  const failed = items.reduce(
+    (n, it) => (it.kind === 'tools' ? n + it.tools.filter((t) => t.status === 'error').length : n),
+    0,
+  );
+  const suffix = failed > 0 ? `（${failed} 失败）` : '';
+  return collapsiblePanel({
+    title: `🛠 **工具调用** ×${toolCount} · 🧠 **思考过程** ×${thinkingCount}${suffix}`,
+    expanded: false,
+    border: failed > 0 ? 'red' : 'grey',
+    elements: items.flatMap((it) =>
+      it.kind === 'tools'
+        ? it.tools.map((t) => toolPanel(t))
+        : [reasoningPanel(it.content, it.active, tables)],
+    ),
+  });
 }
 
 /** Some models emit a bare "." as an empty thinking slot — reasoning panels

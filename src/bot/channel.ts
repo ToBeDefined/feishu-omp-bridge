@@ -4,7 +4,7 @@ import type {
 } from '@larksuiteoapi/node-sdk';
 import { Domain, LoggerLevel, createLarkChannel } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
-import { handleCardAction } from '../card/dispatcher';
+import { handleCardAction } from './card-dispatcher';
 import type { Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import { getMaxConcurrentRuns } from '../config/schema';

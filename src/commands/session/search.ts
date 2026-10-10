@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { getOmpSessionDir } from '../../config/schema';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, codeSpan, recallMessage, reply } from '../shared';
+import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { codeSpan } from '../../utils/text';
 import { extractUserInput, scanSessionFile } from './context';
 import { applyResume, listResumableSessions } from './resume';
 import {

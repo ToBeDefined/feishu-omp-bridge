@@ -1,7 +1,8 @@
 import { homedir } from 'node:os';
 import type { CommandContext, Handler } from '../index';
 import { formatIdleLine, reply } from '../shared';
-import { escapeMd, newSessionCard } from '../../card/templates';
+import { newSessionCard } from '../../card/templates';
+import { escapeMd } from '../../utils/text';
 import { createBoundChat, defaultChatName } from './group';
 import { getOmpModel, getOmpThinking, getRunIdleTimeoutMs } from '../../config/schema';
 import { log } from '../../core/logger';

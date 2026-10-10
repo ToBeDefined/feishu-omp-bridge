@@ -1,5 +1,6 @@
 import type { ToolEntry } from './run-state';
-import { codeFence, escapeCode, escapeMd } from './templates';
+import { codeFence } from './templates';
+import { escapeCode, escapeMd } from '../utils/text';
 
 const HEADER_SUMMARY_MAX = 80;
 const BODY_FIELD_MAX = 600;

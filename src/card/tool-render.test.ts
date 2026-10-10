@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { toolBodyMd, toolHeaderText } from './tool-render';
-import { escapeMd } from './templates';
+import { escapeMd } from '../utils/text';
 import type { ToolEntry } from './run-state';
 
 function tool(partial: Partial<ToolEntry>): ToolEntry {

@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { formatAgoOr, formatClockOr } from '../utils/time';
+import { escapeCode, escapeMd } from '../utils/text';
 
 /** Input for /context renders — gathered by commands/session/context.ts
  * (`collectContextInfo`) and consumed here, so the text renderer and the
@@ -589,6 +590,20 @@ export function releaseCard(progress: ReleaseProgress): object {
   return shell(`${icon} 发布`, elements);
 }
 
+/** Replacement card for a recall that failed — no buttons, so a stale
+ * interactive surface cannot be clicked after its flow moved on. */
+export function staleNoticeCard(): object {
+  return {
+    schema: '2.0',
+    config: { update_multi: true },
+    body: {
+      elements: [
+        { tag: 'markdown', content: '_⚠️ 此卡片已过期，请使用最新发出的卡片。_' },
+      ],
+    },
+  };
+}
+
 const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',
@@ -708,12 +723,6 @@ export function helpCard(): object {
   return shell('💡 命令速查', elements);
 }
 
-export function escapeMd(s: string): string {
-  // `[ ] ( ) !` are included so untrusted content cannot forge a link or image
-  // (`[x](url)` / `![](url)`) inside card markdown.
-  return s.replace(/([*_`\\[\]()!])/g, '\\$1');
-}
-
 /**
  * Wrap `content` in a backtick fence longer than the longest backtick run it
  * contains (min 3), so untrusted content cannot close the fence early and
@@ -723,14 +732,4 @@ export function codeFence(content: string, lang?: string): string {
   const longest = (content.match(/`+/g) ?? []).reduce((max, run) => Math.max(max, run.length), 0);
   const fence = '`'.repeat(Math.max(3, longest + 1));
   return `${fence}${lang ?? ''}\n${content}\n${fence}`;
-}
-
-/**
- * Neutralise content that goes INSIDE an inline code span. Backslash escapes
- * are not processed inside a code span, so `escapeMd` there renders visible
- * backslashes (`src/a\(b\).ts`); the span itself already suppresses markdown,
- * only the delimiter needs handling.
- */
-export function escapeCode(s: string): string {
-  return s.replace(/`/g, "'");
 }

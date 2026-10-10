@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { renderAgentSelectedCard } from './dispatcher';
+import { renderAgentSelectedCard } from './card-dispatcher';
 
 describe('renderAgentSelectedCard', () => {
   it('renders a schema-2.0 card showing the frozen choice, without buttons', () => {

@@ -8,7 +8,8 @@ import {
   getRunIdleTimeoutMs,
 } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
-import { formatIdleLine, summarizeMd } from '../shared';
+import { formatIdleLine } from '../shared';
+import { summarizeMd } from '../../utils/text';
 import { contextCard, type ContextInfo } from '../../card/templates';
 import { formatAgoOr, formatClockOr } from '../../utils/time';
 

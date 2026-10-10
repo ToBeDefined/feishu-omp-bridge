@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { codeSpan, formatIdleLine, summarize, summarizeMd } from './shared';
+import { formatIdleLine } from './shared';
+import { codeSpan, summarize, summarizeMd } from '../utils/text';
 
 describe('summarize', () => {
   it('returns empty for empty input', () => {

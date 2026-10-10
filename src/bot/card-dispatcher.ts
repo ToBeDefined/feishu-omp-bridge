@@ -1,23 +1,23 @@
 import type { CardActionEvent, LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
-import type { ActiveRuns } from '../bot/active-runs';
-import type { ChatModeCache } from '../bot/chat-mode-cache';
-import type { PendingQueue } from '../bot/pending-queue';
-import { RESET_CONTEXT_COMMANDS } from '../bot/intake';
+import type { ActiveRuns } from './active-runs';
+import type { ChatModeCache } from './chat-mode-cache';
+import type { PendingQueue } from './pending-queue';
+import { RESET_CONTEXT_COMMANDS } from './intake';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
 import { isChatAllowed, isUserAllowed } from '../config/schema';
 import { log } from '../core/logger';
 import type { SessionStore } from '../session/store';
-import { AGENT_CALLBACK_MARKER } from './agent-card';
-import { forgetManagedCard, updateManagedCard } from './managed';
-import { escapeMd } from './templates';
+import { AGENT_CALLBACK_MARKER } from '../card/agent-card';
+import { forgetManagedCard, updateManagedCard } from '../card/managed';
+import { escapeMd } from '../utils/text';
 import {
   isOmpUiPayload,
   ompUiRequestId,
   ompUiTitle,
   renderOmpUiResultCard,
   responseFromOmpUiAction,
-} from './omp-ui';
+} from '../card/omp-ui';
 import type { WorkspaceStore } from '../workspace/store';
 
 

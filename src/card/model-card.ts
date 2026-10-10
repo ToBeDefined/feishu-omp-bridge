@@ -1,6 +1,7 @@
-import { summarizeMd } from '../commands/shared';
+import { summarizeMd } from '../utils/text';
 import { isOmpThinkingLevel, OMP_THINKING_LEVELS } from '../config/schema';
-import { escapeCode, escapeMd, shortPath } from './templates';
+import { shortPath } from './templates';
+import { escapeCode, escapeMd } from '../utils/text';
 import { formatAgo } from '../utils/time';
 
 /** Form value meaning "clear ompThinking / follow OMP default". */

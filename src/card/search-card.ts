@@ -1,5 +1,5 @@
-import { codeSpan, summarize } from '../commands/shared';
-import { escapeMd } from './templates';
+import { codeSpan, summarize } from '../utils/text';
+import { escapeMd } from '../utils/text';
 import { formatAgoOr } from '../utils/time';
 
 /**

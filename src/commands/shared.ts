@@ -2,36 +2,7 @@ import { homedir } from 'node:os';
 import type { CommandContext } from './index';
 import { log } from '../core/logger';
 import { forgetManagedCard, updateManagedCard } from '../card/managed';
-import { escapeMd } from '../card/templates';
-
-/**
- * Compact text for a one-line display: collapse whitespace, cap length.
- * Plain-text only — does NOT escape markdown. Use `summarizeMd` when the
- * result is rendered into a markdown element (user message content can
- * otherwise inject/break markdown: stray `` ` `` `, `*`, `_`).
- */
-export function summarize(text: string, max = 48): string {
-  const flat = text.replace(/\s+/g, ' ').trim();
-  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
-}
-
-/**
- * Markdown-safe variant of `summarize`: collapse + cap + escape. Order
- * matters — truncate on the raw text first, then escape the clipped result,
- * so a truncation point can never split an escape sequence (`\*`).
- */
-export function summarizeMd(text: string, max = 48): string {
-  return escapeMd(summarize(text, max));
-}
-
-/**
- * Sanitize a value destined for a markdown code span (`` `value` ``): a
- * backtick inside the value would close the span early and scramble the
- * rest of the message. Replace backticks with apostrophes.
- */
-export function codeSpan(s: string): string {
-  return s.replace(/`/g, "'");
-}
+import { staleNoticeCard } from '../card/templates';
 
 /** Rendered idle-timeout line: scope override wins over the global default. */
 export function formatIdleLine(
@@ -77,19 +48,10 @@ export async function recallMessage(ctx: CommandContext, messageId: string): Pro
     // second clickable flow stacked under the new card.
     log.warn('command', 'recall-failed', { messageId, err: String(err) });
     try {
-      await updateManagedCard(ctx.channel, messageId, {
-        schema: '2.0',
-        config: { update_multi: true },
-        body: {
-          elements: [
-            { tag: 'markdown', content: '_⚠️ 此卡片已过期，请使用最新发出的卡片。_' },
-          ],
-        },
-      });
+      await updateManagedCard(ctx.channel, messageId, staleNoticeCard());
       forgetManagedCard(messageId);
     } catch {
       /* not a managed card or update also failed — nothing more to do */
     }
   }
 }
-

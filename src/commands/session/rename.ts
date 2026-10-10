@@ -3,9 +3,10 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getAgentStopGraceMs, getOmpModel, getOmpSessionDir } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
-import { codeSpan, reply } from '../shared';
+import { reply } from '../shared';
+import { codeSpan } from '../../utils/text';
 import { extractUserInput } from './context';
-import { summarize } from '../shared';
+import { summarize } from '../../utils/text';
 
 export const renameHandlers: Record<string, Handler> = {
   '/rename': handleRename,

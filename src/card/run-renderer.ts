@@ -1,7 +1,8 @@
 import type { Block, FooterStatus, RunState, SubagentEntry, ToolEntry, UiState } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 import { createTableBudget, type TableBudget } from './tables';
-import { codeFence, collapsiblePanel, escapeMd } from './templates';
+import { codeFence, collapsiblePanel } from './templates';
+import { escapeMd } from '../utils/text';
 
 /** Max chars per reasoning body — reasoning is auxiliary, truncation is fine. */
 const REASONING_MAX = 1500;

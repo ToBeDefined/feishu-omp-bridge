@@ -1,5 +1,5 @@
 import type { AgentUiRequest, AgentUiResponse } from '../agent/types';
-import { escapeMd } from './templates';
+import { escapeMd } from '../utils/text';
 
 export const OMP_UI_MARKER = '__omp_ui';
 export const OMP_UI_VALUE_FIELD = 'omp_ui_value';

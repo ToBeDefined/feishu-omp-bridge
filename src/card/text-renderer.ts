@@ -1,6 +1,6 @@
 import type { Block, RunState, ToolEntry, UiState } from './run-state';
 import { toolHeaderText } from './tool-render';
-import { escapeMd } from './templates';
+import { escapeMd } from '../utils/text';
 
 /**
  * Render `RunState` as plain markdown text — used in `messageReply: 'text'`

@@ -220,11 +220,17 @@ async function removeFromRunningCards(messageId: string): Promise<void> {
  * Returns true when a `/restart` card was finalized (the caller then skips the
  * separate「已上线」text notice).
  */
-export async function finalizeInterruptedCards(channel: LarkChannel): Promise<boolean> {
+export async function finalizeInterruptedCards(
+  channel: LarkChannel,
+  excludeMessageId?: string,
+): Promise<boolean> {
   const leftovers = await readRunningCards();
   await unlink(paths.runningCardsFile).catch(() => {});
   let finalizedRestart = false;
   for (const { messageId, kind, card } of leftovers) {
+    // Cards claimed by the boot-notice marker are finished by the caller
+    // instead (the new process confirms /release and /restart themselves).
+    if (messageId === excludeMessageId) continue;
     if (!messageId || messageId === 'om_sent' || !messageId.startsWith('om_')) continue;
     try {
       const finalCard = finalizeByKind(kind, card);

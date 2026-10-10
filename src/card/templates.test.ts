@@ -507,3 +507,16 @@ describe('onlineCard', () => {
     expect(out).not.toContain('column');
   });
 });
+
+describe('releaseCard restarting phase', () => {
+  it('announces the bounce without claiming success', () => {
+    const out = JSON.stringify(releaseCard({ steps: [], phase: 'restarting' }));
+    expect(out).toContain('构建完成，正在重启加载新产物');
+    expect(out).toContain('新进程启动后会确认上线');
+    expect(out).not.toContain('已发布上线');
+  });
+
+  it('claims success only in the success phase', () => {
+    expect(JSON.stringify(releaseCard({ steps: [], phase: 'success' }))).toContain('已发布上线');
+  });
+});

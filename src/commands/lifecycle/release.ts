@@ -10,7 +10,7 @@ import {
 } from '../../release/run';
 import { clearOnlineNotice, markOnlineNotice } from '../../bot/online-notify';
 import { releaseCard, type ReleaseStepState } from '../../card/templates';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
+import { sendManagedCard, updateManagedCard } from '../../card/managed';
 
 let inFlight = false;
 
@@ -44,7 +44,11 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
       await updateManagedCard(ctx.channel, messageId, card);
     }
   };
-  const close = async (phase: 'success' | 'failed', failNote?: string, output?: string): Promise<void> => {
+  const close = async (
+    phase: 'success' | 'restarting' | 'failed',
+    failNote?: string,
+    output?: string,
+  ): Promise<void> => {
     if (!messageId) return;
     await updateManagedCard(
       ctx.channel,
@@ -57,9 +61,6 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
           : {}),
       }),
     );
-    // Card reached its final state: stop crash-tracking it, so the boot after
-    // the restart cannot overwrite「已发布上线」with an interruption notice.
-    forgetManagedCard(messageId);
   };
   let failingStep: ReleaseStepName | undefined;
   try {
@@ -77,10 +78,10 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
       );
       return;
     }
-    await close('success').catch((err) => log.fail('command', err, { step: 'release-card' }));
-    // Persist which chat asked, so the post-boot "已上线" reaches it even
-    // when its session entry was cleared (/new, /cd, /ws) before /release.
-    await markOnlineNotice(ctx.msg.chatId, 'skip');
+    await close('restarting').catch((err) => log.fail('command', err, { step: 'release-card' }));
+    // Carry the card's messageId so the NEW process can confirm 「已发布上线」
+    // once it is actually up — the pre-boot state must not claim success.
+    await markOnlineNotice(ctx.msg.chatId, 'skip', undefined, messageId);
     // 「构建成功」回复走 WS，先等它 flush 再 kickstart，否则会被 SIGTERM 丢掉。
     await new Promise((resolve) => setTimeout(resolve, RESTART_FLUSH_GRACE_MS));
     const realRestart = await ctx.controls.restartProcess();

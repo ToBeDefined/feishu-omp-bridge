@@ -549,7 +549,9 @@ const RELEASE_STEP_LABEL: Record<ReleaseStepName, string> = {
 
 export interface ReleaseProgress {
   steps: Array<{ name: ReleaseStepName; status: ReleaseStepState }>;
-  phase: 'running' | 'success' | 'failed';
+  /** `restarting` is the pre-boot state: build succeeded, process is being
+   * bounced. The NEW process flips it to `success` once it is actually up. */
+  phase: 'running' | 'restarting' | 'success' | 'failed';
   /** Failure details from the failing step. */
   failStep?: ReleaseStepName;
   failNote?: string;
@@ -564,13 +566,22 @@ const STEP_MARK: Record<ReleaseStepState, string> = {
 };
 
 export function releaseCard(progress: ReleaseProgress): RunCard {
-  const icon = progress.phase === 'failed' ? '❌' : progress.phase === 'success' ? '🚀' : '🔄';
+  const icon =
+    progress.phase === 'failed'
+      ? '❌'
+      : progress.phase === 'success'
+        ? '🚀'
+        : progress.phase === 'restarting'
+          ? '🚀'
+          : '🔄';
   const title =
     progress.phase === 'failed'
       ? `**发布失败于 ${RELEASE_STEP_LABEL[progress.failStep ?? 'typecheck']}**`
       : progress.phase === 'success'
         ? '**已发布上线**'
-        : '**正在发布**';
+        : progress.phase === 'restarting'
+          ? '**构建完成，正在重启加载新产物**'
+          : '**正在发布**';
   const steps = progress.steps.map((s) =>
     md(`${STEP_MARK[s.status]} ${RELEASE_STEP_LABEL[s.name]}`),
   );
@@ -591,6 +602,8 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
     if (progress.output) elements.push(md(codeFence(progress.output)));
   } else if (progress.phase === 'success') {
     elements.push(md('_进程已发布并重启。_', 'notation'));
+  } else if (progress.phase === 'restarting') {
+    elements.push(md('_新进程启动后会确认上线。_', 'notation'));
   } else {
     elements.push(md('_typecheck → test → build → 自动重启_', 'notation'));
   }

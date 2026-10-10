@@ -27,7 +27,7 @@ import { gcOldLogs, log } from '../../core/logger';
 import { kickstart } from '../../daemon/launchd';
 import { finalizeInterruptedCards, updateManagedCard } from '../../card/managed';
 import { clearOnlineNotice, takeOnlineNotice } from '../../bot/online-notify';
-import { onlineCard } from '../../card/templates';
+import { onlineCard, releaseCard, restartCard } from '../../card/templates';
 import { gcMediaCache, MEDIA_GC_MAX_AGE_MS } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
 import {
@@ -282,12 +282,32 @@ export async function runStart(opts: StartOptions): Promise<void> {
   // finalized ACCORDING TO ITS KIND (restart → 「重启完成」, streaming reply →
   // content preserved + interruption note, release → interrupted, form →
   // expired).
-  const finalizedRestart = await finalizeInterruptedCards(bridge.channel).catch((err) => {
-    log.warn('notify', 'interrupted-finalize-failed', { err: String(err) });
-    return false;
-  });
+  const finalizedRestart = await finalizeInterruptedCards(bridge.channel, notice?.messageId).catch(
+    (err) => {
+      log.warn('notify', 'interrupted-finalize-failed', { err: String(err) });
+      return false;
+    },
+  );
 
-  if (notice?.mode === 'notify' && !finalizedRestart) {
+  // The command that bounced us confirms its own card NOW, from the new
+  // process — a card must not claim「已发布上线」/「重启完成」before the new
+  // process is actually up.
+  if (notice?.messageId) {
+    const terminal =
+      notice.mode === 'skip' ? releaseCard({ steps: [], phase: 'success' }) : restartCard('done');
+    await bridge.channel.rawClient.im.v1
+      .message.patch({
+        path: { message_id: notice.messageId },
+        data: { content: JSON.stringify(terminal) },
+      })
+      .then(() => log.info('notify', 'command-card-confirmed', { chatId: notice.chatId, mode: notice.mode }))
+      .catch((err) =>
+        log.warn('notify', 'command-card-confirm-failed', {
+          messageId: notice.messageId,
+          err: String(err),
+        }),
+      );
+  } else if (notice?.mode === 'notify' && !finalizedRestart) {
     // /restart requested a notice but no restart card was recovered (e.g. the
     // card was never created) — fall back to a text confirmation.
     await bridge.channel.send(notice.chatId, { markdown: '🚀 **已上线**' }, {}).catch((err) => {

@@ -1,6 +1,6 @@
 import { summarizeMd } from '../utils/text';
 import { isOmpThinkingLevel, OMP_THINKING_LEVELS } from '../config/schema';
-import { shortPath } from './templates';
+import { actions, shortPath, type ButtonSpec } from './templates';
 import { escapeCode, escapeMd } from '../utils/text';
 import { formatAgo } from '../utils/time';
 
@@ -432,29 +432,20 @@ export function resumeCard(
 
   const remaining = Math.max(0, total - (offset + sessions.length));
   const pageSize = sessions.length;
-  const footer: object[] = [];
+  const footer: ButtonSpec[] = [];
   if (offset > 0) {
     footer.push({
-      tag: 'button',
-      text: { tag: 'plain_text', content: '↑ 较新的会话' },
-      type: 'default',
+      text: '↑ 较新的会话',
       value: { cmd: 'resume.back', arg: String(Math.max(0, offset - pageSize)) },
     });
   }
   if (remaining > 0) {
     footer.push({
-      tag: 'button',
-      text: { tag: 'plain_text', content: `↓ 更早（剩 ${remaining}）` },
-      type: 'default',
+      text: `↓ 更早（剩 ${remaining}）`,
       value: { cmd: 'resume.more', arg: String(offset + sessions.length) },
     });
   }
-  footer.push({
-    tag: 'button',
-    text: { tag: 'plain_text', content: '取消' },
-    type: 'default',
-    value: { cmd: 'resume.cancel', arg: '' },
-  });
+  footer.push({ text: '取消', value: { cmd: 'resume.cancel', arg: '' } });
   elements.push(
     { tag: 'hr' },
     {
@@ -462,18 +453,8 @@ export function resumeCard(
       content: `第 ${offset + 1}-${offset + pageSize} 条 / 共 ${total} 条`,
       text_size: 'notation',
     },
-    // Schema 2.0 has no `action` container — buttons ride in a column_set row.
-    {
-      tag: 'column_set',
-      flex_mode: 'none',
-      horizontal_spacing: 'small',
-      columns: footer.map((b) => ({
-        tag: 'column',
-        width: 'auto',
-        vertical_align: 'center',
-        elements: [b],
-      })),
-    },
+    // 2-per-row equal columns — 3 auto columns squeezed the labels together.
+    ...actions(footer),
   );
   return {
     schema: '2.0',

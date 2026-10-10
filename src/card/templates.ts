@@ -23,7 +23,7 @@ export interface ContextInfo {
   summary: { lastMessage?: string; lastReply?: string };
 }
 
-interface ButtonSpec {
+export interface ButtonSpec {
   text: string;
   value: Record<string, unknown>;
   style?: 'primary' | 'danger' | 'default';
@@ -45,6 +45,9 @@ export function md(content: string, size?: 'heading' | 'notation'): object {
     : { tag: 'markdown', content, text_size: size };
 }
 
+/** Labels longer than this get a full-width button row (see `actions`). */
+const LONG_LABEL_MAX = 8;
+
 /**
  * Quick-action buttons, 2 per row with EQUAL widths.
  *
@@ -57,12 +60,20 @@ export function md(content: string, size?: 'heading' | 'notation'): object {
 export function actions(buttons: ButtonSpec[]): object[] {
   // Schema 2.0 has no `action` container — buttons ride in a column_set row.
   const rows: object[] = [];
-  for (let i = 0; i < buttons.length; i += 2) {
+  for (let i = 0; i < buttons.length; ) {
+    // Half a phone card holds ~8 CJK chars; a longer label (e.g. the
+    // pagination rows'「↓ 更早（剩 128）」) would wrap INSIDE its button, so it
+    // takes a full-width row of its own. Both labels must fit to share a row.
+    const fits = (spec: ButtonSpec | undefined): boolean =>
+      spec !== undefined && spec.text.length <= LONG_LABEL_MAX;
+    const take = fits(buttons[i]) && fits(buttons[i + 1]) ? 2 : 1;
+    const slice = buttons.slice(i, i + take);
+    i += slice.length;
     rows.push({
       tag: 'column_set',
       flex_mode: 'none',
       horizontal_spacing: 'small',
-      columns: buttons.slice(i, i + 2).map((spec) => ({
+      columns: slice.map((spec) => ({
         tag: 'column',
         width: 'weighted',
         weight: 1,

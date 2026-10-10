@@ -1,6 +1,7 @@
 import { codeSpan, summarize } from '../utils/text';
 import { escapeMd } from '../utils/text';
 import { formatAgoOr } from '../utils/time';
+import { actions, type ButtonSpec } from './templates';
 
 /**
  * Search result card rendering (moved out of commands/session/search.ts so
@@ -140,37 +141,10 @@ export function searchResultsCard(
     );
     if (showButtons) {
       blocks.push(
-        {
-          tag: 'column_set',
-          flex_mode: 'flow',
-          horizontal_spacing: 'small',
-          columns: [
-            {
-              tag: 'column',
-              width: 'auto',
-              elements: [
-                {
-                  tag: 'button',
-                  text: { tag: 'plain_text', content: '查看详情' },
-                  type: 'default',
-                  value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` },
-                },
-              ],
-            },
-            {
-              tag: 'column',
-              width: 'auto',
-              elements: [
-                {
-                  tag: 'button',
-                  text: { tag: 'plain_text', content: '继续对话' },
-                  type: 'primary',
-                  value: { cmd: 'search.resume', arg: c.sessionId },
-                },
-              ],
-            },
-          ],
-        },
+        ...actions([
+          { text: '查看详情', value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` } },
+          { text: '继续对话', value: { cmd: 'search.resume', arg: c.sessionId }, style: 'primary' },
+        ]),
       );
     }
     const lastOfPage = i === shown.length - 1;
@@ -179,39 +153,21 @@ export function searchResultsCard(
     }
   });
   if (showButtons) {
-    const pageButtons: object[] = [];
+    const pageButtons: ButtonSpec[] = [];
     if (offset > 0) {
       pageButtons.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: '↑ 上一页' },
-        type: 'default',
+        text: '↑ 上一页',
         value: { cmd: 'search.page', arg: `${queryId} ${Math.max(0, offset - SEARCH_PAGE_SIZE)}` },
       });
     }
     if (remaining > 0) {
       pageButtons.push({
-        tag: 'button',
-        text: { tag: 'plain_text', content: `↓ 下一页（剩 ${remaining}）` },
-        type: 'default',
+        text: `↓ 下一页（剩 ${remaining}）`,
         value: { cmd: 'search.page', arg: `${queryId} ${offset + SEARCH_PAGE_SIZE}` },
       });
     }
-    pageButtons.push({
-      tag: 'button',
-      text: { tag: 'plain_text', content: '完成' },
-      type: 'default',
-      value: { cmd: 'search.done', arg: queryId },
-    });
-    blocks.push({
-      tag: 'column_set',
-      flex_mode: 'flow',
-      horizontal_spacing: 'small',
-      columns: pageButtons.map((b) => ({
-        tag: 'column',
-        width: 'auto',
-        elements: [b],
-      })),
-    });
+    pageButtons.push({ text: '完成', value: { cmd: 'search.done', arg: queryId } });
+    blocks.push(...actions(pageButtons));
   }
   return {
     schema: '2.0',
@@ -263,37 +219,10 @@ export function searchDetailCard(
   if (!done) {
     elements.push(
       { tag: 'hr' },
-      {
-        tag: 'column_set',
-        flex_mode: 'flow',
-        horizontal_spacing: 'small',
-        columns: [
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: '继续对话' },
-                type: 'primary',
-                value: { cmd: 'search.resume', arg: sessionId ?? '' },
-              },
-            ],
-          },
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: '完成' },
-                type: 'default',
-                value: { cmd: 'search.done', arg: queryRef ?? '' },
-              },
-            ],
-          },
-        ],
-      },
+      ...actions([
+        { text: '继续对话', value: { cmd: 'search.resume', arg: sessionId ?? '' }, style: 'primary' },
+        { text: '完成', value: { cmd: 'search.done', arg: queryRef ?? '' } },
+      ]),
     );
   }
   return {

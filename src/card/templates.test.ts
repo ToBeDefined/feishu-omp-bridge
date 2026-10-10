@@ -232,6 +232,30 @@ describe('shared card kit', () => {
     // Every button survives the re-layout.
     expect(JSON.stringify(rows)).toContain('"cmd":"d"');
   });
+
+  it('gives a long label its own full-width row instead of half of one', () => {
+    const rows = actions([
+      { text: '↑ 上一页', value: { cmd: 'prev' } },
+      { text: '↓ 下一页（剩 128）', value: { cmd: 'next' } },
+      { text: '完成', value: { cmd: 'done' } },
+    ]);
+    // The 11-char label cannot share a 50% column, and it must not drag a
+    // short button into a cramped row either.
+    expect(rows.map((r) => (r as { columns: unknown[] }).columns.length)).toEqual([1, 1, 1]);
+    for (const row of rows) {
+      expect((row as { columns: Array<Record<string, unknown>> }).columns[0]).toMatchObject({
+        width: 'weighted',
+        weight: 1,
+      });
+    }
+    // Two short labels still pair up.
+    expect(
+      actions([
+        { text: '↑ 上一页', value: { cmd: 'prev' } },
+        { text: '完成', value: { cmd: 'done' } },
+      ]).map((r) => (r as { columns: unknown[] }).columns.length),
+    ).toEqual([2]);
+  });
 });
 
 function statusFixture(extra: Partial<Parameters<typeof statusCard>[0]> = {}) {

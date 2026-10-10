@@ -33,8 +33,9 @@ describe('SessionStore clearSessionId', () => {
     // A stale-session rollover is not a context reset: /new /cd /ws own that.
     expect(store.getRaw('oc_1')?.sessionId).toBeUndefined();
     expect(store.getRaw('oc_1')?.cwd).toBeUndefined();
-    expect(store.getRaw('oc_1')?.title).toBe('修 search bug');
     expect(store.getIdleTimeoutMinutes('oc_1')).toBe(30);
+    // The name belongs to the session, so it outlives the chat's binding.
+    expect(store.titleFor('sess-1')).toBe('修 search bug');
     expect(store.resumeFor('oc_1', '/repo')).toBeUndefined();
     await store.flush();
   });
@@ -52,23 +53,33 @@ describe('SessionStore clearSessionId', () => {
 });
 
 describe('SessionStore title', () => {
-  it('sets and clears a title', async () => {
+  it('sets and clears the current session title', async () => {
     const store = new SessionStore(file);
     stores.push(store);
     store.set('oc_1', 'sess-1', '/repo');
 
-    store.setTitle('oc_1', '修 search bug');
-    expect(store.getRaw('oc_1')?.title).toBe('修 search bug');
+    expect(store.setTitle('oc_1', '修 search bug')).toBe(true);
+    expect(store.titleFor('sess-1')).toBe('修 search bug');
 
     expect(store.clearTitle('oc_1')).toBe(true);
-    expect(store.getRaw('oc_1')?.title).toBeUndefined();
+    expect(store.titleFor('sess-1')).toBeUndefined();
 
     // Clearing again reports nothing to remove.
     expect(store.clearTitle('oc_1')).toBe(false);
     await store.flush();
   });
 
-  it('persists title across load', async () => {
+  it('refuses to name a scope that has no session yet', async () => {
+    const store = new SessionStore(file);
+    stores.push(store);
+    store.setIdleTimeoutMinutes('oc_1', 15);
+
+    expect(store.setTitle('oc_1', '无会话可命名')).toBe(false);
+    expect(store.titlesBySessionId()).toEqual({});
+    await store.flush();
+  });
+
+  it('persists titles across load', async () => {
     const store = new SessionStore(file);
     stores.push(store);
     store.set('oc_1', 'sess-1', '/repo');
@@ -77,28 +88,40 @@ describe('SessionStore title', () => {
 
     const reloaded = new SessionStore(file);
     await reloaded.load();
-    expect(reloaded.getRaw('oc_1')?.title).toBe('已命名会话');
+    expect(reloaded.titleFor('sess-1')).toBe('已命名会话');
   });
 
-  it('keeps title across session rollover in set', async () => {
+  it('keeps a title with ITS session when the chat moves to another one', async () => {
     const store = new SessionStore(file);
     stores.push(store);
     store.set('oc_1', 'sess-old', '/repo');
-    store.setTitle('oc_1', '持续标题');
+    store.setTitle('oc_1', '旧会话名');
 
-    // New session id in the same chat must keep the title.
+    // /resume or /history 继续对话 re-points the chat at a historical session:
+    // that session must not inherit the name of the one it replaced.
     store.set('oc_1', 'sess-new', '/repo');
-    expect(store.getRaw('oc_1')?.sessionId).toBe('sess-new');
-    expect(store.getRaw('oc_1')?.title).toBe('持续标题');
+    expect(store.titleFor('sess-new')).toBeUndefined();
+
+    // ...and coming back must still show the name the user typed.
+    store.set('oc_1', 'sess-old', '/repo');
+    expect(store.titleFor('sess-old')).toBe('旧会话名');
+    await store.flush();
   });
 
-  it('wipes title on clear', async () => {
+  it('keeps a session title across /new (the session still exists)', async () => {
     const store = new SessionStore(file);
     stores.push(store);
     store.set('oc_1', 'sess-1', '/repo');
-    store.setTitle('oc_1', '将清空');
+    store.setTitle('oc_1', '保留的标题');
+
     store.clear('oc_1');
     expect(store.getRaw('oc_1')).toBeUndefined();
+    expect(store.titleFor('sess-1')).toBe('保留的标题');
+
+    // A fresh session in the same chat starts nameless.
+    store.set('oc_1', 'sess-2', '/repo');
+    expect(store.titleFor('sess-2')).toBeUndefined();
+    await store.flush();
   });
 
   it('maps session ids to titles', async () => {
@@ -112,6 +135,33 @@ describe('SessionStore title', () => {
     expect(store.titlesBySessionId()).toEqual({ 'sess-a': 'A 会话' });
   });
 
+  it('migrates a title kept on the entry by an older file', async () => {
+    await writeFileAtomic(file, JSON.stringify({
+      oc_1: { sessionId: 'sess-1', cwd: '/repo', updatedAt: 123, title: '旧版标题' },
+    }));
+    const store = new SessionStore(file);
+    stores.push(store);
+    await store.load();
+
+    // The pre-map file stored the name on the chat entry; it must survive the
+    // upgrade attached to the session it was written for.
+    expect(store.titleFor('sess-1')).toBe('旧版标题');
+    expect(store.getRaw('oc_1')).toMatchObject({ sessionId: 'sess-1', cwd: '/repo' });
+  });
+
+  it('reads the titles map without mistaking it for a chat entry', async () => {
+    await writeFileAtomic(file, JSON.stringify({
+      titles: { 'sess-1': '地图里的标题' },
+      oc_1: { sessionId: 'sess-1', cwd: '/repo', updatedAt: 123 },
+    }));
+    const store = new SessionStore(file);
+    stores.push(store);
+    await store.load();
+
+    expect(store.titlesBySessionId()).toEqual({ 'sess-1': '地图里的标题' });
+    expect(store.chats()).toEqual(['oc_1']);
+  });
+
   it('ignores a title on an entry with no session id when loading', async () => {
     // A bare entry with only a title and updatedAt should not resurrect a
     // session key with a title but no resumable session.
@@ -122,6 +172,50 @@ describe('SessionStore title', () => {
     stores.push(store);
     await store.load();
     expect(store.getRaw('oc_1')).toBeUndefined();
+    expect(store.titlesBySessionId()).toEqual({});
+  });
+});
+
+describe('SessionStore set timestamps', () => {
+  it('keeps the start time of the SAME session across re-runs', async () => {
+    const store = new SessionStore(file);
+    stores.push(store);
+    store.set('oc_1', 'sess-1', '/repo');
+    const first = store.getRaw('oc_1')?.createdAt;
+    expect(first).toBeTypeOf('number');
+
+    await new Promise((r) => setTimeout(r, 5));
+    store.set('oc_1', 'sess-1', '/repo');
+    expect(store.getRaw('oc_1')?.createdAt).toBe(first);
+  });
+
+  it("adopts a resumed session's own start/last-active times", async () => {
+    const store = new SessionStore(file);
+    stores.push(store);
+    store.set('oc_1', 'sess-old', '/repo');
+
+    store.set('oc_1', 'sess-new', '/repo', { createdAtMs: 1_000, updatedAtMs: 2_000 });
+
+    // Inheriting the previous session's createdAt would report the wrong
+    // conversation start for a session resumed from /history.
+    expect(store.getRaw('oc_1')).toMatchObject({
+      sessionId: 'sess-new',
+      createdAt: 1_000,
+      updatedAt: 2_000,
+    });
+  });
+
+  it('stamps now for a session bound without times', async () => {
+    const store = new SessionStore(file);
+    stores.push(store);
+    store.set('oc_1', 'sess-old', '/repo');
+    const before = Date.now();
+
+    store.set('oc_1', 'sess-fresh', '/repo');
+
+    const entry = store.getRaw('oc_1');
+    expect(entry?.createdAt).toBeGreaterThanOrEqual(before);
+    expect(entry?.updatedAt).toBeGreaterThanOrEqual(before);
   });
 });
 

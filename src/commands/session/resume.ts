@@ -47,6 +47,7 @@ export async function listResumableSessions(ctx: CommandContext): Promise<Resume
       sessionId: s.sessionId,
       cwd: s.cwd,
       timestamp: s.startedAt,
+      updatedAtMs: s.updatedAtMs,
       ...(s.title !== undefined ? { title: s.title } : {}),
       summary: s.summary ?? '',
       lastMessage: s.lastMessage,
@@ -194,7 +195,13 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
   // the historical session. resumeFor(scope, cwd) will match next run.
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, cwd);
-  ctx.sessions.set(ctx.scope, match.sessionId, cwd);
+  // The resumed session brings its own history: report ITS start and last
+  // activity, not the moment of the click.
+  const createdAtMs = Date.parse(match.timestamp);
+  ctx.sessions.set(ctx.scope, match.sessionId, cwd, {
+    ...(Number.isFinite(createdAtMs) && createdAtMs > 0 ? { createdAtMs } : {}),
+    ...(match.updatedAtMs !== undefined ? { updatedAtMs: match.updatedAtMs } : {}),
+  });
   log.info('command', 'resume', { scope: ctx.scope, sessionId: match.sessionId, cwd });
   const summary = await loadSessionSummary(ctx, match.sessionId);
   if (ctx.fromCardAction) {

@@ -29,17 +29,26 @@ function agentYielding(...texts: string[]) {
 }
 
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
-  const title: { value?: string } = {};
+  // Titles are keyed by session id in the real store; the fake mirrors that so
+  // "which session does this name belong to" stays testable.
+  const titles: Record<string, string> = {};
+  const current = (): string | undefined => 's1';
   return {
     sessions: {
-      getRaw: () => ({ sessionId: 's1', title: title.value }),
+      getRaw: () => ({ sessionId: current() }),
+      titleFor: (sessionId: string | undefined) =>
+        sessionId !== undefined ? titles[sessionId] : undefined,
       setTitle: (_c: string, t: string) => {
-        title.value = t;
+        const id = current();
+        if (id === undefined) return false;
+        titles[id] = t;
+        return true;
       },
       clearTitle: () => {
-        const had = title.value !== undefined;
-        title.value = undefined;
-        return had;
+        const id = current();
+        if (id === undefined || titles[id] === undefined) return false;
+        delete titles[id];
+        return true;
       },
     },
     agent: agentYielding() as never,
@@ -80,7 +89,7 @@ describe('/rename command', () => {
     const ctx = makeCtx();
     await handleRename('修 search bug', ctx);
     expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('修 search bug'));
-    expect((ctx.sessions.getRaw('oc_1') as { title?: string }).title).toBe('修 search bug');
+    expect(ctx.sessions.titleFor('s1')).toBe('修 search bug');
   });
 
   it('clears a title with `clear`', async () => {
@@ -88,7 +97,7 @@ describe('/rename command', () => {
     await handleRename('旧标题', ctx);
     await handleRename('clear', ctx);
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已清除'));
-    expect((ctx.sessions.getRaw('oc_1') as { title?: string }).title).toBeUndefined();
+    expect(ctx.sessions.titleFor('s1')).toBeUndefined();
   });
 
   it('shows current title with no args', async () => {
@@ -102,7 +111,7 @@ describe('/rename command', () => {
     const ctx = makeCtx();
     await handleRename('x'.repeat(61), ctx);
     expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('过长'));
-    expect((ctx.sessions.getRaw('oc_1') as { title?: string }).title).toBeUndefined();
+    expect(ctx.sessions.titleFor('s1')).toBeUndefined();
   });
 
   it('generates a title from user messages only, in an isolated session dir', async () => {
@@ -113,7 +122,7 @@ describe('/rename command', () => {
     await handleRename('auto', ctx);
 
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已自动生成标题'));
-    const title = (ctx.sessions.getRaw('oc_1') as { title?: string }).title;
+    const title = ctx.sessions.titleFor('s1');
     expect(Array.from(title ?? '')).toHaveLength(30);
     // Prompt feeds the user's messages only (no assistant reply), and the run
     // goes to a throwaway session dir — never resumes the current session.
@@ -141,6 +150,6 @@ describe('/rename command', () => {
     const ctx = makeCtx({ agent: agentYielding('   ') as never });
     await handleRename('auto', ctx);
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('无法生成标题'));
-    expect((ctx.sessions.getRaw('oc_1') as { title?: string }).title).toBeUndefined();
+    expect(ctx.sessions.titleFor('s1')).toBeUndefined();
   });
 });

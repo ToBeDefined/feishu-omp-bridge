@@ -7,6 +7,9 @@ import { shortPath } from '../../card/templates';
 import type { CommandContext } from '../index';
 import { handleHistory } from './history';
 import { listSessions } from './sessions';
+import { applyResume } from './resume';
+import { renderContext } from './context';
+import { SessionStore } from '../../session/store';
 
 const { reply, recallMessage, sendManagedCard } = vi.hoisted(() => ({
   reply: vi.fn(async (_ctx: unknown, _text: string) => {}),
@@ -101,6 +104,7 @@ function makeCtx(over: Partial<Record<string, unknown>> = {}): {
     },
     sessions: {
       titlesBySessionId: () => ({ s1: '命名的会话' }),
+      titleFor: (id?: string) => (id === 's1' ? '命名的会话' : undefined),
       getRaw: () => (spy.currentSessionId ? { sessionId: spy.currentSessionId } : undefined),
       chats: () => ['oc_1'],
       set: spy.set,
@@ -231,13 +235,48 @@ describe('/history', () => {
   it('resumes the session a 继续对话 button points at', async () => {
     const { ctx, spy } = makeCtx();
     await handleHistory('resume s3', ctx);
-    // applyResume ran for the real record: cwd pinned, session switched,
-    // and any in-flight run in this scope interrupted.
-    expect(spy.set).toHaveBeenCalledWith('oc_1', 's3', tmp);
+    // applyResume ran for the real record: cwd pinned, session switched with
+    // that session's OWN start/last-active times (s3 = 2026-01-02, active two
+    // minutes ago — not the moment of the click), and any in-flight run in
+    // this scope interrupted.
+    expect(spy.set).toHaveBeenCalledWith('oc_1', 's3', tmp, {
+      createdAtMs: Date.parse('2026-01-02T00:00:00Z'),
+      updatedAtMs: expect.any(Number),
+    });
     expect(spy.setCwd).toHaveBeenCalledWith('oc_1', tmp);
     expect(spy.interrupt).toHaveBeenCalledWith('oc_1');
     // The listing is not re-sent — the card settles into 会话已恢复.
     expect(sendManagedCard).not.toHaveBeenCalled();
+  });
+
+  it('binds a resumed session to its own title and times', async () => {
+    const store = new SessionStore(join(tmp, 'sessions.json'));
+    await store.load();
+    store.set('oc_1', 's1', tmp);
+    store.setTitle('oc_1', '被替换的会话名');
+
+    const { ctx } = makeCtx({ sessions: store });
+    await applyResume(ctx, {
+      sessionId: 's3',
+      cwd: tmp,
+      timestamp: '2026-01-02T00:00:00Z',
+      updatedAtMs: 1_700_000_000_000,
+      summary: '',
+    });
+
+    // The resumed session reports its own history...
+    expect(store.getRaw('oc_1')).toMatchObject({
+      sessionId: 's3',
+      createdAt: Date.parse('2026-01-02T00:00:00Z'),
+      updatedAt: 1_700_000_000_000,
+    });
+    // ...and never wears the replaced session's name; that name stays with the
+    // session it was written for (so /history keeps labelling it correctly).
+    expect(store.titleFor('s3')).toBeUndefined();
+    expect(store.titleFor('s1')).toBe('被替换的会话名');
+    expect(renderContext(ctx, {})).not.toContain('被替换的会话名');
+    // Settle the store's async persist before afterEach removes tmp.
+    await store.flush();
   });
 
   it('refuses a 继续对话 payload whose session is gone', async () => {

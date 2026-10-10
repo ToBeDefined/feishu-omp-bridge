@@ -22,7 +22,7 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
   const title = args.trim();
 
   if (!title) {
-    const current = ctx.sessions.getRaw(ctx.scope)?.title;
+    const current = ctx.sessions.titleFor(ctx.sessions.getRaw(ctx.scope)?.sessionId);
     await reply(
       ctx,
       current
@@ -45,7 +45,10 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
       await reply(ctx, '❌ 无法生成标题（会话内容太少或生成失败），请手动 `/rename <标题>`。');
       return;
     }
-    ctx.sessions.setTitle(ctx.scope, generated);
+    if (!ctx.sessions.setTitle(ctx.scope, generated)) {
+      await reply(ctx, '❌ 当前还没有会话，先发一条消息再命名。');
+      return;
+    }
     await reply(ctx, `✅ 已自动生成标题：\`${codeSpan(generated)}\``);
     return;
   }
@@ -55,7 +58,10 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
     return;
   }
 
-  ctx.sessions.setTitle(ctx.scope, title);
+  if (!ctx.sessions.setTitle(ctx.scope, title)) {
+    await reply(ctx, '❌ 当前还没有会话，先发一条消息再命名。');
+    return;
+  }
   await reply(ctx, `✅ 已设置当前会话标题：\`${title}\``);
 }
 

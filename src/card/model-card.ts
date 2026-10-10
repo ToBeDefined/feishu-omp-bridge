@@ -327,7 +327,11 @@ export function thinkingCancelledCard(): object {
 export interface ResumeOption {
   sessionId: string;
   cwd: string;
+  /** Session start, ISO. */
   timestamp: string;
+  /** Session file's last write (ms epoch) = when the conversation was last
+   * active. Binding the chat to this session must not claim "now". */
+  updatedAtMs?: number;
   /** User-assigned display title (/rename), if any. Shown ahead of the
    * auto summary so the user can tell sessions apart by name. */
   title?: string;

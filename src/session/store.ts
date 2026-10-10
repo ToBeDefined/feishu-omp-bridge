@@ -17,15 +17,20 @@ export interface SessionEntry {
    * scope, undefined = follow global default. /new clears the whole entry,
    * so this resets to "follow global" when the user starts a new session. */
   idleTimeoutMinutes?: number;
-  /** User-assigned display title for the session (via /rename). Survives
-   * session rollover (set keeps it) but is wiped by /new /cd /ws (clear). */
-  title?: string;
 }
 
 type SessionMap = Record<string, SessionEntry>;
 
 export class SessionStore {
   private data: SessionMap = {};
+  /**
+   * User-assigned display titles (/rename), keyed by SESSION id — a title
+   * names a conversation, so it must neither follow the chat onto whatever
+   * session it is next bound to (that relabelled a resumed session with the
+   * previous one's name) nor vanish when the chat switches away: switching
+   * back must show it again.
+   */
+  private titles: Record<string, string> = {};
   private saving: Promise<void> = Promise.resolve();
   private readonly path: string;
 
@@ -36,9 +41,18 @@ export class SessionStore {
   async load(): Promise<void> {
     try {
       const text = await readFile(this.path, 'utf8');
-      const raw = JSON.parse(text) as Record<string, Partial<SessionEntry>>;
+      const raw = JSON.parse(text) as Record<string, unknown>;
       this.data = {};
-      for (const [chatId, entry] of Object.entries(raw)) {
+      this.titles = {};
+      const rawTitles = raw.titles;
+      if (rawTitles && typeof rawTitles === 'object') {
+        for (const [sessionId, title] of Object.entries(rawTitles as Record<string, unknown>)) {
+          if (typeof title === 'string') this.titles[sessionId] = title;
+        }
+      }
+      for (const [chatId, value] of Object.entries(raw)) {
+        if (chatId === 'titles') continue;
+        const entry = value as Partial<SessionEntry> & { title?: unknown };
         if (!entry || typeof entry.updatedAt !== 'number') continue;
         // Drop entries without a `cwd`/`sessionId` pair *unless* there's
         // some other persisted state worth keeping (e.g. an idle-timeout
@@ -51,7 +65,16 @@ export class SessionStore {
           typeof entry.idleTimeoutMinutes === 'number' ? entry.idleTimeoutMinutes : undefined;
         const createdAt =
           typeof entry.createdAt === 'number' ? entry.createdAt : undefined;
-        const title = typeof entry.title === 'string' ? entry.title : undefined;
+        // Pre-migration files carried the title on the entry; it belongs to
+        // that entry's session, so move it into the per-session map rather
+        // than dropping a name the user typed.
+        if (
+          typeof entry.title === 'string' &&
+          sessionId !== undefined &&
+          this.titles[sessionId] === undefined
+        ) {
+          this.titles[sessionId] = entry.title;
+        }
         const hasSession = sessionId !== undefined && cwd !== undefined;
         if (!hasSession && idleTimeoutMinutes === undefined) continue;
         this.data[chatId] = {
@@ -60,8 +83,6 @@ export class SessionStore {
           updatedAt: entry.updatedAt,
           ...(createdAt !== undefined ? { createdAt } : {}),
           ...(idleTimeoutMinutes !== undefined ? { idleTimeoutMinutes } : {}),
-          // A title only makes sense on an entry that still has a session.
-          ...(title !== undefined && sessionId !== undefined ? { title } : {}),
         };
       }
     } catch (err) {
@@ -71,6 +92,7 @@ export class SessionStore {
       if (err instanceof SyntaxError) {
         log.warn('session', 'load-corrupt-reset', { path: this.path });
         this.data = {};
+        this.titles = {};
         return;
       }
       throw err;
@@ -98,23 +120,38 @@ export class SessionStore {
     return this.data[chatId];
   }
 
-  set(chatId: string, sessionId: string, cwd: string): void {
+  /**
+   * Bind the chat to a session.
+   *
+   * `times` are the session's OWN timestamps, for the case where the entry is
+   * being pointed at a historical session (/resume, /history 继续对话): that
+   * session started and was last active when it did, not now. Without them a
+   * plain run/re-run stamps "now" — which is true, the run just happened.
+   */
+  set(
+    chatId: string,
+    sessionId: string,
+    cwd: string,
+    times?: { createdAtMs?: number; updatedAtMs?: number },
+  ): void {
     // Preserve idleTimeoutMinutes across run starts — it's a per-scope
     // preference, not per-run-instance state. /new (clear) wipes it.
     const prev = this.data[chatId];
+    const sameSession = prev?.sessionId === sessionId;
     this.data[chatId] = {
       sessionId,
       cwd,
-      updatedAt: Date.now(),
-      // First creation time survives re-runs of the same session so
-      // /context can report when the conversation started.
-      ...(prev?.createdAt !== undefined ? { createdAt: prev.createdAt } : { createdAt: Date.now() }),
+      updatedAt: times?.updatedAtMs ?? Date.now(),
+      // First creation time survives re-runs of the SAME session so /context
+      // can report when the conversation started. A different session brings
+      // its own start time — inheriting the previous one reported the old
+      // conversation's birthday for the resumed one.
+      ...(sameSession && prev?.createdAt !== undefined
+        ? { createdAt: prev.createdAt }
+        : { createdAt: times?.createdAtMs ?? Date.now() }),
       ...(prev?.idleTimeoutMinutes !== undefined
         ? { idleTimeoutMinutes: prev.idleTimeoutMinutes }
         : {}),
-      // A user-assigned title survives rollover to a fresh OMP session in
-      // the same chat (e.g. cwd kept, session recycled).
-      ...(prev?.title !== undefined ? { title: prev.title } : {}),
     };
     this.schedulePersist();
   }
@@ -122,6 +159,8 @@ export class SessionStore {
   clear(chatId: string): void {
     if (!(chatId in this.data)) return;
     delete this.data[chatId];
+    // Session titles stay put: the session still exists in /history, and a
+    // fresh session simply has no title until the user names it.
     this.schedulePersist();
   }
 
@@ -129,7 +168,8 @@ export class SessionStore {
    * Drop the resumable session (id + pinned cwd) but keep the scope's
    * preferences. Used when a stored id can no longer be resumed — that is a
    * rollover, not the context reset `/new` / `/cd` / `/ws` perform, so the
-   * user's title and idle-timeout override must survive it.
+   * idle-timeout override must survive it. (The title lives with its session
+   * id, so it is unaffected either way.)
    */
   clearSessionId(chatId: string): void {
     const prev = this.data[chatId];
@@ -166,35 +206,35 @@ export class SessionStore {
     return true;
   }
 
-  /** Assign a display title to the session for this scope. */
-  setTitle(chatId: string, title: string): void {
-    const prev = this.data[chatId];
-    this.data[chatId] = {
-      ...(prev ?? { updatedAt: Date.now() }),
-      title,
-      updatedAt: Date.now(),
-    };
-    this.schedulePersist();
-  }
-
-  /** Clear the title. Returns true if one was actually removed. */
-  clearTitle(chatId: string): boolean {
-    const prev = this.data[chatId];
-    if (!prev || prev.title === undefined) return false;
-    const { title: _, ...rest } = prev;
-    this.data[chatId] = { ...rest, updatedAt: Date.now() };
+  /** Assign a display title to the scope's CURRENT session. Returns false
+   * when there is no session to name (so /rename can say so instead of
+   * silently dropping the name). */
+  setTitle(chatId: string, title: string): boolean {
+    const sessionId = this.data[chatId]?.sessionId;
+    if (sessionId === undefined) return false;
+    this.titles[sessionId] = title;
     this.schedulePersist();
     return true;
   }
 
-  /** Map sessionId → title for every entry that has one. Used to annotate
-   * /search hits and /resume rows that reference a session id. */
+  /** Clear the CURRENT session's title. True if one was actually removed. */
+  clearTitle(chatId: string): boolean {
+    const sessionId = this.data[chatId]?.sessionId;
+    if (sessionId === undefined || this.titles[sessionId] === undefined) return false;
+    delete this.titles[sessionId];
+    this.schedulePersist();
+    return true;
+  }
+
+  /** Title of one specific session, when the user named it. */
+  titleFor(sessionId: string | undefined): string | undefined {
+    return sessionId !== undefined ? this.titles[sessionId] : undefined;
+  }
+
+  /** Map sessionId → title. Used to annotate /history rows, /search hits and
+   * /resume options that reference a session id. */
   titlesBySessionId(): Record<string, string> {
-    const out: Record<string, string> = {};
-    for (const entry of Object.values(this.data)) {
-      if (entry.sessionId && entry.title) out[entry.sessionId] = entry.title;
-    }
-    return out;
+    return { ...this.titles };
   }
 
   async flush(): Promise<void> {
@@ -209,7 +249,11 @@ export class SessionStore {
         // leave a truncated sessions.json behind. Matches registry /
         // scheduler / keystore.
         const tmp = `${this.path}.tmp-${process.pid}`;
-        await writeFile(tmp, `${JSON.stringify(this.data, null, 2)}\n`, 'utf8');
+        // Entries plus the session-title map in one file: load() keys off the
+        // chat ids and reads `titles` separately (a chat id never collides
+        // with it — scopes are `oc_*`).
+        const payload = { ...this.data, titles: this.titles };
+        await writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
         await rename(tmp, this.path);
       })
       .catch((err: unknown) => {

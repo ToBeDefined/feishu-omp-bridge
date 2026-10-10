@@ -23,6 +23,7 @@ function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
     chatMode: 'p2p',
     sessions: {
       getRaw: () => ({ sessionId: '019f0000-0000-7000-0000-000000000000', cwd: '/x', updatedAt: 0 }),
+      titleFor: () => undefined,
       getIdleTimeoutMinutes: () => undefined,
     } as never,
     workspaces: {
@@ -91,7 +92,8 @@ describe('renderContext', () => {
     const titled = renderContext(
       makeCtx({
         sessions: {
-          getRaw: () => ({ sessionId: 's1', cwd: '/x', updatedAt: 0, title: '修搜索' }),
+          getRaw: () => ({ sessionId: 's1', cwd: '/x', updatedAt: 0 }),
+          titleFor: (id?: string) => (id === 's1' ? '修搜索' : undefined),
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),
@@ -109,6 +111,7 @@ describe('renderContext', () => {
       makeCtx({
         sessions: {
           getRaw: () => ({ sessionId: '019f0000-0000-7000-0000-000000000000', cwd: '/x', updatedAt: Date.now() }),
+          titleFor: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),
@@ -116,7 +119,13 @@ describe('renderContext', () => {
     expect(fresh).toContain('0 秒前');
     // No session → new conversation
     const none = renderContext(
-      makeCtx({ sessions: { getRaw: () => undefined, getIdleTimeoutMinutes: () => undefined } as never }),
+      makeCtx({
+        sessions: {
+          getRaw: () => undefined,
+          titleFor: () => undefined,
+          getIdleTimeoutMinutes: () => undefined,
+        } as never,
+      }),
     );
     expect(none).toContain('（无，新会话）');
   });
@@ -125,7 +134,13 @@ describe('renderContext', () => {
     const started = renderContext(
       makeCtx({
         sessions: {
-          getRaw: () => ({ sessionId: '019f0000-0000-7000-0000-000000000000', cwd: '/x', updatedAt: Date.now(), createdAt: Date.now() }),
+          getRaw: () => ({
+            sessionId: '019f0000-0000-7000-0000-000000000000',
+            cwd: '/x',
+            updatedAt: Date.now(),
+            createdAt: Date.now(),
+          }),
+          titleFor: () => undefined,
           getIdleTimeoutMinutes: () => undefined,
         } as never,
       }),

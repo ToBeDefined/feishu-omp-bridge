@@ -90,6 +90,7 @@ function asResumeOption(s: SessionRecord): {
   sessionId: string;
   cwd: string;
   timestamp: string;
+  updatedAtMs: number;
   title?: string;
   summary: string;
   lastMessage?: string;
@@ -98,6 +99,7 @@ function asResumeOption(s: SessionRecord): {
     sessionId: s.sessionId,
     cwd: s.cwd,
     timestamp: s.startedAt,
+    updatedAtMs: s.updatedAtMs,
     ...(s.title !== undefined ? { title: s.title } : {}),
     summary: s.summary ?? '',
     ...(s.lastMessage !== undefined ? { lastMessage: s.lastMessage } : {}),

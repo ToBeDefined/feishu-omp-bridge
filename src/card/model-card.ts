@@ -338,7 +338,9 @@ export interface ResumeOption {
   lastMessage?: string;
 }
 
-/** First 8 chars of a session id — the `/resume <prefix>` handle. */
+/** First 8 chars of a session id — the compact per-row handle in the
+ * `/resume` list, where 20 full ULIDs would swamp the row. Singular
+ * "this is your session" lines show the id in full. */
 function shortId(id: string): string {
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
 }
@@ -359,7 +361,7 @@ export function resumeCard(
       tag: 'markdown',
       content:
         '当前：' +
-        (current ? `\`${escapeCode(shortId(current))}\`` : '_无_') +
+        (current ? `\`${escapeCode(current)}\`` : '_无_') +
         ' · 点击右侧按钮一键恢复',
       text_size: 'notation',
     },
@@ -480,7 +482,7 @@ export function resumeSavedCard(
     { tag: 'markdown', content: '✅ **会话已恢复**', text_size: 'heading' },
     {
       tag: 'markdown',
-      content: `🔗 \`${escapeCode(shortId(sessionId))}\` · 📁 \`${escapeCode(shortPath(cwd))}\``,
+      content: `🔗 \`${escapeCode(sessionId)}\` · 📁 \`${escapeCode(shortPath(cwd))}\``,
     },
     { tag: 'markdown', content: '_下一条消息从该会话继续。_', text_size: 'notation' },
   ];

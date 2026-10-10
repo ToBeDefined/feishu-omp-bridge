@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resumeCard, type ResumeOption } from './model-card';
+import { resumeCard, resumeSavedCard, type ResumeOption } from './model-card';
 import type { RunCard } from './run-renderer';
 import {
   actions,
@@ -318,6 +318,44 @@ describe('statusCard', () => {
   });
 });
 
+describe('session id rendering', () => {
+  const ULID = '01J8Z9K2ABCDEFGHJKLMNPQRST';
+
+  it('shows the full session id on the status/context cards', () => {
+    expect(JSON.stringify(statusCard(statusFixture({ sessionId: ULID })))).toContain(ULID);
+    const ctx = contextCard({
+      scope: 'oc_x',
+      chatMode: 'p2p',
+      cwd: '/repo',
+      sessionId: ULID,
+      running: false,
+      idleLine: '探活：跟随全局',
+      wsNames: [],
+      summary: {},
+    } as never);
+    expect(JSON.stringify(ctx)).toContain(ULID);
+    // No truncated form leaks through.
+    expect(JSON.stringify(ctx)).not.toContain('01J8Z9K2…');
+  });
+
+  it('shows the full id on the singular /resume lines but a short handle per row', () => {
+    const saved = resumeSavedCard(ULID, '/repo/sub');
+    expect(JSON.stringify(saved)).toContain(ULID);
+
+    const card = JSON.stringify(
+      resumeCard(ULID, [
+        { sessionId: ULID, cwd: '/repo', timestamp: new Date().toISOString(), summary: '当前会话' },
+        { sessionId: '01J8Z9K2ZZZZZZZZZZZZZZZZZZ', cwd: '/repo', timestamp: new Date().toISOString(), summary: '另一个' },
+      ]),
+    );
+    // Header: full id, so you can copy it or match it with /resume.
+    expect(card).toContain('当前：`' + ULID + '`');
+    // Rows: 8-char handle only (the summary is the identity).
+    expect(card).toContain('01J8Z9K2…');
+    expect(card).not.toContain('ZZZZZZZZZZZZZZZZZZZZ');
+  });
+});
+
 describe('helpCard', () => {
   it('groups commands into collapsible category panels', () => {
     const card = helpCard();
@@ -400,7 +438,7 @@ describe('contextCard', () => {
     expect(out).toContain('环境');
     expect(out).toContain('最近内容');
     expect(out).toContain('修搜索');
-    expect(out).toContain('019f3a2b…');
+    expect(out).toContain('019f3a2b-7c8d-73e1-9f2a-4b5c6d7e8f90');
     expect(out).toContain('你好 abc');
     expect(out).toContain('答完了');
     expect(out).toContain('bridge');

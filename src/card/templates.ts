@@ -234,11 +234,6 @@ export interface StatusInfo {
   running: boolean;
 }
 
-/** First 8 chars of a session id — enough for `/resume <prefix>` matching. */
-function shortId(id: string): string {
-  return id.length > 8 ? `${id.slice(0, 8)}…` : id;
-}
-
 export function statusCard(info: StatusInfo): object {
   const scopeLine =
     info.chatMode === 'topic'
@@ -254,7 +249,7 @@ export function statusCard(info: StatusInfo): object {
     ),
     md(
       info.sessionId
-        ? `🔗 \`${escapeCode(shortId(info.sessionId))}\``
+        ? `🔗 \`${escapeCode(info.sessionId)}\``
         : '🔗 _无，下条消息新建_',
     ),
     md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
@@ -351,7 +346,7 @@ export function contextCard(
           md(info.sessionTitle ? `🏷 ${escapeMd(info.sessionTitle)}` : '🏷 _未命名_'),
           md(
             info.sessionId
-              ? `🔗 \`${escapeCode(shortId(info.sessionId))}\``
+              ? `🔗 \`${escapeCode(info.sessionId)}\``
               : '🔗 _无，下条消息新建_',
           ),
           md(`🕒 ${formatClockOr(info.createdAt, '—')}`),

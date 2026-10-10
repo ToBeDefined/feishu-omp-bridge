@@ -246,7 +246,9 @@ export function finalizeByKind(kind: RunningCardKind, card: object | undefined):
   if (kind === 'restart') return restartCard('done');
   if (kind === 'release') return noteCard('⚠️ **发布被中断，进程在构建/重启期间退出。**');
   if (kind === 'form') return noteCard('_⚠️ 此卡片已过期，请使用最新发出的卡片。_');
-  return card ? stripRunningState(card) : noteCard('⚠️ **进程在回复期间重启，本条回复未完成。**');
+  return card
+    ? stripRunningState(card)
+    : noteCard('⚠️ **进程中断，本条回复未完成**');
 }
 
 function noteCard(content: string): object {
@@ -268,7 +270,7 @@ export function stripRunningState(card: object): object {
   kept.push({ tag: 'markdown', content: '---', text_size: 'notation' });
   kept.push({
     tag: 'markdown',
-    content: '⚠️ **进程在回复期间重启，以上为已输出的部分内容。**',
+    content: '⚠️ **进程中断，以上为已输出的部分内容**',
     text_size: 'notation',
   });
   return { schema: '2.0', config: { update_multi: true }, body: { elements: kept } };

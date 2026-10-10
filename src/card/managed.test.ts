@@ -28,6 +28,7 @@ describe('stripRunningState', () => {
     expect(json).not.toContain('"cmd":"stop"');
     expect(json).not.toContain('正在输出');
     expect(json).toContain('以上为已输出的部分内容');
+    expect(json).toContain('进程中断');
   });
 
   it('survives a card with no body', () => {

@@ -50,7 +50,26 @@ describe('/config cancel 的兜底', () => {
     vi.mocked(updateManagedCard).mockClear();
   });
 
-  it('卡片不在托管表里（重启前的老卡片 / 进程外发的卡片）时回一条「已取消」而不是静默', async () => {
+  it('托管表里没有但消息可 patch 时：卡片被原地改成「已取消」，不再多回一句', async () => {
+    vi.mocked(updateManagedCard).mockRejectedValueOnce(new Error('no managed card registered'));
+    const patched: string[] = [];
+    const sent: string[] = [];
+    const { ctx } = ctxWith({});
+    (ctx.channel as unknown as { rawClient: unknown }).rawClient = {
+      im: { v1: { message: { patch: async (req: { data: { content: string } }) => { patched.push(req.data.content); return { data: {} }; } } } },
+    };
+    (ctx.channel as unknown as { send: (c: string, p: { markdown?: string }) => Promise<void> }).send =
+      async (_c: string, p: { markdown?: string }) => void sent.push(p.markdown ?? '');
+
+    await configHandlers['/config']!('cancel', ctx);
+    await new Promise((r) => setTimeout(r, 1300));
+
+    expect(patched).toHaveLength(1);
+    expect(patched[0]).toContain('已取消');
+    expect(sent).toHaveLength(0);
+  });
+
+  it('卡片既不在托管表里也 patch 不了 → 回一条「已取消」而不是静默', async () => {
     // 复现：原地更新抛错（没有托管条目）。
     vi.mocked(updateManagedCard).mockRejectedValueOnce(new Error('no managed card registered'));
     const sent: string[] = [];

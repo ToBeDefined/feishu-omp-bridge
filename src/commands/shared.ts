@@ -59,13 +59,27 @@ export async function settleManagedCard(
 ): Promise<void> {
   const messageId = ctx.msg.messageId;
   await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+  // 1) 首选：托管卡片走 CardKit 更新（带 sequence，能做流式 / 多次更新）。
   try {
     await updateManagedCard(ctx.channel, messageId, card);
     forgetManagedCard(messageId);
+    return;
   } catch (err) {
-    log.warn('command', 'card-settle-failed', { messageId, err: String(err) });
-    await reply(ctx, fallbackText);
+    log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
   }
+  // 2) 退而求其次：把消息内容整体 patch 成新卡片 —— 对「bridge 之外发的卡片」
+  //    （手工调试）与「重启前的老卡片」都有效，用户看到卡片真的变成「已取消」。
+  try {
+    await ctx.channel.rawClient.im.v1.message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(card) },
+    });
+    return;
+  } catch (err) {
+    log.warn('command', 'card-patch-failed', { messageId, err: String(err) });
+  }
+  // 3) 两条都不行：至少回一句，别让点击看起来没发生。
+  await reply(ctx, fallbackText);
 }
 
 export async function recallMessage(ctx: CommandContext, messageId: string): Promise<void> {

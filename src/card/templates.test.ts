@@ -240,6 +240,25 @@ describe('shared card kit', () => {
     expect(confirmActions([{ text: '只有我', value: { cmd: 'x' } }])).toHaveLength(1);
   });
 
+  it('offers a 新建会话 jump on the help card footer', () => {
+    const card = helpCard() as { body: { elements: Array<Record<string, unknown>> } };
+    const rows = card.body.elements.filter((e) => e.tag === 'column_set');
+    const labels = rows.map((r) =>
+      (r.columns as Array<{ elements: Array<{ text: { content: string } }> }>).map(
+        (c) => c.elements[0]!.text.content,
+      ),
+    );
+    // 4 个动作 → 每行最多 2 个 → 两行；新建会话在最前（速查卡里最常用）。
+    expect(labels).toEqual([
+      ['🆕 新建会话', '📊 状态'],
+      ['🕘 恢复会话', '📂 工作空间'],
+    ]);
+    const json = JSON.stringify(card);
+    expect(json).toContain('"cmd":"new"');
+    // 按钮名 → `/new`（handlers 里注册的键），不是 `/🆕 新建会话`。
+    expect(json).not.toContain('cmd":"🆕');
+  });
+
   it('folds a third button onto its own row instead of compressing the labels', () => {
     // 回归：/help 页脚三个跳转等宽一行时，「📂 工作空间」在手机上被压到看不见文字。
     const rows = inlineActions([

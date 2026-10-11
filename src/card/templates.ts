@@ -803,9 +803,12 @@ export function helpCard(): object {
     );
   });
   elements.push(md('_发送 `/help` 随时查看；其他内容直接交给 OMP。_', 'notation'));
+  // 新建会话排在最前：速查卡里最常用的动作（等同 `/new`）。并排行每行最多 2 个，
+  // 4 个动作于是折成两行（见 inlineRow 的规则说明）。
   elements.push(
     ...inlineActions([
-      { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
+      { text: '🆕 新建会话', value: { cmd: 'new' }, style: 'primary' },
+      { text: '📊 状态', value: { cmd: 'status' } },
       { text: '🕘 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
     ]),

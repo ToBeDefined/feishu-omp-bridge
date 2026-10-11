@@ -9,11 +9,12 @@ import { codeSpan } from '../../utils/text';
 import { extractUserInput, scanSessionFile } from './context';
 import { applyResume, listResumableSessions } from './resume';
 import {
-  renderSearchContext,
   searchDetailCard,
+  searchDetailText,
   searchEmptyCard,
   searchResultsCard,
   type SearchContext,
+  type SearchDetailInfo,
   type SearchHit,
   type SearchHitGroup,
 } from '../../card/search-card';
@@ -24,6 +25,25 @@ export function workspaceLabel(ctx: CommandContext, cwd: string): string {
     if (path === cwd) return name;
   }
   return cwd;
+}
+
+/** Card/text payload for one conversation's detail view: the card layer owns
+ * the layout, the command only resolves identity + workspace labels. */
+export function detailInfoFor(
+  context: SearchContext,
+  queryId: string,
+  index: number,
+  opts: { done?: boolean; keyword?: string } = {},
+): SearchDetailInfo {
+  return {
+    sessionId: context.sessionId,
+    ...(context.workspace !== undefined ? { workspace: context.workspace } : {}),
+    index,
+    matchCount: context.matchCount,
+    groups: context.groups,
+    ...(opts.keyword ? { keyword: opts.keyword } : {}),
+    ...(opts.done ? { done: true } : { queryRef: `${queryId} ${index}` }),
+  };
 }
 
 export const searchHandlers: Record<string, Handler> = {
@@ -363,6 +383,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     const queryRef = rest.join(' ').trim();
     const [queryId, idxStr] = queryRef.split(/\s+/);
     const contexts = searchCache.get(queryId ?? '');
+    const keyword = searchKeywords.get(queryId ?? '') ?? '';
     // Cache expired (LRU eviction / restart): the detail card can no longer be
     // rebuilt, and its 继续对话 arg would be empty — an empty target must NEVER
     // fall through to resuming the current chat session. Tell the user to
@@ -379,21 +400,20 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
           if (idxStr) {
             const idx = Number.parseInt(idxStr, 10);
             const context = contexts?.[idx - 1];
-            const sessionId = context?.sessionId;
-            const wsLabel = context?.workspace ?? '';
-            const full = context ? renderSearchContext(context, 'detail') : '';
-            await updateManagedCard(
-              ctx.channel,
-              msgId,
-              searchDetailCard(sessionId, full, undefined, idx, true, wsLabel),
-            );
+            if (context) {
+              await updateManagedCard(
+                ctx.channel,
+                msgId,
+                searchDetailCard(detailInfoFor(context, queryId ?? '', idx, { done: true, keyword })),
+              );
+            }
           } else {
-            // Results list card: strip buttons, keep the list with the
-            // workspace / work-session context intact.
+            // Results list card: strip buttons, keep the list intact — with the
+            // real keyword, so every snippet stays centred on its hit.
             await updateManagedCard(
               ctx.channel,
               msgId,
-              searchResultsCard('', contexts ?? [], queryId ?? '', false),
+              searchResultsCard(keyword, contexts ?? [], queryId ?? '', false),
             );
           }
         } catch {
@@ -418,17 +438,12 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       await reply(ctx, `无效的序号 \`${idx}\`。`);
       return;
     }
-    const full = renderSearchContext(context, 'detail');
-    const sessionId = context.sessionId;
-    const wsLabel = context.workspace ?? '';
+    const keyword = searchKeywords.get(queryId) ?? '';
+    const info = detailInfoFor(context, queryId, idx, { keyword });
     if (ctx.fromCardAction) {
-      await sendManagedCard(
-        ctx.channel,
-        ctx.msg.chatId,
-        searchDetailCard(sessionId, full, `${queryId} ${idx}`, idx, false, wsLabel),
-      ).catch(() => {});
+      await sendManagedCard(ctx.channel, ctx.msg.chatId, searchDetailCard(info)).catch(() => {});
     } else {
-      await reply(ctx, `🆔 会话: \`${sessionId}\`\n\n${full}`);
+      await reply(ctx, searchDetailText(info));
     }
     return;
   }

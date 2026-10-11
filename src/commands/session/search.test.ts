@@ -185,14 +185,17 @@ describe('searchSession', () => {
       hitIndex: 0,
     };
     const compact = renderSearchContext(context, 'compact');
-    // user capped at 80, assistant at 120 (plus ellipsis).
-    expect(compact).toContain('q'.repeat(80) + '…');
-    expect(compact).toContain('a'.repeat(120) + '…');
-    expect(compact).not.toContain('q'.repeat(81));
+    // 一行一条：user 56 字符、assistant 88 字符（各带省略号）。
+    expect(compact).toContain('q'.repeat(56) + '…');
+    expect(compact).toContain('a'.repeat(88) + '…');
+    expect(compact).not.toContain('q'.repeat(57));
+    // 压缩成一行：两条消息 = 两行，不再是各自的 role 行 + 引用块。
+    expect(compact.split('\n')).toHaveLength(2);
     const detail = renderSearchContext(context, 'detail');
-    // user capped at 600, assistant at 1000.
-    expect(detail).toContain('q'.repeat(600) + '…');
-    expect(detail).toContain('a'.repeat(1000) + '…');
+    // user capped at 600, assistant at 1000；截断标记落在引用块内（`> …`），
+    // 原文换行保留。
+    expect(detail).toContain('q'.repeat(600) + '\n> …');
+    expect(detail).toContain('a'.repeat(1000) + '\n> …');
   });
 
   it('truncates results to the requested limit, newest first', async () => {
@@ -364,7 +367,8 @@ describe('searchSession', () => {
     expect(hits[0]!.topic).toBeUndefined();
     // Heading is just the row number — no invented identity.
     const card = JSON.stringify(searchResultsCard('codegraph', hits, 'q1', true));
-    expect(card).toContain('"content":"#1","text_size":"heading"');
+    // 行身份是普通字号（`**#1** · _未命名会话_`），只有卡片标题是 heading。
+    expect(card).toContain('"content":"**#1** · _未命名会话_"');
     await store.flush();
   });
 
@@ -394,9 +398,12 @@ describe('searchSession', () => {
     expect(topicById.segA).toBe('第一段 codegraph');
     expect(topicById.segB).toBe('第二段 codegraph');
 
-    // 卡片：一行一个 heading，不再有「N 段」标注。
+    // 卡片：一行一个会话（`**#1**` / `**#2**` 普通字号行），只有卡片标题是 heading。
     const card = JSON.stringify(searchResultsCard('codegraph', hits, 'q1', true));
-    expect(card.match(/"text_size":"heading"/g)).toHaveLength(2);
+    expect(card.match(/"text_size":"heading"/g)).toHaveLength(1);
+    // 按最后活动倒序：较新的 segB 是 #1。
+    expect(card).toContain('"content":"**#1** · **第二段 codegraph**"');
+    expect(card).toContain('"content":"**#2** · **第一段 codegraph**"');
     expect(card).not.toContain('🧵');
     await store.flush();
   });

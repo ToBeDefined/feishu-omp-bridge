@@ -45,6 +45,29 @@ export function expandTilde(p: string): string {
   return p;
 }
 
+/**
+ * 把表单 / 选择器卡片原地收尾成终态（已取消 / 已过期）。
+ *
+ * 卡片可能**不在本进程的托管表里**：重启前发出的老卡片、或卡片是在 bridge 之外发的
+ * （手工调试）。此时原地更新必然失败 —— 不能静默，否则用户点了「取消」什么都不发生，
+ * 看起来就是坏了。退回一条简短回复。
+ */
+export async function settleManagedCard(
+  ctx: CommandContext,
+  card: object,
+  fallbackText: string,
+): Promise<void> {
+  const messageId = ctx.msg.messageId;
+  await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+  try {
+    await updateManagedCard(ctx.channel, messageId, card);
+    forgetManagedCard(messageId);
+  } catch (err) {
+    log.warn('command', 'card-settle-failed', { messageId, err: String(err) });
+    await reply(ctx, fallbackText);
+  }
+}
+
 export async function recallMessage(ctx: CommandContext, messageId: string): Promise<void> {
   try {
     await ctx.channel.rawClient.im.v1.message.delete({

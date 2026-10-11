@@ -45,6 +45,39 @@ function ctxWith(formValue: Record<string, unknown>) {
   return { ctx, cfg };
 }
 
+describe('/config cancel 的兜底', () => {
+  beforeEach(() => {
+    vi.mocked(updateManagedCard).mockClear();
+  });
+
+  it('卡片不在托管表里（重启前的老卡片 / 进程外发的卡片）时回一条「已取消」而不是静默', async () => {
+    // 复现：原地更新抛错（没有托管条目）。
+    vi.mocked(updateManagedCard).mockRejectedValueOnce(new Error('no managed card registered'));
+    const sent: string[] = [];
+    const { ctx } = ctxWith({});
+    (ctx.channel as unknown as { send: (c: string, p: { markdown?: string }) => Promise<void> }).send =
+      async (_c: string, p: { markdown?: string }) => void sent.push(p.markdown ?? '');
+
+    await configHandlers['/config']!('cancel', ctx);
+    await new Promise((r) => setTimeout(r, 1300));   // 等 FORM_SETTLE_MS + 兜底回复
+
+    expect(sent.join('\n')).toContain('已取消');
+  });
+
+  it('托管卡片正常时原地更新，不额外回复', async () => {
+    const sent: string[] = [];
+    const { ctx } = ctxWith({});
+    (ctx.channel as unknown as { send: (c: string, p: { markdown?: string }) => Promise<void> }).send =
+      async (_c: string, p: { markdown?: string }) => void sent.push(p.markdown ?? '');
+
+    await configHandlers['/config']!('cancel', ctx);
+    await new Promise((r) => setTimeout(r, 1300));
+
+    expect(vi.mocked(updateManagedCard)).toHaveBeenCalledTimes(1);
+    expect(sent).toHaveLength(0);
+  });
+});
+
 describe('/config submit 与 access.owner', () => {
   beforeEach(() => {
     vi.mocked(saveConfig).mockClear();

@@ -10,7 +10,7 @@ import { saveConfig } from '../../config/store';
 import { configCancelledCard, configFormCard, configSavedCard } from '../../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { FORM_SETTLE_MS, recallMessage, reply, settleManagedCard } from '../shared';
 import { log } from '../../core/logger';
 
 export const configHandlers: Record<string, Handler> = {
@@ -51,14 +51,8 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
 
 async function cancelConfig(ctx: CommandContext): Promise<void> {
   if (ctx.fromCardAction) {
-    const formMsgId = ctx.msg.messageId;
-    void (async () => {
-      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, formMsgId, configCancelledCard()).catch((err) =>
-        log.warn('command', 'config-cancel-update-failed', { err: String(err) }),
-      );
-      forgetManagedCard(formMsgId);
-    })();
+    // 老卡片（重启前发出 / 非本进程托管）原地更新会失败 → 助手退回一条「已取消」。
+    void settleManagedCard(ctx, configCancelledCard(), '已取消，未做修改。');
   }
 }
 

@@ -11,7 +11,7 @@ import {
 } from '../../card/model-card';
 import { recentModels } from '../../session/model-history';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { FORM_SETTLE_MS, recallMessage, reply, settleManagedCard } from '../shared';
 import { loadModelData } from './data';
 import { log } from '../../core/logger';
 
@@ -136,12 +136,7 @@ async function persistModelPreferences(
     log.fail('command', err, { step: 'model.save' });
     await reply(ctx, '❌ 保存模型设置失败，配置未改动，请稍后重试。');
     if (ctx.fromCardAction) {
-      const formMsgId = ctx.msg.messageId;
-      void (async () => {
-        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-        await updateManagedCard(ctx.channel, formMsgId, modelCancelledCard()).catch(() => {});
-        forgetManagedCard(formMsgId);
-      })();
+      void settleManagedCard(ctx, modelCancelledCard(), '已取消，未做修改。');
     }
     return false;
   }
@@ -185,12 +180,7 @@ async function submitModel(ctx: CommandContext): Promise<void> {
 
 async function cancelModel(ctx: CommandContext): Promise<void> {
   if (!ctx.fromCardAction) return;
-  const formMsgId = ctx.msg.messageId;
-  void (async () => {
-    await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-    await updateManagedCard(ctx.channel, formMsgId, modelCancelledCard()).catch(() => {});
-    forgetManagedCard(formMsgId);
-  })();
+  void settleManagedCard(ctx, modelCancelledCard(), '已取消，未做修改。');
 }
 
 async function resetModel(ctx: CommandContext, current: string | undefined): Promise<void> {

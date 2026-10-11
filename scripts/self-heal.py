@@ -425,6 +425,25 @@ def _run_build() -> str:
     return "ok" if b.returncode == 0 else "fail"
 
 
+def _restore_stash(stashed: bool) -> None:
+    """把回滚前 stash 的本地改动还回去。
+
+    **每条路径都要还**（成功回退、推进游标、恢复原 HEAD）：此前只有「环境问题恢复原 HEAD」
+    那条路会 pop，回退成功后用户的未提交改动就静默留在 stash 里没人知道。
+    pop 冲突时保留 stash 并明确提示，绝不丢数据。
+    """
+    if not stashed:
+        return
+    try:
+        p = subprocess.run(["git", "stash", "pop"], cwd=REPO, capture_output=True, text=True, timeout=30)
+        if p.returncode != 0:
+            log(f"⚠ stash pop 有冲突，未提交改动仍在 stash 中，请手动 `git stash pop`: {(p.stderr or '').strip()}")
+        else:
+            log("✓ 已恢复回滚前 stash 的本地改动")
+    except (subprocess.SubprocessError, FileNotFoundError) as err:
+        log(f"⚠ stash pop 异常，改动仍在 stash 中: {err}")
+
+
 def _restore_head(pre_head: str, stashed: bool) -> None:
     """把仓库恢复到回退前的 HEAD，并尽力让 dist 与它一致。
 
@@ -441,14 +460,7 @@ def _restore_head(pre_head: str, stashed: bool) -> None:
         log(f"✗ 恢复原 HEAD 失败: {(r.stderr or '').strip() or 'unknown'}")
         return
     log(f"✓ 已恢复原 HEAD {pre_head[:12]}")
-    if stashed:
-        # 回退前 stash 的用户改动要还回去，不留悬空 stash。
-        try:
-            p = subprocess.run(["git", "stash", "pop"], cwd=REPO, capture_output=True, text=True, timeout=30)
-            if p.returncode != 0:
-                log(f"⚠ stash pop 失败，改动仍在 stash 中: {(p.stderr or '').strip()}")
-        except (subprocess.SubprocessError, FileNotFoundError) as err:
-            log(f"⚠ stash pop 异常，改动仍在 stash 中: {err}")
+    _restore_stash(stashed)
     if _run_build() != "ok":
         log("⚠ 恢复后重建 dist 未成功，dist 可能与 HEAD 不一致（下一轮自愈会重试）")
 
@@ -528,6 +540,7 @@ def repair_rollback() -> bool:
             return False
         if build == "fail":
             log("✗ rollback 后 build 失败，推进游标退更早节点")
+            _restore_stash(stashed)
             backoff = min((2 ** steps) * ROLLBACK_BASE_S, ROLLBACK_MAX_S)
             _write_state({
                 "rollbackCursor": target_sha,
@@ -543,8 +556,10 @@ def repair_rollback() -> bool:
                 "lastGoodSha": new_head, "rollbackCursor": "",
                 "rollbackSteps": 0, "rollbackBackoffUntil": 0,
             })
+            _restore_stash(stashed)
             log("✓ 回退 + 重建 + 重启成功，自愈完成")
             return True
+        _restore_stash(stashed)
         backoff = min((2 ** steps) * ROLLBACK_BASE_S, ROLLBACK_MAX_S)
         _write_state({
             "rollbackCursor": target_sha,

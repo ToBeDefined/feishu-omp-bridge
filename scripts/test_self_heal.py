@@ -562,3 +562,29 @@ time.sleep(60)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # 不抛即通过
     finally:
         os.close(fd)
+
+
+def test_rollback_success_restores_stashed_local_changes(heal, monkeypatch):
+    """回退成功后必须把回滚前 stash 的本地改动还回去（此前会静默留在 stash 里）。"""
+    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    heal._write_state({"lastGoodSha": "abc123def456"})
+    heal.BACKOFF_BASE_S = 0
+
+    git_calls: list[list[str]] = []
+
+    def fake_subprocess(cmd, **kw):
+        argv = cmd if isinstance(cmd, list) else str(cmd).split()
+        if argv and argv[0] == "git":
+            git_calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(heal, "subprocess", type("SP", (), {"run": staticmethod(fake_subprocess)})())
+    monkeypatch.setattr(heal, "_git_rev", lambda target: "abc123def456")
+    monkeypatch.setattr(heal, "_git_head", lambda: "abc123def456")
+    monkeypatch.setattr(heal, "_git_dirty", lambda: True)     # 工作区脏 → 会 stash
+    monkeypatch.setattr(heal, "_run_build", lambda: "ok")
+    monkeypatch.setattr(heal, "repair_restart", lambda: True)  # 回退成功路径
+
+    assert heal.repair_rollback() is True
+    assert any(c[:2] == ["git", "stash"] and c[2] != "pop" for c in git_calls), "应当先 stash"
+    assert ["git", "stash", "pop"] in git_calls, "回退成功后必须 pop 回本地改动"

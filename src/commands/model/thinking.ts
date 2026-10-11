@@ -1,14 +1,14 @@
 import { getOmpThinking, isOmpThinkingLevel } from '../../config/schema';
 import type { AppPreferences } from '../../config/schema';
 import { saveConfig } from '../../config/store';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
+import { sendManagedCard } from '../../card/managed';
 import {
   thinkingCancelledCard,
   thinkingCard,
   thinkingSavedCard,
 } from '../../card/model-card';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply, settleManagedCard } from '../shared';
+import { recallMessage, reply, settleManagedCard } from '../shared';
 import { log } from '../../core/logger';
 
 export const thinkingHandlers: Record<string, Handler> = {
@@ -88,12 +88,7 @@ async function setThinking(level: string, ctx: CommandContext): Promise<void> {
     via: ctx.fromCardAction ? 'card' : 'text',
   });
   if (ctx.fromCardAction) {
-    const formMsgId = ctx.msg.messageId;
-    void (async () => {
-      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, formMsgId, thinkingSavedCard(level)).catch(() => {});
-      forgetManagedCard(formMsgId);
-    })();
+    void settleManagedCard(ctx, thinkingSavedCard(level), `✅ 思考强度已设为 \`${level}\`。`);
   } else {
     await reply(ctx, `✅ 思考强度已设为 \`${level}\`。下一条消息生效。`);
   }

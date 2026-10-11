@@ -8,10 +8,10 @@ import {
   accountFormCard,
   accountSuccessCard,
 } from '../../card/account-cards';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
+import { sendManagedCard } from '../../card/managed';
 import { validateAppCredentials } from '../../utils/feishu-auth';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { FORM_SETTLE_MS, recallMessage, reply, updateOrFallback } from '../shared';
 
 export const accountCmdHandlers: Record<string, Handler> = {
   '/account': handleAccount,
@@ -60,7 +60,6 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
   const appSecret = String(fv.app_secret ?? '').trim();
   const tenant = (fv.tenant === 'lark' ? 'lark' : 'feishu') as TenantBrand;
 
-  const formMsgId = ctx.msg.messageId;
   const channel = ctx.channel;
   const configPath = ctx.controls.configPath;
   const restart = ctx.controls.restart;
@@ -80,17 +79,16 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
 
     const finishSuccess = async (card: object): Promise<void> => {
       await waitForSettle();
-      await updateManagedCard(channel, formMsgId, card).catch((err) =>
-        console.warn('[account] form update failed:', err),
-      );
-      forgetManagedCard(formMsgId);
+      await updateOrFallback(ctx, card, '✅ 已更换应用凭据，正在重连…');
     };
 
     const finishFailure = async (errorMessage: string): Promise<void> => {
       await waitForSettle();
-      await updateManagedCard(channel, formMsgId, accountFailureCard(errorMessage))
-        .catch((err) => console.warn('[account] mark old form failed:', err));
-      forgetManagedCard(formMsgId);
+      await updateOrFallback(
+        ctx,
+        accountFailureCard(errorMessage),
+        `❌ 更换凭据失败：${errorMessage}`,
+      );
       const retry = accountFormCard({
         initialTenant: tenant,
         prefillAppId: appId,

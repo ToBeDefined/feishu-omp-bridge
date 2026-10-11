@@ -10,7 +10,7 @@ import { saveConfig } from '../../config/store';
 import { configCancelledCard, configFormCard, configSavedCard } from '../../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply, settleManagedCard } from '../shared';
+import { FORM_SETTLE_MS, recallMessage, reply, settleManagedCard, updateOrFallback } from '../shared';
 import { log } from '../../core/logger';
 
 export const configHandlers: Record<string, Handler> = {
@@ -214,9 +214,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       adminsCount: admins.length,
     });
     await waitForSettle();
-    await updateManagedCard(
-      channel,
-      formMsgId,
+    await updateOrFallback(
+      ctx,
       configSavedCard({
         messageReply,
         showToolCalls,
@@ -231,9 +230,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
           ? { owner: ctx.controls.cfg.preferences.access.owner }
           : {}),
       }),
-    ).catch((err) =>
-      log.warn('command', 'config-save-update-failed', { err: String(err) }),
+      '✅ 偏好已保存，立即生效。',
     );
-    forgetManagedCard(formMsgId);
   })();
 }

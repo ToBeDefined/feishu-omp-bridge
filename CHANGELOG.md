@@ -337,7 +337,11 @@
   `settleManagedCard(ctx, card, fallbackText)` 三级收尾：① 托管卡片照旧走 CardKit 更新；
   ② 不是托管卡片则**把消息内容整体 patch 成新卡片**（手工调试卡片、重启前的老卡片都能
   真的变成「已取消」）；③ 连 patch 都不行才退回一条「已取消，未做修改。」。四个取消点
-  （config / model×2 / thinking×2）全部改用，回归测试覆盖三种分支。
+  （config / model×2 / thinking×2）全部改用，回归测试覆盖三种分支。**同一类缺陷的其余
+  残留一并收编**：`/model`、`/thinking` 保存成功后的「已保存」收尾、`/config` 提交后的
+  「偏好已保存」收尾、`/account` 的成败收尾（此前用 `console.warn` 静默吞）全部走同一套
+  `settleManagedCard` / `updateOrFallback`（后者为不含延迟的核心，供自带 `waitForSettle`
+  的表单路径使用），失败即回一句文字，卡片再也不会「点了没反应」。
 
 ### Changed
 - **`/config` 卡片补上「归属者」只读展示**：`owner` 按设计不在表单里（只能在机器上改

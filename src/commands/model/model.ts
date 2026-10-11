@@ -1,7 +1,7 @@
 import { getOmpModel, getOmpThinking, isOmpThinkingLevel } from '../../config/schema';
 import type { AppPreferences } from '../../config/schema';
 import { saveConfig } from '../../config/store';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
+import { sendManagedCard } from '../../card/managed';
 import {
   THINKING_FOLLOW_DEFAULT,
   modelCancelledCard,
@@ -11,7 +11,7 @@ import {
 } from '../../card/model-card';
 import { recentModels } from '../../session/model-history';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply, settleManagedCard } from '../shared';
+import { recallMessage, reply, settleManagedCard } from '../shared';
 import { loadModelData } from './data';
 import { log } from '../../core/logger';
 
@@ -162,12 +162,11 @@ async function submitModel(ctx: CommandContext): Promise<void> {
     via: 'card',
   });
   if (ctx.fromCardAction) {
-    const formMsgId = ctx.msg.messageId;
-    void (async () => {
-      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, formMsgId, modelSavedCard(selector, thinking)).catch(() => {});
-      forgetManagedCard(formMsgId);
-    })();
+    void settleManagedCard(
+      ctx,
+      modelSavedCard(selector, thinking),
+      `✅ 模型已设为 \`${selector}\`。`,
+    );
   } else {
     await reply(
       ctx,
@@ -205,12 +204,11 @@ async function setModel(model: string, ctx: CommandContext): Promise<void> {
   if (!(await persistModelPreferences(ctx, nextPreferences))) return;
   log.info('command', 'model-set', { scope: ctx.scope, model, via: ctx.fromCardAction ? 'card' : 'text' });
   if (ctx.fromCardAction) {
-    const formMsgId = ctx.msg.messageId;
-    void (async () => {
-      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, formMsgId, modelSavedCard(model, getOmpThinking(ctx.controls.cfg))).catch(() => {});
-      forgetManagedCard(formMsgId);
-    })();
+    void settleManagedCard(
+      ctx,
+      modelSavedCard(model, getOmpThinking(ctx.controls.cfg)),
+      `✅ 模型已设为 \`${model}\`。`,
+    );
   } else {
     await reply(
       ctx,

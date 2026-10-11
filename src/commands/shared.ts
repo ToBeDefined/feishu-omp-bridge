@@ -57,8 +57,24 @@ export async function settleManagedCard(
   card: object,
   fallbackText: string,
 ): Promise<void> {
-  const messageId = ctx.msg.messageId;
   await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+  await updateOrFallback(ctx, card, fallbackText);
+}
+
+/**
+ * `settleManagedCard` 的核心（不含 FORM_SETTLE_MS 延迟）：调用方自己等过了
+ * （表单提交那几条路径要等「距提交已过 N 毫秒」而不是固定 N 毫秒）就用这个。
+ *
+ * ① 托管卡片 → CardKit 更新（带 sequence）
+ * ② 否则 → `im.message.patch` 整体替换消息内容（手工卡片 / 重启前老卡片也能变）
+ * ③ 都不行 → 回一句 `fallbackText`，绝不静默
+ */
+export async function updateOrFallback(
+  ctx: CommandContext,
+  card: object,
+  fallbackText: string,
+): Promise<void> {
+  const messageId = ctx.msg.messageId;
   // 1) 首选：托管卡片走 CardKit 更新（带 sequence，能做流式 / 多次更新）。
   try {
     await updateManagedCard(ctx.channel, messageId, card);

@@ -43,6 +43,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     allowedUsers: (access.allowedUsers ?? []).join(', '),
     allowedChats: (access.allowedChats ?? []).join(', '),
     admins: (access.admins ?? []).join(', '),
+    ...(access.owner !== undefined ? { owner: access.owner } : {}),
   });
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
@@ -231,6 +232,10 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         allowedUsers: allowedUsers.join(', '),
         allowedChats: allowedChats.join(', '),
         admins: admins.join(', '),
+        // 归属者不在表单里：这里显示的是既有配置，不是本次提交的值。
+        ...(ctx.controls.cfg.preferences?.access?.owner !== undefined
+          ? { owner: ctx.controls.cfg.preferences.access.owner }
+          : {}),
       }),
     ).catch((err) =>
       log.warn('command', 'config-save-update-failed', { err: String(err) }),

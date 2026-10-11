@@ -2,7 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommandContext } from '../index';
 import { configHandlers } from './config';
 import { saveConfig } from '../../config/store';
+import { configFormCard } from '../../card/config-card';
+import { updateManagedCard } from '../../card/managed';
 import type { AppConfig } from '../../config/schema';
+
+vi.mock('../../card/managed', () => ({
+  sendManagedCard: vi.fn(async () => ({ messageId: 'om_card' })),
+  updateManagedCard: vi.fn(async () => {}),
+  forgetManagedCard: vi.fn(),
+}));
 
 vi.mock('../../config/store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../config/store')>();
@@ -64,6 +72,38 @@ describe('/config submit 与 access.owner', () => {
     expect(written.preferences?.messageReply).toBe('card');
     expect(written.preferences?.ompModel).toBe('futu/deepseek-v4.1-flash');
     expect(written.preferences?.ompThinking).toBe('auto');
+  });
+
+  it('表单卡与保存卡都显示归属者（只读，不进表单字段）', () => {
+    const card = JSON.stringify(
+      // 直接渲染表单卡：owner 是展示字段，不是 input。
+      (0, configFormCard)({
+        messageReply: 'card',
+        showToolCalls: true,
+        maxConcurrentRuns: 10,
+        runIdleTimeoutMinutes: 0,
+        requireMentionInGroup: true,
+        allowedUsers: '',
+        allowedChats: '',
+        admins: '',
+        owner: 'ou_3a4845d7ce8becd003e2728ab7774666',
+      }),
+    );
+    expect(card).toContain('归属者');
+    expect(card).toContain('ou_3a4845d7ce8becd003e2728ab7774666');
+    expect(card).toContain('只读');
+    // 不是表单控件：没有 name=owner 的输入框。
+    expect(card).not.toContain('"name":"owner"');
+  });
+
+  it('提交后保存卡也显示归属者', async () => {
+    vi.mocked(updateManagedCard).mockClear();
+    const { ctx } = ctxWith({});
+    await configHandlers['/config']!('submit', ctx);
+    await new Promise((r) => setTimeout(r, 1200));   // 等 FORM_SETTLE_MS 后的原地更新
+    const saved = vi.mocked(updateManagedCard).mock.calls.at(-1)?.[2];
+    expect(JSON.stringify(saved)).toContain('归属者');
+    expect(JSON.stringify(saved)).toContain('ou_3a4845d7ce8becd003e2728ab7774666');
   });
 
   it('空表单值回落到当前值，同样不丢 owner', async () => {

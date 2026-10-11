@@ -14,6 +14,9 @@ export interface ConfigFormOpts {
   allowedChats: string;
   /** Comma-separated admin open_id list; empty string = no admin gating. */
   admins: string;
+  /** 归属者（`access.owner`）。**只读**：不在表单里，只能在机器上改；这里只是显示
+   * 现状，免得「管理员」一栏空着让人以为没人管。 */
+  owner?: string;
 }
 
 /** Form card for `/config`. */
@@ -126,6 +129,14 @@ export function configFormCard(opts: ConfigFormOpts): object {
             {
               tag: 'markdown',
               content:
+                `\n**归属者**(\`owner\`,只读):${opts.owner ? `\`${opts.owner}\`` : '_未设置_'}\n` +
+                '_高危命令 `/release` `/exec` `/run` 只认它；**不在本表单里**，' +
+                '只能在机器上改 `~/.feishu-omp-bridge/config.json`(防远端提权) —— ' +
+                '未设置时自动取 `admins` 第一个，两者都没有则高危命令对所有人拒绝_',
+            },
+            {
+              tag: 'markdown',
+              content:
                 '\n**用户白名单**(`allowedUsers`)\n' +
                 '_只允许列表内的 open_id 跟 bot 交互。多个用英文逗号分隔。留空 = 不限制_\n' +
                 '_open_id 可从日志 `~/.feishu-omp-bridge/logs/*.log` 里 grep `senderId` 字段_',
@@ -198,6 +209,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +
             `**run 探活**:\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +
+          `**归属者**:${opts.owner ? `\`${opts.owner}\`` : '_(未设置)_'}\n` +
             `**群里需要 @ bot**:\`${opts.requireMentionInGroup ? '是' : '否'}\`\n\n` +
             '🔒 **访问控制**\n' +
             `**用户白名单**:${summarizeList(opts.allowedUsers)}\n` +

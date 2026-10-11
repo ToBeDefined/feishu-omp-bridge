@@ -32,11 +32,13 @@ const CARD_ELEMENT_BUDGET = 40;
  * Minimum gap between card patches on the same message. Feishu rate-limits
  * per-message updates (230020 "Update the single messages too frequently");
  * un-paced patches during fast streaming tripped it and killed runs on the
- * 渲染中断 fallback (observed 2026-10-05 / 10-09). 1/s leaves ~5x headroom
- * under the documented 5/s limit; latest-wins keeps the final state intact,
- * only the intermediate refresh rate drops.
+ * 渲染中断 fallback (observed 2026-10-05 / 10-09).
+ *
+ * 300ms ≈ 3.3 次/秒，仍在文档上限 5/s 之内（余量约 1.7 倍，比原来的 1/s 更激进）。
+ * 若 230020 再次出现，把这个值调回 1000（或更大）即可 —— 限频只影响中间刷新率，
+ * latest-wins 合并保证终态一定落盘。
  */
-export const CARD_UPDATE_MIN_INTERVAL_MS = 1000;
+export const CARD_UPDATE_MIN_INTERVAL_MS = 300;
 
 /**
  * Latest-wins write coalescer. At most one write in flight; newer values

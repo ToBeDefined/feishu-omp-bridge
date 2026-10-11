@@ -45,7 +45,7 @@ It fits these situations:
 - These switch to a new OMP session (= a new conversation): `/new` (`/reset`), `/cd`, `/ws use` (including `/ws undo`), and runtime drift (cwd changed / session file deleted / the old session can no longer be `--resume`d).
 - These do **not** switch sessions: a `/release` restart and `/compact` (both keep running in the same conversation).
 - **The cwd travels with the session**: resuming a conversation runs it in *its own* directory (the window's cwd follows it); only when there is no current session (after `/new`, `/cd`, `/ws use`) does the window's cwd decide where the new conversation lands. The default view of `/history` and the `/ctx`, `/status`, `/diff`, `/compact`, `/exec` commands all use this rule.
-- A title belongs to **that conversation**: `/rename` names the current one; without a name, `/history`, `/search` and `/resume` fall back to its last user message.
+- A title belongs to **that conversation**: `/rename` names the current one; without a name, `/history` and `/search` fall back to its last user message.
 - One `/history` row = one conversation (activity time / turn count / title or last user message); “Continue chat” restores it, and `/history all` covers every working directory.
 - Upgrade note: early versions hung multiple OMP sessions under one “work session” (requiring manual merge/split). Old files are now normalized on load into “one conversation per session”, with a `sessions.json.v2.bak` kept.
 
@@ -403,7 +403,7 @@ Semantics:
 | `/ws use <name>` | Switch to a named workspace (changing the directory = a new conversation; same for `/ws undo`). |
 | `/config` | Open the preferences card. |
 | `/account` | Replace the bot app credentials and reconnect. |
-| `/rename <title>` | Name the current **conversation**; `/rename auto` generates it with an LLM (≤20 chars), `/rename clear` clears it. The title shows up in `/context`, `/status`, `/resume`, `/search`. |
+| `/rename <title>` | Name the current **conversation**; `/rename auto` generates it with an LLM (≤20 chars), `/rename clear` clears it. The title shows up in `/status` (`/ctx`), `/history` and `/search`. |
 | `/history [all]`, `/sessions` | Session list, newest activity first: by default only the **current working directory**, `all` for every working directory. One row = one OMP session (activity time / turn count / title or last user message); “Continue chat” restores it; paginates beyond 8 rows. Admin command. |
 | `/status`、`/ctx`、`/context` | The session status card — one command, three spellings: session (id / title / start / last active / running), environment (cwd / agent / model / thinking / idle timeout / workspace quick-dirs) and the digested recent message + reply. |
 | `/stop` | Abort the OMP run currently executing. |

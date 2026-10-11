@@ -649,11 +649,14 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
     items: [
       ['/new · /reset', '重置上下文，开始新对话'],
       ['/new chat [名字]', '新建群 + 新会话，自动拉你进群'],
-      ['/resume', '历史会话列表，一键恢复'],
+      ['/resume <会话 id>', '按 id / id 前缀直接恢复某条会话'],
       ['/rename <标题>', '会话命名；`auto` LLM 生成，`clear` 清除'],
       ['/status · /ctx · /context', '会话状态：会话 / 环境 / 最近内容'],
       ['/search <关键词> · /s', '跨会话历史检索'],
-      ['/history [all] · /sessions', '工作目录 / 全部的对话历史清单'],
+      [
+        '/history [all] · /sessions',
+        '历史会话清单，「继续对话」一键恢复；不带参数的 /resume 也走这里',
+      ],
     ],
   },
   {

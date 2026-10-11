@@ -47,7 +47,7 @@ omp --mode rpc --session-dir ~/.feishu-omp-bridge/omp-sessions
 - **cwd 由会话携带**：续一段对话就在**它自己的**目录里跑（窗口的 cwd 会跟随它）；
   只有没有当前会话时（`/new`、`/cd`、`/ws use` 之后）才用窗口的 cwd 决定新对话落在哪。
   `/history` 的默认视图、`/ctx`、`/status`、`/diff`、`/compact`、`/exec` 都按这个口径。
-- 标题属于**那个对话**：`/rename` 命名当前对话；没名字时 `/history`、`/search`、`/resume` 回退显示该对话最后一条用户消息。
+- 标题属于**那个对话**：`/rename` 命名当前对话；没名字时 `/history`、`/search` 回退显示该对话最后一条用户消息。
 - `/history` 一行 = 一个对话（活动时间 / 轮数 / 标题或最后一条用户消息）；「继续对话」恢复它，`/history all` 看全部工作目录。
 - 升级须知：早期版本把多个 OMP 会话挂在同一「工作会话」下（需要手工合并/拆分），现在加载旧文件时会自动规范化成「一段一对话」，并留一份 `sessions.json.v2.bak`。
 
@@ -397,7 +397,7 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 | `/ws use <name>` | 切换到命名工作空间（换目录 = 开新对话；`/ws undo` 同理）。 |
 | `/config` | 打开偏好设置卡片。 |
 | `/account` | 更换 bot app 凭据并重连。 |
-| `/rename <标题>` | 给当前**对话**起名；`/rename auto` 用 LLM 生成(≤20 字)，`/rename clear` 清除。标题显示在 `/context`、`/status`、`/resume`、`/search`。 |
+| `/rename <标题>` | 给当前**对话**起名；`/rename auto` 用 LLM 生成(≤20 字)，`/rename clear` 清除。标题显示在 `/status`（`/ctx`）、`/history`、`/search`。 |
 | `/history [all]`、`/sessions` | 会话清单，按最后活动时间倒序：默认只看**当前工作目录**，`all` 看全部工作目录。每行 = 一个 OMP 会话（活动时间 / 轮数 / 标题或最后一条用户消息），「继续对话」恢复它；超过 8 条分页。admin 命令。 |
 | `/status`、`/ctx`、`/context` | 会话状态卡片 —— 一条命令三个写法：会话（id / 标题 / 开始 / 最近活动 / 运行态）、环境（cwd / agent / 模型 / 思考强度 / 探活 / 工作空间快捷名）与最近一问一答的摘要。 |
 | `/stop` | 终止当前正在执行的 OMP run。 |

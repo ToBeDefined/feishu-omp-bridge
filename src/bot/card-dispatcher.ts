@@ -3,7 +3,7 @@ import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from './active-runs';
 import type { ChatModeCache } from './chat-mode-cache';
 import type { PendingQueue } from './pending-queue';
-import { RESET_CONTEXT_COMMANDS } from './intake';
+import { resetsContext } from './intake';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
 import { isChatAllowed, isUserAllowed } from '../config/schema';
 import { log } from '../core/logger';
@@ -117,7 +117,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       // Admin command silently denied — it did NOT run, so its side effects
       // (like resetting the pending queue) must not fire either.
       log.info('cardAction', 'denied-no-reset', { cmd, scope });
-    } else if (RESET_CONTEXT_COMMANDS[`/${name}`] === true) {
+    } else if (resetsContext(`/${name}`, args)) {
       // 与 intake 同语义：上下文切换类命令（卡片按钮 new / ws.use）成功后
       // 丢弃旧上下文的积压消息，防止其泄入新 session。
       const dropped = deps.pending.cancel(scope);

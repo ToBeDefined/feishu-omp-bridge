@@ -6,7 +6,9 @@ import { paths } from '../../config/paths';
 import type { CommandContext } from '../index';
 import { applyResume, listResumableSessions } from './resume';
 import { handleHistory } from './history';
+import { sessionHandlers } from './index';
 import { loadSessionSummary, renderContext } from './context';
+import { sendManagedCard } from '../../card/managed';
 import { SessionStore } from '../../session/store';
 
 const { reply } = vi.hoisted(() => ({
@@ -178,6 +180,29 @@ describe('applyResume binding a conversation', () => {
     const text = renderContext(ctx, {});
     expect(text).toContain('`legacy`');
     expect(text).not.toContain('更新 UI 效果以及扩展功能');
+    await store.flush();
+  });
+});
+
+describe('/resume 的参数分派（session/index.ts 组装层）', () => {
+  it('不带参数时转发给 /history（只读清单）；带 id 才走直连恢复', async () => {
+    // 会话文件落在窗口 cwd（= tmp）里，这样 /history 的默认「当前目录」视图能列出它。
+    await writeSession('sess-fwd-1', tmp);
+    const store = await openStore();
+    const { ctx } = makeCtx(store);
+
+    // 无参数：等同 /history —— 卡是历史清单（带「继续对话」按钮）。
+    vi.mocked(sendManagedCard).mockClear();
+    await sessionHandlers['/resume']!('', ctx);
+    const card = JSON.stringify(vi.mocked(sendManagedCard).mock.calls[0]?.[2] ?? {});
+    expect(card).toContain('对话历史');
+    expect(card).toContain('继续对话');
+    expect(store.sessionFor('oc_1')).toBeUndefined();   // 只读清单不动会话
+
+    // 带 id / 前缀：直连恢复，会话被绑成当前会话（不再走清单）。
+    vi.mocked(sendManagedCard).mockClear();
+    await sessionHandlers['/resume']!('sess-fwd-1', ctx);
+    expect(store.sessionFor('oc_1')?.sessionId).toBe('sess-fwd-1');
     await store.flush();
   });
 });

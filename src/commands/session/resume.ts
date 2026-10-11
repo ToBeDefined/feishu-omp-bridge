@@ -1,24 +1,22 @@
 import { homedir } from 'node:os';
 import { stat } from 'node:fs/promises';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
-import {
-  resumeCard,
-  resumeCancelledCard,
-  resumeSavedCard,
-  type ResumeOption,
-} from '../../card/model-card';
+import { forgetManagedCard, updateManagedCard } from '../../card/managed';
+import { resumeSavedCard, type ResumeOption } from '../../card/model-card';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { FORM_SETTLE_MS, reply } from '../shared';
 import { renderContext, loadSessionSummary } from './context';
 import { scanSessionFiles } from './sessions';
 import { log } from '../../core/logger';
 
+/**
+ * `/resume` / `/session` —— **带参数**时才走到这里：`/resume <会话 id|前缀>` 直接恢复。
+ * 不带参数时由 `session/index.ts` 转发给 `/history`（两者的清单卡片曾是重复能力，
+ * 选择器卡片连同分页 / 取消 / 按钮分支一并下线）。
+ */
 export const resumeHandlers: Record<string, Handler> = {
   '/resume': handleResume,
   '/session': handleResume,
 };
-
-const RESUME_PAGE_SIZE = 5;
 
 /**
  * 若另一个 scope 的**当前会话**落在给定会话集合里，返回那个 scope。
@@ -51,72 +49,22 @@ export async function listResumableSessions(ctx: CommandContext): Promise<Resume
 }
 
 async function handleResume(args: string, ctx: CommandContext): Promise<void> {
-  const [sub, ...rest] = args.trim().split(/\s+/);
-
-  if (sub === 'use') {
-    const id = rest.join('');
-    const sessions = await listResumableSessions(ctx);
-    const match = sessions.find((s) => s.sessionId === id);
-    if (!match) {
-      await reply(ctx, `❌ 未找到会话 \`${id}\`。`);
-      return;
-    }
-    await applyResume(ctx, match);
+  const target = args.trim();
+  if (!target) {
+    // 正常路径由 session/index.ts 转发给 /history；直接调用 handler 时给用法，
+    // 绝不能落进下面的前缀匹配（空前缀会匹配到任意一条会话）。
+    await reply(ctx, '用法：`/resume <会话 id>`；不带参数时等同 `/history`。');
     return;
   }
-
-  if (sub === 'more' || sub === 'back') {
-    const offset = Number.parseInt(rest.join(''), 10);
-    if (!Number.isFinite(offset) || offset < 0) {
-      await reply(ctx, '❌ 无效的分页偏移。');
-      return;
-    }
-    await showResumePage(ctx, offset);
-    return;
-  }
-
-  if (sub === 'cancel') {
-    if (ctx.fromCardAction) {
-      const msgId = ctx.msg.messageId;
-      void (async () => {
-        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-        await updateManagedCard(ctx.channel, msgId, resumeCancelledCard()).catch(() => {});
-        forgetManagedCard(msgId);
-      })();
-    }
-    return;
-  }
-
-  if (!sub) {
-    await showResumePage(ctx, 0);
-    return;
-  }
-
-  // Direct resume by id prefix: match an OMP session id (one session = one
-  // conversation, so that id IS the conversation).
+  // Direct resume by id / id prefix: one session = one conversation, so that id
+  // IS the conversation.
   const sessions = await listResumableSessions(ctx);
-  const match = sessions.find((s) => s.sessionId.startsWith(sub));
+  const match = sessions.find((s) => s.sessionId.startsWith(target));
   if (!match) {
-    await reply(ctx, `❌ 未找到会话 \`${sub}\`。发 \`/resume\` 查看可恢复的会话列表。`);
+    await reply(ctx, `❌ 未找到会话 \`${target}\`。发 \`/history\` 查看历史会话清单。`);
     return;
   }
   await applyResume(ctx, match);
-}
-
-async function showResumePage(ctx: CommandContext, offset: number): Promise<void> {
-  const sessions = await listResumableSessions(ctx);
-  if (sessions.length === 0) {
-    await reply(ctx, '没有找到可恢复的历史会话。');
-    return;
-  }
-  const page = sessions.slice(offset, offset + RESUME_PAGE_SIZE);
-  const currentId = ctx.sessions.sessionFor(ctx.scope)?.sessionId;
-  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(
-    ctx.channel,
-    ctx.msg.chatId,
-    resumeCard(currentId, page, { offset, total: sessions.length }),
-  );
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resumeCard, resumeSavedCard, type ResumeOption } from './model-card';
+import { resumeSavedCard } from './model-card';
 import type { RunCard } from './run-renderer';
 import {
   compactCard,
@@ -413,21 +413,12 @@ describe('session id rendering', () => {
     expect(out).not.toContain('01J8Z9K2…');
   });
 
-  it('shows the full id on the singular /resume lines but a short handle per row', () => {
+  it('shows the full id on the singular /resume confirmation card', () => {
     const saved = resumeSavedCard(ULID, '/repo/sub');
-    expect(JSON.stringify(saved)).toContain(ULID);
-
-    const card = JSON.stringify(
-      resumeCard(ULID, [
-        { sessionId: ULID, cwd: '/repo', timestamp: new Date().toISOString(), summary: '当前会话' },
-        { sessionId: '01J8Z9K2ZZZZZZZZZZZZZZZZZZ', cwd: '/repo', timestamp: new Date().toISOString(), summary: '另一个' },
-      ]),
-    );
-    // Header: full id, so you can copy it or match it with /resume.
-    expect(card).toContain('当前：`' + ULID + '`');
-    // Rows: 8-char handle only (the summary is the identity).
-    expect(card).toContain('01J8Z9K2…');
-    expect(card).not.toContain('ZZZZZZZZZZZZZZZZZZZZ');
+    const out = JSON.stringify(saved);
+    expect(out).toContain(ULID);
+    // 恢复确认卡里的 id 是完整可复制的（列表行才用 8 字符句柄）。
+    expect(out).not.toContain('01J8Z9K2…');
   });
 });
 
@@ -560,60 +551,6 @@ describe('statusCard — 最近内容 / 工作空间 / 占位（原 /context 的
     expect(out).not.toContain('🏷');
     expect(out).toContain('跟随默认');
     expect(out).toContain('（当前目录无快捷方式）');
-  });
-});
-
-describe('resumeCard', () => {
-  it('shows the title ahead of the summary', () => {
-    const sessions: ResumeOption[] = [
-      { sessionId: 's1', cwd: '/repo', timestamp: 't', title: '已命名', summary: '旧摘要' },
-      { sessionId: 's2', cwd: '/repo2', timestamp: 't2', summary: '摘要B' },
-    ];
-    const out = JSON.stringify(resumeCard('s1', sessions));
-
-    // Titled session shows its title; the untitled one leads with its summary.
-    expect(out).toContain('🏷 **已命名**');
-    expect(out).toContain('摘要B');
-    // Exactly one titled row — s2 stays unlabeled.
-    expect((out.match(/🏷/g) ?? []).length).toBe(1);
-  });
-
-  it('renders a relative time from the session timestamp', () => {
-    const sessions: ResumeOption[] = [
-      {
-        sessionId: 's1',
-        cwd: '/repo',
-        timestamp: new Date(Date.now() - 3 * 60_000).toISOString(),
-        summary: '摘要',
-      },
-    ];
-    const out = JSON.stringify(resumeCard('s1', sessions));
-    expect(out).toContain('3 分钟前');
-    // Untitled + summary → the summary is the row identity.
-    expect(out).toContain('**摘要**');
-  });
-
-  it('marks the current session and keeps full ids in button values', () => {
-    const sessions: ResumeOption[] = [
-      { sessionId: 's1', cwd: '/repo', timestamp: 't', title: 'A' },
-      { sessionId: 's2', cwd: '/repo', timestamp: 't', title: 'B' },
-    ];
-    const out = JSON.stringify(resumeCard('s1', sessions));
-    expect(out).toContain('✓ 当前');
-    expect(out).toContain('"arg":"s1"');
-    expect(out).toContain('"arg":"s2"');
-  });
-
-  it('keeps pagination range and older/newer navigation', () => {
-    const page: ResumeOption[] = Array.from({ length: 5 }, (_, i) => ({
-      sessionId: `s${i}`,
-      cwd: '/repo',
-      timestamp: 't',
-    }));
-    const out = JSON.stringify(resumeCard(undefined, page, { offset: 5, total: 12 }));
-    expect(out).toContain('第 6-10 条 / 共 12 条');
-    expect(out).toContain('"cmd":"resume.back","arg":"0"');
-    expect(out).toContain('"cmd":"resume.more","arg":"10"');
   });
 });
 

@@ -30,19 +30,18 @@ export const RESET_CONTEXT_COMMANDS: Record<string, true> = {
   '/reset': true,
   '/cd': true,
   '/ws': true,
-  // /resume (/session) interrupts the run and re-points the session at a
-  // historical one; without this the messages queued behind the run would be
-  // flushed into that resumed session. /s and /search are deliberately NOT
-  // here — they only list results, so dropping queued messages would lose
-  // them for a read-only command.
-  '/resume': true,
-  '/session': true,
+  // /s、/search 与**不带参数的** /resume 都不在这里：它们只列清单，丢掉排队消息
+  // 就是丢用户的消息（见 resetsContext 对 /resume 的单独判断）。
 };
 
 /**
  * Whether a handled command discards the messages queued behind the run.
+ *
+ * `/resume`（`/session`）只有**带目标**时才算换上下文：不带参数时它转发给
+ * `/history`（只读清单），此时丢掉排队消息是纯粹的损失。
  */
-export function resetsContext(cmd: string): boolean {
+export function resetsContext(cmd: string, args = ''): boolean {
+  if (cmd === '/resume' || cmd === '/session') return args.trim() !== '';
   return RESET_CONTEXT_COMMANDS[cmd] === true;
 }
 
@@ -147,7 +146,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
   if (handled) {
     const tokens = msg.content.trim().split(/\s+/);
     const cmd = tokens[0] ?? '';
-    if (handled !== 'denied' && resetsContext(cmd)) {
+    if (handled !== 'denied' && resetsContext(cmd, msg.content.trim().slice(cmd.length))) {
       const dropped = pending.cancel(scope);
       log.info('intake', 'command-reset', { scope, cmd, droppedPending: dropped.length });
     } else if (handled === 'denied') {

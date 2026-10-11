@@ -131,7 +131,7 @@ describe('intakeMessage mid-run routing', () => {
   });
 
   it('a context-resetting command (/new, /cd, /ws) drops queued messages', async () => {
-    for (const cmd of ['/new', '/reset', '/cd', '/ws', '/resume', '/session']) {
+    for (const cmd of ['/new', '/reset', '/cd', '/ws']) {
       vi.clearAllMocks();
       const deps = makeDeps();
       deps.msg = makeMsg(cmd);
@@ -139,6 +139,26 @@ describe('intakeMessage mid-run routing', () => {
 
       await intakeMessage(deps);
       expect(deps.pending.cancel).toHaveBeenCalledWith('oc_1');
+    }
+  });
+
+  it('带目标的 /resume 丢排队消息，不带参数的（= /history 清单）不丢', async () => {
+    for (const [content, drops] of [
+      ['/resume 019f9432', true],
+      ['/session 019f9432', true],
+      ['/resume', false],
+      ['/session', false],
+      // 只读清单类命令也一样不丢。
+      ['/history', false],
+      ['/s foo', false],
+    ] as Array<[string, boolean]>) {
+      vi.clearAllMocks();
+      const deps = makeDeps();
+      deps.msg = makeMsg(content);
+      tryHandleCommand.mockResolvedValue(true);
+
+      await intakeMessage(deps);
+      expect(deps.pending.cancel).toHaveBeenCalledTimes(drops ? 1 : 0);
     }
   });
 

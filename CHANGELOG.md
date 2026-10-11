@@ -330,6 +330,15 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Changed
+- **`/resume` 不带参数时转发给 `/history`**：两者的清单卡片本是重复能力（都是「历史会话
+  一行一个 + 一键恢复」，只是 `/resume` 那份分页 5 条、带「取消」）。现在
+  `/resume`（`/session`）**带参数**才走自己的路径（`/resume <会话 id|前缀>` 直连恢复），
+  不带参数就是 `/history`；选择器卡片（`resumeCard` / `resumeCancelledCard`）、它的
+  分页/取消/`use` 按钮分支、`showResumePage` 与 `RESUME_PAGE_SIZE` 全部下线（121 行）。
+  随之：`resetsContext(cmd, args)` 改为**看参数** —— `/resume` 只有带目标才算换上下文，
+  裸 `/resume`（只读清单）不再丢弃排队中的消息（与 `/s`、`/search` 同规则），
+  intake 与卡片按钮两条路径共用这一个判断。`/help` 的命令说明也并成一条
+  （`/resume <会话 id>` 单列一条，`/history` 那条注明「不带参数的 /resume 也走这里」）。
 - **`/status`、`/ctx`、`/context` 合并成同一张卡**：此前两张卡有约 85% 内容逐字相同
   （同样的「🗂 会话 / 🧩 环境」两面板 + 窗口行），差别只在 `/status` 多 agent 名与
   「会话目录已失效」告警、`/ctx` 多「命名工作空间快捷名」与「最近内容」。

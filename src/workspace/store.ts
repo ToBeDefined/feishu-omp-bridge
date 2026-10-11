@@ -24,10 +24,17 @@ export class WorkspaceStore {
   async load(): Promise<void> {
     try {
       const text = await readFile(this.path, 'utf8');
-      const parsed = JSON.parse(text) as Partial<WorkspaceData>;
+      const parsed: unknown = JSON.parse(text);
+      // 合法 JSON 但非对象（null 等）：当作坏文件重置，别让属性访问抛出去打断启动。
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        log.warn('workspace', 'load-corrupt-reset', { path: this.path });
+        this.data = { chats: {}, named: {} };
+        return;
+      }
+      const data = parsed as Partial<WorkspaceData>;
       this.data = {
-        chats: parsed.chats ?? {},
-        named: parsed.named ?? {},
+        chats: data.chats ?? {},
+        named: data.named ?? {},
       };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;

@@ -330,6 +330,19 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Fixed
+- **存储层对「坏形状 JSON」的容忍（审查第三批）**：
+  - `loadConfig`：文件是合法 JSON 但**不是对象**（`null` / 数组 / 数字 / 字符串）时原样返回
+    —— 调用方 `cfg.accounts…` 直接抛，能把启动流程带崩；现在按「没有配置」返回 `{}` 并告警。
+  - `WorkspaceStore.load`：`null` 会走 `parsed.chats` 抛 TypeError 且不在容忍范围（非
+    SyntaxError）→ 冒泡成启动失败；现在按坏文件重置。
+  - `SessionStore`：① 遇到**比当前更新**的 `v`（降级运行 / 手工改过）不再按 v1 解析成空
+    再用空 v3 覆盖（会丢用户全部会话），改为不迁移不落盘并告警；② `bind()` 的
+    `times?.updatedAtMs ?? Date.now()` 挡不住 `NaN`（`Date.parse` 失败产物）——`NaN` 写盘
+    变 `null`，下次 load 因 `updatedAt` 非数字**丢掉整条会话**，现在一律回落成有限数；
+    ③ 写盘临时名补随机后缀，与 keystore/registry 一致。
+  以上均有测试（含「重新加载后会话仍在」的端到端断言）。
+
+### Fixed
 - **`self-heal.py` 回退成功后把用户的本地改动静默留在 stash 里**：只有「环境问题恢复原 HEAD」
   那条路会 `stash pop`，**回退成功**、**推进游标退更早节点**、**重启仍失败** 三条路都不会
   —— 用户的未提交改动从此躺在 stash 里没人知道（`self-update.py` 早修过这一类，回退脚本漏了）。

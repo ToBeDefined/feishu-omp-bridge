@@ -43,3 +43,19 @@ describe('saveConfig 的凭据护栏', () => {
     expect(reloaded.preferences?.messageReply).toBe('markdown');
   });
 });
+
+describe('loadConfig 对坏形状的容忍', () => {
+  it('合法 JSON 但不是对象（null/数组/数字）→ 返回 {}，不抛', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cfg-load-'));
+    for (const [name, body] of [
+      ['null.json', 'null'],
+      ['arr.json', '[1,2]'],
+      ['num.json', '42'],
+      ['str.json', '"x"'],
+    ] as Array<[string, string]>) {
+      const p = join(dir, name);
+      await writeFile(p, body, 'utf8');
+      await expect(loadConfig(p)).resolves.toEqual({});
+    }
+  });
+});

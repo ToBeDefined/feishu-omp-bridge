@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { constants, copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { paths } from '../config/paths';
@@ -59,6 +60,14 @@ export class SessionStore {
       const raw = (JSON.parse(await readFile(this.path, 'utf8')) ?? {}) as Record<string, unknown>;
       this.scopes = {};
       this.titles = {};
+      // 比我们更新的格式（降级运行 / 手工改过 v）：**不迁移也不落盘** —— 否则
+      // 会把不认识的结构按 v1 解析成空，再用空 v3 覆盖掉用户的会话文件（丢数据）。
+      if (typeof raw.v === 'number' && raw.v > 3) {
+        log.warn('session', 'load-future-version', { path: this.path, v: raw.v });
+        this.scopes = {};
+        this.titles = {};
+        return;
+      }
       const sourceVersion = raw.v === 3 ? 3 : raw.v === 2 ? 2 : 1;
       if (sourceVersion === 3) {
         this.readV3(raw);
@@ -206,13 +215,15 @@ export class SessionStore {
   ): void {
     const prev = this.scopes[scope];
     const sameSession = prev?.sessionId === sessionId;
+    // `??` 挡不住 NaN：Date.parse 失败会给出 NaN，JSON 写出去是 null，
+    // 下次 load 时 parseEntry 要求 updatedAt 是数字 ⇒ **整条会话被丢掉**。
     this.scopes[scope] = {
       sessionId,
       cwd,
-      updatedAt: times?.updatedAtMs ?? Date.now(),
+      updatedAt: finiteOr(times?.updatedAtMs, Date.now()),
       ...(sameSession && prev?.createdAt !== undefined
         ? { createdAt: prev.createdAt }
-        : { createdAt: times?.createdAtMs ?? Date.now() }),
+        : { createdAt: finiteOr(times?.createdAtMs, Date.now()) }),
       ...(prev?.idleTimeoutMinutes !== undefined
         ? { idleTimeoutMinutes: prev.idleTimeoutMinutes }
         : {}),
@@ -310,7 +321,7 @@ export class SessionStore {
         await mkdir(dirname(this.path), { recursive: true });
         // Atomic write (tmp + rename): a crash / SIGKILL mid-write must not leave
         // a truncated sessions.json behind. Matches registry / scheduler / keystore.
-        const tmp = `${this.path}.tmp-${process.pid}`;
+        const tmp = `${this.path}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
         const payload: SessionsFile = { v: 3, scopes: this.scopes, titles: this.titles };
         await writeFile(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
         await rename(tmp, this.path);
@@ -324,6 +335,11 @@ interface RawV2WorkSession {
   currentSegmentId?: unknown;
   lastActiveAtMs?: unknown;
   segments?: Array<{ sessionId?: unknown; cwd?: unknown; startedAtMs?: unknown }>;
+}
+
+/** 只接受有限数（NaN / Infinity 一律回落到 fallback）。 */
+function finiteOr(value: number | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
 /** 读取一条 scope 条目，字段类型不对就当作缺失（手工编辑过的文件不该让 daemon 崩）。 */

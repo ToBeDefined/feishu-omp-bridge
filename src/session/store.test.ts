@@ -218,3 +218,34 @@ describe('SessionStore 持久化与迁移', () => {
     expect(await readFile(file, 'utf8')).toBe(before);
   });
 });
+
+describe('SessionStore 数据安全（审查补强）', () => {
+  it('比当前更新的版本号：不迁移、不落盘（绝不把新格式覆盖成空 v3）', async () => {
+    const future = { v: 9, scopes: { oc_1: { sessionId: 's1', cwd: '/repo', updatedAt: 1 } } };
+    await writeFile(file, JSON.stringify(future), 'utf8');
+    const store = new SessionStore(file);
+    stores.push(store);
+    await store.load();
+    await store.flush();
+    // 文件原样保留
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(future);
+    // 内存里是空的（本次运行按「没有会话」处理），且没被写成空 v3
+    expect(store.chats()).toEqual([]);
+  });
+
+  it('bind 收到非有限时间戳时回落成有限数（NaN → JSON null → 下次 load 丢整条会话）', async () => {
+    const store = await open();
+    store.bind('oc_1', 's1', '/repo', { createdAtMs: Number.NaN, updatedAtMs: Number.NaN });
+    await store.flush();
+    const raw = JSON.parse(await readFile(file, 'utf8')) as {
+      scopes: Record<string, { updatedAt: number; createdAt?: number }>;
+    };
+    expect(Number.isFinite(raw.scopes.oc_1!.updatedAt)).toBe(true);
+    expect(Number.isFinite(raw.scopes.oc_1!.createdAt)).toBe(true);
+    // 重新加载后这条会话仍在（这才是真正要保的东西）
+    const again = new SessionStore(file);
+    stores.push(again);
+    await again.load();
+    expect(again.sessionFor('oc_1')?.sessionId).toBe('s1');
+  });
+});

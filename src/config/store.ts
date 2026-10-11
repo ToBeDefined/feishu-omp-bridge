@@ -4,11 +4,19 @@ import { dirname } from 'node:path';
 import { paths } from './paths';
 import type { AppConfig, AppPreferences, TenantBrand } from './schema';
 import { secretKeyForApp } from './schema';
+import { log } from '../core/logger';
 
 export async function loadConfig(path: string = paths.configFile): Promise<Partial<AppConfig>> {
   try {
     const text = await readFile(path, 'utf8');
-    return JSON.parse(text) as Partial<AppConfig>;
+    const parsed: unknown = JSON.parse(text);
+    // 合法 JSON 但不是对象（null / 数字 / 字符串 / 数组）按「没有配置」处理：
+    // 原样返回会让调用方 `cfg.accounts…` 直接抛，把启动流程带崩。
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      log.warn('config', 'load-shape-unexpected', { path });
+      return {};
+    }
+    return parsed as Partial<AppConfig>;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
     throw err;

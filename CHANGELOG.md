@@ -336,7 +336,12 @@
   `README.zh.md` 中文）相反。现在两份章节一一对应（20 章 / 58 个代码块 / 93 行表格 /
   同一组链接与 30 个命令），并新补一节此前两边都没写的 **CLI 子命令**
   （`run`/`start`/`status`/`restart`/`stop`/`unregister`/`release`/`ps`/`kill`/
-  `secrets`/`migrate`）；顶部互加语言切换链接。
+  `secrets`/`migrate`）；顶部互加语言切换链接。同时修好 9 处**指向已删文档的悬空引用**：
+  `docs/CMUX-AGENT-INTERACTION.md` 已重构为 `cmux-agent` skill（`SKILL.md` + 5 个
+  references、章节重编号），README 排查表与文档索引现在指到
+  `cmux-agent/references/{cli-basics,pi,kimi,cursor,notifications}.md` 的对应小节
+  （原文的 §1/§3/§5/§11.x/§12.x/§13/§14 是旧全局编号，已成死链）；顺带把命令表里
+  两处裸 `|`（`/timeout [N|off|default]`、`/exit <id|#>`）转义，修好 GFM 表格错列。
 - **`/compact` 两张卡合并成一张**：以前「开始压缩」发一张、结束时（成功/失败）再发
   一张，对话里留两条；现在只有一条卡片消息，跑完在**同一张卡**上原地更新
   （🫧 正在压缩 → ✅ 压缩完成 / ❌ 压缩失败），完成后即从崩溃恢复记录里摘掉；若进程

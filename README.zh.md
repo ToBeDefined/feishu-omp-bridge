@@ -402,11 +402,11 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 | `/history [all]`、`/sessions` | 会话清单，按最后活动时间倒序：默认只看**当前工作目录**，`all` 看全部工作目录。每行 = 一个 OMP 会话（活动时间 / 轮数 / 标题或最后一条用户消息），「继续对话」恢复它；超过 8 条分页。admin 命令。 |
 | `/status` | 查看当前 scope、cwd、session、agent。 |
 | `/stop` | 终止当前正在执行的 OMP run。 |
-| `/timeout [N|off|default]` | 设置当前 session 的 idle timeout，或关闭 / 恢复全局默认。 |
+| `/timeout [N\|off\|default]` | 设置当前 session 的 idle timeout，或关闭 / 恢复全局默认。 |
 | `/ps` | 列出本机所有 bridge 进程，并标识当前回复进程。 |
 | `/release` | 自发布：`pnpm typecheck` → `pnpm test` → `pnpm build` 后重启 daemon 加载新代码。失败即中止、不重启。 |
 | `/exec <命令>`、`/run` | 在当前 cwd 下执行 shell 命令并回退出码 + 输出（30s 超时，输出截断 1000 字符）。admin 命令。 |
-| `/exit <id|#>` | 关闭指定 bridge 进程。 |
+| `/exit <id\|#>` | 关闭指定 bridge 进程。 |
 | `/reconnect` | 强制重连 WebSocket。 |
 | `/doctor [描述]` | 把最近日志和故障描述交给 OMP 自助诊断。 |
 | `/help` | 显示帮助卡片。 |
@@ -609,22 +609,22 @@ pnpm build
 | 飞书 API 工具不可用 | 按启动提示安装并绑定 `lark-cli`；或者优先使用已注册的 Feishu host tools。 |
 | `/new chat` 失败 | 确认 bot 具备创建群相关权限，代码中该能力依赖 `im:chat`。 |
 | 后台 daemon 不工作 | 运行 `node bin/feishu-omp-bridge.mjs status` 查看服务状态和日志路径。 |
-| **`cmux ping` 报「访问被拒绝 / Access denied」** | cmux 默认 `socketControlMode=cmuxOnly`，只允许 **cmux 内启动**的进程；改成 **`Automation`**（Settings → Automation）。详见 [`docs/CMUX-AGENT-INTERACTION.md`](docs/CMUX-AGENT-INTERACTION.md) §1。 |
-| **往 cmux 里的 pi 发消息没反应** | 目标忙时消息会进 `Steering:` 队列（等当前 turn 结束才消费），不是失败；验证请看 pi 的 session JSONL。同上 §5。 |
-| **`cmux send-key` 超时 / 无效** | 锁屏场景下 `send-key` 不可靠（键名支持不全 + 间歇超时）；**一律改用 `cmux send`**（Enter 用 `'\r'`）。同上 §3。 |
-| **往 kimi 面板投递多行消息后指令被重复执行** | `cmux paste-buffer` 会把消息最后 1–2 行**留在输入框**，回合结束时会**再投一次**。投递后必做：`send-key <ws> Up`（取回残留）→ `send-key <ws> backspace` ×N → `read-screen` 确认输入框为空。同上 §11.5。 |
-| **以为 cmux 里的 agent「没在动」** | cmux 面板标题取自**会话最初标题**、不随当前动作变化；判断活跃度要看 session 落盘文件（kimi：`state.json` + `agents/main/wire.jsonl` 的 mtime）。同上 §12.3 / §12.7-1。 |
-| **`cmux send-key` 用 `C-u` 报 `Unknown key`** | 组合键要写成 `control-u` / `ctrl-u`（不接受 `C-`/`M-` 缩写）；键名清单与副作用（`shift-tab` 疑似 kimi Plan mode 开关）见同上 §11.3 / §11.4。 |
-| **想一次看所有 cmux 窗口的状态** | 读 `~/Library/Application Support/cmux/session-com.cmuxterm.app.json`（含每个面板的最新通知，agent 完成通知也在里面），比逐个 `read-screen` 快且不受锁屏影响。同上 §11.6。 |
-| **面板从不出 agent 通知**（`Cursor is waiting for you` 等） | 通知由 cmux 的 agent hook 产生（`~/.orca/agent-hooks/<agent>-hook.sh` → POST `127.0.0.1:$ORCA_AGENT_HOOK_PORT`）：**只有从 cmux 面板内启动的 agent 才有 `ORCA_*` 环境变量**，外部（launchd/bridge）启动的不会有通知；另检查 hook 文件可执行、agent 配置里有 hook 条目（`~/.cursor/hooks.json`、`~/.kimi-code/config.toml`）。同上 §14。 |
-| **要驱动 Cursor Agent** | 优先用**非交互通道**：`cursor-agent -p "<prompt>" --output-format json`（`-p` 默认带写/shell 权限，无人值守请配 `--mode plan` 或 `--sandbox enabled`）；会话在 `~/.cursor/chats/<hash>/<chatId>/store.db`（SQLite，判活看 mtime/size）。同上 §13。 |
+| **`cmux ping` 报「访问被拒绝 / Access denied」** | cmux 默认 `socketControlMode=cmuxOnly`，只允许 **cmux 内启动**的进程；改成 **`Automation`**（Settings → Automation）。详见 [`cmux-agent/references/cli-basics.md`](cmux-agent/references/cli-basics.md) §1.1。 |
+| **往 cmux 里的 pi 发消息没反应** | 目标忙时消息会进 `Steering:` 队列（等当前 turn 结束才消费），不是失败；验证请看 pi 的 session JSONL。见 [`cmux-agent/references/pi.md`](cmux-agent/references/pi.md) §3.1。 |
+| **`cmux send-key` 超时 / 无效** | 锁屏场景下 `send-key` 不可靠（键名支持不全 + 间歇超时）；**一律改用 `cmux send`**（Enter 用 `'\r'`）。见 [`cmux-agent/references/cli-basics.md`](cmux-agent/references/cli-basics.md) §3.4。 |
+| **往 kimi 面板投递多行消息后指令被重复执行** | `cmux paste-buffer` 会把消息最后 1–2 行**留在输入框**，回合结束时会**再投一次**。投递后必做：`send-key <ws> Up`（取回残留）→ `send-key <ws> backspace` ×N → `read-screen` 确认输入框为空。见 [`cmux-agent/references/kimi.md`](cmux-agent/references/kimi.md) §1.4。 |
+| **以为 cmux 里的 agent「没在动」** | cmux 面板标题取自**会话最初标题**、不随当前动作变化；判断活跃度要看 session 落盘文件（kimi：`state.json` + `agents/main/wire.jsonl` 的 mtime）。见 [`cmux-agent/references/kimi.md`](cmux-agent/references/kimi.md) §1.3 与 [`cmux-agent/references/pi.md`](cmux-agent/references/pi.md) §2.2 / §4.3。 |
+| **`cmux send-key` 用 `C-u` 报 `Unknown key`** | 组合键要写成 `control-u` / `ctrl-u`（不接受 `C-`/`M-` 缩写）；键名清单与副作用（`shift-tab` 疑似 kimi Plan mode 开关）见 [`cmux-agent/references/cli-basics.md`](cmux-agent/references/cli-basics.md) §3.3 / §3.4。 |
+| **想一次看所有 cmux 窗口的状态** | 读 `~/Library/Application Support/cmux/session-com.cmuxterm.app.json`（含每个面板的最新通知，agent 完成通知也在里面），比逐个 `read-screen` 快且不受锁屏影响。见 [`cmux-agent/references/cli-basics.md`](cmux-agent/references/cli-basics.md) §3.7。 |
+| **面板从不出 agent 通知**（`Cursor is waiting for you` 等） | 通知由 cmux 的 agent hook 产生（`~/.orca/agent-hooks/<agent>-hook.sh` → POST `127.0.0.1:$ORCA_AGENT_HOOK_PORT`）：**只有从 cmux 面板内启动的 agent 才有 `ORCA_*` 环境变量**，外部（launchd/bridge）启动的不会有通知；另检查 hook 文件可执行、agent 配置里有 hook 条目（`~/.cursor/hooks.json`、`~/.kimi-code/config.toml`）。见 [`cmux-agent/references/notifications.md`](cmux-agent/references/notifications.md) §1。 |
+| **要驱动 Cursor Agent** | 优先用**非交互通道**：`cursor-agent -p "<prompt>" --output-format json`（`-p` 默认带写/shell 权限，无人值守请配 `--mode plan` 或 `--sandbox enabled`）；会话在 `~/.cursor/chats/<hash>/<chatId>/store.db`（SQLite，判活看 mtime/size）。见 [`cmux-agent/references/cursor.md`](cmux-agent/references/cursor.md) §1.3。 |
 
 ## 相关文档
 
 | 文档 | 内容 |
 | --- | --- |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 本仓库架构、数据流、目录结构、命令组织约定 |
-| [`docs/CMUX-AGENT-INTERACTION.md`](docs/CMUX-AGENT-INTERACTION.md) | **从 bridge 远程驱动 cmux / pi / kimi / Cursor 的实测手册**：cmux 权限开启（`socketControlMode`）、锁屏能力矩阵与踩坑、`send` vs `send-key`、pi/omp 差异、消息投递语义（idle 直投 vs busy 排队）、不依赖读屏的 session 验证法；**§11 cmux CLI 通用补充**（workspace/panel 定位、键名清单与副作用、`paste-buffer` 残留排队行的清理）；**§12 kimi（Kimi Code）**；**§13 Cursor（cursor-agent）**（多版本 CLI、SQLite 会话库、`-p` 非交互通道）；**§14 agent 通知机制**（`~/.orca/agent-hooks` ⇄ cmux 通知） |
+| [`cmux-agent/SKILL.md`](cmux-agent/SKILL.md) | **从 bridge（或任意外部进程）远程驱动 cmux / pi / kimi / Cursor 的技能包**：三条铁律（只用 `send`、Enter 用 `'\r'`、读落盘状态而非读屏）、定位 → 投递 → 验证的核心循环，以及各 agent 的判活数据源（pi/omp JSONL、kimi `state.json` + `wire.jsonl`、Cursor `store.db`）；`references/cli-basics.md` 覆盖权限前置（§1）、命令面（§2）与通用细节（§3：surface 定位、`read-screen`、键名与 `send-key` 回归、按键副作用、`paste-buffer` 残留行、一次读全状态）；`references/pi.md` 锁屏矩阵（§1）、pi ≠ omp（§2）、投递语义（§3）与标准手册（§4）；`references/kimi.md`、`references/cursor.md` 各自的实测（§1，含 Cursor 的 `-p` 非交互通道）；`references/notifications.md` agent 通知机制（§1） |
 
 ## 当前限制
 

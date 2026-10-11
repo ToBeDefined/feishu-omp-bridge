@@ -73,7 +73,7 @@ describe('command dispatch', () => {
       const ctx = makeCtx({
         msg: { ...makeCtx().msg, content: alias },
         channel: { send: async (id: string, msg: { markdown: string }) => void sent.push(msg.markdown) } as never,
-        sessions: { chats: () => [], activeWorkSession: () => undefined, allWorkSessions: () => [] } as never,
+        sessions: { chats: () => [] } as never,
         workspaces: { cwdFor: () => '/tmp', listNamed: () => ({}) } as never,
       });
       // Both spellings must be recognized (never "unknown command"), i.e. they

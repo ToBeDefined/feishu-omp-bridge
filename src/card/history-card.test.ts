@@ -171,18 +171,11 @@ describe('historyCard', () => {
     expect(secondCols.length).toBe(2);
   });
 
-  it('carries only 继续对话 — no segment count, merge or split surfaces', () => {
+  it('carries exactly one 继续对话 button per row', () => {
     const card = JSON.stringify(
       historyCard([row(), row({ sessionId: 's2' })], { mode: 'cwd', offset: 0, total: 2 }),
     );
-    // One session = one conversation: the segment/merge vocabulary is gone.
-    expect(card).not.toContain('工作会话');
-    expect(card).not.toContain('段');
-    expect(card).not.toContain('合并');
-    expect(card).not.toContain('拆分');
-    expect(card).not.toContain('work.merge');
-    expect(card).not.toContain('work.split');
     const buttons = allButtons(JSON.parse(card) as object);
-    expect(buttons.every((b) => b.label === '继续对话')).toBe(true);
+    expect(buttons.map((b) => b.label)).toEqual(['继续对话', '继续对话']);
   });
 });

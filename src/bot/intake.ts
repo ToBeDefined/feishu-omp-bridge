@@ -23,8 +23,7 @@ import { addReaction } from './reaction';
  * different cwd / re-pointed session). Only these discard queued messages —
  * messages queued behind a run belong to the old context. Every other
  * command must not silently drop messages the user sent while a run was
- * processing. `/work` also resets (see `resetsContext`) but only when it
- * starts a new work session, so it lives outside this set.
+ * processing.
  */
 export const RESET_CONTEXT_COMMANDS: Record<string, true> = {
   '/new': true,

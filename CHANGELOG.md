@@ -46,15 +46,6 @@
 - **`/exec` 直接执行命令**（别名 `/run`）：admin 在飞书里直接跑 shell 命令
   （`bash -c`，支持管道/重定向），当前 cwd 执行、30s 超时、输出截断
   1000 字符、禁交互、写审计日志。
-- **`/work [名字]` 命令**：开启一件新工作（**工作会话**），这是唯一的工作会话
-  边界；名字可空，为空时列表里回退显示该工作会话最后一条用户消息。
-- **`/history seg <workSessionId>`**：展开一个工作会话的各段，每段带「恢复这一段」
-  按钮，可单独恢复到某一段。
-- **`/work merge <keepId> [foldId]`、`/work split <wsId> <段序号>`**：手工修正
-  历史分段（按钮 `work.merge` / `work.split` 同步挂到 `/history` 行上）。
-- **`bridge migrate work-sessions`（CLI）**：按日志里的 `/new`/`/cd`/`/ws`
-  边界与各 OMP 会话文件回填工作会话；默认 **dry-run** 只打印计划，`--apply`
-  才先写 `sessions.json.v1.bak` 再落盘（幂等）。
 
 ### Fixed
 - **「标题」只认 `/rename` 起的名字**：`/ctx`、`/status` 与 `/rename` 的无参查询
@@ -80,30 +71,26 @@
   兜底机会也一起删了），成功收尾才撤。
 
 ### Added
-- **`/history 继续对话` 恢复无归属历史时不再挂进当前工作会话**：回填不出归属的
-  历史会话（`workSessionId` = 它自己的 id）此前走 `bindSegment`——那是**运行期**
-  「同一摊活换了 OMP 会话」的路径，会把这段历史追加进 chat 的**当前活跃工作会话**；
-  结果恢复后的 `/ctx` / 恢复卡片顶着当前那摊活的标题、`/history` 的行与恢复后的
-  身份（工作会话 id / 段数 / 标题）对不上（用户报「history 之后继续对话，标题还是
-  错的」）。现在这类会话由 `WorkSessionStore.claimWorkSession` 认领为**它自己的
-  工作会话**：id = 首段 id、单段、无标题，开始/最后活跃时间取会话文件本身；被别的
-  工作会话占用时（含只作为某段存在）改走 adopt，不会出现两份指向同一 JSONL 的
-  工作会话。`/resume <id>` 与 `/history seg` 之外的同一条 `applyResume` 路径一并生效。
-- **标题不再跟着 chat 跑（属工作会话）**：`/rename` 命名的对象从「某个 OMP
-  会话 / chat 条目」改为当前**工作会话**——OMP 换段（`/new`、`/cd`、漂移）后
-  名字仍在，`/ctx`、`/status`、`/history`、`/resume`、`/search` 都以工作会话
-  口径显示，不再张冠李戴。
-- **幽灵工作会话（段文件全被删）恢复被拒**：工作会话的段都指向已删除的 OMP
-  会话文件时，`/resume` / `/history 继续对话` 明确报错而不是恢复出一个空壳。
-- **`/rename` 的标题跟着 chat 跑，`/ctx` 与 `/history` 张冠李戴**：标题原先存在
+- **`/history 继续对话` 恢复无归属历史时不再顶着当前会话的身份**：恢复一条
+  「没有归属」的历史会话时，旧路径会把它并进 chat 的**当前会话**，于是恢复后的
+  `/ctx`、恢复卡片顶着当前那条会话的标题，`/history` 的行与恢复后的身份对不上
+  （用户报「history 之后继续对话，标题还是错的」）。现在这条会话直接成为当前
+  会话：`/resume <id>` 与「继续对话」走同一条 `applyResume`，标题/开始时间取
+  会话文件本身，不借用别人的。
+- **标题按 session id 归属**：`/rename` 命名的对象从「chat 条目」改为**那个 OMP
+  会话**（`sessions.json.titles[sessionId]`）——`/new`、`/cd`、OMP 漂移、`/resume`
+  换走再换回来，名字都还在。`/ctx`、`/status`、`/history`、`/resume`、`/search`
+  一律按这条口径显示，不再张冠李戴。
+- **会话文件被删后的恢复被拒**：`sessionId` 指向的 OMP JSONL 已不存在时，
+  `/resume` / `/history 继续对话` 明确报错，而不是恢复出一个空壳。
+- **`/rename` 的标题原先跟着 chat 跑，`/ctx` 与 `/history` 张冠李戴**：标题以前存在
   sessions.json 的 chat 条目上（`SessionEntry.title`），谁被绑定就显示谁 ——
   在 A 会话起的名字，`/resume` / `/history 继续对话` 到 B 会话后会在 B 的
   `/ctx` 与 `/history` 行上显示；`set()` 还会把上一个绑定的 `createdAt` 一起
-  带过来，恢复旧会话后「开始对话」显示的是上一次绑定的时间。修复先改为按
-  session id 归属，随后的工作会话重构把归属口径统一为**工作会话**（见上方
-  「标题不再跟着 chat 跑」）；`/resume` 与「继续对话」写入被恢复会话自己的
-  开始 / 最后活跃时间，`/rename` 在没有会话时明确报错；旧文件的 chat 级标题
-  在加载时迁移到其绑定的工作会话。
+  带过来，恢复旧会话后「开始对话」显示的是上一次绑定的时间。现在按 session id
+  归属（见上）；`/resume` 与「继续对话」写入被恢复会话自己的开始 / 最后活跃
+  时间，`/rename` 在没有会话时明确报错；旧文件里的 chat 级（v1）/ 工作会话级
+  （v2）标题在加载时迁移到它当时绑定的那个**会话 id**。
 - **卡片流式更新触发飞书频率限制（230020）**：卡片更新原先不限速，快速
   流式输出时对同一条消息的 patch 频率超限（"Update the single messages
   too frequently"），整轮回复被「⚠️ 卡片渲染中断」兜底卡取代。现在同卡
@@ -369,10 +356,9 @@
   `/ctx`、`/status`、`/diff`）用只读的 `conversationCwd()`，同样会话优先；
   `/status` 的「换会话」提示改为真实信号「当前会话的目录已不存在」；
   `/compact`、`/exec`、`/diff`、文档评论（评论合成 scope）一并切到同一口径。
-- **会话模型回正：一个 OMP 会话 = 一个对话**。`sessions.json` 仍是 v2
-  （`{ v, scopes, workSessions }`，工作会话 id = 首段 OMP 会话 id），但每次换
-  OMP 会话都开**新对话**，不再往同一「工作会话」里追加段——于是既不需要
-  `/work`、也不需要手工合并/拆分，`/history` 一行就是一个对话。
+- **会话模型回正：一个 OMP 会话 = 一个对话**：每次换 OMP 会话都开**新对话**，
+  不再往同一「工作会话」里追加段——于是既不需要 `/work`、也不需要手工合并/拆分，
+  `/history` 一行就是一个对话（`sessions.json` v3 只记每个 scope 的当前会话，见上）。
 - **`/new`（`/reset`）、`/cd`、`/ws use`（含 `/ws undo`）开新对话**：下一条消息
   新建 OMP 会话，旧对话连同它的名字原样留在 `/history` 里；`/release` 重启与
   `/compact` 仍接在同一段里跑。
@@ -427,6 +413,10 @@
 - **工作会话/段这一层**：`/work`（含 `merge` / `split` 子命令）、`/history seg`、
   `/history` 行上的「合并 / 拆分」按钮、`bridge migrate work-sessions` 回填命令，
   以及 `src/session/backfill.ts`、`src/card/history-seg-card.ts`。
+  `/new`、`/cd`、`/ws use` 现在只把当前会话指针清成「下一条消息开新对话」，
+  旧对话留在 `/history` 里由 `/resume` 找回。命令注册表、卡片按钮映射、`/work`
+  相关的注释与测试，以及 README / ARCHITECTURE 里「工作会话 = 段的容器」口径的
+  全部残留一并清掉。
 - 死代码：`src/bot/scope.ts`、`isManaged`、`ChatModeCache.invalidate`、
   未使用的 `senderId` 参数。
 

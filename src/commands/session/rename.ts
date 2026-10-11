@@ -16,7 +16,7 @@ export const renameHandlers: Record<string, Handler> = {
 const MAX_TITLE_LENGTH = 60;
 const AUTO_TITLE_MAX = 30;
 /** 没有当前会话时的统一提示：读、清、写都走它，不做任何写入。 */
-const NO_WORK_SESSION = '❌ 当前还没有会话，先发一条消息开始一段对话。';
+const NO_SESSION = '❌ 当前还没有会话，先发一条消息开始一段对话。';
 /** Internal marker told to the model not to emit; no longer used for
  * history stripping since generation runs in an isolated session dir. */
 const RENAME_AUTO_MARKER = '<rename-auto-title>';
@@ -28,7 +28,7 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
   // 读/清/写/auto 一律给同一条提示，且不动盘。
   const target = ctx.sessions.sessionFor(ctx.scope)?.sessionId;
   if (target === undefined) {
-    await reply(ctx, NO_WORK_SESSION);
+    await reply(ctx, NO_SESSION);
     return;
   }
 
@@ -72,7 +72,7 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
   }
 
   ctx.sessions.setTitle(ctx.scope, title);
-  await reply(ctx, `✅ 已设置当前工作会话标题：\`${codeSpan(title)}\``);
+  await reply(ctx, `✅ 已设置当前会话标题：\`${codeSpan(title)}\``);
 }
 
 /** Ask the agent to title the session from the user's recent messages. A

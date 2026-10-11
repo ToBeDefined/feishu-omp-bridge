@@ -148,8 +148,8 @@ export function searchResultsCard(
     // Identity line is heading-sized; everything else drops to a small grey
     // meta line. Blending a 36-char id and the workspace path into the heading
     // produced several lines of oversized text per result on a phone.
-    // Identity = the work session's name, else its topic fallback (last user
-    // message of its current/latest segment); never an invented title.
+    // Identity = the session's name, else its topic fallback (last user
+    // message); never an invented title.
     const identity = c.title
       ? `🏷 ${escapeMd(c.title)}`
       : c.topic
@@ -245,7 +245,7 @@ export function searchDetailCard(
   ];
   const metaLine = [
     workspace ? `📁 ${escapeMd(workspace)}` : '',
-    // Full id here: this is the one place the work session can be identified
+    // Full id here: this is the one place the session can be identified
     // exactly (the list only carries an 8-char handle).
     sessionId ? `🆔 ${escapeMd(sessionId)}` : '',
   ]

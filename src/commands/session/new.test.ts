@@ -50,7 +50,7 @@ function makeCtx(over: { wasRunning?: boolean } = {}): {
     workspaces: { cwdFor: () => root, clearUndo } as never,
     agent: {} as never,
     activeRuns: { interrupt } as never,
-    // 空的 OMP 会话目录：无名工作会话的“最后一条用户消息”回退拿不到 → 不显示。
+    // 空的 OMP 会话目录：无名字时「最后一条用户消息」回退拿不到 → 不显示。
     controls: { cfg: { preferences: { ompSessionDir: join(root, 'omp') } } } as never,
   } as CommandContext;
   return { ctx, interrupt, clearUndo, sent };
@@ -130,10 +130,9 @@ describe('/new — 卡片文案', () => {
     expect(json).toContain('上下文已重置');
     // 新对话刚开、还没名字：不再顶着旧对话的名字。
     expect(json).not.toContain('KMP 导出');
-    expect(json).not.toContain('仍在同一工作会话');
   });
 
-  it('renders no name placeholder when the work session is unnamed', async () => {
+  it('renders no name placeholder when the conversation is unnamed', async () => {
     store.bind('oc_1', 'sess-a', root);
     const { ctx, sent } = makeCtx();
 

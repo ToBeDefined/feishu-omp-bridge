@@ -23,14 +23,13 @@ describe('agentSelectedCard', () => {
 });
 
 describe('resolveCardCommand', () => {
-  it('maps the /history merge & split buttons to their text subcommands', () => {
-    const merge = resolveCardCommand('work.merge', { arg: 'keep-id fold-id' });
-    expect(merge).toEqual({ name: 'work', args: 'merge keep-id fold-id' });
-    expect(`/${merge.name} ${merge.args}`).toBe('/work merge keep-id fold-id');
+  it('splits a dotted cmd into name + subcommand args', () => {
+    const page = resolveCardCommand('history.page', { arg: 'all 8' });
+    expect(page).toEqual({ name: 'history', args: 'page all 8' });
+    expect(`/${page.name} ${page.args}`).toBe('/history page all 8');
 
-    const split = resolveCardCommand('work.split', { arg: 'ws-id 2' });
-    expect(split).toEqual({ name: 'work', args: 'split ws-id 2' });
-    expect(`/${split.name} ${split.args}`).toBe('/work split ws-id 2');
+    // No arg → the subcommand alone, never a trailing space.
+    expect(resolveCardCommand('search.page', {})).toEqual({ name: 'search', args: 'page' });
   });
 
   it('leaves the existing history buttons mapping unchanged', () => {

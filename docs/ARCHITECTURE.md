@@ -62,39 +62,30 @@ OMP agent 调 feishu_* host tool
 
 ## 持久化与会话
 
-单文件单真相：`~/.feishu-omp-bridge/sessions.json` 是会话状态的唯一持久层，原子写（临时文件 + `rename`）。**持久化单位是「工作会话」，不是 chat，也不是 OMP 会话。**
+单文件单真相：`~/.feishu-omp-bridge/sessions.json` 是会话状态的唯一持久层，原子写（临时文件 + `rename`）。**持久化单位是 OMP 会话本身 —— 一个 OMP 会话 = 一个对话**，不是 chat，也不是「一次工作」。
 
-`sessions.json` v2 形状：
+`sessions.json` v3 形状：
 
 ```jsonc
 {
-  "v": 2,
-  "scopes": {                     // 每个 chat / chat:thread 一条
-    "oc_x": { "activeWorkSession": "<workSessionId>", "idleTimeoutMinutes": 30 }
-  },
-  "workSessions": {               // 工作会话：一次「活」
-    "<workSessionId>": {
-      "id": "<workSessionId>",    // = segments[0].sessionId
-      "scope": "oc_x",
-      "title": "bridge UI 调整",
-      "cwd": "/repo",
-      "createdAtMs": 0, "lastActiveAtMs": 0,
-      "currentSegmentId": "<OMP session id>",
-      "segments": [
-        { "sessionId": "<OMP session id>", "cwd": "/repo", "startedAtMs": 0, "lastActiveAtMs": 0 }
-      ]
+  "v": 3,
+  "scopes": {                     // 每个 chat / chat:thread / 话题 / 文档评论一条
+    "oc_x": {
+      "sessionId": "<OMP session id>",  // 缺失 = 下一条消息开新对话
+      "cwd": "/repo",                   // 与 sessionId 同进同出（/timeout 覆盖另存）
+      "createdAt": 0, "updatedAt": 0,
+      "idleTimeoutMinutes": 30          // /timeout 覆盖；0 = 关闭，缺失 = 跟随全局
     }
-  }
+  },
+  "titles": { "<OMP session id>": "bridge UI 调整" }   // /rename 命名会话
 }
 ```
 
-**段（segment）与工作会话**：段 = 一次 OMP 会话（`sessionId` + `cwd` + 起止时间）。运行期在 OMP 报告 `system.sessionId` 时 `bindSegment`：同 id 更新、新 id 追加。`/work` 是**唯一**的工作会话边界；`/new`、`/cd`、`/ws use`、`/resume`、OMP 漂移、`/release` 重启都不开新工作会话 —— `/new` 只 `dropCurrentSegment`（清掉「当前段」指针，段本身留在 `segments` 里），漂移带来新 `sessionId` 再绑定即多一段。
+**scope → 当前会话**：`sessionFor(scope)` 给出这条会话的 `sessionId` + `cwd`；`startNew(scope)`（`/new`、`/cd`、`/ws use`）清掉指针，OMP 报告 `system.sessionId` 时 `bind(scope, sessionId, cwd)` 写回。旧对话不删——它本来就是 `omp-sessions/*.jsonl` 里的一个文件，只由 `/history` 扫描列出。
 
-**id 不变量**：`workSession.id = segments[0].sessionId`（第一段的 OMP 会话 id；ULID → 天然按时间有序）。身份不随漂移变化：`/ctx` / `/status` 的「工作会话」恒为该 id，OMP 会话 id 只出现在「当前段」。显示名 `title ?? 最后一条用户消息`（`/rename` 命名工作会话）。
+**名字跟着会话 id**：`/rename` 写 `titles[sessionId]`，因此 `/history`、`/search`、`/resume`、`/context` 换走再换回来都还是同一个名字；无名时回退该会话最后一条用户消息。
 
-**v1 → v2 迁移**：加载遇旧格式（每 chat 一条 `{sessionId, cwd, createdAt, updatedAt, title?, idleTimeoutMinutes?}`）时，迁成「1 工作会话 + 1 段」，旧平铺 `titles` 回填到工作会话，随后写回 v2。
-
-**历史回填**：`bridge migrate work-sessions`（默认 dry-run，`--apply` 落盘并先写 `sessions.json.v1.bak`）读日志 + `omp-sessions/*.jsonl`，按日志里同 scope 的 `/new`/`/cd`/`/ws` 边界与每段的**首次**绑定归属，把老会话归位；日志覆盖不到的会话各自成一条 `scope: null` 的工作会话。回填后可用 `/work merge|split` 手工修正。
+**v1 / v2 → v3 迁移**：加载遇旧格式就地迁移，迁前留一份 `sessions.json.v<N>.bak`（已存在不覆盖）。v1（每 chat 一条平铺 `{sessionId, cwd, …}`）直接成为一条 scope 记录；v2（`scopes[scope].activeWorkSession` + `workSessions[].segments`）收敛为「当前段 = 当前会话」，其余段本来就以会话文件出现在 `/history` 里，平铺名字回填进 `titles`。
 
 ## 目录结构 (src/)
 
@@ -107,7 +98,7 @@ OMP agent 调 feishu_* host tool
 | `scheduler/` | 定时任务调度器（纯逻辑 + 持久化，`/every` 使用） |
 | `agent/` | OMP RPC 适配器（`AgentAdapter` 接口 + OMP 实现） |
 | `config/` | 配置 schema / 存储 / 密钥解析 |
-| `session/` | 工作会话存储（`WorkSessionStore` + 纯模型 + 历史回填） |
+| `session/` | 会话存储（`SessionStore` v3 + v1/v2 迁移）、`current-cwd` 目录解析、模型历史 |
 | `workspace/` | 工作区（cwd / 命名空间 / undo） |
 | `media/` | 附件下载缓存 |
 | `runtime/` | 进程注册表（/ps /exit 依据） |
@@ -126,18 +117,19 @@ src/commands/
   index.ts            注册表 + dispatch + Controls/CommandContext 类型
   shared.ts           跨命令公共工具(reply/recall/formatAgo/FORM_SETTLE_MS/expandTilde)
   session/            会话/工作区类命令
-    new.ts            /new /reset（只重置上下文，同一工作会话）
-    work.ts           /work [名字] + merge/split（工作会话边界）
-    cd.ts             /cd
+    new.ts            /new /reset（清当前会话，下条消息重开）+ /new chat
+    cd.ts             /cd（换目录 = 换会话）
     ws.ts             /ws (list/save/use/remove/undo/cancel)
     status.ts         /status
     timeout.ts        /timeout
-    context.ts        /context + renderContext + 会话扫描
-    display.ts        工作会话显示名 / 取样段
-    resume.ts         /resume /session
-    history.ts        /history /sessions（含 seg 段列表）
-    sessions.ts       工作会话清单聚合(listWorkSessions)/扫描
+    context.ts        /context /ctx + renderContext
+    rename.ts         /rename [+ auto|clear]（名字按 session id 存）
+    resume.ts         /resume /session（applyResume 由 /history 按钮复用）
+    history.ts        /history /sessions（会话清单卡片 + 「继续对话」）
+    sessions.ts       扫描 omp-sessions/*.jsonl（清单聚合）
     search.ts         /search + 搜索逻辑(渲染在 card/search-card.ts)
+    diff.ts           /diff
+    group.ts          新建群并绑定新会话
     index.ts          sessionHandlers 汇总
   model/
     model.ts          /model

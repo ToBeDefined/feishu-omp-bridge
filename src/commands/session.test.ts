@@ -6,7 +6,7 @@ const ULID = '019f0000-0000-7000-0000-000000000000';
 
 /**
  * 一个 scope 的 store 条目 stub（一个 OMP 会话 = 一个对话：只有会话 id + cwd +
- * 时间，没有「工作会话 / 段」这一层）。
+ * 时间）。
  */
 interface EntryStub {
   sessionId?: string;
@@ -141,7 +141,7 @@ describe('renderContext', () => {
       }),
     );
     expect(fresh).toContain('0 秒前');
-    // No session → new work session
+    // No session → the next message starts a fresh conversation here
     const none = renderContext(
       makeCtx({
         sessions: stubStore(undefined),
@@ -207,16 +207,11 @@ describe('renderContext', () => {
     expect(out).toContain('**开始**: （无，新会话）');
   });
 
-  it('以单个会话为单位渲染，不再有工作会话/段', () => {
+  it('身份 = 会话 id；无名会话不渲染标题行', () => {
     const out = renderContext(makeCtx());
-    // 身份 = 会话 id（🧠 会话 行），名字落在当前对话上。
     expect(out).toContain('🧠 **会话**');
-    // 无名会话没有标题行 —— 别拿最后一条用户消息冒充。
+    // 别拿最后一条用户消息冒充标题。
     expect(out).not.toContain('标题');
-    expect(out).not.toContain('工作会话');
-    expect(out).not.toContain('当前段');
-    expect(out).not.toContain('段');
-    expect(out).not.toContain('个目录');
   });
 });
 

@@ -59,9 +59,8 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
   // 默认视图 = 当前会话所在目录（会话优先；没有会话时才是聊天窗口的 cwd）。
   const cwd = conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope);
   const all = await scanSessionFiles(ctx);
-  // One row per work session; cwd mode filters on the work session's own cwd
-  // (its LATEST segment), so a work session that crossed directories is not
-  // dropped just because an older segment lived elsewhere.
+  // One row per OMP session (= one conversation); cwd mode filters on the
+  // session's own cwd.
   const scoped = mode === 'all' ? all : all.filter((s) => s.cwd === cwd);
   if (scoped.length === 0) {
     await reply(

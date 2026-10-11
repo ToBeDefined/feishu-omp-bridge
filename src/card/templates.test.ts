@@ -289,10 +289,6 @@ describe('statusCard', () => {
     );
     expect(out).toContain('会话');
     expect(out).toContain('`ws-first`');
-    // 单一会话：不再渲染段数 / 「当前段」这一层。
-    expect(out).not.toContain('工作会话');
-    expect(out).not.toContain('段');
-    expect(out).not.toContain('🧵');
   });
 
   it('is informational — no action buttons', () => {
@@ -580,21 +576,6 @@ describe('newSessionCard', () => {
     );
     expect(out).not.toContain('已中断');
     expect(out).toContain('已重置上下文');
-  });
-
-  it('renders a plain reset with no work-session / segment line', () => {
-    const out = JSON.stringify(
-      newSessionCard({
-        cwd: '/repo',
-        idleLine: '全局 30 分钟',
-        wasRunning: false,
-      }),
-    );
-    // One session = one conversation: /new starts a fresh conversation, so
-    // there is nothing to say about a prior one.
-    expect(out).not.toContain('🧵');
-    expect(out).not.toContain('工作会话');
-    expect(out).not.toContain('未命名');
   });
 
   it('carries the topic scope note when provided', () => {

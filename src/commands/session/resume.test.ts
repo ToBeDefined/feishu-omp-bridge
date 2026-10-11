@@ -159,7 +159,7 @@ describe('applyResume binding a conversation', () => {
     await writeSession('legacy', a);
     const store = await openStore();
     // The chat is in the middle of another conversation, with a name.
-    store.bind('oc_1', 'current-work', a);
+    store.bind('oc_1', 'sess-other', a);
     store.setTitle('oc_1', '更新 UI 效果以及扩展功能');
     const { ctx } = makeCtx(store, { scope: 'oc_1' });
 
@@ -174,7 +174,7 @@ describe('applyResume binding a conversation', () => {
     expect(store.sessionFor('oc_1')?.sessionId).toBe('legacy');
     expect(store.titleFor('legacy')).toBeUndefined();
     // The other conversation keeps its own name.
-    expect(store.titleFor('current-work')).toBe('更新 UI 效果以及扩展功能');
+    expect(store.titleFor('sess-other')).toBe('更新 UI 效果以及扩展功能');
     const text = renderContext(ctx, {});
     expect(text).toContain('`legacy`');
     expect(text).not.toContain('更新 UI 效果以及扩展功能');

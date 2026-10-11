@@ -36,7 +36,7 @@ function agentYielding(...texts: string[]) {
 }
 
 /** An agent whose generation runs `during()` first — a hook to simulate the user
- * issuing /work or /resume while the (async) title generation is in flight. */
+ * issuing /new or /resume while the (async) title generation is in flight. */
 function agentYieldingWith(text: string, during: () => void) {
   async function* events() {
     during();

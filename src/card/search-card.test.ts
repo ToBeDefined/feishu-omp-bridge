@@ -347,6 +347,29 @@ describe('searchResultsCard', () => {
     expect(page2).toContain('**#8**');
   });
 
+  it('lays the pager out side by side, giving the longer label more room', () => {
+    // 14 条、第 2 页：既有上一页也有下一页，才会出现三键并排。
+    const contexts = Array.from({ length: 14 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
+    const card = searchResultsCard('kw', contexts, 'q9', true, 6) as {
+      body: { elements: Array<Record<string, unknown>> };
+    };
+    // 最后一个是分页行：三键横排（不是「每键占满一行」的 actions）。
+    const pager = card.body.elements.at(-1) as {
+      tag: string;
+      flex_mode: string;
+      columns: Array<{ weight: number; elements: Array<{ text: { content: string } }> }>;
+    };
+    expect(pager.tag).toBe('column_set');
+    expect(pager.flex_mode).toBe('none');
+    expect(pager.columns.map((c) => c.elements[0]!.text.content)).toEqual([
+      '↑ 上一页',
+      '↓ 下一页（剩 2）',
+      '完成',
+    ]);
+    // 长标签多分宽度，短标签保持 1：等宽三等分会让「下一页（剩 N）」在手机上折行。
+    expect(pager.columns.map((c) => c.weight)).toEqual([1, 1.6, 1]);
+  });
+
   it('pages its row numbering off the page offset', () => {
     const many = Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
     // The 详情 payload must carry the GLOBAL row number, not the page-local one.
@@ -426,6 +449,23 @@ describe('searchDetailCard', () => {
     expect(active).toContain('完成');
     expect(active).toContain('q1 3');
     expect(active).not.toContain('✅');
+  });
+
+  it('lays the detail footer out side by side too', () => {
+    const active = searchDetailCard({
+      sessionId: 'sess-9',
+      groups: [{ messages: [{ role: 'user', content: '内容' }], hitIndex: 0, matchCount: 1 }],
+      queryRef: 'q1 3',
+    }) as { body: { elements: Array<Record<string, unknown>> } };
+    const footer = active.body.elements.at(-1) as {
+      flex_mode: string;
+      columns: Array<{ weight: number; elements: Array<{ text: { content: string } }> }>;
+    };
+    expect(footer.flex_mode).toBe('none');
+    expect(footer.columns.map((c) => [c.elements[0]!.text.content, c.weight])).toEqual([
+      ['继续对话', 1],
+      ['完成', 1],
+    ]);
   });
 
   it('highlights and centres on the keyword in the detail body', () => {

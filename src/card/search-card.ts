@@ -1,7 +1,6 @@
 import { codeSpan, escapeMd, summarizeMd } from '../utils/text';
 import { formatAgoOr } from '../utils/time';
 import {
-  actions,
   inlineActions,
   md,
   panel,
@@ -20,7 +19,9 @@ import {
  * - **A row is a vertical stack**: identity, meta, one grey block per matched
  *   pair, then its two actions side by side at the bottom. A right-hand button
  *   column made the buttons float next to the first line; at the bottom they
- *   belong to the whole row and are a bigger tap target.
+ *   belong to the whole row and are a bigger tap target. The pager and the
+ *   detail card's footer use the same side-by-side row, so every action pair in
+ *   these cards is horizontal — no stacked full-width button.
  * - **Matched content sits in a grey block** (`panel`/`stackedPanels`, the same
  *   rounded block /context and the run card use): it is the payload of the row,
  *   and the block's edges delimit rows better than a divider line between two
@@ -358,7 +359,14 @@ export function searchResultsCard(
     pageButtons.push({ text: '完成', value: { cmd: 'search.done', arg: queryId } });
     // Divider before the pager: it follows the last row's own button pair, and
     // two adjacent button rows read as if the pager belonged to that row.
-    elements.push({ tag: 'hr' }, ...actions(pageButtons));
+    // Side by side like the row buttons; the long 下一页 label gets extra room
+    // so equal thirds do not make it wrap on a phone.
+    elements.push(
+      { tag: 'hr' },
+      ...inlineActions(
+        pageButtons.map((b) => (b.text.includes('下一页') ? { ...b, weight: 1.6 } : b)),
+      ),
+    );
   }
   return {
     schema: '2.0',
@@ -432,7 +440,7 @@ export function searchDetailCard(info: SearchDetailInfo): object {
   if (!info.done) {
     elements.push(
       { tag: 'hr' },
-      ...actions([
+      ...inlineActions([
         { text: '继续对话', value: { cmd: 'search.resume', arg: info.sessionId }, style: 'primary' },
         { text: '完成', value: { cmd: 'search.done', arg: info.queryRef ?? '' } },
       ]),

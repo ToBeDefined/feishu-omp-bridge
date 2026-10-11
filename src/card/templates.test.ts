@@ -252,6 +252,13 @@ describe('shared card kit', () => {
       text: { content: '继续对话' },
     });
     expect(row.columns[1]!.elements[0]).toMatchObject({ text: { content: '详情' } });
+
+    // 长标签可以多分宽度（等宽会让它在手机上折行）。
+    const wide = inlineActions([
+      { text: '↑ 上一页', value: { cmd: 'a' } },
+      { text: '↓ 下一页（剩 2）', value: { cmd: 'b' }, weight: 1.6 },
+    ])[0] as { columns: Array<{ weight: number }> };
+    expect(wide.columns.map((c) => c.weight)).toEqual([1, 1.6]);
   });
 
 });

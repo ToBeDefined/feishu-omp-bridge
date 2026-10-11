@@ -92,7 +92,7 @@ export function shortSessionId(id: string): string {
  * columns under `flex_mode: 'none'` stay side by side at every card width,
  * unlike `auto` columns, which compress on narrow screens.
  */
-export function inlineActions(buttons: ButtonSpec[]): object[] {
+export function inlineActions(buttons: InlineActionSpec[]): object[] {
   return [
     {
       tag: 'column_set',
@@ -101,12 +101,19 @@ export function inlineActions(buttons: ButtonSpec[]): object[] {
       columns: buttons.map((spec) => ({
         tag: 'column',
         width: 'weighted',
-        weight: 1,
+        weight: spec.weight ?? 1,
         vertical_align: 'center',
         elements: [button(spec)],
       })),
     },
   ];
+}
+
+/** A button in an {@link inlineActions} row. */
+export interface InlineActionSpec extends ButtonSpec {
+  /** Relative column width (default 1). A longer label needs a wider column,
+   * otherwise equal thirds make it wrap on a phone. */
+  weight?: number;
 }
 
 /**

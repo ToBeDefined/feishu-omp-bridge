@@ -1,10 +1,12 @@
 # feishu-omp-bridge
 
-把飞书 / Lark 消息接入本地 Oh My Pi CLI 的桥接服务。它会把私聊、群聊、话题群、云文档评论中的消息转给 `omp --mode rpc`，再把 OMP 的文本、thinking、工具调用、工具增量、原生 UI 交互和结果流式回写到飞书。
+[English](README.md) | [中文](README.zh.md)
 
-## 项目定位
+A bridge that plugs Feishu / Lark messages into the local Oh My Pi CLI. It forwards messages from DMs, group chats, topic groups and cloud-doc comments to `omp --mode rpc`, then streams OMP's text, thinking, tool calls, tool deltas, native UI interactions and results back to Feishu.
 
-`feishu-omp-bridge` 不是重新实现一个飞书机器人框架，而是把已有 Feishu/Lark 桥接层和 OMP 的 RPC Agent 能力接起来：
+## Positioning
+
+`feishu-omp-bridge` does not re-implement a Feishu bot framework. It connects an existing Feishu/Lark bridging layer with OMP's RPC agent surface:
 
 ```text
 Feishu / Lark
@@ -18,57 +20,55 @@ src/agent/omp/OmpAdapter
 omp --mode rpc --session-dir ~/.feishu-omp-bridge/omp-sessions
 ```
 
-它适合以下场景：
+It fits these situations:
 
-- 在飞书里直接让本地 OMP 读写项目、运行命令、分析日志、修代码。
-- 让团队用飞书群 / 话题群共享一个可恢复的 OMP 会话。
-- 让 OMP 原生 `confirm` / `select` / `input` / `editor` UI 在飞书交互卡片中完成。
-- 把飞书上下文以 OMP host tools / host URI 的形式暴露给 Agent，而不是让 Agent 绕到 shell 里调用 `lark-cli`。
+- Driving your local OMP from Feishu: read and write project files, run commands, analyze logs, fix code.
+- Letting a team share one resumable OMP session through a Feishu group / topic group.
+- Completing OMP's native `confirm` / `select` / `input` / `editor` UI inside Feishu interactive cards.
+- Exposing Feishu context to the agent as OMP host tools / host URIs, instead of having the agent shell out to `lark-cli`.
 
-## 核心能力
+## Core capabilities
 
-### 消息与会话
+### Messages and sessions
 
-- 支持飞书 / Lark 私聊、普通群聊 `@bot`、话题群 topic、云文档评论 `@bot`。
-- 每个 chat / topic 独立保存**当前会话**，下一轮用 `omp --mode rpc --resume <session_id>` 续聊。
-- 话题群按 `chatId:threadId` 隔离会话、cwd、pending queue 和 active run。
-- 支持图片输入：飞书图片会下载到本地缓存，再转成 OMP RPC image payload。
-- 支持文件下载缓存，供 OMP 后续按本地路径读取。
-- 支持消息 debounce：短时间连续消息会合并成一个 batch prompt。
+- Feishu / Lark DMs, plain group chats with `@bot`, topic groups, and cloud-doc comments with `@bot`.
+- Every chat / topic stores its own **current session**; the next turn continues it with `omp --mode rpc --resume <session_id>`.
+- Topic groups isolate session, cwd, pending queue and active run by `chatId:threadId`.
+- Image input: Feishu images are downloaded into the local cache and turned into an OMP RPC image payload.
+- File downloads are cached so OMP can read them later by local path.
+- Message debounce: messages sent in quick succession are merged into one batch prompt.
 
-### 会话模型
+### Session model
 
-**一个 OMP 会话 = 一个对话。** 桥只在 chat/topic 上记住「当前会话」，下一轮 `--resume` 它；续不上（或者你主动开新的）就开一段新对话，旧对话原样留在 `/history` 里。
+**One OMP session = one conversation.** The bridge only remembers the *current session* per chat/topic and `--resume`s it on the next turn; when that fails (or when you deliberately start a new one) a fresh conversation begins, and the old one stays in `/history` untouched.
 
-- 会换到新 OMP 会话（= 开新对话）的：`/new`（`/reset`）、`/cd`、`/ws use`（含 `/ws undo`），以及运行期漂移（cwd 变了 / 会话文件被删 / 旧会话已无法 `--resume`）。
-- **不会**换会话的：`/release` 重启、`/compact`（都在同一段里接着跑）。
-- **cwd 由会话携带**：续一段对话就在**它自己的**目录里跑（窗口的 cwd 会跟随它）；
-  只有没有当前会话时（`/new`、`/cd`、`/ws use` 之后）才用窗口的 cwd 决定新对话落在哪。
-  `/history` 的默认视图、`/ctx`、`/status`、`/diff`、`/compact`、`/exec` 都按这个口径。
-- 标题属于**那个对话**：`/rename` 命名当前对话；没名字时 `/history`、`/search`、`/resume` 回退显示该对话最后一条用户消息。
-- `/history` 一行 = 一个对话（活动时间 / 轮数 / 标题或最后一条用户消息）；「继续对话」恢复它，`/history all` 看全部工作目录。
-- 升级须知：早期版本把多个 OMP 会话挂在同一「工作会话」下（需要手工合并/拆分），现在加载旧文件时会自动规范化成「一段一对话」，并留一份 `sessions.json.v2.bak`。
+- These switch to a new OMP session (= a new conversation): `/new` (`/reset`), `/cd`, `/ws use` (including `/ws undo`), and runtime drift (cwd changed / session file deleted / the old session can no longer be `--resume`d).
+- These do **not** switch sessions: a `/release` restart and `/compact` (both keep running in the same conversation).
+- **The cwd travels with the session**: resuming a conversation runs it in *its own* directory (the window's cwd follows it); only when there is no current session (after `/new`, `/cd`, `/ws use`) does the window's cwd decide where the new conversation lands. The default view of `/history` and the `/ctx`, `/status`, `/diff`, `/compact`, `/exec` commands all use this rule.
+- A title belongs to **that conversation**: `/rename` names the current one; without a name, `/history`, `/search` and `/resume` fall back to its last user message.
+- One `/history` row = one conversation (activity time / turn count / title or last user message); “Continue chat” restores it, and `/history all` covers every working directory.
+- Upgrade note: early versions hung multiple OMP sessions under one “work session” (requiring manual merge/split). Old files are now normalized on load into “one conversation per session”, with a `sessions.json.v2.bak` kept.
 
-### OMP RPC 流式输出
+### OMP RPC streaming output
 
-- 流式展示 OMP 文本输出。
-- 展示 thinking / reasoning 片段。
-- 展示工具调用开始、增量更新和最终结果。
-- 展示 token usage（当 OMP RPC 返回 usage 时）。
-- 支持中断：`/stop` 会向 OMP 发送 `abort`，随后按 grace period 终止进程。
+- Streams OMP text output.
+- Shows thinking / reasoning fragments.
+- Shows tool-call starts, incremental updates and final results.
+- Shows token usage (when OMP RPC reports usage).
+- Supports interruption: `/stop` sends `abort` to OMP and then terminates the process after a grace period.
 
-### OMP 原生 UI → 飞书交互卡片
+### OMP native UI → Feishu interactive cards
 
-OMP RPC 的 extension UI request 会被映射为飞书卡片，并把用户响应写回同一个 live RPC run：
+OMP RPC extension UI requests are mapped to Feishu cards, and the user's answer is written back to the same live RPC run:
 
-| OMP UI method | 飞书表现 | 写回 OMP |
+| OMP UI method | Feishu rendering | Written back to OMP |
 | --- | --- | --- |
-| `confirm` | 确认 / 否 / 取消按钮 | `extension_ui_response` |
-| `select` | 下拉选择 + 提交 / 取消 | `extension_ui_response` |
-| `input` | 单行输入 + 提交 / 取消 | `extension_ui_response` |
-| `editor` | 多行输入 + 提交 / 取消 | `extension_ui_response` |
+| `confirm` | Confirm / No / Cancel buttons | `extension_ui_response` |
+| `select` | Dropdown + Submit / Cancel | `extension_ui_response` |
+| `input` | Single-line input + Submit / Cancel | `extension_ui_response` |
+| `editor` | Multi-line input + Submit / Cancel | `extension_ui_response` |
 
-非阻塞 UI 事件会渲染进运行卡片或文本输出：
+Non-blocking UI events render into the run card or the text output:
 
 - `notify`
 - `setStatus`
@@ -77,81 +77,85 @@ OMP RPC 的 extension UI request 会被映射为飞书卡片，并把用户响�
 - `set_editor_text`
 - `open_url`
 
-当 OMP 正在等待 UI 响应时，idle watchdog 会暂停；用户提交或取消后再恢复探活，避免误杀等待人工输入的 run。
+While OMP is waiting for a UI response the idle watchdog is paused; it resumes probing after the user submits or cancels, so a run waiting on a human is never killed by mistake.
 
 ### Feishu-native OMP host surface
 
-每个 OMP run 启动时都会注册 Feishu host tools：
+Every OMP run registers Feishu host tools:
 
-| Tool | 用途 |
+| Tool | Purpose |
 | --- | --- |
-| `feishu_current_context` | 返回当前 scope、chat、topic、触发消息、cwd。 |
-| `feishu_send_message` | 向当前 chat 或显式 `chatId` 发送 Markdown。 |
-| `feishu_reply_message` | 回复触发消息或显式 `messageId`。 |
-| `feishu_get_message` | 按 `messageId` 拉取并规范化飞书消息。 |
-| `feishu_send_file` | 上传本地文件 / 图片并发送到当前 chat 或显式 `chatId`。 |
-| `feishu_send_card` | 用标题 + markdown 正文 + 按钮列表发交互卡片，点击经 `__codex_cb` 回填为 `[card-click]`。 |
-| `feishu_recall_message` | 撤回 bot 自己发出的消息。 |
-| `feishu_view_image` | 把本地图片注入当前 run，让模型直接看图。 |
+| `feishu_current_context` | Returns the current scope, chat, topic, triggering message and cwd. |
+| `feishu_send_message` | Sends Markdown to the current chat or an explicit `chatId`. |
+| `feishu_reply_message` | Replies to the triggering message or an explicit `messageId`. |
+| `feishu_get_message` | Fetches and normalizes a Feishu message by `messageId`. |
+| `feishu_send_file` | Uploads a local file / image and sends it to the current chat or an explicit `chatId`. |
+| `feishu_send_card` | Sends an interactive card from a title + markdown body + button list; clicks come back as `[card-click]` through `__codex_cb`. |
+| `feishu_recall_message` | Recalls a message the bot itself sent. |
+| `feishu_view_image` | Injects a local image into the current run so the model can look at it. |
 
-同时注册只读 `feishu://` host URI scheme：
+A read-only `feishu://` host URI scheme is registered as well:
 
 - `feishu://current/context`
 - `feishu://message/<message_id>`
 
-这使 OMP 可以通过结构化 host callback 使用飞书**消息面**资源（消息收发、历史、卡片、文件），而不是让模型在 shell 里拼 `lark-cli` 命令。桥接层负责权限、当前上下文、消息解析和结果格式化。
+This lets OMP use Feishu **message-surface** resources (send/receive, history, cards, files) through structured host callbacks instead of making the model assemble `lark-cli` commands in a shell. The bridge owns permissions, current context, message parsing and result formatting.
 
-**访问边界**（防止 prompt injection 把 host tools 变成外泄通道）：
+**Access boundary** (so prompt injection cannot turn the host tools into an exfiltration channel):
 
-- 显式 `chatId` 只在 `preferences.access.allowedChats` 允许时生效（未配置 =
-  不限制）；越界返回明确错误，不会静默发送。
-- `feishu_send_file` / `feishu_view_image` 的 `path` 只允许 session cwd、
-  媒体缓存目录、临时目录（含 symlink 解析后的真实路径），其余一律拒绝 ——
-  `~/.feishu-omp-bridge/`（config.json / keystore）与任意 `$HOME` 路径都
-  发不出去。需要发送别处的文件时，让 agent 先复制到 cwd。
+- An explicit `chatId` only takes effect when `preferences.access.allowedChats` allows it (unset =
+  unrestricted); out-of-range requests fail with a clear error instead of sending silently.
+- The `path` argument of `feishu_send_file` / `feishu_view_image` is restricted to the session cwd,
+  the media cache directory and the temp directory (after resolving symlinks); everything else is
+  refused — nothing under `~/.feishu-omp-bridge/` (config.json / keystore) or anywhere else in
+  `$HOME` can be sent out. To send a file from elsewhere, have the agent copy it into the cwd first.
 
-> **能力边界**：bridge 只封装 IM 消息面。飞书生态面（文档 / 表格 / 多维表格 /
-> 日历 / 会议 / 审批等）**不重复实现** —— agent 需要时直接调用 `lark-cli`
-> （或对应的 lark-* skill），bridge 不做第二份封装。
+> **Capability boundary**: the bridge only wraps the IM message surface. The wider Feishu ecosystem
+> (docs / sheets / Base / calendar / meetings / approvals …) is **not** re-implemented — when the
+> agent needs it, it calls `lark-cli` (or the matching lark-* skill) directly; the bridge does not
+> build a second wrapper.
 
 ### Mid-run follow-up / steer
 
-当某个 chat/topic 已经有 OMP run 正在执行时，同一 scope 的普通新消息**不会丢失**：它们进入 pending 队列，等当前 run 结束后合并进下一轮（600ms 静默后刷新）。只有以 `!` 开头的消息会直接写入当前 RPC run 进行 steer：
+When an OMP run is already executing for a chat/topic, new plain messages in the same scope are **not lost**: they enter the pending queue and are merged into the next turn once the current run ends (flushed after 600 ms of silence). Only messages starting with `!` are written into the current RPC run as a steer:
 
-- 普通消息 → 排队，当前 run 结束后合并进下一轮
-- 以 `!` 开头的消息 → 直接作为 `steer` 写入当前 run
+- plain message → queued, merged into the next turn after the current run ends
+- message starting with `!` → written into the current run as a `steer`
 
-例如：
-
-```text
-再看一下 tests 目录
-```
-
-会在当前 run 结束后作为下一轮处理（绝不静默丢弃）；
+For example:
 
 ```text
-!先不要改代码，只分析原因
+also take a look at the tests directory
 ```
 
-会直接进入当前 run 的 steer。
+is handled as the next turn once the current run ends (never silently dropped);
 
-> 说明：早前版本把普通消息也作为 `follow_up` 直接写入当前 run，但 OMP 只在空闲时消化 follow_up，而桥接层在当前 turn 的 terminal 事件就拆除 run，导致处理中发送的普通消息可能被静默丢弃。现已改为普通消息可靠排队、仅 `!` 显式 steer。
+```text
+!don't change the code yet, just analyze the cause
+```
 
-## 前置条件
+goes straight into the current run as a steer.
+
+> Note: earlier versions wrote plain messages into the current run as `follow_up`, but OMP only
+> consumes follow-ups while idle, and the bridge tore the run down on the terminal event of the
+> current turn — so a plain message sent mid-run could be silently dropped. Now plain messages are
+> queued reliably and only `!` steers explicitly.
+
+## Prerequisites
 
 - Node.js `>= 20`
 - pnpm
-- 已安装并配置 Oh My Pi CLI，并确认：
+- Oh My Pi CLI installed and configured, verified with:
 
 ```bash
 omp --version
 omp --mode rpc
 ```
 
-- 一个飞书 / Lark PersonalAgent 应用。
-- 如果需要让 OMP 继续使用传统飞书 CLI 工具，可按启动提示安装并绑定 `lark-cli`；host tools 不依赖 OMP 自己 shell 出 `lark-cli`。
+- A Feishu / Lark PersonalAgent app.
+- If you want OMP to keep using the traditional Feishu CLI tooling, install and bind `lark-cli` when the startup prompt offers it; the host tools do not depend on OMP shelling out to `lark-cli`.
 
-## 快速开始
+## Quick start
 
 ```bash
 git clone https://github.com/Gyarados4157/feishu-omp-bridge.git
@@ -161,71 +165,92 @@ pnpm build
 node bin/feishu-omp-bridge.mjs run
 ```
 
-不带子命令运行时，等价于 `run`：
+Running without a subcommand is equivalent to `run`:
 
 ```bash
 node bin/feishu-omp-bridge.mjs
 ```
 
-如果之后发布为 npm 包，CLI binary 名称是：
+Once published to npm, the CLI binary name is:
 
 ```bash
 feishu-omp-bridge
 ```
 
-## 首次启动向导
+## First-run wizard
 
-首次启动会检查配置并交互式引导：
+The first start checks the configuration and walks you through:
 
-1. 选择租户品牌：飞书或 Lark。
-2. 输入 PersonalAgent App ID / App Secret。
-3. 可选安装并绑定 `lark-cli`。
-4. 写入 `~/.feishu-omp-bridge/config.json`。
-5. App Secret 迁移到本地加密 keystore，避免明文留在配置文件中。
+1. Pick the tenant brand: Feishu or Lark.
+2. Enter the PersonalAgent App ID / App Secret.
+3. Optionally install and bind `lark-cli`.
+4. Write `~/.feishu-omp-bridge/config.json`.
+5. Move the App Secret into the local encrypted keystore so it never sits in plaintext in the config file.
 
-常用启动命令：
+Common startup commands:
 
 ```bash
 node bin/feishu-omp-bridge.mjs run
 ```
 
-跳过 `lark-cli` 预检查：
+Skip the `lark-cli` pre-flight check:
 
 ```bash
 node bin/feishu-omp-bridge.mjs run --skip-check-lark-cli
 ```
 
-使用指定配置文件：
+Use a specific config file:
 
 ```bash
 node bin/feishu-omp-bridge.mjs run -c /path/to/config.json
 ```
 
-## 后台运行
+## CLI reference
 
 ```bash
-node bin/feishu-omp-bridge.mjs start      # 注册（如需）并启动 OS 管理的后台 daemon
-node bin/feishu-omp-bridge.mjs status     # 查看 daemon 状态、pid、日志路径
-node bin/feishu-omp-bridge.mjs restart    # 重启 daemon
-node bin/feishu-omp-bridge.mjs stop       # 停止 daemon，但保留注册文件
-node bin/feishu-omp-bridge.mjs unregister # 删除 daemon 注册文件
+feishu-omp-bridge run [-c <config>] [--skip-check-lark-cli]   # foreground bot (same as no subcommand)
+feishu-omp-bridge start        # install (if needed) and start the OS-managed daemon
+feishu-omp-bridge status       # daemon status, pid, last exit, log paths
+feishu-omp-bridge restart      # restart the daemon
+feishu-omp-bridge stop         # stop the daemon (registration files stay)
+feishu-omp-bridge unregister   # remove the daemon registration (bootout + delete plist)
+feishu-omp-bridge release      # typecheck → test → build, then restart the daemon
+feishu-omp-bridge ps           # list running bridge processes on this machine
+feishu-omp-bridge kill <id|#>  # kill a bridge process (SIGTERM, then SIGKILL after 2s)
+feishu-omp-bridge secrets get|set|list|remove   # inspect / manage the encrypted secret keystore
+feishu-omp-bridge migrate      # migrate legacy config paths/shape (idempotent no-op when done)
+feishu-omp-bridge -v, --version
 ```
 
-后台实现：
+Process-level commands (`ps`, `kill`) act on running bridge processes; service-level commands
+(`start`, `stop`, `restart`, `status`, `unregister`, `release`) act on the OS-managed daemon.
 
-| 平台 | 后台机制 | 标识 |
+## Background daemon
+
+```bash
+node bin/feishu-omp-bridge.mjs start      # register (if needed) and start the OS-managed daemon
+node bin/feishu-omp-bridge.mjs status     # daemon status, pid, log paths
+node bin/feishu-omp-bridge.mjs restart    # restart the daemon
+node bin/feishu-omp-bridge.mjs stop       # stop the daemon, keep the registration files
+node bin/feishu-omp-bridge.mjs unregister # delete the daemon registration files
+```
+
+Background implementations:
+
+| Platform | Background mechanism | Identifier |
 | --- | --- | --- |
 | macOS | launchd user agent | `ai.feishu-omp-bridge.bot` |
 | Linux | systemd user unit | `feishu-omp-bridge.bot.service` |
 | Windows | Task Scheduler | `FeishuOmpBridge.Bot` |
 
-macOS 额外说明：macOS 15+ 的**本地网络**隐私按进程身份放行，由 launchd 直接
-拉起的 `node` 属于后台 CLI，既弹不出授权框、也不会出现在
-设置 → 隐私与安全性 → 本地网络 列表里，导致 bridge 里执行的命令访问**同网段**
-地址（例如公司内网 FTP / 局域网服务）被内核拒绝，报 `No route to host`
-（Python 侧 `[Errno 65]`），而路由网段与公网正常 —— 同一个命令在终端里跑却没问题，
-因为终端 app 早已获得该权限。因此 macOS 的 plist 不直接跑 `node`，而是先运行一个
-supervisor app：
+macOS extra note: on macOS 15+ the **Local Network** privacy prompt is granted per process
+identity. A `node` launched directly by launchd counts as a background CLI: it can neither show the
+prompt nor appear in System Settings → Privacy & Security → Local Network, so commands the bridge
+runs against **same-subnet** addresses (an intranet FTP server, a LAN service) get rejected by the
+kernel with `No route to host` (Python: `[Errno 65]`), while routed subnets and the public internet
+work fine — and the very same command runs fine in a terminal, because the terminal app already has
+that permission. The macOS plist therefore does not run `node` directly but starts a supervisor app
+first:
 
 ```bash
 ~/.feishu-omp-bridge/macos/FeishuOmpBridge.app/Contents/MacOS/FeishuOmpBridgeSupervisor \
@@ -233,45 +258,48 @@ supervisor app：
     <node> <bridge entry> run
 ```
 
-它由 `src/daemon/macos-supervisor.ts` 在 `start`/`restart` 时按需用 `xcrun swiftc`
-编译并 `codesign`，把 `node` 作为子进程运行 —— 整棵进程树
-（含 OMP 及其工具子进程）都归到 `ai.feishu-omp-bridge.supervisor` 这个 app 身份，
-于是 macOS 只会弹**一次**「允许访问本地网络」（点允许后窗口自动关闭并写 marker），
-之后内网访问长期有效。缺 `swiftc` 或签名身份时自动回退到直接跑 `node`（旧行为）。
-若权限被系统收回（或用户手动关掉），删除
-`~/.feishu-omp-bridge/macos/local-network-granted` 再 `restart` 即可重新触发授权。
+`src/daemon/macos-supervisor.ts` compiles it on demand with `xcrun swiftc` and `codesign`s it during
+`start`/`restart`, then runs `node` as a child process — the whole process tree (including OMP and
+its tool subprocesses) belongs to the `ai.feishu-omp-bridge.supervisor` app identity, so macOS shows
+the “allow local network access” prompt **once** (the window closes itself after you allow it and a
+marker is written) and intranet access keeps working afterwards. When `swiftc` or a signing identity
+is missing it falls back to running `node` directly (the old behavior). If the permission is revoked
+(or you turn it off manually), delete `~/.feishu-omp-bridge/macos/local-network-granted` and
+`restart` to trigger the prompt again.
 
-签名身份**不写死**，按以下顺序决定，选定后写入
-`~/.feishu-omp-bridge/macos/sign-identity` 固化（否则钥匙串顺序变化会导致重签、
-进而丢失授权）：
+The signing identity is **not hard-coded**; it is chosen in this order and then frozen into
+`~/.feishu-omp-bridge/macos/sign-identity` (otherwise a change in keychain order causes a re-sign and
+loses the grant):
 
-1. 环境变量 `FOB_MACOS_SIGN_IDENTITY`（显式指定，值就是 `security find-identity
-   -v -p codesigning` 里的名字，例如 `"Apple Development: you@example.com (XXXXXXXXXX)"`；
-   设成 `-` / `ad-hoc` / `none` 表示不签名）；
-2. 上面那个固化文件里记着的身份（仍存在于钥匙串时复用）；
-3. 钥匙串里现有的 codesigning 身份，按「有效期长 → 短」优先：
-   `Developer ID Application` > `Apple Development` > `Mac Developer`（同级保持钥匙串顺序）。
+1. The `FOB_MACOS_SIGN_IDENTITY` environment variable (an explicit choice — the value is the name
+   from `security find-identity -v -p codesigning`, e.g.
+   `"Apple Development: you@example.com (XXXXXXXXXX)"`; set it to `-` / `ad-hoc` / `none` to skip
+   signing);
+2. The identity recorded in that frozen file (reused while it still exists in the keychain);
+3. An existing codesigning identity in the keychain, preferring the longer validity:
+   `Developer ID Application` > `Apple Development` > `Mac Developer` (same tier keeps keychain order).
 
-ad-hoc 签名（没有任何可用证书时）没有稳定身份：macOS 可能既不给弹窗也不给授权，
-而且每次重编译都会变，需要重新授权 —— 此时用 `FOB_MACOS_SIGN_IDENTITY` 显式指定一个
-证书即可（任意开发者证书都行，包括个人团队）。
+An ad-hoc signature (when no usable certificate exists) has no stable identity: macOS may neither
+prompt nor grant, and every rebuild changes it, so you have to re-authorize — set
+`FOB_MACOS_SIGN_IDENTITY` to an explicit certificate in that case (any developer certificate works,
+including a personal team).
 
-进程级命令：
+Process-level commands:
 
 ```bash
 node bin/feishu-omp-bridge.mjs ps
 node bin/feishu-omp-bridge.mjs kill <id|#>
 ```
 
-## 配置文件
+## Configuration file
 
-默认配置路径：
+Default config path:
 
 ```text
 ~/.feishu-omp-bridge/config.json
 ```
 
-典型结构：
+Typical shape:
 
 ```json
 {
@@ -306,25 +334,25 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 }
 ```
 
-### `preferences` 字段
+### `preferences` fields
 
-| 字段 | 默认值 | 说明 |
+| Field | Default | Description |
 | --- | --- | --- |
-| `ompBinary` | `omp` | OMP 可执行文件名或绝对路径。 |
-| `ompModel` | 未设置 | 传给 `omp --model`；留空由 OMP 自身配置决定。 |
-| `ompThinking` | 未设置 | 传给 `omp --thinking`。 |
-| `ompSessionDir` | `~/.feishu-omp-bridge/omp-sessions` | bridge 专用 OMP session 目录（支持 `~` 展开）。运行与 `/resume`、`/ctx`、`/search`、`/history`、`/rename` 等历史命令都读这里。 |
-| `ompTools` | 未设置 | 传给 `omp --tools` 的逗号分隔工具白名单；留空使用 OMP 默认工具集。 |
-| `messageReply` | `markdown` | `card`、`markdown` 或 `text`。推荐使用 `card` 以获得完整交互。 |
-| `showToolCalls` | `true` | 是否展示工具调用过程。 |
-| `maxConcurrentRuns` | `10` | 全局并发 OMP run 上限，范围按代码限制到最多 50。 |
-| `runIdleTimeoutMinutes` | 关闭 | OMP 长时间无输出时的 idle kill 分钟数；`0` 或未设置表示关闭。 |
-| `requireMentionInGroup` | `true` | 群聊是否必须 `@bot` 才响应；私聊不受影响。 |
-| `agentStopGraceMs` | `5000` | OMP 进程收到停止信号后等待 SIGKILL 的毫秒数，限制在 100-30000。 |
+| `ompBinary` | `omp` | OMP executable name or absolute path. |
+| `ompModel` | unset | Passed to `omp --model`; left empty, OMP's own config decides. |
+| `ompThinking` | unset | Passed to `omp --thinking`. |
+| `ompSessionDir` | `~/.feishu-omp-bridge/omp-sessions` | Bridge-only OMP session directory (`~` is expanded). Running and the `/resume`, `/ctx`, `/search`, `/history`, `/rename` history commands all read it. |
+| `ompTools` | unset | Comma-separated tool allowlist passed to `omp --tools`; empty uses OMP's default tool set. |
+| `messageReply` | `markdown` | `card`, `markdown` or `text`. `card` is recommended for full interactivity. |
+| `showToolCalls` | `true` | Whether to show the tool-call process. |
+| `maxConcurrentRuns` | `10` | Global OMP run concurrency limit; the code caps it at 50. |
+| `runIdleTimeoutMinutes` | off | Idle-kill minutes when OMP produces no output for a long time; `0` or unset turns it off. |
+| `requireMentionInGroup` | `true` | Whether group chats must `@bot` to get a response; DMs are unaffected. |
+| `agentStopGraceMs` | `5000` | Milliseconds to wait for SIGKILL after the OMP process receives a stop signal; clamped to 100-30000. |
 
-### 访问控制
+### Access control
 
-可在 `preferences.access` 中限制用户、群和管理员：
+User, chat and admin restrictions live under `preferences.access`:
 
 ```json
 {
@@ -339,74 +367,74 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 }
 ```
 
-语义：
+Semantics:
 
-- `allowedUsers` 空或未设置：允许所有用户。
-- `allowedChats` 空或未设置：允许所有 chat。
-- `admins` 空或未设置：所有允许用户都可执行管理员命令。
-- `owner` 未设置：回退到 `admins[0]`；两者都未设置时，高危命令对所有人拒绝。
-- 管理员命令（`admins`）：`/account`、`/config`、`/model`、`/thinking`、`/restart`、`/context`、`/resume`、`/session`、`/every`、`/search`、`/history`、`/sessions`、`/diff`、`/exit`、`/reconnect`、`/doctor`、`/cd`、`/ws`。
-- 归属者命令（`owner`，比 admins 更严）：`/release`、`/exec`、`/run` —— 只有 owner 能跑，协作者拿 admin 也无法执行 shell。
+- `allowedUsers` empty or unset: every user is allowed.
+- `allowedChats` empty or unset: every chat is allowed.
+- `admins` empty or unset: every allowed user may run admin commands.
+- `owner` unset: falls back to `admins[0]`; when both are unset, high-risk commands are denied for everyone.
+- Admin commands (`admins`): `/account`, `/config`, `/model`, `/thinking`, `/restart`, `/context`, `/resume`, `/session`, `/every`, `/search`, `/history`, `/sessions`, `/diff`, `/exit`, `/reconnect`, `/doctor`, `/cd`, `/ws`.
+- Owner commands (`owner`, stricter than admins): `/release`, `/exec`, `/run` — only the owner can run them; a collaborator with admin still cannot execute shell.
 
-## 数据目录
+## Data directory
 
-| 路径 | 用途 |
+| Path | Purpose |
 | --- | --- |
-| `~/.feishu-omp-bridge/config.json` | App 凭据、secret refs、偏好配置。 |
-| `~/.feishu-omp-bridge/secrets.enc` | 本地加密 secret keystore。 |
-| `~/.feishu-omp-bridge/.keystore.salt` | keystore salt。 |
-| `~/.feishu-omp-bridge/secrets-getter` | exec secret provider wrapper。 |
-| `~/.feishu-omp-bridge/sessions.json` | v3：`{ v, scopes, titles }` —— 每个 scope 只记**当前会话**（`sessionId`/`cwd`/`createdAt`/`updatedAt`，以及 `/timeout` 覆盖），会话名字按**会话 id** 存在 `titles` 里。旧文件加载时就地迁移（v1/v2 各留一份 `sessions.json.v<N>.bak`）；v2 的「工作会话 + 段」在迁移时收敛为「当前段 = 当前会话」。 |
-| `~/.feishu-omp-bridge/omp-sessions/` | bridge 专用 OMP JSONL session 文件。 |
-| `~/.feishu-omp-bridge/workspaces.json` | 命名工作空间。 |
-| `~/.feishu-omp-bridge/processes.json` | 本机 bridge 进程注册表。 |
-| `~/.feishu-omp-bridge/media/` | 下载的图片 / 文件缓存。 |
-| `~/.feishu-omp-bridge/logs/` | 结构化日志和 daemon stdout/stderr 日志。 |
+| `~/.feishu-omp-bridge/config.json` | App credentials, secret refs, preferences. |
+| `~/.feishu-omp-bridge/secrets.enc` | Local encrypted secret keystore. |
+| `~/.feishu-omp-bridge/.keystore.salt` | Keystore salt. |
+| `~/.feishu-omp-bridge/secrets-getter` | exec secret provider wrapper. |
+| `~/.feishu-omp-bridge/sessions.json` | v3: `{ v, scopes, titles }` — each scope records only its **current session** (`sessionId`/`cwd`/`createdAt`/`updatedAt` plus the `/timeout` override), and session names live in `titles` keyed by **session id**. Old files migrate in place on load (v1/v2 each keep a `sessions.json.v<N>.bak`); the v2 “work session + segments” shape collapses to “current segment = current session”. |
+| `~/.feishu-omp-bridge/omp-sessions/` | Bridge-only OMP JSONL session files. |
+| `~/.feishu-omp-bridge/workspaces.json` | Named workspaces. |
+| `~/.feishu-omp-bridge/processes.json` | Registry of bridge processes on this machine. |
+| `~/.feishu-omp-bridge/media/` | Downloaded image / file cache. |
+| `~/.feishu-omp-bridge/logs/` | Structured logs plus daemon stdout/stderr logs. |
 
-## 飞书聊天命令
+## Feishu chat commands
 
-| 命令 | 作用 |
+| Command | Purpose |
 | --- | --- |
-| `/new`、`/reset` | 开一段**新对话**（旧对话留在 `/history` 里）。 |
-| `/new chat [name]` | 创建新群并拉你进去，继承当前 cwd。需要 bot 具备 `im:chat` 权限。 |
-| `/cd <path>` | 切换当前 chat/topic 的工作目录并开新对话（cwd 不匹配没法续旧会话）。支持绝对路径、`~/xxx`、相对当前目录的路径（如 `src`、`../x`）。 |
-| `/ws list` | 查看命名工作空间。 |
-| `/ws add <name> <path>` | 保存当前 cwd 为命名工作空间。 |
-| `/ws use <name>` | 切换到命名工作空间（换目录 = 开新对话；`/ws undo` 同理）。 |
-| `/config` | 打开偏好设置卡片。 |
-| `/account` | 更换 bot app 凭据并重连。 |
-| `/context` | 查看当前会话上下文（会话 id / 标题 / cwd / 模型 / 探活等）。 |
-| `/rename <标题>` | 给当前**对话**起名；`/rename auto` 用 LLM 生成(≤20 字)，`/rename clear` 清除。标题显示在 `/context`、`/status`、`/resume`、`/search`。 |
-| `/history [all]`、`/sessions` | 会话清单，按最后活动时间倒序：默认只看**当前工作目录**，`all` 看全部工作目录。每行 = 一个 OMP 会话（活动时间 / 轮数 / 标题或最后一条用户消息），「继续对话」恢复它；超过 8 条分页。admin 命令。 |
-| `/status` | 查看当前 scope、cwd、session、agent。 |
-| `/stop` | 终止当前正在执行的 OMP run。 |
-| `/timeout [N|off|default]` | 设置当前 session 的 idle timeout，或关闭 / 恢复全局默认。 |
-| `/ps` | 列出本机所有 bridge 进程，并标识当前回复进程。 |
-| `/release` | 自发布：`pnpm typecheck` → `pnpm test` → `pnpm build` 后重启 daemon 加载新代码。失败即中止、不重启。 |
-| `/exec <命令>`、`/run` | 在当前 cwd 下执行 shell 命令并回退出码 + 输出（30s 超时，输出截断 1000 字符）。admin 命令。 |
-| `/exit <id|#>` | 关闭指定 bridge 进程。 |
-| `/reconnect` | 强制重连 WebSocket。 |
-| `/doctor [描述]` | 把最近日志和故障描述交给 OMP 自助诊断。 |
-| `/help` | 显示帮助卡片。 |
+| `/new`, `/reset` | Start a **new conversation** (the old one stays in `/history`). |
+| `/new chat [name]` | Create a new group and pull you into it, inheriting the current cwd. Requires the `im:chat` permission for the bot. |
+| `/cd <path>` | Change the working directory of the current chat/topic and start a new conversation (a mismatched cwd cannot resume the old session). Accepts absolute paths, `~/xxx`, and paths relative to the current directory (`src`, `../x`). |
+| `/ws list` | List named workspaces. |
+| `/ws add <name> <path>` | Save the current cwd as a named workspace. |
+| `/ws use <name>` | Switch to a named workspace (changing the directory = a new conversation; same for `/ws undo`). |
+| `/config` | Open the preferences card. |
+| `/account` | Replace the bot app credentials and reconnect. |
+| `/context` | Show the current session context (session id / title / cwd / model / idle timeout …). |
+| `/rename <title>` | Name the current **conversation**; `/rename auto` generates it with an LLM (≤20 chars), `/rename clear` clears it. The title shows up in `/context`, `/status`, `/resume`, `/search`. |
+| `/history [all]`, `/sessions` | Session list, newest activity first: by default only the **current working directory**, `all` for every working directory. One row = one OMP session (activity time / turn count / title or last user message); “Continue chat” restores it; paginates beyond 8 rows. Admin command. |
+| `/status` | Show the current scope, cwd, session and agent. |
+| `/stop` | Abort the OMP run currently executing. |
+| `/timeout [N|off|default]` | Set the current session's idle timeout, or turn it off / fall back to the global default. |
+| `/ps` | List every bridge process on this machine and mark the one replying now. |
+| `/release` | Self-release: `pnpm typecheck` → `pnpm test` → `pnpm build`, then restart the daemon to load the new code. Any failure aborts without restarting. |
+| `/exec <command>`, `/run` | Run a shell command in the current cwd and return its exit code + output (30 s timeout, output truncated to 1000 chars). Admin command. |
+| `/exit <id|#>` | Shut down the given bridge process. |
+| `/reconnect` | Force a WebSocket reconnect. |
+| `/doctor [description]` | Hand the recent logs plus your failure description to OMP for self-diagnosis. |
+| `/help` | Show the help card. |
 
-普通消息会直接交给 OMP。群聊默认需要 `@bot`；私聊不需要。
+Plain messages go straight to OMP. Group chats require `@bot` by default; DMs do not.
 
-## 飞书卡片回调
+## Feishu card callbacks
 
-bridge 会识别两类卡片回调：
+The bridge recognizes two kinds of card callbacks:
 
-1. bridge 自己的命令卡片，例如 `/config`、`/help`、OMP UI 卡片。
-2. Agent 生成的 callback payload。为了兼容旧桥接层，内部 marker 仍保留 `__codex_cb` 字符串，但代码变量已经改为通用 agent callback 命名。
+1. Its own command cards, e.g. `/config`, `/help`, OMP UI cards.
+2. Callback payloads generated by the agent. For compatibility with the older bridging layer the internal marker string `__codex_cb` is still used, although the code variables have been renamed to generic agent-callback naming.
 
-Agent callback 会被转成当前 scope 的 follow-up 消息，使 OMP 在同一个 session 中收到用户点击结果。
+Agent callbacks are turned into a follow-up message in the current scope, so OMP receives the user's click within the same session.
 
-## OMP host tools 细节
+## OMP host tools in detail
 
 ### `feishu_current_context`
 
-入参：无。
+Arguments: none.
 
-返回示例：
+Example response:
 
 ```json
 {
@@ -420,33 +448,33 @@ Agent callback 会被转成当前 scope 的 follow-up 消息，使 OMP 在同一
 
 ### `feishu_send_message`
 
-入参：
+Arguments:
 
 ```json
 {
-  "content": "Markdown 内容",
-  "chatId": "可选，默认当前 chat"
+  "content": "Markdown content",
+  "chatId": "optional, defaults to the current chat"
 }
 ```
 
-行为：向目标 chat 发送 Markdown。若目标是当前 topic 所在 chat，会带上 thread reply 选项。
+Behavior: sends Markdown to the target chat. If the target is the chat of the current topic, thread-reply options are included.
 
 ### `feishu_reply_message`
 
-入参：
+Arguments:
 
 ```json
 {
-  "content": "Markdown 回复内容",
-  "messageId": "可选，默认触发本轮的消息"
+  "content": "Markdown reply content",
+  "messageId": "optional, defaults to the message that triggered this turn"
 }
 ```
 
-行为：回复指定消息；在 topic 中会尽量保持 thread reply。
+Behavior: replies to the given message; inside a topic it keeps the thread reply when possible.
 
 ### `feishu_get_message`
 
-入参：
+Arguments:
 
 ```json
 {
@@ -454,117 +482,121 @@ Agent callback 会被转成当前 scope 的 follow-up 消息，使 OMP 在同一
 }
 ```
 
-行为：读取并规范化指定飞书消息，适合让 OMP 查看引用消息、卡片来源或转发内容。
+Behavior: reads and normalizes the given Feishu message, suitable for letting OMP inspect a quoted message, a card's origin or forwarded content.
 
-## `feishu://` URI
+## `feishu://` URIs
 
-OMP 可读取：
+OMP can read:
 
 ```text
 feishu://current/context
 feishu://message/<message_id>
 ```
 
-当前 scheme 只读。写操作会返回错误，避免 Agent 绕开 bridge 的消息发送工具和权限边界。
+The scheme is read-only today. Write operations return an error, so the agent cannot bypass the bridge's message-sending tools and permission boundary.
 
-## 安全说明
+## Security notes
 
-- 不要提交 `~/.feishu-omp-bridge/config.json`、`secrets.enc`、日志或 session 文件。
-- App Secret 默认迁移到本地加密 keystore；`config.json` 只保存 SecretRef。
-- 本地 keystore 防止备份、误提交、日志泄漏中的明文暴露；它不是同用户进程级别的强隔离密钥库。
-- OMP 可以运行本机工具，等价于把飞书消息授权给本地 Agent 执行。生产使用建议配置：
+- Never commit `~/.feishu-omp-bridge/config.json`, `secrets.enc`, logs or session files.
+- The App Secret is moved into the local encrypted keystore by default; `config.json` only stores a SecretRef.
+- The local keystore protects against plaintext exposure through backups, accidental commits and log leakage; it is not a strong isolation key store against other processes of the same user.
+- OMP can run local tools, which is equivalent to authorizing a local agent to act on Feishu messages. For production, configure:
   - `preferences.access.allowedUsers`
   - `preferences.access.allowedChats`
   - `preferences.access.admins`
-  - `ompTools` 工具白名单
-  - 固定工作目录 / 命名工作空间
-- 群聊默认必须 `@bot` 才响应，避免无意触发。
-- `@全员` 不会触发响应。
+  - the `ompTools` allowlist
+  - fixed working directories / named workspaces
+- Group chats require `@bot` by default, which avoids accidental triggers.
+- `@all` never triggers a response.
 
-## 开发
+## Development
 
-架构与代码组织约定见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+Architecture and code-organization conventions: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-### 自更新 / 自愈
+### Self-update / self-heal
 
-以下脚本位于 `scripts/`（随仓库分发），用于防止"周末 bot 自己更新后起不来"这类问题：
+These scripts live in `scripts/` (shipped with the repo) and guard against the classic “the bot
+updated itself over the weekend and never came back” failure:
 
-- **`scripts/self-update.py`** — 受控自更新：`git pull` → `typecheck` →
-  `test` → `build` 全部通过才 `restart`；任一步失败自动回滚到旧 HEAD +
-  恢复备份的 `dist/`，daemon 保持旧版本运行。原子锁防并发。
-- **`scripts/self-heal.py`** — 自愈看门狗（launchd 常驻
-  `ai.feishu-omp-bridge.heal`）：每 60s 探测「进程存活 + 服务在后台运行」。
-  进程存活由三路独立信号取 OR（launchd 给的 pid / `processes.json` 里进程
-  自写的 pid / `pgrep -f`），只有三路全部判死才算死；探针超时或信号矛盾一律
-  算「判不出」，不计异常、不动手。连续 3 次**确认**异常后先复检一次，仍判死
-  才 `restart`，仍失败则唤起一个 omp 会话带日志上下文诊断修复（并发锁 +
-  阶梯退避 + 最大 10 次上限 + 提示词退出契约）。
-  - 安装：`scripts/self-heal.py install`；卸载：`uninstall`
-  - 手动一轮：`scripts/self-heal.py --once`
+- **`scripts/self-update.py`** — controlled self-update: `git pull` → `typecheck` → `test` → `build`,
+  and only `restart`s when everything passes; any failing step rolls back to the previous HEAD and
+  restores the backed-up `dist/`, leaving the daemon running the old version. An atomic lock prevents
+  concurrent runs.
+- **`scripts/self-heal.py`** — self-healing watchdog (a persistent launchd job,
+  `ai.feishu-omp-bridge.heal`): every 60 s it probes “process alive + service running in the
+  background”. Liveness is an OR of three independent signals (the pid launchd reports / the pid the
+  process wrote into `processes.json` / `pgrep -f`), and only when all three say dead is it dead; a
+  probe timeout or contradictory signals counts as “undecidable” and neither counts as an anomaly nor
+  triggers action. After 3 consecutive **confirmed** anomalies it re-checks once, and only then
+  `restart`s; if that still fails it spawns an omp session with log context to diagnose and fix
+  (concurrency lock + stepped backoff + a 10-attempt cap + an exit contract in the prompt).
+  - Install: `scripts/self-heal.py install`; uninstall: `uninstall`
+  - One manual round: `scripts/self-heal.py --once`
 
-自更新 / 自愈均有 pytest 测试（隔离环境，不影响生产）：
-  - `scripts/test_self_heal.py` — 27 场景：健康不误报 / 进程死自愈 /
-    断连自愈 / pgrep 假阴性不动手 / 探针超时判不出不动手 / status 超时不算
-    健康 / 动手前复检 / omp 不可用判异常 / restart 失败唤起 omp / 锁互斥 /
-    退避 / omp 并发锁 / 修复闭环 / 最大次数上限 / 提示词契约 / rollback
-    （含 build 超时恢复原 HEAD）/ SIGKILL 锁释放
-  - `scripts/test_self_update.py` — 6 场景：更新成功 / typecheck / test /
-    build / restart 任一失败回滚 / 锁互斥
-  运行：`pnpm test:self-heal`（或 `python3 -m pytest scripts/test_self_heal.py scripts/test_self_update.py`）。
-  需要 pytest：`python3 -m pip install --user pytest`。
+Both self-update and self-heal have pytest coverage (isolated environments, production untouched):
+  - `scripts/test_self_heal.py` — 27 scenarios: no false alarm when healthy / heal when the process is
+    dead / heal on disconnect / no action on a pgrep false negative / no action when a probe times out
+    / a status timeout is not health / re-check before acting / treat an unavailable omp as an anomaly
+    / spawn omp when restart fails / lock mutual exclusion / backoff / omp concurrency lock / the fix
+    loop / the attempt cap / the prompt contract / rollback (including restoring the original HEAD
+    after a build timeout) / lock release on SIGKILL
+  - `scripts/test_self_update.py` — 6 scenarios: successful update / rollback when typecheck / test /
+    build / restart fails / lock mutual exclusion
+  Run with `pnpm test:self-heal` (or `python3 -m pytest scripts/test_self_heal.py scripts/test_self_update.py`).
+  pytest is required: `python3 -m pip install --user pytest`.
 
-另外，`src/daemon/launchd.ts` 生成的 plist 带 `ThrottleInterval=10`（崩溃后
-防重启风暴），且 `start`/`restart` 若 30s 内连不上飞书会以非零码退出
-（触发 launchd 重试）；设 `SELF_HEAL=1` 时还会自动唤起 omp 修复。
+In addition, the plist generated by `src/daemon/launchd.ts` carries `ThrottleInterval=10` (guarding
+against restart storms after a crash), and `start`/`restart` exit non-zero when they cannot reach
+Feishu within 30 s (which makes launchd retry); with `SELF_HEAL=1` they also spawn omp to fix things.
 
-安装依赖：
+Install dependencies:
 
 ```bash
 pnpm install
 ```
 
-开发 watch：
+Development watch:
 
 ```bash
 pnpm dev
 ```
 
-类型检查：
+Type check:
 
 ```bash
 pnpm typecheck
 ```
 
-测试：
+Tests:
 
 ```bash
 pnpm test
 ```
 
-构建：
+Build:
 
 ```bash
 pnpm build
 ```
 
-查看 CLI：
+Inspect the CLI:
 
 ```bash
 node bin/feishu-omp-bridge.mjs --help
 ```
 
-## 验证状态
+## Verification status
 
-本仓库当前代码层验证覆盖：
+The current code-level verification covers:
 
-- OMP RPC adapter 参数、事件翻译、session/run 生命周期。
-- OMP 原生 UI request/response。
-- OMP host tool / host URI callback。
-- active run 的 UI response 与 mid-run prompt 路由。
-- 配置 schema。
-- run-state reducer 与飞书卡片相关逻辑。
+- OMP RPC adapter arguments, event translation, session/run lifecycle.
+- OMP native UI request/response.
+- OMP host tool / host URI callbacks.
+- UI responses of active runs and mid-run prompt routing.
+- Config schema.
+- The run-state reducer and Feishu-card related logic.
 
-常规验证命令：
+Regular verification commands:
 
 ```bash
 pnpm typecheck
@@ -572,44 +604,44 @@ pnpm test
 pnpm build
 ```
 
-真实飞书端到端验证需要可用的 PersonalAgent 凭据和实际飞书会话环境。
+Real Feishu end-to-end verification needs working PersonalAgent credentials and an actual Feishu conversation environment.
 
-## 故障排查
+## Troubleshooting
 
-| 问题 | 处理 |
+| Problem | Fix |
 | --- | --- |
-| 启动时报找不到 `omp` | 确认 `omp --version` 可用，并先运行一次 `omp` 完成模型 / 认证配置。 |
-| OMP RPC 启动后无响应 | 单独运行 `omp --mode rpc` 做 smoke test；检查 `~/.feishu-omp-bridge/logs/`。 |
-| OMP 没有续上次对话 | 发 `/context` 看当前会话 id：会话文件被删、或你 `/cd`、`/ws use`、`/new` 都会换成新对话（旧对话仍在 `/history` 里，点「继续对话」回去）。窗口的 cwd 不再影响续接——续的是会话自己的目录。 |
-| 群聊无响应 | 确认消息里 `@bot`，或在 `/config` / `config.json` 中调整 `requireMentionInGroup`。 |
-| 卡片长时间不动 | 用 `/stop` 中断；也可设置 `/timeout 10` 开启当前 session idle 探活。 |
-| OMP 等待选择 / 输入 | 回复单独出现的“OMP 交互”卡片；等待期间 idle watchdog 会暂停。 |
-| 飞书 API 工具不可用 | 按启动提示安装并绑定 `lark-cli`；或者优先使用已注册的 Feishu host tools。 |
-| `/new chat` 失败 | 确认 bot 具备创建群相关权限，代码中该能力依赖 `im:chat`。 |
-| 后台 daemon 不工作 | 运行 `node bin/feishu-omp-bridge.mjs status` 查看服务状态和日志路径。 |
-| **`cmux ping` 报「访问被拒绝 / Access denied」** | cmux 默认 `socketControlMode=cmuxOnly`，只允许 **cmux 内启动**的进程；改成 **`Automation`**（Settings → Automation）。详见 [`docs/CMUX-AGENT-INTERACTION.md`](docs/CMUX-AGENT-INTERACTION.md) §1。 |
-| **往 cmux 里的 pi 发消息没反应** | 目标忙时消息会进 `Steering:` 队列（等当前 turn 结束才消费），不是失败；验证请看 pi 的 session JSONL。同上 §5。 |
-| **`cmux send-key` 超时 / 无效** | 锁屏场景下 `send-key` 不可靠（键名支持不全 + 间歇超时）；**一律改用 `cmux send`**（Enter 用 `'\r'`）。同上 §3。 |
-| **往 kimi 面板投递多行消息后指令被重复执行** | `cmux paste-buffer` 会把消息最后 1–2 行**留在输入框**，回合结束时会**再投一次**。投递后必做：`send-key <ws> Up`（取回残留）→ `send-key <ws> backspace` ×N → `read-screen` 确认输入框为空。同上 §11.5。 |
-| **以为 cmux 里的 agent「没在动」** | cmux 面板标题取自**会话最初标题**、不随当前动作变化；判断活跃度要看 session 落盘文件（kimi：`state.json` + `agents/main/wire.jsonl` 的 mtime）。同上 §12.3 / §12.7-1。 |
-| **`cmux send-key` 用 `C-u` 报 `Unknown key`** | 组合键要写成 `control-u` / `ctrl-u`（不接受 `C-`/`M-` 缩写）；键名清单与副作用（`shift-tab` 疑似 kimi Plan mode 开关）见同上 §11.3 / §11.4。 |
-| **想一次看所有 cmux 窗口的状态** | 读 `~/Library/Application Support/cmux/session-com.cmuxterm.app.json`（含每个面板的最新通知，agent 完成通知也在里面），比逐个 `read-screen` 快且不受锁屏影响。同上 §11.6。 |
-| **面板从不出 agent 通知**（`Cursor is waiting for you` 等） | 通知由 cmux 的 agent hook 产生（`~/.orca/agent-hooks/<agent>-hook.sh` → POST `127.0.0.1:$ORCA_AGENT_HOOK_PORT`）：**只有从 cmux 面板内启动的 agent 才有 `ORCA_*` 环境变量**，外部（launchd/bridge）启动的不会有通知；另检查 hook 文件可执行、agent 配置里有 hook 条目（`~/.cursor/hooks.json`、`~/.kimi-code/config.toml`）。同上 §14。 |
-| **要驱动 Cursor Agent** | 优先用**非交互通道**：`cursor-agent -p "<prompt>" --output-format json`（`-p` 默认带写/shell 权限，无人值守请配 `--mode plan` 或 `--sandbox enabled`）；会话在 `~/.cursor/chats/<hash>/<chatId>/store.db`（SQLite，判活看 mtime/size）。同上 §13。 |
+| Startup reports `omp` not found | Make sure `omp --version` works and run `omp` once to finish model / auth configuration. |
+| No response after OMP RPC starts | Run `omp --mode rpc` alone as a smoke test; check `~/.feishu-omp-bridge/logs/`. |
+| OMP did not continue the previous conversation | Send `/context` and look at the current session id: a deleted session file, or your own `/cd`, `/ws use`, `/new`, all switch to a new conversation (the old one is still in `/history` — click “Continue chat” to go back). The window's cwd no longer affects resumption: the bridge resumes the session's own directory. |
+| A group chat gets no response | Make sure the message `@bot`s the bot, or adjust `requireMentionInGroup` in `/config` / `config.json`. |
+| A card sits there for a long time | Interrupt with `/stop`; you can also enable idle probing for the current session with `/timeout 10`. |
+| OMP is waiting for a choice / input | Reply to the standalone “OMP interaction” card; the idle watchdog is paused while waiting. |
+| Feishu API tools are unavailable | Install and bind `lark-cli` as the startup prompt suggests, or prefer the registered Feishu host tools. |
+| `/new chat` fails | Make sure the bot has the group-creation permissions; in code that capability depends on `im:chat`. |
+| The background daemon does not work | Run `node bin/feishu-omp-bridge.mjs status` to inspect the service state and log paths. |
+| **`cmux ping` reports “access denied”** | cmux defaults to `socketControlMode=cmuxOnly`, which only allows processes **started inside cmux**; switch it to **`Automation`** (Settings → Automation). See [`docs/CMUX-AGENT-INTERACTION.md`](docs/CMUX-AGENT-INTERACTION.md) §1. |
+| **Sending a message to pi inside cmux does nothing** | When the target is busy the message enters the `Steering:` queue (consumed after the current turn ends); that is not a failure. Verify in pi's session JSONL. Same doc §5. |
+| **`cmux send-key` times out / does nothing** | With the screen locked, `send-key` is unreliable (incomplete key-name support + intermittent timeouts); **always use `cmux send`** (use `'\r'` for Enter). Same doc §3. |
+| **Delivering a multi-line message to a kimi panel re-runs the command** | `cmux paste-buffer` leaves the last 1–2 lines **in the input box**, which get **delivered again** at the end of the turn. After delivery you must: `send-key <ws> Up` (retrieve the leftover) → `send-key <ws> backspace` ×N → `read-screen` to confirm the input box is empty. Same doc §11.5. |
+| **Thinking an agent inside cmux “is not doing anything”** | The cmux panel title comes from the **session's original title** and does not track the current action; judge activity from the session files on disk (kimi: mtime of `state.json` + `agents/main/wire.jsonl`). Same doc §12.3 / §12.7-1. |
+| **`cmux send-key` with `C-u` reports `Unknown key`** | Combinations must be written `control-u` / `ctrl-u` (the `C-`/`M-` abbreviations are rejected); for the key list and side effects (`shift-tab` appears to toggle kimi's Plan mode) see the same doc §11.3 / §11.4. |
+| **Want to see every cmux window's state at once** | Read `~/Library/Application Support/cmux/session-com.cmuxterm.app.json` (it holds each panel's latest notification, agent-completion notifications included) — faster than `read-screen` per panel and unaffected by the lock screen. Same doc §11.6. |
+| **A panel never shows an agent notification** (e.g. `Cursor is waiting for you`) | Notifications come from cmux's agent hook (`~/.orca/agent-hooks/<agent>-hook.sh` → POST `127.0.0.1:$ORCA_AGENT_HOOK_PORT`): **only agents started inside a cmux panel get the `ORCA_*` environment variables**; ones started externally (launchd/bridge) will not notify. Also check that the hook file is executable and the agent config has a hook entry (`~/.cursor/hooks.json`, `~/.kimi-code/config.toml`). Same doc §14. |
+| **Driving the Cursor agent** | Prefer the **non-interactive channel**: `cursor-agent -p "<prompt>" --output-format json` (`-p` grants write/shell permissions by default, so for unattended runs configure `--mode plan` or `--sandbox enabled`); sessions live in `~/.cursor/chats/<hash>/<chatId>/store.db` (SQLite; judge liveness by mtime/size). Same doc §13. |
 
-## 相关文档
+## Related docs
 
-| 文档 | 内容 |
+| Document | Content |
 | --- | --- |
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | 本仓库架构、数据流、目录结构、命令组织约定 |
-| [`docs/CMUX-AGENT-INTERACTION.md`](docs/CMUX-AGENT-INTERACTION.md) | **从 bridge 远程驱动 cmux / pi / kimi / Cursor 的实测手册**：cmux 权限开启（`socketControlMode`）、锁屏能力矩阵与踩坑、`send` vs `send-key`、pi/omp 差异、消息投递语义（idle 直投 vs busy 排队）、不依赖读屏的 session 验证法；**§11 cmux CLI 通用补充**（workspace/panel 定位、键名清单与副作用、`paste-buffer` 残留排队行的清理）；**§12 kimi（Kimi Code）**；**§13 Cursor（cursor-agent）**（多版本 CLI、SQLite 会话库、`-p` 非交互通道）；**§14 agent 通知机制**（`~/.orca/agent-hooks` ⇄ cmux 通知） |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | This repo's architecture, data flow, directory structure, command-organization conventions |
+| [`docs/CMUX-AGENT-INTERACTION.md`](docs/CMUX-AGENT-INTERACTION.md) | **A field manual for driving cmux / pi / kimi / Cursor from the bridge**: enabling cmux permissions (`socketControlMode`), the lock-screen capability matrix and its pitfalls, `send` vs `send-key`, pi/omp differences, message-delivery semantics (idle = direct, busy = queued), and how to verify sessions without reading the screen; **§11 cmux CLI in general** (workspace/panel targeting, key names and their side effects, cleaning up the queued line left by `paste-buffer`); **§12 kimi (Kimi Code)**; **§13 Cursor (cursor-agent)** (multiple CLI versions, the SQLite session DB, the `-p` channel); **§14 the agent notification mechanism** (`~/.orca/agent-hooks` ⇄ cmux notifications) |
 
-## 当前限制
+## Current limitations
 
-- 当前 Feishu host URI 只支持 `current/context` 和 `message/<message_id>`。
-- `feishu://` 只读；发送消息请使用 `feishu_send_message` 或 `feishu_reply_message`。
-- 真实飞书端到端能力取决于 PersonalAgent 权限、租户策略和网络环境。
-- OMP SDK 深集成尚未启用；当前主路径是更稳定、易调试、进程隔离更清晰的 `omp --mode rpc`。
+- The Feishu host URI supports only `current/context` and `message/<message_id>`.
+- `feishu://` is read-only; to send messages use `feishu_send_message` or `feishu_reply_message`.
+- Real Feishu end-to-end capability depends on PersonalAgent permissions, tenant policies and the network environment.
+- Deep OMP SDK integration is not enabled yet; the main path is the more stable, easier-to-debug, better process-isolated `omp --mode rpc`.
 
 ## License
 

@@ -135,6 +135,25 @@ describe('modelProviderCard', () => {
     expect(json).not.toContain('"arg":"p/cur"');
   });
 
+  it('caps 最近使用 and 常用 at 4 buttons each', () => {
+    const recents = Array.from({ length: 8 }, (_, i) => `p/r${i}`);
+    const commons = Array.from({ length: 6 }, (_, i) => `p/c${i}`);
+    const json = JSON.stringify(modelProviderCard('p/cur', providers, recents, commons, 'high'));
+    // 每区 4 个：r0-r3（r4+ 不出现）、c0-c3。
+    for (const keep of ['"arg":"p/r3"', '"arg":"p/c3"']) expect(json).toContain(keep);
+    for (const drop of ['"arg":"p/r4"', '"arg":"p/c4"']) expect(json).not.toContain(drop);
+
+    // 当前模型先被剔掉再截断：可见按钮仍是 4 个（不是 3 个）。
+    const withCurrentFirst = JSON.stringify(
+      modelProviderCard('p/r0', providers, recents, [], 'high'),
+    );
+    expect(withCurrentFirst).not.toContain('"arg":"p/r0"');
+    for (const keep of ['"arg":"p/r1"', '"arg":"p/r2"', '"arg":"p/r3"', '"arg":"p/r4"']) {
+      expect(withCurrentFirst).toContain(keep);
+    }
+    expect(withCurrentFirst).not.toContain('"arg":"p/r5"');
+  });
+
   it('lays quick-set buttons side by side instead of one full-width row each', () => {
     const card = modelProviderCard('p/cur', providers, ['p/one', 'p/two', 'p/three'], [], undefined) as {
       body: { elements: Array<Record<string, unknown>> };

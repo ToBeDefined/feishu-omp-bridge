@@ -18,13 +18,19 @@ export interface ModelProviderInfo {
   count: number;
 }
 
+/** 最近使用 / 常用两个快捷区各自最多展示几个 —— 再多就把卡片撑成按钮墙
+ * （模型历史存 20 条，常用角色也可能十几条）。 */
+const QUICK_SET_MAX = 4;
+
 /**
  * Quick-set 按钮（最近使用 / 常用）：并排、每行最多 2 个（`inlineRow` 的规则），
  * 当前模型不出现（再点一次是无操作）。标签只留模型段 —— 卡片标题已给出提供方，
  * 每个按钮都重复 `provider/` 只是噪音。
+ *
+ * 先剔当前模型再截断到 4 个：否则当前模型占掉一个名额，可见按钮只剩 3 个。
  */
 function quickSetButtons(current: string | undefined, models: string[]): object[] {
-  const items = models.filter((m) => m !== current);
+  const items = models.filter((m) => m !== current).slice(0, QUICK_SET_MAX);
   return inlineActions(
     items.map((m) => ({
       text: modelShortLabel(m),

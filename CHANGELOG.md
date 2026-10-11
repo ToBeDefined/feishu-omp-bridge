@@ -330,6 +330,11 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Fixed
+- **`/config` 表单提交不再抹掉 `access.owner`**：`nextPreferences.access` 此前按表单字段
+  整体重建（allowedUsers / allowedChats / admins），把不在表单里的 `owner` 一并丢掉 ——
+  owner 按设计只能在机器上配置，于是**一次 `/config` 提交就把它抹掉**，重启后
+  `/release`、`/exec` 等高危命令对所有人拒绝。现在提交时原样保留既有 `access.owner`，
+  并带回归测试（保留 + 空表单回落两种）。
 - **`saveConfig` 加了凭据护栏（配置被覆盖的事故复盘）**：冒烟脚本曾拿「只有
   `preferences` 的假 cfg」调 `/model submit`，把**真配置文件覆盖成 97 字节**——
   运行中的进程还在用内存里的配置，所以当场毫无异常，直到下次重启才会连不上飞书。

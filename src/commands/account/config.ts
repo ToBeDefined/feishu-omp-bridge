@@ -175,6 +175,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       }
     };
 
+    // `access.owner` 不在表单里（按设计只能在机器上配置），提交时必须原样保留 ——
+    // 否则一次 /config 提交就会把 owner 从配置里抹掉（重启后高危命令对所有人拒绝）。
     const nextPreferences = {
       ...(ctx.controls.cfg.preferences ?? {}),
       messageReply,
@@ -183,7 +185,12 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
-      access: { allowedUsers, allowedChats, admins },
+      access: {
+        ...(ctx.controls.cfg.preferences?.access ?? {}),
+        allowedUsers,
+        allowedChats,
+        admins,
+      },
     };
     const nextCfg = { ...ctx.controls.cfg, preferences: nextPreferences };
 

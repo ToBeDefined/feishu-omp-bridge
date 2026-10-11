@@ -207,6 +207,36 @@ describe('searchResultsCard', () => {
     expect(buttons).toEqual(['继续对话', '详情']);
   });
 
+  it('packs the matched content into a grey block after the row identity', () => {
+    const card = searchResultsCard('foo', [sampleContext({ matchCount: 2 })], 'q1') as {
+      body: { elements: Array<Record<string, unknown>> };
+    };
+    const rowIdx = card.body.elements.findIndex((e) => e.tag === 'column_set');
+    // 行 = [身份+meta | 按钮]，紧跟着命中内容的灰底块。
+    const row = card.body.elements[rowIdx] as { columns: Array<{ width: string }> };
+    expect(row.columns.map((c) => c.width)).toEqual(['weighted', 'auto']);
+    const block = card.body.elements[rowIdx + 1] as {
+      tag: string;
+      columns: Array<{ background_style?: string; padding?: string; elements: Array<{ content?: string }> }>;
+    };
+    expect(block.tag).toBe('column_set');
+    expect(block.columns).toHaveLength(1);
+    expect(block.columns[0]!.background_style).toBe('grey');
+    expect(block.columns[0]!.padding).toBe('8px');
+    expect(block.columns[0]!.elements[0]!.content).toContain('问题');
+    // 命中块是行的最后一段：没有把 meta 行也塞进灰底里。
+    expect(block.columns[0]!.elements[0]!.content).not.toContain('🆔');
+  });
+
+  it('drops the divider between rows (the grey block separates them)', () => {
+    const many = Array.from({ length: 3 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
+    const card = searchResultsCard('foo', many, 'q1') as {
+      body: { elements: Array<Record<string, unknown>> };
+    };
+    // 只有表头和表尾的 hr：行与行之间靠灰底块分界。
+    expect(card.body.elements.filter((e) => e.tag === 'hr')).toHaveLength(1);
+  });
+
   it('caps snippets per row and points at 详情 for the rest', () => {
     const groups = Array.from({ length: 4 }, (_, i) => ({
       messages: [{ role: 'user' as const, content: `第 ${i + 1} 处命中` }],
@@ -232,9 +262,10 @@ describe('searchResultsCard', () => {
     const done = JSON.stringify(searchResultsCard('foo', [sampleContext()], 'q1', false));
     expect(done).not.toContain('查看详情');
     expect(done).not.toContain('继续对话');
-    expect(done).not.toContain('column_set');
     expect(done).toContain('✅ **搜索完成**');
     expect(done).toContain('1 个对话 · 1 处匹配');
+    // 已结算视图仍保留灰底命中块，只是没有按钮。
+    expect(done).toContain('"background_style":"grey"');
   });
 
   it('shows a match count when a session has multiple hits', () => {
@@ -368,6 +399,24 @@ describe('searchDetailCard', () => {
     );
     expect(card).toContain('**关键命中**');
     expect(card).toContain('…');
+  });
+
+  it('packs each matched pair of the detail view into its own grey block', () => {
+    const card = searchDetailCard({
+      sessionId: 'sess-9',
+      groups: [
+        { messages: [{ role: 'user', content: '一' }], hitIndex: 0, matchCount: 1 },
+        { messages: [{ role: 'user', content: '二' }], hitIndex: 0, matchCount: 1 },
+      ],
+    }) as { body: { elements: Array<Record<string, unknown>> } };
+    const blocks = card.body.elements.filter(
+      (e) =>
+        e.tag === 'column_set' &&
+        (e.columns as Array<{ background_style?: string }>)[0]?.background_style === 'grey',
+    );
+    expect(blocks).toHaveLength(2);
+    const titles = markdowns(card).filter((c) => c.startsWith('**第 '));
+    expect(titles).toEqual(['**第 1 处**', '**第 2 处**']);
   });
 
   it('renders the text variant with the session id and every pair', () => {

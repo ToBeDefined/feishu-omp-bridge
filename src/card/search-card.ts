@@ -1,6 +1,14 @@
 import { codeSpan, escapeMd, summarizeMd } from '../utils/text';
 import { formatAgoOr } from '../utils/time';
-import { actions, button, md, shortSessionId, type ButtonSpec } from './templates';
+import {
+  actions,
+  button,
+  md,
+  panel,
+  shortSessionId,
+  stackedPanels,
+  type ButtonSpec,
+} from './templates';
 
 /**
  * Search result card rendering.
@@ -12,6 +20,10 @@ import { actions, button, md, shortSessionId, type ButtonSpec } from './template
  * - **Rows are laid out as a `column_set`** (content | buttons) so each result
  *   is a compact block instead of a heading line + meta line + a full-width
  *   button row per hit group.
+ * - **Matched content sits in a grey block** (`panel`/`stackedPanels`, the same
+ *   rounded block /context and the run card use): it is the payload of the row,
+ *   and the block's edges delimit rows better than a divider line between two
+ *   lines of small grey type.
  * - **Only the card title is heading-sized.** Six heading-sized rows of
  *   identity text is unreadable on a phone; row identity is default-size bold
  *   and everything else is `notation` (the /history card's idiom).
@@ -281,12 +293,12 @@ export function searchResultsCard(
     // One session = one conversation: a row shows its newest matched pairs and
     // keeps the rest behind 详情 (dumping every pair made rows unbounded).
     const visible = c.groups.slice(0, SEARCH_COMPACT_GROUPS);
-    for (const g of visible) {
-      lines.push(md(renderSearchContext(g, 'compact', keyword)));
-    }
+    const snippets: object[] = visible.map((g) =>
+      md(renderSearchContext(g, 'compact', keyword)),
+    );
     const hidden = c.groups.length - visible.length;
     if (hidden > 0) {
-      lines.push(md(`_另有 ${hidden} 处匹配，点「详情」看全部_`, 'notation'));
+      snippets.push(md(`_另有 ${hidden} 处匹配，点「详情」看全部_`, 'notation'));
     }
 
     const rowButtons: object[] = [];
@@ -300,8 +312,10 @@ export function searchResultsCard(
         button({ text: '详情', value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` } }),
       );
     }
-    elements.push(...columnRow(lines, rowButtons));
-    if (i < shown.length - 1) elements.push({ tag: 'hr' });
+    // Identity + meta + actions stay plain; the matched content drops into a
+    // grey block. Rows need no `hr` between them — the block edges (and the
+    // gap around them) already separate one result from the next.
+    elements.push(...columnRow(lines, rowButtons), ...greyBlock(snippets));
   });
 
   if (showButtons) {
@@ -326,6 +340,16 @@ export function searchResultsCard(
     config: { summary: { content: '搜索结果' } },
     body: { elements },
   };
+}
+
+/**
+ * Rounded grey block holding the matched content — the row's payload, visually
+ * separated from its small grey identity/meta lines. `panel()` produces a
+ * `column`, which is only accepted inside a `column_set` (`stackedPanels`), and
+ * an empty block would render as an empty box.
+ */
+function greyBlock(lines: object[]): object[] {
+  return lines.length > 0 ? stackedPanels([panel(lines)]) : [];
 }
 
 /**
@@ -396,7 +420,12 @@ export function searchDetailCard(info: SearchDetailInfo): object {
     .filter(Boolean)
     .join(' · ');
   if (metaLine) elements.push(md(metaLine, 'notation'));
-  elements.push({ tag: 'hr' }, md(renderSearchGroups(info, 'detail', info.keyword)));
+  elements.push({ tag: 'hr' });
+  const multi = info.groups.length > 1;
+  info.groups.forEach((g, i) => {
+    if (multi) elements.push(md(`**第 ${i + 1} 处**`));
+    elements.push(...greyBlock([md(renderSearchContext(g, 'detail', info.keyword))]));
+  });
   if (!info.done) {
     elements.push(
       { tag: 'hr' },

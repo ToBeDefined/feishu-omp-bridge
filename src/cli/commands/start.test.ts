@@ -1,3 +1,4 @@
+import { spawn, writeFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BridgeChannel } from '../../bot/channel';
@@ -46,7 +47,7 @@ vi.mock('../../media/cache', () => ({
 import { paths } from '../../config/paths';
 import { readAndPrune, type ProcessEntry } from '../../runtime/registry';
 import { startChannel } from '../../bot/channel';
-import { runStart } from './start';
+import { isReplaceableConflict, replaceSupersededConflicts, runStart } from './start';
 
 const SENTINEL_ID = 'zz99';
 
@@ -130,5 +131,53 @@ describe('runStart 信号处理时序', () => {
     expect(ids.filter((id) => id !== SENTINEL_ID)).toEqual([]); // 自己的已注销
     // 建连从未完成 → 没有任何 bridge 可断开；startChannel 恰好被调一次。
     expect(vi.mocked(startChannel)).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('replaceSupersededConflicts（孤儿/前任顶替）', () => {
+  const base = (pid: number): ProcessEntry => ({
+    id: 'conf1',
+    pid,
+    appId: 'cli_x',
+    tenant: 'feishu',
+    configPath: '/tmp/x.json',
+    startedAt: new Date().toISOString(),
+    version: '0.1.0',
+  });
+
+  it('supervised 环境下无条件顶替：SIGTERM 后冲突实例退出', async () => {
+    const child = spawn('sleep', ['30'], { stdio: 'ignore' });
+    try {
+      const remaining = await replaceSupersededConflicts([base(child.pid!)], {
+        supervised: true,
+        timeoutMs: 2000,
+      });
+      expect(remaining).toEqual([]); // 已退出
+    } finally {
+      try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+    }
+  });
+
+  it('非 supervised 下只顶替孤儿（ppid=1）或已消失条目，活终端实例保留', async () => {
+    const child = spawn('sleep', ['30'], { stdio: 'ignore' });
+    try {
+      const dead = base(999999); // 已消失 → readAndPrune 竞态，可顶替
+      const foreground = base(child.pid!); // 父进程是本测试进程（活着）→ 不动
+      const remaining = await replaceSupersededConflicts(
+        [dead, foreground],
+        { supervised: false, timeoutMs: 500 },
+      );
+      expect(remaining.map((e) => e.pid)).toEqual([child.pid]);
+    } finally {
+      try { child.kill('SIGKILL'); } catch { /* 已退出 */ }
+    }
+  });
+
+  it('isReplaceableConflict：supervised=true 恒真；否则看 ppid', () => {
+    const ppidOf = (pid: number): number | undefined => (pid === 100 ? 1 : pid === 200 ? 4242 : undefined);
+    expect(isReplaceableConflict(base(1), ppidOf, true)).toBe(true);
+    expect(isReplaceableConflict(base(100), ppidOf, false)).toBe(true); // ppid=1 孤儿
+    expect(isReplaceableConflict(base(200), ppidOf, false)).toBe(false); // 活终端
+    expect(isReplaceableConflict(base(300), ppidOf, false)).toBe(true); // 已消失
   });
 });

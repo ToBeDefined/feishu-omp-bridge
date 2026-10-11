@@ -330,6 +330,13 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Fixed
+- **重启死锁（生产事故）**：`kickstart` 杀掉 supervisor 后其 node 子进程可能脱管存活
+  （ppid=1 孤儿），此后每次 launchd 拉起的新实例都会因「单实例守卫」拒绝启动并 exit 1，
+  无限崩溃循环，release 卡永远停在「重启中」。现在 boot 时会把**可顶替**的冲突实例
+  （孤儿、已消失条目，或 launchd/systemd 托管环境——plist/unit 注入 `FOB_SUPERVISED=1`）
+  SIGTERM 掉再继续；前台开发实例（父进程为活终端）保持守卫本意，仍拒绝。
+
+### Fixed
 - **审查第五批（daemon / CLI / bot 胶水，6 切片并行修复）**：
   - **评论管线**：事件按 `event_id`（缺失则 fileToken+comment+reply+time）有界去重，
     重推不再重跑 agent / 重复回复 / 污染 doc 会话；agent 事件流抛错时 `run.stop()`

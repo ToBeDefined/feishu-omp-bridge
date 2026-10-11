@@ -71,6 +71,8 @@ ${program.map((arg) => `        <string>${arg}</string>`).join('\n')}
     <dict>
         <key>PATH</key>
         <string>${escape(inputs.envPath)}</string>
+        <key>FOB_SUPERVISED</key>
+        <string>1</string>
     </dict>
 </dict>
 </plist>

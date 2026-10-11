@@ -1,4 +1,5 @@
 import dns from 'node:dns';
+import { spawnSync } from 'node:child_process';
 import pkg from '../../../package.json';
 import { OmpAdapter } from '../../agent';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
@@ -159,7 +160,11 @@ export async function runStart(opts: StartOptions): Promise<void> {
   // already clean up old processes first).
   const conflicts = sameAppOthers(cfg.accounts.app.id);
   if (conflicts.length > 0) {
-    rejectDuplicates(cfg, conflicts);
+    // 同 job 的孤儿/前任（kickstart 杀了 supervisor 但 node 存活）若只是拒绝，
+    // KeepAlive 会在每次重启时撞上它 → 无限崩溃循环、release 卡永远停在
+    // 「重启中」。这里把可顶替的冲突实例 SIGTERM 掉再继续。
+    const remaining = await replaceSupersededConflicts(conflicts);
+    if (remaining.length > 0) rejectDuplicates(cfg, remaining);
   }
 
   // Register self in the process registry. Cleanup is wired via stop() and
@@ -383,6 +388,81 @@ export async function runStart(opts: StartOptions): Promise<void> {
  * manager can't answer questions, and erroring out by default would surprise
  * users running a daemon.
  */
+/**
+ * 判断一个同应用的存活实例能否被当前启动直接顶替：
+ * - `FOB_SUPERVISED=1`（launchd plist / systemd unit 注入）：守护接管一切，含前台
+ *   实例 —— 接管语义本来就如此，且双连接必须避免；
+ * - 否则只顶替**孤儿**（ppid=1，supervisor 已死但 node 存活）或已消失的条目
+ *   （readAndPrune 竞态）；前台 `run`（父进程是活着的终端）保持守卫本意，不顶替。
+ */
+export function isReplaceableConflict(
+  entry: ProcessEntry,
+  ppidOf: (pid: number) => number | undefined,
+  supervised: boolean,
+): boolean {
+  if (supervised) return true;
+  const ppid = ppidOf(entry.pid);
+  return ppid === 1 || ppid === undefined;
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    let alive = true;
+    try {
+      process.kill(pid, 0);
+    } catch {
+      alive = false;
+    }
+    if (!alive) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+/**
+ * SIGTERM 可顶替的冲突实例并等它退出（不退则 SIGKILL 兜底），返回仍然
+ * 存活的实例 —— 非空则调用方照旧拒绝启动。
+ */
+export async function replaceSupersededConflicts(
+  conflicts: ProcessEntry[],
+  opts: { supervised?: boolean; timeoutMs?: number } = {},
+): Promise<ProcessEntry[]> {
+  const supervised = opts.supervised ?? process.env.FOB_SUPERVISED === '1';
+  const ppidOf = (pid: number): number | undefined => {
+    const r = spawnSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8' });
+    const n = Number.parseInt((r.stdout ?? '').trim(), 10);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  for (const e of conflicts) {
+    if (!isReplaceableConflict(e, ppidOf, supervised)) continue;
+    console.log(`顶替旧实例 ${e.id}（pid ${e.pid}）：同一守护任务的孤儿/前任，先 SIGTERM。`);
+    try {
+      process.kill(e.pid, 'SIGTERM');
+    } catch {
+      /* 已经死了 */
+    }
+    if (!(await waitForProcessExit(e.pid, opts.timeoutMs ?? 8000))) {
+      console.warn(`旧实例 ${e.pid} 未按期退出，升级 SIGKILL。`);
+      try {
+        process.kill(e.pid, 'SIGKILL');
+      } catch {
+        /* 已经死了 */
+      }
+      await waitForProcessExit(e.pid, 2000);
+    }
+    console.log(`旧实例 ${e.pid} 已退出，由当前实例接管。`);
+  }
+  return conflicts.filter((e) => {
+    try {
+      process.kill(e.pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 /**
  * Refuse to start when the same Feishu app already has a live process.
  * Enforces single-process: the app's events would be routed to whichever

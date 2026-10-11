@@ -60,6 +60,7 @@ RestartSec=5
 StandardOutput=append:${escapeLogPath(daemonStdoutPath())}
 StandardError=append:${escapeLogPath(daemonStderrPath())}
 Environment="PATH=${escape(inputs.envPath)}"
+Environment="FOB_SUPERVISED=1"
 
 [Install]
 WantedBy=default.target

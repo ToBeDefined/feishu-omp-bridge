@@ -973,6 +973,10 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
     const handle = activeRuns.register(scope, run, claim);
     if (!handle) {
       log.warn('runs', 'register-failed', { scope, via: 'scheduler' });
+      // 防御性：把 claim 还回去（这条路径不抛异常，调用方的 `.catch` 不会触发；
+      // 与交互路径 finally 里的 releaseClaim 对称）。当前 register 在「claim 存活且
+      // 无 handle」时必然成功，所以这条分支实际很难走到 —— 留着防止 contract 变化后泄漏。
+      activeRuns.releaseClaim(claim);
       await run.stop().catch(() => {});
       return;
     }

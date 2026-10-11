@@ -526,6 +526,15 @@
   全部残留一并清掉。
 - 死代码：`src/bot/scope.ts`、`isManaged`、`ChatModeCache.invalidate`、
   未使用的 `senderId` 参数。
+- **未使用的导入 / 局部 / 参数（全仓一次扫净）**：`tsc --noUnusedLocals
+  --noUnusedParameters` 从 21 处告警扫到 0 —— `bot/batch.ts`（`homedir`/`stat`/
+  `RunCard`/`createTableBudget`）、`bot/comments.ts` 与 `commands/lifecycle/exec.ts`
+  的 `homedir`、`bot/feishu-host.ts` 的 `viewImageTool(channel)`、`card/managed.ts`
+  的 `unlink`、`card/pagination.ts` 的 `RunCard`、`commands/session/*` 合并后遗留的
+  `Handler`/`formatAgo`/`codeSpan`/`HISTORY_PAGE_SIZE`、`cli/commands/start.ts` 的
+  `updateManagedCard`、`cli/index.ts` 的 `migrate` 绑定、`runtime/registry.ts` 的
+  `readFile`/`EMPTY`、`commands/model/{model,thinking}.ts` 三个只被透传、从未读取的
+  `current` 参数（连调用方一起改），以及三处测试里的死导入/死局部。
 
 ## [0.1.0] — 2026-05 起的历史功能
 

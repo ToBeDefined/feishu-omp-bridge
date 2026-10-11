@@ -31,9 +31,9 @@ async function handleModel(args: string, ctx: CommandContext): Promise<void> {
     case 'provider':
       return showModelPicker(rest.join(' '), ctx, current);
     case 'use':
-      return setModel(rest.join(' '), ctx, current);
+      return setModel(rest.join(' '), ctx);
     case 'submit':
-      return submitModel(ctx, current);
+      return submitModel(ctx);
     case 'cancel':
       return cancelModel(ctx);
     case 'reset':
@@ -46,7 +46,7 @@ async function handleModel(args: string, ctx: CommandContext): Promise<void> {
         await reply(ctx, '❌ 用法:`/model` 打开选择卡片,或 `/model <id>` 直接设置(如 `futu/deepseek-v4-flash-0731`)。');
         return;
       }
-      return setModel(trimmed, ctx, current);
+      return setModel(trimmed, ctx);
   }
 }
 
@@ -146,7 +146,7 @@ async function persistModelPreferences(
   return true;
 }
 
-async function submitModel(ctx: CommandContext, current: string | undefined): Promise<void> {
+async function submitModel(ctx: CommandContext): Promise<void> {
   const selector = String(ctx.formValue?.model_selector ?? '').trim();
   if (!selector) {
     await reply(ctx, '未选择模型,已取消。');
@@ -202,7 +202,7 @@ async function resetModel(ctx: CommandContext, current: string | undefined): Pro
   await reply(ctx, '✅ 已清除模型设置,回退 OMP 默认。下一条消息生效。');
 }
 
-async function setModel(model: string, ctx: CommandContext, current: string | undefined): Promise<void> {
+async function setModel(model: string, ctx: CommandContext): Promise<void> {
   if (!model) {
     await reply(ctx, '未指定模型。用 `/model` 打开选择卡片。');
     return;

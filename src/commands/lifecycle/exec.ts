@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import { homedir } from 'node:os';
 import { execResultCard } from '../../card/templates';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';

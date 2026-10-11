@@ -97,7 +97,7 @@ program
     await runServiceUnregister();
   });
 
-const migrate = program
+program
   .command('migrate')
   .description('Migrate legacy config paths/shape to the current layout (idempotent no-op when already migrated)')
   .option('-c, --config <path>', 'path to config file')

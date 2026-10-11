@@ -1,4 +1,3 @@
-import { homedir } from 'node:os';
 import type { CommentEvent, LarkChannel } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
 import type { AppConfig } from '../config/schema';

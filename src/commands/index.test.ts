@@ -75,7 +75,7 @@ describe('command dispatch', () => {
       const sent: string[] = [];
       const ctx = makeCtx({
         msg: { ...makeCtx().msg, content: alias },
-        channel: { send: async (id: string, msg: { markdown: string }) => void sent.push(msg.markdown) } as never,
+        channel: { send: async (_id: string, msg: { markdown: string }) => void sent.push(msg.markdown) } as never,
         sessions: { chats: () => [] } as never,
         workspaces: { cwdFor: () => '/tmp', listNamed: () => ({}) } as never,
       });

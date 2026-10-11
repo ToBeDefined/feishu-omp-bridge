@@ -137,7 +137,7 @@ async function promptPassword(prompt: string): Promise<string> {
   const isTTY = Boolean(process.stdin.isTTY);
   return new Promise((resolve) => {
     const muted = new Writable({
-      write(chunk: Buffer | string, _enc, cb) {
+      write(_chunk: Buffer | string, _enc, cb) {
         // Only suppress AFTER the prompt has been written. We let the
         // initial prompt through by writing it ourselves below, then
         // swallow everything else.

@@ -26,9 +26,9 @@ async function handleThinking(args: string, ctx: CommandContext): Promise<void> 
     case '':
       return showThinkingPicker(ctx, current);
     case 'set':
-      return setThinking(rest.join(' '), ctx, current);
+      return setThinking(rest.join(' '), ctx);
     case 'submit':
-      return submitThinking(ctx, current);
+      return submitThinking(ctx);
     case 'cancel':
       return cancelThinking(ctx);
     case 'reset':
@@ -36,7 +36,7 @@ async function handleThinking(args: string, ctx: CommandContext): Promise<void> 
     default:
       if (trimmed === '') return showThinkingPicker(ctx, current);
       if (isOmpThinkingLevel(trimmed)) {
-        return setThinking(trimmed, ctx, current);
+        return setThinking(trimmed, ctx);
       }
       await reply(
         ctx,
@@ -79,7 +79,7 @@ async function persistThinkingPreferences(
   return true;
 }
 
-async function setThinking(level: string, ctx: CommandContext, current: string | undefined): Promise<void> {
+async function setThinking(level: string, ctx: CommandContext): Promise<void> {
   if (!level || !isOmpThinkingLevel(level)) {
     await reply(ctx, '❌ 合法值:`off|minimal|low|medium|high|xhigh|max|auto`');
     return;
@@ -104,13 +104,13 @@ async function setThinking(level: string, ctx: CommandContext, current: string |
   }
 }
 
-async function submitThinking(ctx: CommandContext, current: string | undefined): Promise<void> {
+async function submitThinking(ctx: CommandContext): Promise<void> {
   const level = String(ctx.formValue?.thinking_level ?? '').trim();
   if (!level) {
     await reply(ctx, '未选择思考强度,已取消。');
     return;
   }
-  await setThinking(level, ctx, current);
+  await setThinking(level, ctx);
 }
 
 async function cancelThinking(ctx: CommandContext): Promise<void> {

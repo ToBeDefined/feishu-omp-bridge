@@ -1,5 +1,3 @@
-import { homedir } from 'node:os';
-import { stat } from 'node:fs/promises';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter, AgentEvent, AgentUiRequest } from '../agent/types';
 import type { ActiveRuns, RunClaim, RunHandle } from './active-runs';
@@ -13,8 +11,8 @@ import {
   updateManagedCard,
 } from '../card/managed';
 import { renderOmpUiRequestCard, renderOmpUiResultCard } from '../card/omp-ui';
-import { renderCard, type RunCard } from '../card/run-renderer';
-import { createTableBudget, splitByTableBudget } from '../card/tables';
+import { renderCard } from '../card/run-renderer';
+import { splitByTableBudget } from '../card/tables';
 import {
   CARD_UPDATE_MIN_INTERVAL_MS,
   carryOverBlocks,

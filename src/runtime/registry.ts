@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { paths } from '../config/paths';
 import type { TenantBrand } from '../config/schema';
@@ -37,8 +37,6 @@ export interface ProcessEntry {
 interface RegistryFile {
   entries: ProcessEntry[];
 }
-
-const EMPTY: RegistryFile = { entries: [] };
 
 function readRaw(path: string): RegistryFile {
   try {

@@ -88,7 +88,7 @@ export function createFeishuHostIntegration(
       sendCardTool(channel, ctx),
       recallMessageTool(channel),
       addReactionTool(channel, ctx),
-      viewImageTool(channel, ctx),
+      viewImageTool(ctx),
     ],
     uriSchemes: [feishuUriScheme(channel, ctx)],
   };
@@ -376,7 +376,7 @@ const IMAGE_MIME: Record<string, string> = {
  * run as a follow-up with the image attached (OMP turns the path into a
  * base64 image payload). Only works while a run is active for this chat.
  */
-function viewImageTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTool {
+function viewImageTool(ctx: FeishuHostContext): AgentHostTool {
   return {
     definition: {
       name: 'feishu_view_image',

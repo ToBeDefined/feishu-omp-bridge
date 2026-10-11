@@ -25,7 +25,7 @@ import {
 } from '../../config/store';
 import { gcOldLogs, log } from '../../core/logger';
 import { kickstart } from '../../daemon/launchd';
-import { finalizeInterruptedCards, updateManagedCard } from '../../card/managed';
+import { finalizeInterruptedCards } from '../../card/managed';
 import { clearOnlineNotice, takeOnlineNotice } from '../../bot/online-notify';
 import { onlineCard, releaseCard, restartCard } from '../../card/templates';
 import { RELEASE_STEPS } from '../../release/run';

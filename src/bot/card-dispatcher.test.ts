@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { handleCardAction, resolveCardCommand } from './card-dispatcher';
+import { resolveCardCommand } from './card-dispatcher';
 import { agentSelectedCard } from '../card/templates';
 
 describe('agentSelectedCard', () => {

@@ -330,6 +330,19 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Fixed
+- **审查第四批（卡片管线 / agent 传输，reviewer 掉线后人工补审）**：
+  - **子代理名放进 code span 却用 `escapeMd`**：反斜杠转义在 `` `...` `` 里不生效，
+    `a_b*reviewer` 会渲染成 `a\_b\*reviewer`（可见反斜杠）。改用 `codeSpan`
+    （只把反引号换成撇号），4 处渲染统一。
+  - **用户输入裸插 code span**：`/ws use`、`/ctx` 的「命名工作空间」名字若含反引号会提前
+    闭合 span（后续文本变成正文），改用 `codeSpan`。
+  - **子进程 stdio 没有 `'error'` 监听**：`omp` 子进程在写入前/中死掉时 EPIPE 是**异步**
+    `'error'` 事件（`writeFrame` 的 try/catch 只兜同步抛），无监听会直接抛出 —— 落到进程级
+    `uncaughtException`（进程不死，但每次都是未捕获异常、状态被视为不可靠）。`agent/omp`
+    两个 spawn 点（主 run + oneshot compact）与 `secret-resolver` 的 provider 写入都补上，
+    抽成 `wireChildStdio()`。
+
+### Fixed
 - **存储层对「坏形状 JSON」的容忍（审查第三批）**：
   - `loadConfig`：文件是合法 JSON 但**不是对象**（`null` / 数组 / 数字 / 字符串）时原样返回
     —— 调用方 `cfg.accounts…` 直接抛，能把启动流程带崩；现在按「没有配置」返回 `{}` 并告警。

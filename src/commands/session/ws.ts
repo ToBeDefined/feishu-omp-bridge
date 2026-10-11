@@ -76,7 +76,7 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
     prevCwd && prevCwd !== cwd
       ? `\n\n想撤回？发 \`/ws undo\` 回到 \`${prevCwd}\``
       : '';
-  const confirm = `✅ 已切换到 \`${name}\` (${cwd})\n（session 已重置）${undoHint}`;
+  const confirm = `✅ 已切换到 \`${codeSpan(name)}\` (${cwd})\n（session 已重置）${undoHint}`;
   // When triggered from the panel button, send the confirmation as a
   // standalone message (not threaded under the panel), then dismiss the
   // panel. Threading under the panel and deleting the panel would take the

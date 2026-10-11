@@ -8,7 +8,7 @@ import {
 } from '../../config/schema';
 import type { CommandContext } from '../index';
 import { formatIdleLine } from '../shared';
-import { summarizeMd } from '../../utils/text';
+import { codeSpan, summarizeMd } from '../../utils/text';
 import type { ContextInfo } from '../../card/templates';
 import { formatAgoOr, formatClockOr } from '../../utils/time';
 import { conversationCwd } from '../../session/current-cwd';
@@ -79,7 +79,7 @@ export function renderContext(
   // current cwd; otherwise say none exists.
   const matchingNames = Object.entries(ctx.workspaces.listNamed())
     .filter(([, path]) => path === cwd)
-    .map(([name]) => `\`${name}\``);
+    .map(([name]) => `\`${codeSpan(name)}\``);
   const quickDirLine =
     matchingNames.length > 0 ? matchingNames.join(' ') : '（当前目录无快捷方式）';
   const lastMsgLine = summary.lastMessage

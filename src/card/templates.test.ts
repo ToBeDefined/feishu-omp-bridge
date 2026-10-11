@@ -102,8 +102,8 @@ describe('compactCard', () => {
       compactCard({ phase: 'started', tokensK: '690', mb: '10.0', eta: '15分30秒', cap: '46分' }),
     );
     expect(out).toContain('正在压缩会话上下文');
-    expect(out).toContain('690k token');
-    expect(out).toContain('10.0 MB');
+    expect(out).toContain('**690k** token');
+    expect(out).toContain('**10.0** MB');
     expect(out).toContain('15分30秒');
     expect(out).toContain('46分');
   });

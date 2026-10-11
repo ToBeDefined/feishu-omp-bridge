@@ -1,6 +1,14 @@
 import { summarizeMd } from '../utils/text';
 import { isOmpThinkingLevel, OMP_THINKING_LEVELS } from '../config/schema';
-import { actions, shortPath, shortSessionId, type ButtonSpec } from './templates';
+import {
+  actions,
+  inlineActions,
+  panel,
+  shortPath,
+  shortSessionId,
+  stackedPanels,
+  type ButtonSpec,
+} from './templates';
 import { escapeCode, escapeMd } from '../utils/text';
 import { formatAgo } from '../utils/time';
 
@@ -406,29 +414,19 @@ export function resumeCard(
         text_size: 'notation',
       });
     }
-    elements.push({
-      tag: 'column_set',
-      flex_mode: 'none',
-      horizontal_spacing: 'small',
-      columns: [
-        { tag: 'column', width: 'weighted', weight: 1, vertical_align: 'center', elements: details },
+    // 一行一个会话：身份 / meta 进灰底块，动作并排贴在块下面（与 /history、/search 同款）。
+    elements.push(
+      ...stackedPanels([panel(details)]),
+      ...inlineActions([
         {
-          tag: 'column',
-          width: 'auto',
-          vertical_align: 'center',
-          elements: [
-            {
-              tag: 'button',
-              text: { tag: 'plain_text', content: isCurrent ? '✓ 当前' : '恢复' },
-              type: isCurrent ? 'default' : 'primary',
-              // Keep the value so the click still resolves to this session, but a
-              // current-session switch is a no-op in applyResume.
-              value: { cmd: 'resume.use', arg: key },
-            },
-          ],
+          text: isCurrent ? '✓ 当前' : '恢复',
+          style: isCurrent ? ('default' as const) : ('primary' as const),
+          // Keep the value so the click still resolves to this session, but a
+          // current-session switch is a no-op in applyResume.
+          value: { cmd: 'resume.use', arg: key },
         },
-      ],
-    });
+      ]),
+    );
     if (i < sessions.length - 1) elements.push({ tag: 'hr' });
   });
 

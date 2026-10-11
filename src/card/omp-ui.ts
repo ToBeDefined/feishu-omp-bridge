@@ -1,5 +1,6 @@
 import type { AgentUiRequest, AgentUiResponse } from '../agent/types';
 import { escapeMd } from '../utils/text';
+import { panel, stackedPanels } from './templates';
 
 export const OMP_UI_MARKER = '__omp_ui';
 export const OMP_UI_VALUE_FIELD = 'omp_ui_value';
@@ -46,7 +47,13 @@ export function renderOmpUiRequestCard(request: AgentUiRequest, scope?: string):
   }
 
   if (request.method === 'confirm') {
-    elements.push(markdown(request.message));
+    // 要用户确认的那句话是这张卡的「内容」：进灰底块，与说明文字和按钮分开
+    // （OMP 卡片里唯一值得读的一段文字）。
+    elements.push(
+      ...stackedPanels([
+        panel([{ tag: 'markdown', content: request.message, text_size: 'notation' }]),
+      ]),
+    );
     elements.push({
       tag: 'column_set',
       flex_mode: 'flow',

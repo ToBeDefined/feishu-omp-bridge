@@ -1,4 +1,4 @@
-import { actions, button, shortPath } from './templates';
+import { actions, inlineActions, md, panel, shortPath, stackedPanels } from './templates';
 import { escapeMd, summarizeMd } from '../utils/text';
 import { formatAgo, formatClock } from '../utils/time';
 
@@ -102,33 +102,24 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
         text_size: 'notation',
       });
     }
-    // Row layout: content in a weighted column, the resume button in an auto
-    // column — `width` is only honoured under `flex_mode: 'none'`, and the
-    // weighted column absorbs the slack so nothing is stretched or squeezed.
+    // Row layout: the identity / meta / topic lines sit in a grey block, and
+    // the row's action goes side by side UNDER it — the same shape as a
+    // /search result row, so the two list cards read alike.
     //
     // The only row action is 继续对话 — and even that is dropped on the current
-    // row, where resuming would be a no-op.
-    const rowButtons: object[] = [];
+    // row, where resuming would be a no-op (leaving just the block).
+    elements.push(...stackedPanels([panel(lines)]));
     if (!isCurrent) {
-      rowButtons.push(
-        button({
-          text: '继续对话',
-          value: { cmd: 'history.resume', arg: row.sessionId },
-          style: 'primary',
-        }),
+      elements.push(
+        ...inlineActions([
+          {
+            text: '继续对话',
+            value: { cmd: 'history.resume', arg: row.sessionId },
+            style: 'primary',
+          },
+        ]),
       );
     }
-    elements.push({
-      tag: 'column_set',
-      flex_mode: 'none',
-      horizontal_spacing: 'small',
-      columns: [
-        { tag: 'column', width: 'weighted', weight: 1, vertical_align: 'center', elements: lines },
-        ...(rowButtons.length > 0
-          ? [{ tag: 'column', width: 'auto', vertical_align: 'center', elements: rowButtons }]
-          : []),
-      ],
-    });
     if (i < page.length - 1) elements.push({ tag: 'hr' });
   });
 

@@ -38,6 +38,15 @@ function buttonValues(card: object): Array<{ cmd: string; arg: string }> {
     .map(({ cmd, arg }) => ({ cmd, arg }));
 }
 
+/** Every grey content block of a card. */
+function greyBlocks(card: { body: { elements: Array<Record<string, unknown>> } }): unknown[] {
+  return card.body.elements.filter(
+    (e) =>
+      e.tag === 'column_set' &&
+      (e.columns as Array<{ background_style?: string }>)[0]?.background_style === 'grey',
+  );
+}
+
 describe('historyCard', () => {
   it('renders the identity, activity time, turn count and id handle per row', () => {
     const card = JSON.stringify(
@@ -76,9 +85,9 @@ describe('historyCard', () => {
     const text = JSON.stringify(card);
     expect(text.match(/会话 UI 优化/g)?.length).toBe(1);
     expect(text.match(/看下 FC1 在做什么/g)?.length).toBe(1);
-    // Exactly one row container per row.
+    // Exactly one grey row block per row.
     const parsed = card as { body: { elements: Array<Record<string, unknown>> } };
-    expect(parsed.body.elements.filter((e) => e.tag === 'column_set' && e.flex_mode === 'none')).toHaveLength(2);
+    expect(greyBlocks(parsed)).toHaveLength(2);
   });
 
   it("shows each row's workspace only in all-mode", () => {
@@ -134,14 +143,18 @@ describe('historyCard', () => {
         label: '继续对话',
       },
     ]);
-    // Row = weighted content column + auto button column: `width` only applies
-    // under flex_mode 'none', and weighted absorbs the slack so the button is
-    // neither stretched across the card nor squeezed.
+    // Row = grey content block, then its action side by side underneath.
     const parsed = card as { body: { elements: Array<Record<string, unknown>> } };
-    const rowSet = parsed.body.elements.filter((e) => e.tag === 'column_set')[0]!;
-    const cols = rowSet.columns as Array<Record<string, unknown>>;
-    expect(rowSet.flex_mode).toBe('none');
-    expect(cols.map((c) => c.width)).toEqual(['weighted', 'auto']);
+    expect(greyBlocks(parsed)).toHaveLength(1);
+    const actionRow = parsed.body.elements.filter((e) => e.tag === 'column_set').at(-1) as {
+      flex_mode: string;
+      columns: Array<{ width: string; elements: Array<Record<string, unknown>> }>;
+    };
+    expect(actionRow.flex_mode).toBe('none');
+    expect(actionRow.columns.map((c) => c.width)).toEqual(['weighted']);
+    expect((actionRow.columns[0]!.elements[0] as { text: { content: string } }).text.content).toBe(
+      '继续对话',
+    );
   });
 
   it('marks the current session instead of offering a no-op resume', () => {
@@ -162,13 +175,11 @@ describe('historyCard', () => {
     );
     expect(markdown.some((c) => c.includes('✅ 当前'))).toBe(true);
     expect(markdown.some((c) => c.includes('🆔') && c.includes('✅ 当前'))).toBe(false);
-    // The current row is a single-column layout (no button column).
+    // The current row keeps its grey block but has no action row at all.
     const parsed = card as { body: { elements: Array<Record<string, unknown>> } };
-    const sets = parsed.body.elements.filter((e) => e.tag === 'column_set');
-    const firstCols = sets[0]!.columns as unknown[];
-    const secondCols = sets[1]!.columns as unknown[];
-    expect(firstCols.length).toBe(1);
-    expect(secondCols.length).toBe(2);
+    expect(greyBlocks(parsed)).toHaveLength(2);
+    // 2 个行尾动作块（只有另一行有）+ 2 个灰底块 = 4 个 column_set。
+    expect(parsed.body.elements.filter((e) => e.tag === 'column_set')).toHaveLength(3);
   });
 
   it('carries exactly one 继续对话 button per row', () => {

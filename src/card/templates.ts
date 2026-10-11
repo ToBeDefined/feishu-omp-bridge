@@ -217,35 +217,19 @@ export function workspacesCard(current: string | undefined, named: Record<string
     elements.push(HR);
     entries.forEach(([name, path], i) => {
       const isCurrent = path === current;
-      elements.push({
-        tag: 'column_set',
-        flex_mode: 'none',
-        horizontal_spacing: 'small',
-        columns: [
-          {
-            tag: 'column',
-            width: 'weighted',
-            weight: 1,
-            vertical_align: 'center',
-            elements: [
-              md(`**${escapeMd(name)}**${isCurrent ? ' ⭐' : ''}`),
-              md(`_${escapeCode(tildePath(path))}_`, 'notation'),
-            ],
-          },
-          {
-            tag: 'column',
-            width: 'auto',
-            vertical_align: 'center',
-            elements: [button({ text: '切换', value: { cmd: 'ws.use', name }, style: 'primary' })],
-          },
-          {
-            tag: 'column',
-            width: 'auto',
-            vertical_align: 'center',
-            elements: [button({ text: '删除', value: { cmd: 'ws.remove', name }, style: 'danger' })],
-          },
-        ],
-      });
+      // 一行一个工作空间：内容进灰底块，动作并排贴在块下面（与 /search 结果行同一套）。
+      elements.push(
+        ...stackedPanels([
+          panel([
+            md(`**${escapeMd(name)}**${isCurrent ? ' ⭐' : ''}`),
+            md(`_${escapeCode(tildePath(path))}_`, 'notation'),
+          ]),
+        ]),
+        ...inlineActions([
+          { text: '切换', value: { cmd: 'ws.use', name }, style: 'primary' },
+          { text: '删除', value: { cmd: 'ws.remove', name }, style: 'danger' },
+        ]),
+      );
       if (i < entries.length - 1) elements.push(HR);
     });
   }
@@ -471,33 +455,18 @@ export function psCard(rows: PsRow[]): object {
   const blocks: object[] = [md(`🖥 **Bot 进程** ×${rows.length}`, 'heading')];
   rows.forEach((row, i) => {
     const label = row.botName ?? row.appId;
-    blocks.push({
-      tag: 'column_set',
-      flex_mode: 'none',
-      horizontal_spacing: 'small',
-      columns: [
-        {
-          tag: 'column',
-          width: 'weighted',
-          weight: 1,
-          vertical_align: 'center',
-          elements: [
-            md(
-              `**#${i + 1}** ${escapeMd(label)}${row.isCurrent ? ' ⭐ 当前' : ''}`,
-            ),
-            md(`_\`${escapeCode(row.id)}\` · ${escapeMd(row.appId)} · ${escapeMd(row.startedAgo)}启动_`, 'notation'),
-          ],
-        },
-        {
-          tag: 'column',
-          width: 'auto',
-          vertical_align: 'center',
-          elements: [
-            button({ text: '退出', value: { cmd: 'exit', arg: row.id }, style: 'danger' }),
-          ],
-        },
-      ],
-    });
+    // 一个进程一个灰底块，行尾「退出」横排。
+    blocks.push(
+      ...stackedPanels([
+        panel([
+          md(`**#${i + 1}** ${escapeMd(label)}${row.isCurrent ? ' ⭐ 当前' : ''}`),
+          md(`_\`${escapeCode(row.id)}\` · ${escapeMd(row.appId)} · ${escapeMd(row.startedAgo)}启动_`, 'notation'),
+        ]),
+      ]),
+      ...inlineActions([
+        { text: '退出', value: { cmd: 'exit', arg: row.id }, style: 'danger' },
+      ]),
+    );
   });
   blocks.push(
     { tag: 'hr' },
@@ -555,16 +524,19 @@ export interface CompactInfo {
 
 export function compactCard(info: CompactInfo): object {
   if (info.phase === 'started') {
-    const sizeLine =
+    const sizeBlock =
       info.tokensK !== undefined
-        ? md(
-            `📏 会话 ≈${info.tokensK}k token / ${info.mb} MB\n⏳ 预计 ≈${info.eta}（上限 ${info.cap}）`,
-          )
-        : md('_（无法估算会话大小，耐心等待…）_', 'notation');
+        ? stackedPanels([
+            panel([
+              md(`📏 会话 ≈**${info.tokensK}k** token · **${info.mb}** MB`),
+              md(`⏳ 预计 ≈${info.eta}（上限 ${info.cap}）`),
+            ]),
+          ])
+        : [md('_（无法估算会话大小，耐心等待…）_', 'notation')];
     return shell('🫧 压缩会话', [
       md('🫧 **正在压缩会话上下文**', 'heading'),
       md('_完成后会在这里通知你。_', 'notation'),
-      sizeLine,
+      ...sizeBlock,
     ]);
   }
   if (info.phase === 'failed') {

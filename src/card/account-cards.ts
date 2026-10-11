@@ -1,4 +1,5 @@
 import type { TenantBrand } from '../config/schema';
+import { md, panel, stackedPanels } from './templates';
 
 function maskAppId(id: string): string {
   if (id.length < 12) return id;
@@ -17,16 +18,15 @@ export function accountCurrentCard(info: CurrentInfo): object {
     config: { summary: { content: '当前应用' } },
     body: {
       elements: [
-        {
-          tag: 'markdown',
-          content: [
-            '📋 **当前应用**',
-            '',
-            `**App ID**: \`${maskAppId(info.appId)}\``,
-            `**Bot 名**: ${info.botName ?? '(未知)'}`,
-            `**Tenant**: ${info.tenant}`,
-          ].join('\n'),
-        },
+        md('📋 **当前应用**'),
+        // 事实进灰底块（与 /context /status 同一套观感），动作留在块外。
+        ...stackedPanels([
+          panel([
+            md(`**App ID**: \`${maskAppId(info.appId)}\``),
+            md(`**Bot 名**: ${info.botName ?? '(未知)'}`),
+            md(`**Tenant**: ${info.tenant}`),
+          ]),
+        ]),
         { tag: 'hr' },
         {
           tag: 'button',

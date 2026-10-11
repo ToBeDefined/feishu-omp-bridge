@@ -269,12 +269,20 @@ function rowIdentity(ctx: SearchContext): string {
 
 const SEARCH_PAGE_SIZE = 6;
 
+export interface SearchResultsOpts {
+  /** OMP session id the calling scope is already on: that row is marked
+   * 「✅ 当前」 and drops its 继续对话 button (resuming it is a no-op) —
+   * the same rule /history applies to its current row. */
+  currentSessionId?: string;
+}
+
 export function searchResultsCard(
   keyword: string,
   contexts: SearchContext[],
   queryId: string,
   showButtons = true,
   offset = 0,
+  opts: SearchResultsOpts = {},
 ): object {
   const done = !showButtons;
   const shown = done ? contexts : contexts.slice(offset, offset + SEARCH_PAGE_SIZE);
@@ -300,8 +308,11 @@ export function searchResultsCard(
   shown.forEach((c, i) => {
     const globalIdx = offset + i;
     const ago = formatAgoOr(lastHitTime(c), '');
+    const isCurrent =
+      opts.currentSessionId !== undefined && c.sessionId === opts.currentSessionId;
     const lines: object[] = [
-      md(`**#${globalIdx + 1}** · ${rowIdentity(c)}`),
+      // 当前对话的标记紧跟在行号后面 —— 埋在 meta 行里就没人看得见。
+      md(`**#${globalIdx + 1}**${isCurrent ? ' ✅ 当前 ·' : ' ·'} ${rowIdentity(c)}`),
       md(
         [
           c.workspace ? `📁 ${escapeMd(c.workspace)}` : '',
@@ -331,11 +342,16 @@ export function searchResultsCard(
     if (showButtons) {
       elements.push(
         ...inlineActions([
-          {
-            text: '继续对话',
-            value: { cmd: 'search.resume', arg: c.sessionId },
-            style: 'primary',
-          },
+          // 当前对话不给「继续对话」：恢复它等于原地重启一次会话。
+          ...(isCurrent
+            ? []
+            : [
+                {
+                  text: '继续对话',
+                  value: { cmd: 'search.resume', arg: c.sessionId },
+                  style: 'primary' as const,
+                },
+              ]),
           { text: '详情', value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` } },
         ]),
       );
@@ -415,6 +431,9 @@ export interface SearchDetailInfo {
   /** `<queryId> <index>` — carried by the 完成 button. */
   queryRef?: string;
   done?: boolean;
+  /** This conversation is the scope's current one — marked, and its 继续对话
+   * button (a no-op) is dropped. */
+  current?: boolean;
 }
 
 export function searchDetailCard(info: SearchDetailInfo): object {
@@ -425,6 +444,7 @@ export function searchDetailCard(info: SearchDetailInfo): object {
     md(info.done ? `✅ **${label}**` : `📄 **${label}**`, 'heading'),
   ];
   const metaLine = [
+    info.current ? '✅ 当前对话' : '',
     info.workspace ? `📁 ${escapeMd(info.workspace)}` : '',
     info.matchCount !== undefined && info.matchCount > 1
       ? `🔎 ${info.matchCount} 处匹配`
@@ -444,7 +464,15 @@ export function searchDetailCard(info: SearchDetailInfo): object {
     elements.push(
       { tag: 'hr' },
       ...inlineActions([
-        { text: '继续对话', value: { cmd: 'search.resume', arg: info.sessionId }, style: 'primary' },
+        ...(info.current
+          ? []
+          : [
+              {
+                text: '继续对话',
+                value: { cmd: 'search.resume', arg: info.sessionId },
+                style: 'primary' as const,
+              },
+            ]),
         { text: '完成', value: { cmd: 'search.done', arg: info.queryRef ?? '' } },
       ]),
     );
@@ -459,6 +487,11 @@ export function searchDetailCard(info: SearchDetailInfo): object {
 /** Plain-text rendering of one conversation's hits, for the non-card reply
  * (`/search <kw>` typed outside a card flow). */
 export function searchDetailText(info: SearchDetailInfo): string {
-  const head = info.workspace ? `📁 ${info.workspace}\n` : '';
-  return `${head}🆔 会话: \`${codeSpan(info.sessionId)}\`\n\n${renderSearchGroups(info, 'detail', info.keyword)}`;
+  const head = [
+    info.workspace ? `📁 ${info.workspace}` : '',
+    info.current ? '✅ 当前对话' : '',
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  return `${head ? `${head}\n` : ''}🆔 会话: \`${codeSpan(info.sessionId)}\`\n\n${renderSearchGroups(info, 'detail', info.keyword)}`;
 }

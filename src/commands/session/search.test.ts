@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommandContext } from '../index';
 import { paths } from '../../config/paths';
-import { searchSession, searchHandlers, workspaceLabel } from './search';
+import { detailInfoFor, searchSession, searchHandlers, workspaceLabel } from './search';
 import { loadSessionSummary } from './context';
 import { renderSearchContext, searchResultsCard } from '../../card/search-card';
 import { SessionStore } from '../../session/store';
@@ -38,6 +38,30 @@ function ctxFor(
     controls: { cfg: {} },
   } as CommandContext;
 }
+
+describe('detailInfoFor', () => {
+  it('marks the conversation the scope is already on', () => {
+    const hit = {
+      sessionId: 'sess-a',
+      workspace: '~/repo',
+      matchCount: 1,
+      groups: [{ messages: [{ role: 'user' as const, content: 'x' }], hitIndex: 0, matchCount: 1 }],
+      messages: [{ role: 'user' as const, content: 'x' }],
+      hitIndex: 0,
+    };
+    const marked = detailInfoFor(hit, 'q1', 1, { currentSessionId: 'sess-a' });
+    expect(marked.current).toBe(true);
+    expect(marked.queryRef).toBe('q1 1');
+    // 别的会话 / 没有当前会话 → 不标记，保留「继续对话」。
+    expect(detailInfoFor(hit, 'q1', 1, { currentSessionId: 'sess-b' }).current).toBeUndefined();
+    expect(detailInfoFor(hit, 'q1', 1, {}).current).toBeUndefined();
+    // 结算态不带 queryRef（按钮已撤），但仍带标记。
+    const done = detailInfoFor(hit, 'q1', 1, { done: true, currentSessionId: 'sess-a' });
+    expect(done.done).toBe(true);
+    expect(done.queryRef).toBeUndefined();
+    expect(done.current).toBe(true);
+  });
+});
 
 describe('workspaceLabel', () => {
   it('returns the named workspace when cwd matches', () => {

@@ -207,6 +207,31 @@ describe('searchResultsCard', () => {
     expect(searchDetailText({ sessionId: UUID, groups: [] })).toContain(UUID);
   });
 
+  it('marks the row of the conversation the user is already in', () => {
+    const contexts = [
+      sampleContext({ sessionId: 'sess-current', title: '当前这条' }),
+      sampleContext({ sessionId: 'sess-other', title: '另一条' }),
+    ];
+    const lines = markdowns(
+      searchResultsCard('foo', contexts, 'q1', true, 0, { currentSessionId: 'sess-current' }),
+    );
+    // 标记紧跟行号（埋在 meta 里就没人看得见），另一行不受影响。
+    expect(lines.filter((l) => l.startsWith('**#'))).toEqual([
+      '**#1** ✅ 当前 · 🏷 **当前这条**',
+      '**#2** · 🏷 **另一条**',
+    ]);
+    // 当前对话不给「继续对话」（恢复它等于原地重启），只留「详情」。
+    const json = JSON.stringify(
+      searchResultsCard('foo', contexts, 'q1', true, 0, { currentSessionId: 'sess-current' }),
+    );
+    expect(json.match(/"text":"\{?"?继续对话/g) ?? json.match(/继续对话/g)).toHaveLength(1);
+    expect(json.match(/详情/g)).toHaveLength(2);
+    // 没传 currentSessionId 时一行都不标。
+    const plain = JSON.stringify(searchResultsCard('foo', contexts, 'q1'));
+    expect(plain).not.toContain('✅ 当前');
+    expect(plain.match(/继续对话/g)).toHaveLength(2);
+  });
+
   it('stacks identity → meta → block → buttons, with the buttons side by side', () => {
     const card = searchResultsCard('foo', [sampleContext()], 'q1') as {
       body: { elements: Array<Record<string, unknown>> };
@@ -515,6 +540,32 @@ describe('searchDetailCard', () => {
     // 详情卡仍是「全部命中 + 完整正文 + 按钮」。
     expect(JSON.stringify(detail)).toContain('继续对话');
     expect(JSON.stringify(detail)).toContain('完成');
+  });
+
+  it('marks the detail card of the current conversation and drops its resume', () => {
+    const groups: SearchHitGroup[] = [
+      { messages: [{ role: 'user', content: '一' }], hitIndex: 0, matchCount: 1 },
+    ];
+    const current = searchDetailCard({
+      sessionId: 'sess-current',
+      workspace: '~/ws',
+      index: 2,
+      groups,
+      queryRef: 'q1 2',
+      current: true,
+    });
+    const json = JSON.stringify(current);
+    expect(json).toContain('✅ 当前对话');
+    expect(json).not.toContain('继续对话');
+    expect(json).toContain('完成');
+    // 纯文本详情同样带标记。
+    expect(searchDetailText({ sessionId: 'sess-current', current: true, groups })).toContain(
+      '✅ 当前对话',
+    );
+    // 非当前对话不变。
+    const other = JSON.stringify(searchDetailCard({ sessionId: 'sess-9', index: 2, groups, queryRef: 'q1 2' }));
+    expect(other).not.toContain('当前对话');
+    expect(other).toContain('继续对话');
   });
 
   it('renders the text variant with the session id and every pair', () => {

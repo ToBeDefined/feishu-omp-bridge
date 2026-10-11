@@ -27,13 +27,21 @@ export function workspaceLabel(ctx: CommandContext, cwd: string): string {
   return cwd;
 }
 
+/** The scope's current OMP session id, or undefined when the next message
+ * would start a fresh conversation. Passed to the cards so the row of the
+ * conversation the user is already in gets marked (and stops offering a
+ * resume that would be a no-op). */
+function currentSessionId(ctx: CommandContext): string | undefined {
+  return ctx.sessions.sessionFor(ctx.scope)?.sessionId;
+}
+
 /** Card/text payload for one conversation's detail view: the card layer owns
  * the layout, the command only resolves identity + workspace labels. */
 export function detailInfoFor(
   context: SearchContext,
   queryId: string,
   index: number,
-  opts: { done?: boolean; keyword?: string } = {},
+  opts: { done?: boolean; keyword?: string; currentSessionId?: string } = {},
 ): SearchDetailInfo {
   return {
     sessionId: context.sessionId,
@@ -43,6 +51,9 @@ export function detailInfoFor(
     groups: context.groups,
     ...(opts.keyword ? { keyword: opts.keyword } : {}),
     ...(opts.done ? { done: true } : { queryRef: `${queryId} ${index}` }),
+    ...(opts.currentSessionId !== undefined && opts.currentSessionId === context.sessionId
+      ? { current: true }
+      : {}),
   };
 }
 
@@ -349,7 +360,9 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       await sendManagedCard(
         ctx.channel,
         ctx.msg.chatId,
-        searchResultsCard(keyword, cached, queryId, true, offset),
+        searchResultsCard(keyword, cached, queryId, true, offset, {
+          currentSessionId: currentSessionId(ctx),
+        }),
       );
       return;
     }
@@ -404,7 +417,13 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
               await updateManagedCard(
                 ctx.channel,
                 msgId,
-                searchDetailCard(detailInfoFor(context, queryId ?? '', idx, { done: true, keyword })),
+                searchDetailCard(
+                  detailInfoFor(context, queryId ?? '', idx, {
+                    done: true,
+                    keyword,
+                    currentSessionId: currentSessionId(ctx),
+                  }),
+                ),
               );
             }
           } else {
@@ -413,7 +432,9 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
             await updateManagedCard(
               ctx.channel,
               msgId,
-              searchResultsCard(keyword, contexts ?? [], queryId ?? '', false),
+              searchResultsCard(keyword, contexts ?? [], queryId ?? '', false, 0, {
+                currentSessionId: currentSessionId(ctx),
+              }),
             );
           }
         } catch {
@@ -439,7 +460,10 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       return;
     }
     const keyword = searchKeywords.get(queryId) ?? '';
-    const info = detailInfoFor(context, queryId, idx, { keyword });
+    const info = detailInfoFor(context, queryId, idx, {
+      keyword,
+      currentSessionId: currentSessionId(ctx),
+    });
     if (ctx.fromCardAction) {
       await sendManagedCard(ctx.channel, ctx.msg.chatId, searchDetailCard(info)).catch(() => {});
     } else {
@@ -473,6 +497,8 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   await sendManagedCard(
     ctx.channel,
     ctx.msg.chatId,
-    searchResultsCard(keyword, contexts, queryId, true),
+    searchResultsCard(keyword, contexts, queryId, true, 0, {
+      currentSessionId: currentSessionId(ctx),
+    }),
   );
 }

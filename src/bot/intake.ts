@@ -28,10 +28,9 @@ import { addReaction } from './reaction';
 export const RESET_CONTEXT_COMMANDS: Record<string, true> = {
   '/new': true,
   '/reset': true,
-  '/cd': true,
-  '/ws': true,
-  // /s、/search 与**不带参数的** /resume 都不在这里：它们只列清单，丢掉排队消息
-  // 就是丢用户的消息（见 resetsContext 对 /resume 的单独判断）。
+  // /cd、/ws、/resume 都按**参数**判断（见 resetsContext）：裸 /cd 只回用法提示、
+  // /ws list|save|remove 只是查看/管理命名工作空间，都不换上下文，丢掉排队消息就是
+  // 丢用户的消息。同理 /s、/search 也不在这里。
 };
 
 /**
@@ -41,7 +40,11 @@ export const RESET_CONTEXT_COMMANDS: Record<string, true> = {
  * `/history`（只读清单），此时丢掉排队消息是纯粹的损失。
  */
 export function resetsContext(cmd: string, args = ''): boolean {
-  if (cmd === '/resume' || cmd === '/session') return args.trim() !== '';
+  const trimmed = args.trim();
+  // 只有**带目标**的 /resume、**带路径**的 /cd、**切目录的** /ws 子命令才算换上下文。
+  if (cmd === '/resume' || cmd === '/session') return trimmed !== '';
+  if (cmd === '/cd') return trimmed !== '';
+  if (cmd === '/ws') return /^(use|undo)\b/.test(trimmed);
   return RESET_CONTEXT_COMMANDS[cmd] === true;
 }
 

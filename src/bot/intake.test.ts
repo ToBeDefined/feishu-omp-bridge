@@ -130,8 +130,8 @@ describe('intakeMessage mid-run routing', () => {
     expect(deps.pending.push).not.toHaveBeenCalled();
   });
 
-  it('a context-resetting command (/new, /cd, /ws) drops queued messages', async () => {
-    for (const cmd of ['/new', '/reset', '/cd', '/ws']) {
+  it('a context-resetting command (/new, /cd <path>, /ws use) drops queued messages', async () => {
+    for (const cmd of ['/new', '/reset', '/cd /repo', '/ws use x']) {
       vi.clearAllMocks();
       const deps = makeDeps();
       deps.msg = makeMsg(cmd);
@@ -151,6 +151,14 @@ describe('intakeMessage mid-run routing', () => {
       // 只读清单类命令也一样不丢。
       ['/history', false],
       ['/s foo', false],
+      // 裸 /cd（忘写路径）与只看/管理命名工作空间的 /ws 子命令都不换上下文。
+      ['/cd', false],
+      ['/cd /repo', true],
+      ['/ws', false],
+      ['/ws list', false],
+      ['/ws save x', false],
+      ['/ws use x', true],
+      ['/ws undo', true],
     ] as Array<[string, boolean]>) {
       vi.clearAllMocks();
       const deps = makeDeps();

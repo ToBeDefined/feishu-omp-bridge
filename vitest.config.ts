@@ -7,5 +7,7 @@ export default defineConfig({
     // tree run its own suite twice (132 files / 1462 tests instead of 66/731)
     // — a silently wrong baseline. Exclude the worktree directory.
     exclude: [...configDefaults.exclude, '.worktrees/**'],
+    // 测试绝不写真实 ~/.feishu-omp-bridge（见 test/setup-paths.ts 的说明）。
+    setupFiles: ['./test/setup-paths.ts'],
   },
 });

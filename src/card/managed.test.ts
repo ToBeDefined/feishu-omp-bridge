@@ -2,7 +2,14 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { finalizeByKind, finalizeInterruptedCards, stripRunningState, type RunningCardKind } from './managed';
+import {
+  finalizeByKind,
+  finalizeInterruptedCards,
+  forgetStreamingCard,
+  rememberStreamingCard,
+  stripRunningState,
+  type RunningCardKind,
+} from './managed';
 import { paths } from '../config/paths';
 
 describe('stripRunningState', () => {
@@ -38,6 +45,24 @@ describe('stripRunningState', () => {
   it('survives a card with no body', () => {
     const out = JSON.stringify(stripRunningState({}));
     expect(out).toContain('以上为已输出的部分内容');
+  });
+});
+
+describe('running-cards 的读改写串行', () => {
+  it('remember 紧跟 forget 不残留记录（否则下次启动会给已完成卡片补「进程中断」）', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'cards-race-'));
+    const orig = paths.runningCardsFile;
+    paths.runningCardsFile = join(dir, 'running-cards.json');
+    try {
+      rememberStreamingCard('om_race', 'oc_1', { schema: '2.0', body: { elements: [] } });
+      forgetStreamingCard('om_race');
+      await new Promise((r) => setTimeout(r, 50));
+      const left = JSON.parse(await readFile(paths.runningCardsFile, 'utf8').catch(() => '[]')) as unknown[];
+      expect(left).toEqual([]);
+    } finally {
+      paths.runningCardsFile = orig;
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

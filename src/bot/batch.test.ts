@@ -218,11 +218,12 @@ describe('产流中断的卡片收尾', () => {
   it('收尾补卡也失败 → 留下记录，让下次启动的兜底再补', async () => {
     await runFailingStream(rejectingChannel([], { patchFails: true }));
 
-    // 从前这里是 finally 里的无条件 forget：补卡失败一次，那个 ⏹ 就永远挂着了。
-    await vi.waitFor(async () => {
-      const left = JSON.parse(await readFile(file, 'utf8')) as Array<{ messageId: string }>;
-      expect(left.map((c) => c.messageId)).toEqual(['om_stranded']);
-    });
+    // 记录是异步删的（`void forgetStreamingCard`）：必须等它落地再断言，
+    // 否则 waitFor 会在删除发生前就先通过（这条用例此前就是这样侥幸绿的。
+    await new Promise((r) => setTimeout(r, 50));
+
+    const left = JSON.parse(await readFile(file, 'utf8')) as Array<{ messageId: string }>;
+    expect(left.map((c) => c.messageId)).toEqual(['om_stranded']);
   });
 });
 

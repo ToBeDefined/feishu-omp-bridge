@@ -330,6 +330,38 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Fixed
+- **全仓审查（6 路并行 reviewer + 人工核实）第二批**：
+  - **安全（high）：`feishu_send_file` 可外发应用私有文件**。可发送根含 `ctx.cwd`，而
+    scope 还没有当前会话/工作区时 cwd 会回退成 `$HOME`（新建私聊第一轮、`/cd ~` 都命中）
+    —— 此时 `~/.feishu-omp-bridge/secrets.enc`、`config.json`、`~/.ssh/*` 全在「白名单」内，
+    与代码注释声称的拒绝恰恰相反。现在私有应用目录里**只放行媒体缓存**，其余一律拒绝
+    （跟随符号链接解析后的真身判断），3 条测试覆盖（含 symlink 绕过）。
+  - **安全（medium）：出队途中（已 claim、未 register）的批次拦不住**。`interrupt()` 只找
+    handle ⇒ `/new`、`/cd`、`/ws use`、`/stop` 在池子排队/下载媒体/查 chat 模式这段窗口内
+    是空操作，旧批次随后照跑并把刚重置的 scope 重新绑成「以旧对话为首轮」的会话。
+    现在 `interrupt` 会给未注册的 claim 打取消标记，`register` 拒绝被取消的 claim
+    （调用方据此杀掉子进程），带测试。
+  - **安全（low）：按 `messageId` 的工具绕过 `access.allowedChats`**。`feishu_get_message`
+    / `reply_message` / `recall_message` / `add_reaction` / `feishu://message/<id>` 只用
+    模型给的 id，不校验那条消息属于哪个会话 —— 于是能读/写被排除的会话。现在先问出所属
+    会话再套白名单（触发消息本身免检），带测试。
+  - **安全（low）：裸 `/cd`、`/ws list|save|remove` 也丢排队消息**（它们并不换上下文）。
+    `resetsContext` 改为按参数判断：`/cd` 需带路径、`/ws` 只在 `use|undo` 时算重置。
+  - **崩溃恢复记录被删（medium）**：`batch.ts` 的 `failed` 标志从未被写入 ⇒ `finally` 里
+    `if (!failed) forgetStreamingCard(...)` 等价于无条件删除，卡在运行态（⏹ 不消失）的
+    卡片再也没机会被下次启动补终态。现在抛错路径置 `failed = true`，并把用例改成确定化
+    （反证：临时去掉那行，该用例失败）。
+  - **running-cards 的读改写竞态**：`remember`/`forget` 只串行了「写」而不串行「读—改—写」，
+    实测 `remember` 紧跟 `forget`（一次**成功**回合的正常收尾）会让记录残留 —— 下次启动
+    给**已完成**的卡片补「进程中断，以上为已输出的部分内容」。现在整段读改写走同一条链，
+    并留了回归测试。
+- **测试路径隔离（全局）**：`vitest.config.ts` 新增 `setupFiles: test/setup-paths.ts`，把
+  `paths.*` 全部指向每个 worker 自己的临时目录 —— 此前有测试没有覆盖
+  `paths.runningCardsFile`，**直接写真实 `~/.feishu-omp-bridge/running-cards.json`**
+  （把它写空），并让同一路径在并行 worker 间互相干扰（表现为偶发「看到 2 条记录」的 flake）。
+  另加断言防止以后退化。
+
+### Fixed
 - **全仓审查（6 路并行 reviewer + 人工核实）修掉的一批真实缺陷**：
   - **`/config` 表单「工具调用显示」被静默改回「显示」**：`show_tool_calls` 字段缺失时
     旧代码写 `rawTools !== 'hide'` ⇒ 恒为 true；用户设的「隐藏」会在提交任何其它设置时

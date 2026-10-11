@@ -178,6 +178,25 @@ async function readRunningCards(): Promise<PersistedRunningCard[]> {
 /** Serialize writes so concurrent snapshot updates can't lose each other. */
 let writeChain: Promise<void> = Promise.resolve();
 
+/**
+ * 串行化「读—改—写」整段：只串行 write 不够 —— 两个读改写交错时，后写的会覆盖前写
+ * 的结果。实测过的坑：`rememberStreamingCard` 紧跟 `forgetStreamingCard`（一次**成功**
+ * 回合的正常收尾）时，forget 的 read 赶在 remember 的 write 之前 → 读到空文件 → 跳过
+ * 写 → remember 的记录残留下来，下次启动的兜底会给这张**已完成**的卡片补上「进程中断，
+ * 以上为已输出的部分内容」。
+ */
+let cardsChain: Promise<void> = Promise.resolve();
+
+function mutateRunningCards<T>(fn: () => Promise<T>): Promise<T> {
+  const run = (): Promise<T> => fn();
+  const result = cardsChain.then(run, run);
+  cardsChain = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
 async function writeRunningCards(list: PersistedRunningCard[]): Promise<void> {
   const next = writeChain.then(() =>
     writeFile(paths.runningCardsFile, JSON.stringify(list.slice(-RUNNING_CARDS_MAX)), 'utf8'),
@@ -189,25 +208,31 @@ async function writeRunningCards(list: PersistedRunningCard[]): Promise<void> {
 }
 
 /** Insert or replace the entry for a card still in flight. */
-async function upsertRunningCard(entry: PersistedRunningCard): Promise<void> {
-  const list = await readRunningCards();
-  const next = [...list.filter((c) => c.messageId !== entry.messageId), entry];
-  await writeRunningCards(next);
+function upsertRunningCard(entry: PersistedRunningCard): Promise<void> {
+  return mutateRunningCards(async () => {
+    const list = await readRunningCards();
+    const next = [...list.filter((c) => c.messageId !== entry.messageId), entry];
+    await writeRunningCards(next);
+  });
 }
 
 /** Refresh the persisted snapshot for one card (called on every render). */
-async function updateRunningCardSnapshot(messageId: string, card: object): Promise<void> {
-  const list = await readRunningCards();
-  const entry = list.find((c) => c.messageId === messageId);
-  if (!entry) return;
-  entry.card = card;
-  await writeRunningCards(list);
+function updateRunningCardSnapshot(messageId: string, card: object): Promise<void> {
+  return mutateRunningCards(async () => {
+    const list = await readRunningCards();
+    const entry = list.find((c) => c.messageId === messageId);
+    if (!entry) return;
+    entry.card = card;
+    await writeRunningCards(list);
+  });
 }
 
-async function removeFromRunningCards(messageId: string): Promise<void> {
-  const list = await readRunningCards();
-  const next = list.filter((c) => c.messageId !== messageId);
-  if (next.length !== list.length) await writeRunningCards(next);
+function removeFromRunningCards(messageId: string): Promise<void> {
+  return mutateRunningCards(async () => {
+    const list = await readRunningCards();
+    const next = list.filter((c) => c.messageId !== messageId);
+    if (next.length !== list.length) await writeRunningCards(next);
+  });
 }
 
 /**

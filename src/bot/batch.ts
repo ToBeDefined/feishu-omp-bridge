@@ -879,6 +879,11 @@ async function runCardPage(
             await q.flush();
             // (reap happens once in streamCardPages' finally, after all pages)
           }
+          } catch (err) {
+            // 抛错路径必须留记录：卡片停在运行态（⏹ 挂着），只能靠下次启动的
+            // 兜底补卡收尾。此前只声明了 failed 却从未置 true，等于无条件删除。
+            failed = true;
+            throw err;
           } finally {
             // 只在**正常收尾**时撤记录：那张卡此刻已是终态（⏹ 已随终态渲染消失）。
             // 抛错的路径留着记录 —— 卡片停在运行态，要让下次启动的兜底补卡去收尾。

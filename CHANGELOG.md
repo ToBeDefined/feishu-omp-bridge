@@ -330,6 +330,22 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Fixed
+- **全仓审查（6 路并行 reviewer + 人工核实）修掉的一批真实缺陷**：
+  - **`/config` 表单「工具调用显示」被静默改回「显示」**：`show_tool_calls` 字段缺失时
+    旧代码写 `rawTools !== 'hide'` ⇒ 恒为 true；用户设的「隐藏」会在提交任何其它设置时
+    被改回（CardKit 偶发丢字段，`messageReply` 早有同款回落，这一处漏了）。现在空值回落
+    到当前值，并带两条测试（缺失→保留、明确 hide→按表单）。
+  - **原子写的临时文件名 / 串行化**：`media/cache.ts` 的 `.part-<pid>`、`scheduler` 与
+    `model/data.ts`、`config/store` 的 wrapper 都只用 pid 后缀且无串行 —— 同进程并发
+    写同一路径会互相覆盖，rename 出去的就是半截文件（媒体缓存被写坏、`tasks.json` 损坏后
+    下次启动「corrupt → start empty」**静默丢掉全部定时任务**）。现在临时名一律
+    `pid + 6 字节随机`（与仓库既有的 keystore/registry/session 一致），scheduler 另加
+    写盘串行链。
+  - **日志写流没有 `'error'` 监听**：`EPIPE`/`ENOSPC`/权限变化这类流错误在无监听时会**抛出**，
+    而进程级 `uncaughtException` 处理器又往同一条坏流里写（可能反复抛）。现在流上挂
+    error 处理：一次性停用文件日志（console 仍在），daemon 继续运行。
+
+### Fixed
 - **点「取消」不再毫无反应**：`/config`、`/model`、`/thinking` 的取消都是「原地把卡片改成
   已取消」，而卡片必须在本进程的托管表里才更新得动 —— 重启前发出的老卡片、或在 bridge
   之外发的卡片（手工调试）都不在里面，原地更新抛错后被 `.catch(() => {})` 静默吞掉，

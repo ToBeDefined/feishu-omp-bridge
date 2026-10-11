@@ -66,7 +66,12 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       ? (rawReply as MessageReplyMode)
       : getMessageReplyMode(ctx.controls.cfg);
   const rawTools = String(fv.show_tool_calls ?? '').trim();
-  const showToolCalls = rawTools !== 'hide';
+  // 字段缺失同样回落当前值：此前 `rawTools !== 'hide'` 会把「隐藏」静默改回「显示」
+  // （CardKit 偶发丢字段，见上面 messageReply 的同款处理）。
+  const showToolCalls =
+    rawTools === 'show' || rawTools === 'hide'
+      ? rawTools === 'show'
+      : getShowToolCalls(ctx.controls.cfg);
   const rawMaxCC = String(fv.max_concurrent_runs ?? '').trim();
   const parsedMaxCC = Number(rawMaxCC);
   const maxConcurrentRuns =

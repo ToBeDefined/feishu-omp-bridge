@@ -47,7 +47,7 @@ export interface LogContext {
 const als = new AsyncLocalStorage<LogContext>();
 
 let stream: WriteStream | null = null;
-let currentDate = '';
+let currentDate: string | undefined = '';
 
 function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
@@ -73,7 +73,17 @@ function getStream(): WriteStream | null {
   }
   try {
     mkdirSync(logsDir(), { recursive: true });
-    stream = createWriteStream(join(logsDir(), `${today}.log`), { flags: 'a' });
+    const next = createWriteStream(join(logsDir(), `${today}.log`), { flags: 'a' });
+    // 写流必须挂 'error'：EPIPE / ENOSPC / 权限被改这类错误在无监听时会**抛出**，
+    // 而进程级 uncaughtException 处理器又会往同一条坏流里写 → 反复抛。
+    // 这里一次性停用文件日志（console 仍然有输出），daemon 继续干活。
+    next.on('error', (err) => {
+      console.error(`[logger] file log disabled: ${String(err)}`);
+      if (stream === next) stream = null;
+      currentDate = undefined;
+      next.destroy();
+    });
+    stream = next;
     currentDate = today;
     return stream;
   } catch {

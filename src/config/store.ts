@@ -89,7 +89,8 @@ export async function ensureSecretsGetterWrapper(): Promise<string> {
     `exec ${sq(node)} ${sq(bridgeEntry)} secrets get "$@"\n`;
 
   await mkdir(dirname(wrapperPath), { recursive: true });
-  const tmp = `${wrapperPath}.tmp-${process.pid}`;
+  // 唯一临时名：`/account change` 与启动可能同时刷新 wrapper，撞名会写出半截脚本。
+  const tmp = `${wrapperPath}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
   await writeFile(tmp, content, 'utf8');
   await chmod(tmp, 0o700);
   await rename(tmp, wrapperPath);

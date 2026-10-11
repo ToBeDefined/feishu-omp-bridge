@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
@@ -94,7 +95,7 @@ async function loadModelsCache(): Promise<ModelsCache | undefined> {
 async function saveModelsCache(cache: ModelsCache): Promise<void> {
   try {
     await mkdir(dirname(paths.modelsCacheFile), { recursive: true });
-    const tmp = `${paths.modelsCacheFile}.tmp-${process.pid}`;
+    const tmp = `${paths.modelsCacheFile}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
     await writeFile(tmp, `${JSON.stringify(cache)}\n`, 'utf8');
     await rename(tmp, paths.modelsCacheFile);
   } catch (err) {

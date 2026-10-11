@@ -160,6 +160,22 @@ describe('/config submit 与 access.owner', () => {
     expect(JSON.stringify(saved)).toContain('ou_3a4845d7ce8becd003e2728ab7774666');
   });
 
+  it('表单缺 show_tool_calls 时保留当前值（不再把「隐藏」静默改回「显示」）', async () => {
+    const { ctx, cfg } = ctxWith({ message_reply: 'card' });
+    (cfg.preferences as { showToolCalls?: boolean }).showToolCalls = false;
+    await configHandlers['/config']!('submit', ctx);
+    const written = vi.mocked(saveConfig).mock.calls[0]![0] as AppConfig;
+    expect(written.preferences?.showToolCalls).toBe(false);
+  });
+
+  it('表单明确回传 hide 时按表单走', async () => {
+    const { ctx, cfg } = ctxWith({ show_tool_calls: 'hide' });
+    (cfg.preferences as { showToolCalls?: boolean }).showToolCalls = true;
+    await configHandlers['/config']!('submit', ctx);
+    const written = vi.mocked(saveConfig).mock.calls[0]![0] as AppConfig;
+    expect(written.preferences?.showToolCalls).toBe(false);
+  });
+
   it('空表单值回落到当前值，同样不丢 owner', async () => {
     const { ctx } = ctxWith({});
     await configHandlers['/config']!('submit', ctx);

@@ -2,7 +2,7 @@ import type { LarkChannel } from '@larksuiteoapi/node-sdk';
 import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
-import { restartCard } from './templates';
+import { compactCard, restartCard } from './templates';
 
 interface ManagedEntry {
   cardId: string;
@@ -14,7 +14,7 @@ interface ManagedEntry {
  * it: a `/restart` card must become「重启完成」, a streaming reply must keep
  * its content and be marked interrupted, etc.
  */
-export type RunningCardKind = 'stream' | 'release' | 'restart' | 'form';
+export type RunningCardKind = 'stream' | 'release' | 'restart' | 'compact' | 'form';
 
 /**
  * Card left in-flight when the process died. `card` is the LAST rendered
@@ -216,6 +216,7 @@ async function removeFromRunningCards(messageId: string): Promise<void> {
  *   restart → 「🚀 重启完成」(the restart we were asked to perform finished)
  *   stream  → replay the last snapshot minus running chrome + interruption note
  *   release → 「⚠️ 发布被中断」
+ *   compact → 「❌ 压缩失败」(the oneshot compactor died with the process)
  *   form    → 「此卡片已过期」
  * Returns true when a `/restart` card was finalized (the caller then skips the
  * separate「已上线」text notice).
@@ -290,6 +291,9 @@ async function tryPatchCard(channel: LarkChannel, messageId: string, card: objec
 export function finalizeByKind(kind: RunningCardKind, card: object | undefined): object {
   if (kind === 'restart') return restartCard('done');
   if (kind === 'release') return noteCard('⚠️ **发布被中断，进程在构建/重启期间退出。**');
+  if (kind === 'compact') {
+    return compactCard({ phase: 'failed', error: '进程在压缩期间退出，压缩未完成。' });
+  }
   if (kind === 'form') return noteCard('_⚠️ 此卡片已过期，请使用最新发出的卡片。_');
   return card
     ? stripRunningState(card)

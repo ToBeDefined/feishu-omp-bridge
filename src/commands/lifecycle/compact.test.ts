@@ -1,11 +1,29 @@
 import { chmod, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../bot/active-runs';
 import { OmpAdapter } from '../../agent/omp/adapter';
 import { compactHandlers } from './compact';
 import type { CommandContext } from '../index';
+
+// 托管卡片路径（sendManagedCard / updateManagedCard）与 channel.send 记进同一个
+// 数组：断言同时覆盖纯文本与卡片；并数清到底发了几条消息（合并后应为 1 条）。
+const h = vi.hoisted(() => ({ managed: [] as string[], sends: 0, updates: 0, forgotten: 0 }));
+vi.mock('../../card/managed', () => ({
+  sendManagedCard: async (...args: unknown[]) => {
+    h.sends += 1;
+    h.managed.push(JSON.stringify(args[2]));
+    return { messageId: 'om_card', cardId: 'card_1' };
+  },
+  updateManagedCard: async (...args: unknown[]) => {
+    h.updates += 1;
+    h.managed.push(JSON.stringify(args[2]));
+  },
+  forgetManagedCard: () => {
+    h.forgotten += 1;
+  },
+}));
 
 async function fakeOmp(source: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'omp-compact-test-'));
@@ -52,14 +70,22 @@ interface SendCall {
 
 function sentBodies(ctx: CommandContext): string[] {
   const send = ctx.channel.send as unknown as { mock: { calls: Array<[unknown, SendCall]> } };
-  return send.mock.calls.map((c) => {
+  const texts = send.mock.calls.map((c) => {
     const payload = c[1] as { markdown?: string; card?: object };
     return payload.markdown ?? (payload.card ? JSON.stringify(payload.card) : '');
   });
+  return [...texts, ...h.managed];
 }
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+beforeEach(() => {
+  h.managed.length = 0;
+  h.sends = 0;
+  h.updates = 0;
+  h.forgotten = 0;
 });
 
 describe('/compact command', () => {
@@ -103,6 +129,19 @@ describe('/compact command', () => {
     const bodies = sentBodies(ctx).join('\n');
     expect(bodies).toContain('正在压缩');
     expect(bodies).toContain('✅');
+  });
+
+  it('合并成一张卡：只发一条消息，跑完原地更新成终态', async () => {
+    const ctx = makeCtx({ compactSession: async () => undefined, sessionId: 's1' });
+
+    await compactHandlers['/compact']!('', ctx);
+
+    expect(h.sends).toBe(1);
+    expect(h.updates).toBe(1);
+    expect(h.forgotten).toBe(1);
+    // 同一张卡先「正在压缩」、后被更新为「✅ 完成」——对话里不再留两条。
+    expect(h.managed[0]).toContain('正在压缩');
+    expect(h.managed[1]).toContain('✅');
   });
 
   it('reports the error from the oneshot compact', async () => {

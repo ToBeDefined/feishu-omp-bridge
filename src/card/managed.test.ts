@@ -56,6 +56,12 @@ describe('finalizeByKind', () => {
     expect(JSON.stringify(finalizeByKind('form', undefined))).toContain('已过期');
   });
 
+  it('marks a compact card as failed when the process died mid-compaction', () => {
+    const out = JSON.stringify(finalizeByKind('compact', undefined));
+    expect(out).toContain('压缩失败');
+    expect(out).not.toContain('正在压缩');
+  });
+
   it('preserves a streaming card snapshot with the interruption note', () => {
     const out = JSON.stringify(
       finalizeByKind('stream', {

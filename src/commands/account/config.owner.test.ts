@@ -76,8 +76,7 @@ describe('/config submit 与 access.owner', () => {
 
   it('表单卡与保存卡都显示归属者（只读，不进表单字段）', () => {
     const card = JSON.stringify(
-      // 直接渲染表单卡：owner 是展示字段，不是 input。
-      (0, configFormCard)({
+      configFormCard({
         messageReply: 'card',
         showToolCalls: true,
         maxConcurrentRuns: 10,
@@ -91,7 +90,9 @@ describe('/config submit 与 access.owner', () => {
     );
     expect(card).toContain('归属者');
     expect(card).toContain('ou_3a4845d7ce8becd003e2728ab7774666');
-    expect(card).toContain('只读');
+    expect(card).toContain('归属者');
+    // 收紧成一行：不再有整段说明。
+    expect(card).not.toContain('两者都没有则高危命令对所有人拒绝');
     // 不是表单控件：没有 name=owner 的输入框。
     expect(card).not.toContain('"name":"owner"');
   });

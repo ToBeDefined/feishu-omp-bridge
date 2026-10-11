@@ -128,11 +128,11 @@ export function configFormCard(opts: ConfigFormOpts): object {
             },
             {
               tag: 'markdown',
+              // 一行说清：谁、为什么只读、没有时怎么办。
               content:
-                `\n**归属者**(\`owner\`,只读):${opts.owner ? `\`${opts.owner}\`` : '_未设置_'}\n` +
-                '_高危命令 `/release` `/exec` `/run` 只认它；**不在本表单里**，' +
-                '只能在机器上改 `~/.feishu-omp-bridge/config.json`(防远端提权) —— ' +
-                '未设置时自动取 `admins` 第一个，两者都没有则高危命令对所有人拒绝_',
+                `\n**归属者**(只读):${opts.owner ? `\`${opts.owner}\`` : '_未设置_'}` +
+                ' · _高危命令只认它；只能在机器上改 `config.json`(防远端提权)，' +
+                '未设置时取 `admins` 第一个_',
             },
             {
               tag: 'markdown',

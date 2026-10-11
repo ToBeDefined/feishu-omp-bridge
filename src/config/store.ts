@@ -101,8 +101,25 @@ export async function ensureSecretsGetterWrapper(): Promise<string> {
  * session/store.ts). */
 let saveChain: Promise<void> = Promise.resolve();
 
+/**
+ * 写入前的防呆：磁盘上的配置文件可能带着凭据（`accounts`），而 `saveConfig` 的调用方
+ * 有多个（`/config`、`/model`、`/thinking`、`/account`、启动迁移）。曾经有一次冒烟脚本
+ * 拿「只有 preferences 的假 cfg」走了保存路径，**把真配置覆盖成 97 字节的 preferences**
+ * —— 运行中的进程还在用内存里的配置，所以当场看不出问题，直到下次重启才会连不上飞书。
+ * 因此这里拒绝任何「丢掉 accounts.app.id」的写入：要么带来凭据，要么别写。
+ */
+function assertKeepsCredentials(cfg: AppConfig, path: string): void {
+  if (cfg.accounts?.app?.id) return;
+  throw new Error(
+    `saveConfig refused: refusing to write a config without accounts.app.id (target ${path})`,
+  );
+}
+
 export function saveConfig(cfg: AppConfig, path: string = paths.configFile): Promise<void> {
   const write = async (): Promise<void> => {
+    // 护栏放在写链里（而不是同步抛）：`saveConfig` 声明返回 Promise，调用方
+    // （`/config`、`/model`…）靠 `.catch`/`try await` 兜错，同步抛会漏出去。
+    assertKeepsCredentials(cfg, path);
     await mkdir(dirname(path), { recursive: true });
     // Unique per-call temp name: two writers in the same process must not
     // clobber each other's temp before its rename.

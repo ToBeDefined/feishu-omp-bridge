@@ -90,7 +90,10 @@ async function showModelPicker(
   ctx: CommandContext,
   current: string | undefined,
 ): Promise<void> {
-  const data = await loadModelData(ctx.controls.cfg, false);
+  const [data, recents] = await Promise.all([
+    loadModelData(ctx.controls.cfg, false),
+    recentModels(),
+  ]);
   const pick = data.list.filter((m) => m.provider === provider);
   if (pick.length === 0) {
     await reply(ctx, `未找到提供方 \`${provider}\`。请用 \`/model\` 重选。`);
@@ -100,7 +103,7 @@ async function showModelPicker(
   await sendManagedCard(
     ctx.channel,
     ctx.msg.chatId,
-    modelSelectCard(provider, current, pick, getOmpThinking(ctx.controls.cfg)),
+    modelSelectCard(provider, current, pick, getOmpThinking(ctx.controls.cfg), recents),
   );
 }
 

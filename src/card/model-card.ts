@@ -1,5 +1,5 @@
 import { isOmpThinkingLevel, OMP_THINKING_LEVELS } from '../config/schema';
-import { inlineRow, shortPath } from './templates';
+import { inlineActions, inlineRow, shortPath } from './templates';
 import { escapeCode } from '../utils/text';
 
 /** Form value meaning "clear ompThinking / follow OMP default". */
@@ -18,26 +18,25 @@ export interface ModelProviderInfo {
   count: number;
 }
 
-/** Recent model selector buttons, shown as quick-set. */
-function modelRecentButtons(current: string | undefined, recents: string[]): object[] {
-  const items = recents.filter((m) => m !== current);
-  return items.map((m) => ({
-    tag: 'button',
-    text: { tag: 'plain_text', content: m },
-    type: 'default',
-    value: { cmd: 'model.use', arg: m },
-  }));
+/**
+ * Quick-set 按钮（最近使用 / 常用）：并排、每行最多 2 个（`inlineRow` 的规则），
+ * 当前模型不出现（再点一次是无操作）。标签只留模型段 —— 卡片标题已给出提供方，
+ * 每个按钮都重复 `provider/` 只是噪音。
+ */
+function quickSetButtons(current: string | undefined, models: string[]): object[] {
+  const items = models.filter((m) => m !== current);
+  return inlineActions(
+    items.map((m) => ({
+      text: modelShortLabel(m),
+      value: { cmd: 'model.use', arg: m },
+    })),
+  );
 }
 
-/** Common (modelRoles) model buttons, shown as quick-set. */
-function modelCommonButtons(current: string | undefined, commons: string[]): object[] {
-  const items = commons.filter((m) => m !== current);
-  return items.map((m) => ({
-    tag: 'button',
-    text: { tag: 'plain_text', content: m },
-    type: 'default',
-    value: { cmd: 'model.use', arg: m },
-  }));
+/** `provider/model` → `model`（提供方已由卡片标题/分组说明给出）。 */
+function modelShortLabel(selector: string): string {
+  const slash = selector.indexOf('/');
+  return slash >= 0 ? selector.slice(slash + 1) : selector;
 }
 
 function formatCurrent(value: string | undefined): string {
@@ -69,49 +68,43 @@ export function modelProviderCard(
   commons: string[] = [],
   thinking?: string,
 ): object {
-  const lines = [
-    `当前模型：` + formatCurrent(current),
-    `思考强度：` + formatCurrent(thinking),
-  ];
-  const commonButtons = modelCommonButtons(current, commons);
-  const commonBlock: object[] =
-    commonButtons.length > 0
-      ? [{ tag: 'markdown', content: '\n**常用**' }, ...commonButtons, { tag: 'hr' }]
-      : [];
-  const recentButtons = modelRecentButtons(current, recents);
-  const recentBlock: object[] =
-    recentButtons.length > 0
-      ? [{ tag: 'markdown', content: '\n**最近使用**' }, ...recentButtons, { tag: 'hr' }]
-      : [];
-  const buttons = providers.map((p) => ({
-    tag: 'button',
-    text: { tag: 'plain_text', content: `${p.provider} (${p.count})` },
-    type: p.provider.toLowerCase() === (current?.split('/')[0] ?? '') ? 'primary' : 'default',
-    value: { cmd: 'model.provider', arg: p.provider },
-  }));
-  buttons.push({
-    tag: 'button',
-    text: { tag: 'plain_text', content: '回退默认' },
-    type: current ? 'default' : 'primary',
-    value: { cmd: 'model.reset', arg: '' },
-  });
-  buttons.push({
-    tag: 'button',
-    text: { tag: 'plain_text', content: '取消' },
-    type: 'default',
-    value: { cmd: 'model.cancel', arg: '' },
-  });
+  /** 一段快捷选择（标题 + 并排按钮），空段整块不渲染。 */
+  const section = (title: string, models: string[]): object[] => {
+    const buttons = quickSetButtons(current, models);
+    return buttons.length > 0 ? [{ tag: 'markdown', content: `**${title}**` }, ...buttons] : [];
+  };
+  // 顺序：最近使用 → 常用 → 提供方。最近使用是「我刚才在用的那个」，
+  // 是这张卡最高频的动作，理应排在最前（此前常用在前，最近使用在中间）。
+  const recentSection = section('🕘 最近使用', recents);
+  const commonSection = section('⭐ 常用', commons);
+  const providerButtons = inlineActions(
+    providers.map((p) => ({
+      text: `${p.provider} (${p.count})`,
+      style: p.provider.toLowerCase() === (current?.split('/')[0] ?? '') ? ('primary' as const) : ('default' as const),
+      value: { cmd: 'model.provider', arg: p.provider },
+    })),
+  );
   return {
     schema: '2.0',
     config: { summary: { content: '切换模型' } },
     body: {
       elements: [
         { tag: 'markdown', content: '🎛 **切换模型**', text_size: 'heading' },
-        { tag: 'markdown', content: lines.join('\n') },
-        ...commonBlock,
-        ...recentBlock,
-        { tag: 'markdown', content: '\n**选择提供方**' },
-        ...buttons,
+        {
+          tag: 'markdown',
+          content: `当前 ${formatCurrent(current)} · 思考 ${formatCurrent(thinking)}`,
+          text_size: 'notation',
+        },
+        ...(recentSection.length > 0 || commonSection.length > 0 ? [{ tag: 'hr' }] : []),
+        ...recentSection,
+        ...(recentSection.length > 0 && commonSection.length > 0 ? [{ tag: 'markdown', content: '\n' }] : []),
+        ...commonSection,
+        { tag: 'hr' },
+        { tag: 'markdown', content: '**📦 提供方**' },
+        ...providerButtons,
+        // 全局动作各占一行铺满：回退默认（不是提供方，单列）与退路「取消」。
+        ...inlineActions([{ text: '回退默认', value: { cmd: 'model.reset', arg: '' } }]),
+        ...inlineActions([{ text: '取消', value: { cmd: 'model.cancel', arg: '' } }]),
       ],
     },
   };
@@ -123,8 +116,17 @@ export function modelSelectCard(
   current: string | undefined,
   models: ModelInfo[],
   thinking?: string,
+  /** 全局最近使用的 selector，最新在前：本提供方命中的那些排到下拉最前面。 */
+  recents: string[] = [],
 ): object {
-  const sorted = [...models].sort((a, b) => a.selector.localeCompare(b.selector));
+  const alphabetical = [...models].sort((a, b) => a.selector.localeCompare(b.selector));
+  // 顺序：最近使用（按 recency）→ 其余按字母。模型列表有几十条时，「我刚用过」
+  // 比「按字母排」有用得多。
+  const rank = new Map(recents.map((sel, i) => [sel, i]));
+  const sorted = [
+    ...alphabetical.filter((m) => rank.has(m.selector)).sort((a, b) => rank.get(a.selector)! - rank.get(b.selector)!),
+    ...alphabetical.filter((m) => !rank.has(m.selector)),
+  ];
   // options 的 value 是完整 selector（provider/model）。用半段 id 永远匹配
   // 不上任何 option —— 预选会静默落到 sorted[0]，用户看到错误的"当前模型"。
   const initial =
@@ -132,7 +134,9 @@ export function modelSelectCard(
       ? current
       : sorted[0]?.selector;
   const options = sorted.map((m) => {
-    const label = m.name && m.name !== m.selector ? `${m.selector} (${m.name})` : m.selector;
+    // 卡片标题已给出提供方，下拉里只留模型段；名字不同时附在后面。
+    const short = modelShortLabel(m.selector);
+    const label = m.name && m.name !== short ? `${short} (${m.name})` : short;
     return { text: { tag: 'plain_text', content: label }, value: m.selector };
   });
   return {
@@ -140,15 +144,13 @@ export function modelSelectCard(
     config: { summary: { content: `选择 ${provider} 模型` } },
     body: {
       elements: [
+        { tag: 'markdown', content: `🎛 **${provider} 模型**`, text_size: 'heading' },
         {
           tag: 'markdown',
-          text_size: 'heading',
-          content:
-            `🎛 **${provider} 模型**\n` +
-            `当前模型：` + formatCurrent(current) +
-            `\n思考强度：` + formatCurrent(thinking),
+          content: `当前 ${formatCurrent(current)} · 思考 ${formatCurrent(thinking)}` +
+            (recents.length > 0 ? ' · _下拉里最近用过的排在前面_' : ''),
+          text_size: 'notation',
         },
-        { tag: 'hr' },
         {
           tag: 'form',
           name: 'model_form',

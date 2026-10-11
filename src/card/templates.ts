@@ -59,8 +59,11 @@ export interface RowItem {
  * 卡片动作布局规则（全站统一）：
  *
  * 1. **同一层级的并列动作等宽并排一行** —— 确认 / 否、保存 / 取消、切换 / 删除、
- *    继续对话 / 详情、上一页 / 下一页、页脚的几个跳转：一律 `inlineRow`
- *    （`inlineActions` 是它的按钮 spec 版）。**单个动作也走它** —— 一列就是整行宽。
+ *    继续对话 / 详情、上一页 / 下一页：一律 `inlineRow`（`inlineActions` 是它的按钮
+ *    spec 版）。**单个动作也走它** —— 一列就是整行宽。
+ *    **一行最多 `INLINE_ROW_MAX`（2）个**：手机卡片可用宽度约 300px，三列等宽时
+ *    每个按钮只剩 ~100px，中文标签（`📂 工作空间`）会被压到看不见文字 —— 超出的
+ *    自动折到下一行（最后一行可能只有一个按钮，那就铺满）。
  * 2. **退路动作「取消」单独一行、铺满整宽，放在并列动作下方** —— 它语义不同
  *    （放弃当前操作），挤在正向动作旁边既容易误点，也把正向动作拽到同一视觉层级：
  *    用 `confirmActions(choices, cancel)` 一步到位。
@@ -69,21 +72,26 @@ export interface RowItem {
  * 元素版 `inlineRow` 给表单里的按钮用 —— 表单按钮带 `name` /
  * `form_action_type` / `behaviors`，不是 `ButtonSpec` 那套 value。
  */
+/** 并排行最多几个按钮 —— 见上方规则：3 列等宽会把中文标签压到看不见。 */
+export const INLINE_ROW_MAX = 2;
+
 export function inlineRow(items: RowItem[]): object[] {
-  return [
-    {
+  const rows: object[] = [];
+  for (let i = 0; i < items.length; i += INLINE_ROW_MAX) {
+    rows.push({
       tag: 'column_set',
       flex_mode: 'none',
       horizontal_spacing: 'small',
-      columns: items.map((item) => ({
+      columns: items.slice(i, i + INLINE_ROW_MAX).map((item) => ({
         tag: 'column',
         width: 'weighted',
         weight: item.weight ?? 1,
         vertical_align: 'center',
         elements: [item.element],
       })),
-    },
-  ];
+    });
+  }
+  return rows;
 }
 
 /** 并列动作并排 + 退路动作「取消」单独一行铺满（规则 1 + 2 的合成）。 */

@@ -11,6 +11,7 @@ import {
   helpCard,
   inlineActions,
   inlineRow,
+  INLINE_ROW_MAX,
   md,
   newSessionCard,
   psCard,
@@ -237,6 +238,22 @@ describe('shared card kit', () => {
 
     // 没有取消时只有并列那行。
     expect(confirmActions([{ text: '只有我', value: { cmd: 'x' } }])).toHaveLength(1);
+  });
+
+  it('folds a third button onto its own row instead of compressing the labels', () => {
+    // 回归：/help 页脚三个跳转等宽一行时，「📂 工作空间」在手机上被压到看不见文字。
+    const rows = inlineActions([
+      { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
+      { text: '🕘 恢复会话', value: { cmd: 'resume' } },
+      { text: '📂 工作空间', value: { cmd: 'ws.list' } },
+    ]);
+    expect(rows).toHaveLength(2);
+    const [first, second] = rows as Array<{ columns: Array<{ elements: Array<{ text: { content: string } }> }> }>;
+    expect(first!.columns.map((c) => c.elements[0]!.text.content)).toEqual(['📊 状态', '🕘 恢复会话']);
+    // 折下来的那个独占一行 = 整行宽（不再三等分）。
+    expect(second!.columns).toHaveLength(1);
+    expect(second!.columns[0]!.elements[0]!.text.content).toBe('📂 工作空间');
+    expect(INLINE_ROW_MAX).toBe(2);
   });
 
   it('lays inline actions side by side in one weighted row', () => {

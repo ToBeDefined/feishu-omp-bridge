@@ -10,24 +10,29 @@ import {
 import type { CommandContext, Handler } from '../index';
 import { formatIdleLine } from '../shared';
 import { summarizeMd } from '../../utils/text';
-import { contextCard, type ContextInfo } from '../../card/templates';
+import type { ContextInfo } from '../../card/templates';
 import { formatAgo, formatAgoOr, formatClockOr } from '../../utils/time';
 import { conversationCwd } from '../../session/current-cwd';
 
-export const contextHandlers: Record<string, Handler> = {
-  '/context': handleContext,
-  '/ctx': handleContext,
-};
-
+/**
+ * 会话状态卡的输入（`/status` · `/context` · `/ctx` 共用）。
+ *
+ * `overrides` 由命令层传它才知道的两件事：
+ * - `cwd`：`/status` 用 `resolveConversationCwd` 的「下一条消息实际会跑在哪」（会修好
+ *   失效目录并回写窗口 cwd），而不是只读的会话目录；
+ * - `sessionStale`：当前会话带着一个已不存在的目录（下次会新建会话）—— 判定要 stat，
+ *   所以放在命令层做。
+ */
 export function collectContextInfo(
   ctx: CommandContext,
   summary: { lastMessage?: string; lastReply?: string } = {},
+  overrides: { cwd?: string; sessionStale?: boolean } = {},
 ): ContextInfo {
   const entry = ctx.sessions.getRaw(ctx.scope);
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
   // 身份 = 会话（一个 OMP 会话 = 一个对话）：cwd 取它自己的目录（会话优先，聊天
   // 窗口的 cwd 只是它没有会话时的落点），名字取 /rename 的 title。
-  const cwd = conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope);
+  const cwd = overrides.cwd ?? conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope);
   const sessionId = entry?.sessionId;
   // 名字 = 真标题（/rename 起的）。**不拿最后一条用户消息冒充标题**：那会让
   // 「标题」这一行看起来像用户起的名，实际只是他上一句话。
@@ -41,6 +46,8 @@ export function collectContextInfo(
     createdAt: entry?.createdAt,
     updatedAt: entry?.updatedAt,
     running: ctx.activeRuns.has(ctx.scope),
+    agentName: ctx.agent.displayName,
+    ...(overrides.sessionStale !== undefined ? { sessionStale: overrides.sessionStale } : {}),
     model: getOmpModel(ctx.controls.cfg),
     thinking: getOmpThinking(ctx.controls.cfg),
     idleLine: formatIdleLine(
@@ -194,14 +201,4 @@ export async function loadSessionSummary(
     /* fall through to empty */
   }
   return { lastMessage: '', lastReply: '' };
-}
-
-async function handleContext(_args: string, ctx: CommandContext): Promise<void> {
-  const sessionId = ctx.sessions.sessionFor(ctx.scope)?.sessionId;
-  const summary =
-    sessionId !== undefined
-      ? await loadSessionSummary(ctx, sessionId)
-      : { lastMessage: '', lastReply: '' };
-  const card = contextCard(collectContextInfo(ctx, summary));
-  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
 }

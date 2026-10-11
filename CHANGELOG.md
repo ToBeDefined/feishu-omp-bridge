@@ -330,6 +330,20 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Changed
+- **`/status`、`/ctx`、`/context` 合并成同一张卡**：此前两张卡有约 85% 内容逐字相同
+  （同样的「🗂 会话 / 🧩 环境」两面板 + 窗口行），差别只在 `/status` 多 agent 名与
+  「会话目录已失效」告警、`/ctx` 多「命名工作空间快捷名」与「最近内容」。
+  现在一条命令三个写法（`/status` 主名，`/ctx`、`/context` 别名，同一 handler），
+  卡片 = 会话面板 + 环境面板（含 agent 名 + 📂 工作空间快捷名）+ 💬 最近内容
+  （最后一条用户消息 / 助手回答，各截 80 字）+ 失效告警。
+  随之删掉重复实现：`StatusInfo` / `contextCard` / `ContextInfo` 里的重复字段合并成
+  一份 `ContextInfo`（新增 `agentName`、`sessionStale`），`context.ts` 只留取数
+  （`collectContextInfo` / `renderContext` / `loadSessionSummary` 等），命令层归到
+  `status.ts` 一个 handler；`/help` 的两行说明并成一行
+  （`/status · /ctx · /context` — 会话状态：会话 / 环境 / 最近内容）。
+  代价明说：`/status` 现在也会读一次会话文件（最近内容），且沿用
+  `resolveConversationCwd` 的「目录失效就退回 $HOME 并回写」行为；`/ctx` 此前用的是
+  只读口径 —— 两者统一到前者（状态卡报的是「下一条消息实际会跑在哪」）。
 - **定下卡片按钮布局规则，并全站对齐**（`src/card/templates.ts`）：
   1. **同一层级的并列动作等宽并排一行** —— 确认 / 否、切换 / 删除、继续对话 / 详情、
      上一页 / 下一页：一律 `inlineRow`（`inlineActions` 是其按钮 spec 版）；

@@ -6,6 +6,12 @@ import { escapeCode, escapeMd } from '../utils/text';
 /** Input for /context renders — gathered by commands/session/context.ts
  * (`collectContextInfo`) and consumed here, so the text renderer and the
  * card cannot drift apart. */
+/**
+ * 会话状态卡（`/status` · `/context` · `/ctx` 同一个）的全部输入。
+ *
+ * 两个命令合并后这仍是一张卡：会话 / 环境两面板 + 命名工作空间快捷方式 +
+ * 最近内容，再补上原来只在 `/status` 里的 agent 名与「会话目录已失效」告警。
+ */
 export interface ContextInfo {
   scope: string;
   chatMode: 'p2p' | 'group' | 'topic';
@@ -18,12 +24,16 @@ export interface ContextInfo {
   createdAt?: number;
   updatedAt?: number;
   running: boolean;
+  /** Agent 适配器显示名（OMP）。 */
+  agentName: string;
   model?: string;
   thinking?: string;
   idleLine: string;
   /** Named workspaces pointing at the current cwd. */
   wsNames: string[];
   summary: { lastMessage?: string; lastReply?: string };
+  /** 当前会话带着一个已经不可用的 cwd：下一条消息会新建会话。 */
+  sessionStale?: boolean;
 }
 
 export interface ButtonSpec {
@@ -256,37 +266,15 @@ export function workspacesCard(current: string | undefined, named: Record<string
   return shell('📂 工作空间', elements);
 }
 
-export interface StatusInfo {
-  /** 当前工作目录（= 会话的 cwd，没有会话时退回 scope cwd）。 */
-  cwd: string;
-  /** 当前会话 id（一个 OMP 会话 = 一个对话）；无会话时缺失。 */
-  sessionId?: string;
-  /** 显示名：/rename 的名字，回退到最后一条用户消息。 */
-  sessionName?: string;
-  sessionStale: boolean;
-  agentName: string;
-  /** Session scope (= chatId or chatId:threadId in topic groups). */
-  scope: string;
-  /** Chat mode — used to label scope. */
-  chatMode: 'p2p' | 'group' | 'topic';
-  /** Active model selector; absent = following OMP default. */
-  model?: string;
-  /** Thinking level; absent = following OMP default. */
-  thinking?: string;
-  /** Rendered idle-timeout line (scope override vs global default). */
-  idleLine: string;
-  createdAt?: number;
-  lastActive?: number;
-  /** Whether a run is executing in this scope right now. */
-  running: boolean;
-}
-
-export function statusCard(info: StatusInfo): object {
+export function statusCard(info: ContextInfo): object {
   const scopeLine =
     info.chatMode === 'topic'
       ? `窗口 \`${escapeCode(info.scope)}\` _（话题独立会话）_`
       : `窗口 \`${escapeCode(info.scope)}\``;
-
+  const wsLine =
+    info.wsNames.length > 0
+      ? info.wsNames.map((n) => `\`${escapeCode(n)}\``).join(' ')
+      : '_（当前目录无快捷方式）_';
   const sessionPanel = [
     md('**🗂 会话**'),
     // 没有真名字就不渲染这一行：占位的「未命名」会让人以为会话有名字。
@@ -297,7 +285,7 @@ export function statusCard(info: StatusInfo): object {
         : '🔗 _无，下条消息新建_',
     ),
     md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
-    md(`🕘 ${formatAgoOr(info.lastActive, '新会话')}`),
+    md(`🕘 ${formatAgoOr(info.updatedAt, '新会话')}`),
     md(info.running ? '🔄 任务执行中' : '✅ 空闲'),
   ];
   const envPanel = [
@@ -307,12 +295,27 @@ export function statusCard(info: StatusInfo): object {
     md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
     md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
     md(`⏱ ${escapeMd(info.idleLine)}`),
+    md(`📂 ${wsLine}`),
   ];
+  const hasRecent = Boolean(info.summary.lastMessage || info.summary.lastReply);
+  const recentPanel = hasRecent
+    ? [
+        panel([
+          md('**💬 最近内容**'),
+          ...(info.summary.lastMessage
+            ? [md(`💬 ${digest(info.summary.lastMessage, 80)}`)]
+            : []),
+          ...(info.summary.lastReply
+            ? [md(`📝 ${digest(info.summary.lastReply, 80)}`)]
+            : []),
+        ]),
+      ]
+    : [];
 
   return shell('📊 会话状态', [
     md('📊 **会话状态**', 'heading'),
     md(scopeLine, 'notation'),
-    ...stackedPanels([panel(sessionPanel), panel(envPanel)]),
+    ...stackedPanels([panel(sessionPanel), panel(envPanel), ...recentPanel]),
     ...(info.sessionStale
       ? [md('⚠️ _session 来自旧 cwd，下一条消息将新建会话_', 'notation')]
       : []),
@@ -331,64 +334,6 @@ export function cwdChangedCard(cwd: string, scopeNote?: string): object {
     ...inlineActions([
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
       { text: '📊 会话状态', value: { cmd: 'status' } },
-    ]),
-  ]);
-}
-
-/** /context card — same data as the /status panels plus the recent
- * message/reply digest, from the shared ContextInfo gatherer
- * (commands/session/context.ts). Type-only import: no runtime cycle. */
-export function contextCard(
-  info: ContextInfo,
-): object {
-  const hasRecent = Boolean(info.summary.lastMessage || info.summary.lastReply);
-  const recentPanel = hasRecent
-    ? [
-        panel([
-          md('**💬 最近内容**'),
-          ...(info.summary.lastMessage
-            ? [md(`💬 ${digest(info.summary.lastMessage, 80)}`)]
-            : []),
-          ...(info.summary.lastReply
-            ? [md(`📝 ${digest(info.summary.lastReply, 80)}`)]
-            : []),
-        ]),
-      ]
-    : [];
-  const scopeLine =
-    info.chatMode === 'topic'
-      ? `窗口 \`${escapeCode(info.scope)}\` _（话题独立会话）_`
-      : `窗口 \`${escapeCode(info.scope)}\``;
-  const wsLine =
-    info.wsNames.length > 0
-      ? info.wsNames.map((n) => `\`${escapeCode(n)}\``).join(' ')
-      : '_（当前目录无快捷方式）_';
-  return shell('🧾 会话上下文', [
-    md('🧾 **会话上下文**', 'heading'),
-    md(scopeLine, 'notation'),
-    ...stackedPanels([
-      panel([
-        md('**🗂 会话**'),
-        // 没有真名字就不渲染这一行：占位的「未命名」会让人以为会话有名字。
-    ...(info.sessionName ? [md(`🏷 ${escapeMd(info.sessionName)}`)] : []),
-        md(
-          info.sessionId
-            ? `🔗 \`${escapeCode(info.sessionId)}\``
-            : '🔗 _无，下条消息新建_',
-        ),
-        md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
-        md(`🕘 ${formatAgoOr(info.updatedAt, '新会话')}`),
-        md(info.running ? '🔄 任务执行中' : '✅ 空闲'),
-      ]),
-      panel([
-        md('**🧩 环境**'),
-        md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
-        md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
-        md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
-        md(`⏱ ${escapeMd(info.idleLine)}`),
-        md(`📂 ${wsLine}`),
-      ]),
-      ...recentPanel,
     ]),
   ]);
 }
@@ -706,8 +651,7 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
       ['/new chat [名字]', '新建群 + 新会话，自动拉你进群'],
       ['/resume', '历史会话列表，一键恢复'],
       ['/rename <标题>', '会话命名；`auto` LLM 生成，`clear` 清除'],
-      ['/status', '当前会话 / 环境状态卡片'],
-      ['/context · /ctx', '会话上下文详情'],
+      ['/status · /ctx · /context', '会话状态：会话 / 环境 / 最近内容'],
       ['/search <关键词> · /s', '跨会话历史检索'],
       ['/history [all] · /sessions', '工作目录 / 全部的对话历史清单'],
     ],

@@ -62,11 +62,14 @@ describe('command dispatch', () => {
   });
 
   it('routes slash-command aliases to the same handler', async () => {
-    // /sessions is /history's alias, /session is /resume's, /s is /search's.
+    // /sessions is /history's alias, /session is /resume's, /s is /search's,
+    // /ctx and /context are /status's (one card, three spellings).
     const aliases: Array<[string, string]> = [
       ['/sessions', '/history'],
       ['/session', '/resume'],
       ['/s', '/search'],
+      ['/ctx', '/status'],
+      ['/context', '/status'],
     ];
     for (const [alias, canonical] of aliases) {
       const sent: string[] = [];

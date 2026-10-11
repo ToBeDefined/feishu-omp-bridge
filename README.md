@@ -403,10 +403,9 @@ Semantics:
 | `/ws use <name>` | Switch to a named workspace (changing the directory = a new conversation; same for `/ws undo`). |
 | `/config` | Open the preferences card. |
 | `/account` | Replace the bot app credentials and reconnect. |
-| `/context` | Show the current session context (session id / title / cwd / model / idle timeout …). |
 | `/rename <title>` | Name the current **conversation**; `/rename auto` generates it with an LLM (≤20 chars), `/rename clear` clears it. The title shows up in `/context`, `/status`, `/resume`, `/search`. |
 | `/history [all]`, `/sessions` | Session list, newest activity first: by default only the **current working directory**, `all` for every working directory. One row = one OMP session (activity time / turn count / title or last user message); “Continue chat” restores it; paginates beyond 8 rows. Admin command. |
-| `/status` | Show the current scope, cwd, session and agent. |
+| `/status`、`/ctx`、`/context` | The session status card — one command, three spellings: session (id / title / start / last active / running), environment (cwd / agent / model / thinking / idle timeout / workspace quick-dirs) and the digested recent message + reply. |
 | `/stop` | Abort the OMP run currently executing. |
 | `/timeout [N\|off\|default]` | Set the current session's idle timeout, or turn it off / fall back to the global default. |
 | `/ps` | List every bridge process on this machine and mark the one replying now. |
@@ -612,7 +611,7 @@ Real Feishu end-to-end verification needs working PersonalAgent credentials and 
 | --- | --- |
 | Startup reports `omp` not found | Make sure `omp --version` works and run `omp` once to finish model / auth configuration. |
 | No response after OMP RPC starts | Run `omp --mode rpc` alone as a smoke test; check `~/.feishu-omp-bridge/logs/`. |
-| OMP did not continue the previous conversation | Send `/context` and look at the current session id: a deleted session file, or your own `/cd`, `/ws use`, `/new`, all switch to a new conversation (the old one is still in `/history` — click “Continue chat” to go back). The window's cwd no longer affects resumption: the bridge resumes the session's own directory. |
+| OMP did not continue the previous conversation | Send `/status` (`/ctx`) and look at the current session id: a deleted session file, or your own `/cd`, `/ws use`, `/new`, all switch to a new conversation (the old one is still in `/history` — click “Continue chat” to go back). The window's cwd no longer affects resumption: the bridge resumes the session's own directory. |
 | A group chat gets no response | Make sure the message `@bot`s the bot, or adjust `requireMentionInGroup` in `/config` / `config.json`. |
 | A card sits there for a long time | Interrupt with `/stop`; you can also enable idle probing for the current session with `/timeout 10`. |
 | OMP is waiting for a choice / input | Reply to the standalone “OMP interaction” card; the idle watchdog is paused while waiting. |

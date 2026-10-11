@@ -3,7 +3,6 @@ import { resumeCard, resumeSavedCard, type ResumeOption } from './model-card';
 import type { RunCard } from './run-renderer';
 import {
   compactCard,
-  contextCard,
   cwdChangedCard,
   everyCard,
   execResultCard,
@@ -21,6 +20,7 @@ import {
   restartCard,
   shell,
   statusCard,
+  type ContextInfo,
   workspacesCard,
 } from './templates';
 
@@ -311,16 +311,19 @@ describe('shared card kit', () => {
 
 });
 
-function statusFixture(extra: Partial<Parameters<typeof statusCard>[0]> = {}) {
+/** 合并后 `/status` · `/context` · `/ctx` 共用这一份输入。 */
+function statusFixture(extra: Partial<ContextInfo> = {}): ContextInfo {
   return {
     cwd: '/repo',
     sessionId: 'ws-1',
     sessionStale: false,
     agentName: 'omp',
     scope: 'oc_1',
-    chatMode: 'p2p' as const,
+    chatMode: 'p2p',
     idleLine: '全局 30 分钟',
     running: false,
+    wsNames: [],
+    summary: {},
     ...extra,
   };
 }
@@ -341,7 +344,7 @@ describe('statusCard', () => {
       statusFixture({
         model: 'zhipu-coding-plan/glm-5.3',
         thinking: 'high',
-        lastActive: Date.now() - 5 * 60_000,
+        updatedAt: Date.now() - 5 * 60_000,
         running: true,
       }),
     );
@@ -355,6 +358,15 @@ describe('statusCard', () => {
     expect(out).toContain('全局 30 分钟');
     expect(out).toContain('分钟前');
     expect(out).toContain('任务执行中');
+  });
+
+  it('carries the agent name and the workspace quick-dirs (the old /status + /ctx union)', () => {
+    const out = JSON.stringify(
+      statusCard(statusFixture({ agentName: 'OMP', wsNames: ['bridge', 'notes'] })),
+    );
+    expect(out).toContain('🤖 OMP');
+    expect(out).toContain('bridge');
+    expect(out).toContain('notes');
   });
 
   it('warns when the session belongs to an old cwd', () => {
@@ -390,21 +402,15 @@ describe('statusCard', () => {
 describe('session id rendering', () => {
   const ULID = '01J8Z9K2ABCDEFGHJKLMNPQRST';
 
-  it('shows the full session id on the status/context cards', () => {
-    expect(JSON.stringify(statusCard(statusFixture({ sessionId: ULID })))).toContain(ULID);
-    const ctx = contextCard({
-      scope: 'oc_x',
-      chatMode: 'p2p',
-      cwd: '/repo',
-      sessionId: ULID,
-      running: false,
-      idleLine: '探活：跟随全局',
-      wsNames: [],
-      summary: {},
-    });
-    expect(JSON.stringify(ctx)).toContain(ULID);
+  it('shows the full session id on the merged status card', () => {
+    const out = JSON.stringify(
+      statusCard(
+        statusFixture({ sessionId: ULID, sessionName: '长 id 会话', agentName: 'OMP' }),
+      ),
+    );
+    expect(out).toContain(ULID);
     // No truncated form leaks through.
-    expect(JSON.stringify(ctx)).not.toContain('01J8Z9K2…');
+    expect(out).not.toContain('01J8Z9K2…');
   });
 
   it('shows the full id on the singular /resume lines but a short handle per row', () => {
@@ -484,16 +490,17 @@ describe('workspacesCard', () => {
   });
 });
 
-describe('contextCard', () => {
-  const base = {
+describe('statusCard — 最近内容 / 工作空间 / 占位（原 /context 的能力）', () => {
+  const base: ContextInfo = {
     scope: 'oc_1',
-    chatMode: 'p2p' as const,
+    chatMode: 'p2p',
     cwd: '/repo',
     sessionId: '019f3a2b-7c8d-73e1-9f2a-4b5c6d7e8f90',
     sessionName: '修搜索',
     createdAt: Date.now() - 86_400_000,
     updatedAt: Date.now() - 120_000,
     running: false,
+    agentName: 'OMP',
     model: 'p/m',
     thinking: 'high',
     idleLine: '全局 30 分钟',
@@ -501,8 +508,8 @@ describe('contextCard', () => {
     summary: { lastMessage: '你好  abc', lastReply: '答完了' },
   };
 
-  it('renders the three panels with digested recent content', () => {
-    const out = JSON.stringify(contextCard(base));
+  it('renders the panels with agent, workspace quick-dirs and digested recent content', () => {
+    const out = JSON.stringify(statusCard(base));
     expect(out).toContain('会话');
     expect(out).toContain('环境');
     expect(out).toContain('最近内容');
@@ -514,17 +521,15 @@ describe('contextCard', () => {
     expect(out).toContain('全局 30 分钟');
   });
 
-  it('carries no action buttons — /ctx is informational, /status is the console', () => {
-    const out = JSON.stringify(contextCard(base));
+  it('carries no action buttons — it is informational', () => {
+    const out = JSON.stringify(statusCard(base));
     expect(out).not.toContain('"tag":"button"');
-    // The buttons it used to carry were circular (状态 re-renders these same
-    // panels) / duplicated (/status already offers 恢复会话).
     expect(out).not.toContain('"cmd":"status"');
     expect(out).not.toContain('"cmd":"resume"');
   });
 
   it('stacks the panels full-width instead of laying them side by side', () => {
-    const out = contextCard(base) as { body: { elements: Array<Record<string, unknown>> } };
+    const out = statusCard(base) as { body: { elements: Array<Record<string, unknown>> } };
     const sets = out.body.elements.filter((e) => e.tag === 'column_set');
     // One single-column column_set per panel — stacked at every card width,
     // unlike a multi-column row that goes side by side on a desktop card.
@@ -537,7 +542,7 @@ describe('contextCard', () => {
 
   it('drops the recent panel and placeholders when nothing to show', () => {
     const out = JSON.stringify(
-      contextCard({
+      statusCard({
         ...base,
         sessionId: undefined,
         sessionName: undefined,

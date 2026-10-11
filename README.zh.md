@@ -397,10 +397,9 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 | `/ws use <name>` | 切换到命名工作空间（换目录 = 开新对话；`/ws undo` 同理）。 |
 | `/config` | 打开偏好设置卡片。 |
 | `/account` | 更换 bot app 凭据并重连。 |
-| `/context` | 查看当前会话上下文（会话 id / 标题 / cwd / 模型 / 探活等）。 |
 | `/rename <标题>` | 给当前**对话**起名；`/rename auto` 用 LLM 生成(≤20 字)，`/rename clear` 清除。标题显示在 `/context`、`/status`、`/resume`、`/search`。 |
 | `/history [all]`、`/sessions` | 会话清单，按最后活动时间倒序：默认只看**当前工作目录**，`all` 看全部工作目录。每行 = 一个 OMP 会话（活动时间 / 轮数 / 标题或最后一条用户消息），「继续对话」恢复它；超过 8 条分页。admin 命令。 |
-| `/status` | 查看当前 scope、cwd、session、agent。 |
+| `/status`、`/ctx`、`/context` | 会话状态卡片 —— 一条命令三个写法：会话（id / 标题 / 开始 / 最近活动 / 运行态）、环境（cwd / agent / 模型 / 思考强度 / 探活 / 工作空间快捷名）与最近一问一答的摘要。 |
 | `/stop` | 终止当前正在执行的 OMP run。 |
 | `/timeout [N\|off\|default]` | 设置当前 session 的 idle timeout，或关闭 / 恢复全局默认。 |
 | `/ps` | 列出本机所有 bridge 进程，并标识当前回复进程。 |

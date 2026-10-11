@@ -30,6 +30,16 @@ interface ExecResponseValue {
 const PROTOCOL_VERSION = 1;
 
 /**
+ * exec-provider 请求形状校验：必须是**非 null、非数组的 JSON 对象**。
+ * stdin 为字面 `null`、`[]`、数字或字符串时 JSON.parse 并不报错，但直接
+ * 取 `req.ids` 会对 null 抛 TypeError、对数组/标量产生垃圾行为 —— 这里
+ * 统一拦下，让调用方走 exit(2) 分支。纯函数，便于测试。
+ */
+export function isValidExecRequest(value: unknown): value is ExecRequest {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
  * `secrets get` — exec-provider protocol mode.
  *
  * Reads a JSON object from stdin:
@@ -45,13 +55,20 @@ const PROTOCOL_VERSION = 1;
  */
 export async function runSecretsGet(): Promise<void> {
   const input = await readAllStdin();
-  let req: ExecRequest;
+  let parsed: unknown;
   try {
-    req = JSON.parse(input || '{}') as ExecRequest;
+    parsed = JSON.parse(input || '{}');
   } catch (err) {
     console.error(`secrets get: invalid stdin JSON: ${(err as Error).message}`);
     process.exit(2);
   }
+  // 字面 `null` 等标量能通过 JSON.parse，但不是合法请求 —— 统一按
+  // 「stdin JSON 非法」处理，exit(2)。
+  if (!isValidExecRequest(parsed)) {
+    console.error('secrets get: invalid stdin JSON: expected a JSON object');
+    process.exit(2);
+  }
+  const req = parsed;
   const ids = req.ids ?? [];
   const resp: ExecResponseValue = {
     protocolVersion: PROTOCOL_VERSION,

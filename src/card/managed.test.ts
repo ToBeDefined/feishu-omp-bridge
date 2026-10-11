@@ -7,6 +7,7 @@ import {
   finalizeInterruptedCards,
   forgetStreamingCard,
   rememberStreamingCard,
+  runningCardsSettled,
   stripRunningState,
   type RunningCardKind,
 } from './managed';
@@ -56,7 +57,7 @@ describe('running-cards 的读改写串行', () => {
     try {
       rememberStreamingCard('om_race', 'oc_1', { schema: '2.0', body: { elements: [] } });
       forgetStreamingCard('om_race');
-      await new Promise((r) => setTimeout(r, 50));
+      await runningCardsSettled();
       const left = JSON.parse(await readFile(paths.runningCardsFile, 'utf8').catch(() => '[]')) as unknown[];
       expect(left).toEqual([]);
     } finally {

@@ -24,7 +24,7 @@ import {
   saveConfig,
 } from '../../config/store';
 import { gcOldLogs, log } from '../../core/logger';
-import { kickstart } from '../../daemon/launchd';
+import { kickstart, rotateDaemonStdoutIfNeeded } from '../../daemon/launchd';
 import { finalizeInterruptedCards } from '../../card/managed';
 import { clearOnlineNotice, takeOnlineNotice } from '../../bot/online-notify';
 import { onlineCard, releaseCard, restartCard } from '../../card/templates';
@@ -35,6 +35,7 @@ import {
   cleanupTmpFiles,
   register,
   sameAppOthers,
+  unregister,
   unregisterSync,
   updateEntry,
   type ProcessEntry,
@@ -66,6 +67,48 @@ export interface StartOptions {
 }
 
 export async function runStart(opts: StartOptions): Promise<void> {
+  // 信号处理器必须在第一个 await 之前挂上：启动窗口（读配置 / 向导 /
+  // preflight / 建连）里的 SIGINT/SIGTERM 原本走默认行为直接终止进程，
+  // 什么都不清理。stop() 对尚未初始化的部分做守卫 —— bridge 没连上就跳过
+  // disconnect，entry 还没注册就跳过注销；已初始化时行为与原来完全一致。
+  let stopping = false;
+  let entry: ProcessEntry | undefined;
+  let bridge: BridgeChannel | undefined;
+  const stop = async (sig: string): Promise<void> => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`\n收到 ${sig}，正在关闭...`);
+    try {
+      // SIGTERM (launchd shutdown / external restart): don't kill OMP runs —
+      // the agent may be mid-`restart` and needs to survive to re-bootstrap
+      // us. OMP exits on its own when the channel (stdin pipe) closes.
+      // Explicit user exit command: kill runs fast for a clean shutdown.
+      await bridge?.disconnect(sig === 'exit-command');
+    } catch (err) {
+      console.error('[disconnect-failed]', err);
+    }
+    if (entry) {
+      // 注册的写盘和锁释放之间有窗口：SIGTERM 若正好落在窗口里，
+      // unregisterSync 会抢锁失败而静默放弃（自己的条目残留）。这里走
+      // 带锁等待的异步路径；极端情况（锁忙超时）再退同步兜底。
+      try {
+        await unregister(entry.id);
+      } catch {
+        unregisterSync(entry.id);
+      }
+    }
+    process.exit(0);
+  };
+  process.on('SIGINT', () => void stop('SIGINT'));
+  process.on('SIGTERM', () => void stop('SIGTERM'));
+
+  // daemon-stdout.log 由 launchd 追加、不会滚动；启动时超阈值就 copytruncate，
+  // 防止数月运行后无限膨胀。**不能 await**：runStart 必须同步走到 loadConfig
+  // 挂闸门，否则外部测试/调用方在第一个 await 前拿到的闸门句柄会张冠李戴。
+  void rotateDaemonStdoutIfNeeded().catch((err) =>
+    log.warn('daemon', 'stdout-rotate-failed', { err: String(err) }),
+  );
+
   const configPath = opts.config ?? paths.configFile;
   const existing = await loadConfig(configPath);
 
@@ -122,38 +165,22 @@ export async function runStart(opts: StartOptions): Promise<void> {
   // Register self in the process registry. Cleanup is wired via stop() and
   // 'exit' below — both paths run unregisterSync so stale entries don't
   // poison the next start.
-  const entry = await register({
+  entry = await register({
     appId: cfg.accounts.app.id,
     tenant: cfg.accounts.app.tenant,
     configPath,
     version: pkg.version,
   });
-  log.info('registry', 'registered', { id: entry.id, pid: process.pid });
+  // 闭包里（restart / exit 钩子）都用 entryId：entry 是 let，闭包内不做
+  // 非空判断也拿不到收窄后的类型。
+  const entryId = entry.id;
+  log.info('registry', 'registered', { id: entryId, pid: process.pid });
 
   // `bridge` is mutable so /account can swap it on restart. `controls` carries
   // restart() and a snapshot of the current cfg so command handlers can read
   // and replace credentials without plumbing through the whole runStart scope.
-  let bridge: BridgeChannel;
+  // bridge / entry 本体与 stop() 一起声明在函数最顶部（信号守卫需要）。
   let restarting = false;
-
-  let stopping = false;
-  const stop = async (sig: string): Promise<void> => {
-    if (stopping) return;
-    stopping = true;
-    console.log(`\n收到 ${sig}，正在关闭...`);
-    try {
-      // SIGTERM (launchd shutdown / external restart): don't kill OMP runs —
-      // the agent may be mid-`restart` and needs to survive to re-bootstrap
-      // us. OMP exits on its own when the channel (stdin pipe) closes.
-      // Explicit user exit command: kill runs fast for a clean shutdown.
-      await bridge.disconnect(sig === 'exit-command');
-    } catch (err) {
-      console.error('[disconnect-failed]', err);
-    }
-    // unregister is best-effort sync — we're about to exit anyway.
-    unregisterSync(entry.id);
-    process.exit(0);
-  };
 
   const scheduler = new Scheduler();
   await scheduler.load();
@@ -185,17 +212,17 @@ export async function runStart(opts: StartOptions): Promise<void> {
         controls,
         scheduler,
       });
-      console.log('[restart] disconnecting old bridge...');
+      console.log('[restart] 断开旧 bridge...');
       try {
-        await bridge.disconnect();
+        await bridge?.disconnect();
       } catch (err) {
-        console.warn('[restart] old disconnect failed:', err);
+        console.warn('[restart] 旧 bridge 断开失败:', err);
       }
       bridge = next_bridge;
       controls.cfg = next;
       // Keep the registry in sync so /ps reflects the new app after an
       // /account change. Same process id, new app fields.
-      await updateEntry(entry.id, {
+      await updateEntry(entryId, {
         appId: next.accounts.app.id,
         tenant: next.accounts.app.tenant,
         configPath,
@@ -212,7 +239,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
   const controls: Controls = {
     configPath,
     cfg,
-    processId: entry.id,
+    processId: entryId,
     scheduler,
     async exit() {
       await stop('exit-command');
@@ -263,12 +290,12 @@ export async function runStart(opts: StartOptions): Promise<void> {
 
   bridge = await startChannel({ cfg, agent, sessions, workspaces, controls, scheduler });
 
-  // Backfill the bot's display name into the registry once WS handshake is
-  // done — future starts conflicting on this app can show it in the prompt
+  // Backfill the bot's display name into the registry once the WS handshake
+  // is done — future starts conflicting on this app can show it in the prompt
   // ("bot 尼莫 (cli_xxx)") instead of just a short id.
-  const botName = bridge.channel.botIdentity?.name;
+  const botName = bridge?.channel.botIdentity?.name;
   if (botName) {
-    await updateEntry(entry.id, { botName }).catch((err) =>
+    await updateEntry(entryId, { botName }).catch((err) =>
       log.warn('registry', 'update-failed', { step: 'botName', err: String(err) }),
     );
   }
@@ -336,12 +363,11 @@ export async function runStart(opts: StartOptions): Promise<void> {
         .catch((err) => log.warn('notify', 'online-failed', { chatId, err: String(err) }));
     }
   }
-  process.on('SIGINT', () => void stop('SIGINT'));
-  process.on('SIGTERM', () => void stop('SIGTERM'));
-  // Last-ditch sync unregister in case something exits without going through
-  // stop() (e.g. uncaughtException with process.exit(1)).
+  // SIGINT/SIGTERM 在 runStart 顶部就已注册（启动窗口也要能优雅退出），
+  // 这里不再重复挂。最后兜底：同步注销 + 清临时文件，防止不走 stop() 的
+  // 退出路径（如 uncaughtException 里的 process.exit(1)）留下脏注册表。
   process.on('exit', () => {
-    unregisterSync(entry.id);
+    unregisterSync(entryId);
     cleanupTmpFiles();
   });
 

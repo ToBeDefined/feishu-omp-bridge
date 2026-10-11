@@ -1,5 +1,5 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import { compactCard, restartCard } from './templates';
@@ -175,9 +175,6 @@ async function readRunningCards(): Promise<PersistedRunningCard[]> {
   }
 }
 
-/** Serialize writes so concurrent snapshot updates can't lose each other. */
-let writeChain: Promise<void> = Promise.resolve();
-
 /**
  * 串行化「读—改—写」整段：只串行 write 不够 —— 两个读改写交错时，后写的会覆盖前写
  * 的结果。实测过的坑：`rememberStreamingCard` 紧跟 `forgetStreamingCard`（一次**成功**
@@ -198,13 +195,16 @@ function mutateRunningCards<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function writeRunningCards(list: PersistedRunningCard[]): Promise<void> {
-  const next = writeChain.then(() =>
-    writeFile(paths.runningCardsFile, JSON.stringify(list.slice(-RUNNING_CARDS_MAX)), 'utf8'),
-  );
-  writeChain = next.catch(() => {});
-  await next.catch((err) => {
+  // 调用方必须在 mutateRunningCards(cardsChain) 内；这里只负责落盘。
+  // tmp + rename 原子替换：链外的读者（测试断言、崩溃恢复扫描）直接
+  // readFile，非原子写会让它们看到 truncate 后的空文件。
+  const tmp = `${paths.runningCardsFile}.${process.pid}.tmp`;
+  try {
+    await writeFile(tmp, JSON.stringify(list.slice(-RUNNING_CARDS_MAX)), 'utf8');
+    await rename(tmp, paths.runningCardsFile);
+  } catch (err) {
     log.warn('card', 'running-cards-persist-failed', { err: String(err) });
-  });
+  }
 }
 
 /** Insert or replace the entry for a card still in flight. */
@@ -268,7 +268,7 @@ export async function finalizeInterruptedCards(
       retry.push(entry);
     }
   }
-  await writeRunningCards(retry);
+  await mutateRunningCards(() => writeRunningCards(retry));
   return finalizedRestart;
 }
 
@@ -371,6 +371,11 @@ export function rememberStreamingCard(messageId: string, chatId: string, card?: 
 /** Refresh a streaming card's persisted snapshot (called on every render). */
 export function snapshotStreamingCard(messageId: string, card: object): void {
   void updateRunningCardSnapshot(messageId, card);
+}
+
+/** 等所有在途的 running-cards 读改写排空（测试与优雅关停用）。 */
+export function runningCardsSettled(): Promise<void> {
+  return cardsChain;
 }
 
 /** Remove a streaming card from the crash-recovery persistence. */

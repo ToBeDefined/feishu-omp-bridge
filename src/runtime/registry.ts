@@ -1,5 +1,15 @@
 import { randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, renameSync, writeFileSync, unlinkSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from 'node:fs';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { paths } from '../config/paths';
@@ -102,6 +112,107 @@ function writeAtomicSync(entries: ProcessEntry[], path: string): void {
   renameSync(tmp, path);
 }
 
+// ---------------------------------------------------------------------------
+// Cross-process lock
+//
+// The in-process `mutationChain` below only serialises callers inside one
+// process. Two `start` processes still read-modify-write the same registry
+// file: both prune, both write the full entry list, last rename wins and the
+// other's entry vanishes — `sameAppOthers` then can't see the twin and we get
+// two long-connections on the same app. Every mutation therefore wraps its
+// read-modify-write in `<file>.lock`, created with O_EXCL:
+//   - busy  → retry every `retryMs` up to `timeoutMs`, then fail loudly
+//     (refusing to write unlocked is the point; a dropped entry is the bug).
+//   - stale → a lock whose mtime is older than `staleMs` means the holder
+//     died before unlinking (kill -9, power loss); take it over. Takeover
+//     renames the stale file away instead of unlinking, so two processes that
+//     both spotted the stale lock can't evict the fresh lock of the winner.
+// ---------------------------------------------------------------------------
+
+const LOCK_RETRY_MS = 50;
+const LOCK_TIMEOUT_MS = 2_000;
+const LOCK_STALE_MS = 5_000;
+
+export interface RegistryLockOptions {
+  /** Poll interval while the lock is held by someone else. */
+  retryMs?: number;
+  /** Give up (throw) after this long without acquiring. */
+  timeoutMs?: number;
+  /** Lock file mtime older than this ⇒ holder crashed ⇒ take over. */
+  staleMs?: number;
+}
+
+/** One O_EXCL acquisition attempt. On EEXIST, checks for a stale lock and if
+ * stale, moves it aside (atomic — only one contender can rename it) so the
+ * next attempt can create its own. Returns whether we hold the lock now. */
+function tryAcquireSync(lockPath: string, staleMs: number): boolean {
+  let fd: number;
+  try {
+    fd = openSync(lockPath, 'wx');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    let mtimeMs: number;
+    try {
+      mtimeMs = statSync(lockPath).mtimeMs;
+    } catch {
+      return false; // released between create-attempt and stat; just retry
+    }
+    if (Date.now() - mtimeMs <= staleMs) return false;
+    try {
+      renameSync(lockPath, `${lockPath}.stale`);
+      try {
+        unlinkSync(`${lockPath}.stale`);
+      } catch {
+        /* another takeover already swept it */
+      }
+    } catch {
+      /* someone else took it over; fall through and retry */
+    }
+    return false;
+  }
+  try {
+    writeSync(fd, `${process.pid}\n`);
+  } finally {
+    closeSync(fd);
+  }
+  return true;
+}
+
+/**
+ * Run `fn` while holding the cross-process registry lock for `file`.
+ * All registry mutations go through this; `fn` must not return before it is
+ * safe for another process to mutate (no leaking of in-flight work).
+ */
+export async function withRegistryLock<T>(
+  file: string,
+  fn: () => Promise<T>,
+  options: RegistryLockOptions = {},
+): Promise<T> {
+  const retryMs = options.retryMs ?? LOCK_RETRY_MS;
+  const timeoutMs = options.timeoutMs ?? LOCK_TIMEOUT_MS;
+  const staleMs = options.staleMs ?? LOCK_STALE_MS;
+  const lockPath = `${file}.lock`;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (tryAcquireSync(lockPath, staleMs)) break;
+    if (Date.now() >= deadline) {
+      throw new Error(`registry lock busy after ${timeoutMs}ms: ${lockPath}`);
+    }
+    // Executor form: Promise.withResolvers needs Node 22+ / ES2024 lib; this
+    // package still supports Node >= 20 (same as bot/active-runs.ts).
+    await new Promise((resolve) => setTimeout(resolve, retryMs));
+  }
+  try {
+    return await fn();
+  } finally {
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      /* a stale-takeover may have moved it; nothing to release */
+    }
+  }
+}
+
 /** Generate a short, human-typable id. Collisions are caller's problem;
  * acceptable since dead entries are pruned and same-machine fleets are
  * small. */
@@ -116,8 +227,11 @@ export interface RegisterArgs {
   version: string;
 }
 
-/** Serialises registry mutations so two concurrent read-modify-write callers
- * can't both read the same baseline and lose one update. */
+/** Serialises registry mutations *within this process* so two concurrent
+ * read-modify-write callers can't both read the same baseline and lose one
+ * update. Cross-process safety comes from `withRegistryLock`, which every
+ * mutation additionally takes — this chain just avoids lock busy-waiting
+ * between our own coroutines. */
 let mutationChain: Promise<void> = Promise.resolve();
 
 function enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -134,33 +248,44 @@ function enqueue<T>(fn: () => Promise<T>): Promise<T> {
  * representing this process (so callers can stash the id for later use, e.g.
  * "is /exit <id> me?" checks).
  *
+ * The read-modify-write runs under the cross-process `<file>.lock` (on top of
+ * the in-process chain) — two concurrent `start` processes must not clobber
+ * each other's entry.
+ *
  * Caller is responsible for installing cleanup that calls `unregister`.
  */
-export function register(args: RegisterArgs): Promise<ProcessEntry> {
-  return enqueue(async () => {
-    const live = readAndPrune();
-    const entry: ProcessEntry = {
-      id: generateShortId(),
-      pid: process.pid,
-      appId: args.appId,
-      tenant: args.tenant,
-      configPath: args.configPath,
-      startedAt: new Date().toISOString(),
-      version: args.version,
-    };
-    await writeAtomic([...live, entry], paths.processesFile);
-    return entry;
-  });
+export function register(
+  args: RegisterArgs,
+  file: string = paths.processesFile,
+): Promise<ProcessEntry> {
+  return enqueue(() =>
+    withRegistryLock(file, async () => {
+      const live = readAndPrune(file);
+      const entry: ProcessEntry = {
+        id: generateShortId(),
+        pid: process.pid,
+        appId: args.appId,
+        tenant: args.tenant,
+        configPath: args.configPath,
+        startedAt: new Date().toISOString(),
+        version: args.version,
+      };
+      await writeAtomic([...live, entry], file);
+      return entry;
+    }),
+  );
 }
 
-/** Remove an entry by id. Atomic + prunes dead in same write. Async. */
-export function unregister(id: string): Promise<void> {
-  return enqueue(async () => {
-    const live = readAndPrune();
-    const next = live.filter((e) => e.id !== id);
-    if (next.length === live.length) return;
-    await writeAtomic(next, paths.processesFile);
-  });
+/** Remove an entry by id. Lock + atomic + prunes dead in same write. Async. */
+export function unregister(id: string, file: string = paths.processesFile): Promise<void> {
+  return enqueue(() =>
+    withRegistryLock(file, async () => {
+      const live = readAndPrune(file);
+      const next = live.filter((e) => e.id !== id);
+      if (next.length === live.length) return;
+      await writeAtomic(next, file);
+    }),
+  );
 }
 
 /**
@@ -171,31 +296,46 @@ export function unregister(id: string): Promise<void> {
 export function updateEntry(
   id: string,
   patch: Partial<Pick<ProcessEntry, 'appId' | 'tenant' | 'configPath' | 'botName'>>,
+  file: string = paths.processesFile,
 ): Promise<void> {
-  return enqueue(async () => {
-    const live = readAndPrune();
-    let changed = false;
-    const next = live.map((e) => {
-      if (e.id !== id) return e;
-      changed = true;
-      return { ...e, ...patch };
-    });
-    if (!changed) return;
-    await writeAtomic(next, paths.processesFile);
-  });
+  return enqueue(() =>
+    withRegistryLock(file, async () => {
+      const live = readAndPrune(file);
+      let changed = false;
+      const next = live.map((e) => {
+        if (e.id !== id) return e;
+        changed = true;
+        return { ...e, ...patch };
+      });
+      if (!changed) return;
+      await writeAtomic(next, file);
+    }),
+  );
 }
 
 /**
  * Synchronous unregister — for use inside `process.on('exit')` and other
- * sync-only contexts where async file I/O doesn't run. Best-effort.
+ * sync-only contexts where async file I/O doesn't run. Best-effort: if
+ * another process holds the lock we skip the write entirely (this process is
+ * exiting; its dead pid gets pruned on the next read anyway) and if the lock
+ * is stale we take it over, same as the async path.
  */
-export function unregisterSync(id: string): void {
+export function unregisterSync(id: string, file: string = paths.processesFile): void {
+  const lockPath = `${file}.lock`;
   try {
-    const live = readRaw(paths.processesFile).entries.filter((e) => isAlive(e.pid));
-    const next = live.filter((e) => e.id !== id);
-    if (next.length === live.length) return;
-    writeAtomicSync(next, paths.processesFile);
-    // If we just emptied the file, also remove the temp turd if any.
+    if (!tryAcquireSync(lockPath, LOCK_STALE_MS)) return;
+    try {
+      const live = readRaw(file).entries.filter((e) => isAlive(e.pid));
+      const next = live.filter((e) => e.id !== id);
+      if (next.length === live.length) return;
+      writeAtomicSync(next, file);
+    } finally {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        /* a stale-takeover may have moved it; nothing to release */
+      }
+    }
   } catch {
     // exit handlers must not throw.
   }

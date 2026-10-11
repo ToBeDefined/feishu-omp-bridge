@@ -1,3 +1,4 @@
+import { readFile, writeFile } from 'node:fs/promises';
 import * as launchd from './launchd';
 import { WINDOWS_TASK_NAME, launchAgentPlistPath, systemdUnitPath } from './paths';
 import * as schtasks from './schtasks';
@@ -61,18 +62,47 @@ export interface ServiceAdapter {
   parseStatus(text: string): { pid?: string; lastExit?: string };
 }
 
+/** Extract the running pid from `launchctl print` output. A loaded service
+ * that isn't running has no `pid = <n>` line. (Inlined because the planned
+ * launchd.ts `parseRunningPid` export hasn't landed yet.) */
+export function parseLaunchdRunningPid(text: string): string | undefined {
+  return text.match(/^\s*pid\s*=\s*(\d+)/m)?.[1];
+}
+
+/**
+ * Rewrite a launchd plist so the service no longer autostarts: flip
+ * RunAtLoad / KeepAlive to false while preserving everything else.
+ * (Inlined because the planned launchd.ts disabled-plist export hasn't
+ * landed yet.)
+ */
+export function disablePlistAutostart(content: string): string {
+  let out = content;
+  for (const key of ['RunAtLoad', 'KeepAlive']) {
+    out = out.replace(new RegExp(`(<key>${key}</key>\\s*)<true/>`), '$1<false/>');
+  }
+  return out;
+}
+
 function makeLaunchdAdapter(): ServiceAdapter {
   return {
     platformName: 'launchd (macOS)',
     fileExists: launchd.plistExists,
-    isRunning: launchd.isLoaded,
+    // loaded ≠ running — parse `launchctl print` for a live pid.
+    isRunning: () => parseLaunchdRunningPid(launchd.describeService()) !== undefined,
     servicePath: launchAgentPlistPath,
     install: launchd.writePlist,
     start: launchd.bootstrap,
     stop: launchd.bootout,
-    // launchd has no separate "disable" — bootout already removes the
-    // service from launchd, which also nukes KeepAlive / RunAtLoad.
-    stopAndDisableAutostart: launchd.bootout,
+    // bootout only unloads the service from launchd; it never touches the
+    // plist on disk, so RunAtLoad/KeepAlive would relaunch it at next login.
+    // After booting out, rewrite the plist with autostart disabled. The
+    // plist file itself stays in place, matching deleteFile's flow.
+    stopAndDisableAutostart: async () => {
+      const r = launchd.bootout();
+      const plistPath = launchAgentPlistPath();
+      await writeFile(plistPath, disablePlistAutostart(await readFile(plistPath, 'utf8')), 'utf8');
+      return { ok: r.ok, stderr: r.stderr };
+    },
     restart: launchd.kickstart,
     waitUntilStopped: launchd.waitUntilUnloaded,
     deleteFile: launchd.deletePlist,
@@ -139,14 +169,7 @@ function makeSchtasksAdapter(): ServiceAdapter {
       await schtasks.deleteTask();
     },
     describeStatus: schtasks.describeTask,
-    parseStatus: (text) => ({
-      // `Process ID: <n>` shows up in verbose listing only when task is running.
-      pid: text.match(/Process ID:\s*(\d+)/i)?.[1],
-      // `Last Result: <0|nonzero>` — `0` means last run succeeded.
-      // Filter the `1056` ("task already running") and `267011` ("task hasn't
-      // run") sentinels that aren't real exit codes.
-      lastExit: text.match(/Last Result:\s*(\d+)/i)?.[1],
-    }),
+    parseStatus: schtasks.parseTaskStatus,
   };
 }
 

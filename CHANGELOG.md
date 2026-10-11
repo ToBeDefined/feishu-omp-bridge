@@ -330,6 +330,40 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Fixed
+- **审查第五批（daemon / CLI / bot 胶水，6 切片并行修复）**：
+  - **评论管线**：事件按 `event_id`（缺失则 fileToken+comment+reply+time）有界去重，
+    重推不再重跑 agent / 重复回复 / 污染 doc 会话；agent 事件流抛错时 `run.stop()`
+    进 finally（不再泄漏 omp 子进程）；同文档 in-flight 只提示一次「处理中」。
+  - **配置**：`config.json` 非法 JSON 不再 throw（此前在 launchd KeepAlive 下变成
+    每 10s 一次的静默崩溃循环），warn 后按「无配置」走清晰报错。
+  - **CLI**：`kill <id>` 对 launchd 托管进程改走 adapter.stop（此前 SIGTERM 后被
+    KeepAlive 立刻拉起还谎报「已关闭」）；`start` 的清野进程跳过注册表内任何
+    pid（不再误杀其他 app 实例）；SIGINT/SIGTERM 处理器提前到第一个 await 之前，
+    stop() 对未初始化的 bridge/entry 有守卫；`secrets get` 对非对象 stdin 走
+    exit(2)；`/account` saveConfig 失败回滚刚写的 secret。
+  - **daemon**：launchd `isRunning` 按 `launchctl print` 的 pid 判活（loaded≠running，
+    node 路径失效不再假显「运行中」）；`stopAndDisableAutostart` 真正写禁用版
+    plist（裸 bootout 挡不住下次登录自启，注释纠正）；schtasks /TR 裸路径交给
+    Node 转义、/End 后固定 1.5s 再 /Run、哨兵退出码 1056/267011 过滤；systemd
+    unit 的 ExecStart/Environment 统一 `%`→`%%`；macos-supervisor stamp 读取
+    包 try/catch（读失败重建而非炸掉 install）。
+  - **bot**：intake 按 messageId 有界去重（WS 重推不再重复入队）；quote 的 post
+    分支保留 title/链接，纯链接 post 不再渲染空引用块；`feishu_send_card` 的
+    replyTo 过会话白名单（与 reply_message 一致）。
+  - **registry**：跨进程文件锁（`<file>.lock` O_EXCL + 陈旧接管），register/
+    update/unregister 全走锁，消灭 last-writer-wins 丢条目（同 app 双长连接的根）。
+  - **running-cards**：写盘统一 tmp+rename 原子替换、单一串行链（原先两条链
+    互相覆盖 + 非原子写让并发读者看到半截文件），boot 补卡与崩溃恢复不再受负载
+    影响丢/留错记录。
+  - **守护日志**：daemon-stdout.log 启动时超 20MB copytruncate（launchd 追加写
+    原本无限增长）。
+  - **测试**：新增 ~90 个用例（评论去重/finally、registry 锁、launchd pid 解析、
+    systemd % 转义、schtasks 状态解析、secrets 形状守卫、account 回滚、start 信号
+    时序、killStray 选择、quote post、intake 去重、managed 链）；修复 4 处负载
+    下必现/偶发的测试自身竞态（盲等 sleep → 链排空/唯一 tmp 路径）。三套并行
+    全绿（748×3）。
+
+### Fixed
 - **审查第四批（卡片管线 / agent 传输，reviewer 掉线后人工补审）**：
   - **子代理名放进 code span 却用 `escapeMd`**：反斜杠转义在 `` `...` `` 里不生效，
     `a_b*reviewer` 会渲染成 `a\_b\*reviewer`（可见反斜杠）。改用 `codeSpan`

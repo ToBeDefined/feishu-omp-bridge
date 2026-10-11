@@ -509,6 +509,9 @@ function sendCardTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTo
       const title = requiredString(args, 'title');
       const text = requiredString(args, 'text');
       const replyTo = optionalString(args, 'replyTo') ?? ctx.replyToMessageId;
+      // 与 feishu_reply_message 同样的守卫：replyTo 决定落点会话，不能指向
+      // allowedChats 之外的群（触发消息本身免检，见 assertMessageChatAllowed）。
+      if (replyTo) await assertMessageChatAllowed(channel, ctx, replyTo);
       const card = buildAgentCard(title, text, args['buttons']);
       const { messageId } = await sendManagedCard(channel, ctx.chatId, card, replyTo);
       return { result: jsonResult({ messageId }) };

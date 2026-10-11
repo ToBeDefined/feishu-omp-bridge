@@ -19,6 +19,14 @@ export async function loadConfig(path: string = paths.configFile): Promise<Parti
     return parsed as Partial<AppConfig>;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    // JSON 语法错误（半截写入、手动改坏）按「没有配置」处理：原样抛出去，
+    // runStart 不捕获，launchd KeepAlive+ThrottleInterval 会变成每 10s 一次
+    // 的静默崩溃循环。返回 {} 让上层 isComplete 给出清晰报错。其他 IO 错误
+    // （EACCES、EISDIR…）照旧抛。
+    if (err instanceof SyntaxError) {
+      log.warn('config', 'load-parse-failed', { path, message: (err as Error).message });
+      return {};
+    }
     throw err;
   }
 }

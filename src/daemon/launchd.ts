@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, rm, stat, writeFile } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { dirname } from 'node:path';
 import { ensureSupervisorApp, supervisorGrantMarkerPath } from './macos-supervisor';
@@ -77,7 +77,7 @@ ${program.map((arg) => `        <string>${arg}</string>`).join('\n')}
 `;
 }
 
-export async function writePlist(): Promise<void> {
+async function writePlistFile(): Promise<void> {
   const bridgeEntryPath = process.argv[1];
   if (!bridgeEntryPath) {
     throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
@@ -92,6 +92,10 @@ export async function writePlist(): Promise<void> {
   await mkdir(dirname(plistPath), { recursive: true });
   await mkdir(daemonLogDir(), { recursive: true });
   await writeFile(plistPath, content, 'utf8');
+}
+
+export async function writePlist(): Promise<void> {
+  await writePlistFile();
 }
 
 export function plistExists(): boolean {
@@ -174,4 +178,39 @@ export function describeService(): string {
 
 export async function deletePlist(): Promise<void> {
   await rm(launchAgentPlistPath(), { force: true });
+}
+
+/** daemon-stdout.log 超过该字节数时轮转（copytruncate：launchd 持有同一
+ * inode 的 fd，只有原地把文件截断重写才不会让 launchd 继续写旧句柄）。 */
+export const DAEMON_STDOUT_MAX_BYTES = 20 * 1024 * 1024;
+/** 轮转时保留的尾部字节数 —— 最近的日志最值得排查。 */
+const ROTATE_TAIL_BYTES = 1024 * 1024;
+
+/**
+ * daemon-stdout.log 无轮转、会无限增长。boot 时调用一次：超过 maxBytes 时
+ * 原地 copytruncate —— 读取尾部 tailBytes 并重写文件（同一 inode，launchd
+ * 的 stdout fd 继续有效）。文件不存在时静默跳过。
+ */
+export async function rotateDaemonStdoutIfNeeded(
+  stdoutPath: string = daemonStdoutPath(),
+  maxBytes: number = DAEMON_STDOUT_MAX_BYTES,
+  tailBytes: number = ROTATE_TAIL_BYTES,
+): Promise<void> {
+  let size: number;
+  try {
+    size = (await stat(stdoutPath)).size;
+  } catch {
+    return; // 没有日志文件就没有可轮转的东西
+  }
+  if (size <= maxBytes) return;
+  const start = Math.max(0, size - tailBytes);
+  const length = size - start;
+  const handle = await open(stdoutPath, 'r');
+  try {
+    const tail = Buffer.alloc(length);
+    await handle.read(tail, 0, length, start);
+    await writeFile(stdoutPath, tail); // flag 'w'：截断后重写
+  } finally {
+    await handle.close();
+  }
 }

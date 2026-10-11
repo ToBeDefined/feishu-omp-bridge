@@ -196,16 +196,27 @@ export function parseMessageContent(msgType: string, rawContent: string): string
     }
     if (msgType === 'post') {
       const lines: string[] = [];
+      const links: string[] = [];
+      // post 的标题在 content 之外，单独一个 title 字段。
+      const title = typeof parsed.title === 'string' ? parsed.title.trim() : '';
+      if (title) lines.push(`【${title}】`);
       for (const block of Array.isArray(parsed.content) ? parsed.content : []) {
         if (!Array.isArray(block)) continue;
         for (const el of block) {
-          if (el && typeof el === 'object' && 'text' in el) {
-            const text = (el as { text?: unknown }).text;
-            if (typeof text === 'string' && text.trim()) lines.push(text);
+          if (!el || typeof el !== 'object') continue;
+          if ('text' in el && typeof el.text === 'string' && el.text.trim()) {
+            lines.push(el.text);
+          }
+          // a 元素（以及带超链接的 text）只保留链接，附在文末。
+          if ('href' in el && typeof el.href === 'string' && el.href.trim()) {
+            links.push(el.href.trim());
           }
         }
       }
-      return lines.join('\n');
+      const out = [...lines.slice(title ? 1 : 0), ...links].join('\n');
+      // 纯链接/空 post 可能一行文本都没有——渲染成空引用块没有意义，保证非空。
+      if (out.trim() || title) return title ? `【${title}】\n${out}`.trimEnd() : out;
+      return '[富文本/链接卡片]';
     }
   } catch {
     /* fall through to raw marker */

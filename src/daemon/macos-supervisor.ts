@@ -47,6 +47,15 @@ export function supervisorGrantMarkerPath(): string {
 
 const BUILD_STAMP_FILE = '.build-stamp';
 
+/** 编译缓存命中标记；读不到/读失败都返回 undefined（当缓存未命中重建）。 */
+function readBuildStamp(stampFile: string): string | undefined {
+  try {
+    return readFileSync(stampFile, 'utf8').trim();
+  } catch {
+    return undefined;
+  }
+}
+
 /** 设置里的显示名 —— 用户就是照着这个名字在「本地网络」列表里授权。 */
 const APP_DISPLAY_NAME = 'Feishu OMP Bridge';
 
@@ -363,7 +372,9 @@ export async function ensureSupervisorApp(): Promise<string | undefined> {
     .digest('hex');
   const exe = supervisorExecutablePath();
   const stampFile = join(supervisorAppPath(), BUILD_STAMP_FILE);
-  if (existsSync(exe) && existsSync(stampFile) && readFileSync(stampFile, 'utf8').trim() === stamp) {
+  // stamp 读不到/读失败（权限、损坏等）都当需要重建 —— 缓存判定绝不能让
+  // install 直接炸掉。
+  if (existsSync(exe) && readBuildStamp(stampFile) === stamp) {
     return exe;
   }
   if (!swiftcAvailable()) {

@@ -1,6 +1,6 @@
 import type { AppConfig, TenantBrand } from '../../config/schema';
 import { secretKeyForApp } from '../../config/schema';
-import { setSecret } from '../../config/keystore';
+import { removeSecret, setSecret } from '../../config/keystore';
 import { buildEncryptedAccountConfig, saveConfig } from '../../config/store';
 import {
   accountCurrentCard,
@@ -116,8 +116,17 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
         tenant,
         ctx.controls.cfg.preferences,
       );
-      await setSecret(secretKeyForApp(appId), appSecret);
-      await saveConfig(newCfg, configPath);
+      const secretKey = secretKeyForApp(appId);
+      await setSecret(secretKey, appSecret);
+      try {
+        await saveConfig(newCfg, configPath);
+      } catch (err) {
+        // saveConfig 失败时，刚写入 keystore 的 secret 成了孤儿（config.json
+        // 仍指向旧凭据，这条密钥查无出处）。best-effort 删除后再抛，失败
+        // 本身不掩盖原始错误。
+        await removeSecret(secretKey).catch(() => {});
+        throw err;
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await finishFailure(`保存凭据失败：${msg}`);

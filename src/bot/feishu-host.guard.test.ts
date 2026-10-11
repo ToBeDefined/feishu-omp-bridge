@@ -133,4 +133,21 @@ describe('按 messageId 的工具也要过 allowedChats', () => {
     const err = await getTool.execute({ messageId: 'om_other' } as never).then(() => undefined, (e: Error) => e);
     expect(String(err?.message ?? '')).not.toMatch(/不允许操作该会话/);
   });
+
+  it('send_card 的 replyTo 指向被排除会话的消息时被拒', async () => {
+    const work = await mkdtemp(join(tmpdir(), 'work-'));
+    dirs.push(work);
+    const ctx = ctxWithAllowlist(work);
+
+    const integration = createFeishuHostIntegration(fakeChannel(excluded), ctx);
+    const tool = integration.tools.find((t) => t.definition.name === 'feishu_send_card')!;
+    await expect(
+      tool.execute({
+        title: 't',
+        text: 'x',
+        buttons: [{ label: 'a', value: {} }],
+        replyTo: 'om_other',
+      } as never),
+    ).rejects.toThrow(/不允许操作该会话/);
+  });
 });

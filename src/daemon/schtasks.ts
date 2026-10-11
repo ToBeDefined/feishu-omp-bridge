@@ -76,8 +76,11 @@ function runSchtasks(args: string[]): SchtasksResult {
  * `/RL LIMITED` runs as the current user without admin elevation.
  * `/F` overwrites if the task already exists.
  *
- * The /TR value is the .cmd wrapper path. Schtasks treats /TR as a command
- * line, so wrapping in quotes keeps spaces in the path intact.
+ * The /TR value is the .cmd wrapper path, passed as a bare argv element.
+ * [推断，无法本机验证] Hand-quoting the path (`"C:\...\x.cmd"`) gets mangled by
+ * Node's Windows argument escaping (quotes are re-escaped), so the task
+ * receives literal quotes and fails to start when the path has spaces;
+ * letting Node escape the bare path keeps the value intact.
  */
 export async function installTask(): Promise<SchtasksResult> {
   await writeLauncherCmd();
@@ -91,7 +94,7 @@ export async function installTask(): Promise<SchtasksResult> {
     '/TN',
     WINDOWS_TASK_NAME,
     '/TR',
-    `"${windowsLauncherCmdPath()}"`,
+    windowsLauncherCmdPath(),
   ]);
 }
 
@@ -123,13 +126,16 @@ export function endAndDisable(): SchtasksResult {
   const disabled = disableTask();
   // Surface whichever signal is more informative — disable result wins
   // because the autostart prevention is the user-visible effect.
-  return disabled.ok ? disabled : ended.ok ? disabled : ended;
+  return disabled.ok ? disabled : ended;
 }
 
-/** Schtasks has no native restart — end, wait, run. */
+/** Schtasks has no native restart — end, wait a fixed delay, run. */
 export async function restartTask(): Promise<SchtasksResult> {
   endTask(); // best-effort; ignore if not running
-  await waitUntilStopped();
+  // isTaskRunning relies on localized /Query output and can report false
+  // while the old instance is still terminating, so a fixed delay guards
+  // against /Run racing (and colliding with) the not-yet-dead instance.
+  await new Promise((resolve) => setTimeout(resolve, 1500));
   return runTask();
 }
 
@@ -145,20 +151,47 @@ export function isTaskRegistered(): boolean {
 }
 
 /**
- * Parse `/Query /V /FO LIST` output for the current run state. schtasks
- * localizes the field name and value with the system locale — match both
- * English ("Status: Running") and Chinese ("状态: 正在运行"). Other states
- * ("Ready"/"就绪", "Disabled"/"已禁用") must not match either pattern.
+ * Whether a `schtasks /Query /V /FO LIST` stdout reports the task as
+ * currently running. schtasks localizes field names and values with the
+ * system locale — match both English ("Status: Running") and Chinese
+ * ("状态: 正在运行"). Other states ("Ready"/"就绪", "Disabled"/"已禁用")
+ * and unrecognized localized output must not match.
+ */
+export function isRunningStatusOutput(stdout: string): boolean {
+  return /(Status|状态)\s*:\s*(Running|正在运行)/i.test(stdout);
+}
+
+/**
+ * Parse `/Query /V /FO LIST` output for the current run state. See
+ * isRunningStatusOutput for the localization caveat.
  */
 export function isTaskRunning(): boolean {
   const r = runSchtasks(['/Query', '/V', '/FO', 'LIST', '/TN', WINDOWS_TASK_NAME]);
   if (!r.ok) return false;
-  return /(Status|状态)\s*:\s*(Running|正在运行)/i.test(r.stdout);
+  return isRunningStatusOutput(r.stdout);
 }
 
 export function describeTask(): string {
   const r = runSchtasks(['/Query', '/V', '/FO', 'LIST', '/TN', WINDOWS_TASK_NAME]);
   return r.stdout || r.stderr || '';
+}
+
+/** Result codes schtasks reports that are not real process exit codes:
+ * 1056 = "task already running", 267011 = "task has not yet run". */
+const SENTINEL_RESULTS: Record<string, true> = { 1056: true, 267011: true };
+
+/**
+ * Extract pid / last result from `describeTask()` text. `Last Result` of a
+ * sentinel value is not a real exit code — reported as undefined instead.
+ * `Process ID: 0` means the task is not running — also undefined.
+ */
+export function parseTaskStatus(text: string): { pid?: string; lastExit?: string } {
+  const lastExit = text.match(/Last Result:\s*(\d+)/i)?.[1];
+  const pid = text.match(/Process ID:\s*(\d+)/i)?.[1];
+  return {
+    pid: pid !== undefined && pid !== '0' ? pid : undefined,
+    lastExit: lastExit !== undefined && !(lastExit in SENTINEL_RESULTS) ? lastExit : undefined,
+  };
 }
 
 export async function waitUntilStopped(timeoutMs = 5000): Promise<boolean> {

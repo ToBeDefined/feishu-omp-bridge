@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
 import { describe, expect, it } from 'vitest';
 import { createFeishuHostIntegration } from './feishu-host';
@@ -170,7 +172,7 @@ describe('feishu_view_image', () => {
       scope: 'chat-1', chatId: 'chat-1', cwd: '/x', activeRuns: activeRuns as never,
     });
     const tool = host.tools.find((t) => t.definition.name === 'feishu_view_image')!;
-    const tmp = '/tmp/view-image-test.png';
+    const tmp = join(tmpdir(), `view-image-test-${process.pid}-${Math.random().toString(36).slice(2)}.png`);
     await import('node:fs/promises').then((fs) => fs.writeFile(tmp, Buffer.from([0x89, 0x50, 0x4e, 0x47])));
     const res = await tool.execute({ path: tmp });
     expect(JSON.stringify(res.result)).toContain('已注入图片');
@@ -191,7 +193,7 @@ describe('feishu_view_image', () => {
       scope: 'chat-1', chatId: 'chat-1', cwd: '/x', activeRuns: { has: () => false } as never,
     });
     const tool = host.tools.find((t) => t.definition.name === 'feishu_view_image')!;
-    const tmp = '/tmp/view-image-test.png';
+    const tmp = join(tmpdir(), `view-image-test-${process.pid}-${Math.random().toString(36).slice(2)}.png`);
     await import('node:fs/promises').then((fs) => fs.writeFile(tmp, Buffer.from([0x89, 0x50, 0x4e, 0x47])));
     await expect(tool.execute({ path: tmp })).rejects.toThrow('no active run');
     await import('node:fs/promises').then((fs) => fs.rm(tmp, { force: true }));

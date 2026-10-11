@@ -8,6 +8,7 @@ import { streamCardPages } from './batch';
 import type { AgentEvent } from '../agent/types';
 import type { RunHandle } from './active-runs';
 import type { SessionStore } from '../session/store';
+import { runningCardsSettled } from '../card/managed';
 import { countTables } from '../card/tables';
 
 /** A 2-column GFM table tagged so tests can tell tables apart. */
@@ -218,9 +219,9 @@ describe('产流中断的卡片收尾', () => {
   it('收尾补卡也失败 → 留下记录，让下次启动的兜底再补', async () => {
     await runFailingStream(rejectingChannel([], { patchFails: true }));
 
-    // 记录是异步删的（`void forgetStreamingCard`）：必须等它落地再断言，
-    // 否则 waitFor 会在删除发生前就先通过（这条用例此前就是这样侥幸绿的。
-    await new Promise((r) => setTimeout(r, 50));
+    // 写入走 managed 的串行链且是 fire-and-forget：等链排空后断言一次即可，
+    // 与机器负载无关（vi.waitFor 固定 1s 超时在满载下会误报）。
+    await runningCardsSettled();
 
     const left = JSON.parse(await readFile(file, 'utf8')) as Array<{ messageId: string }>;
     expect(left.map((c) => c.messageId)).toEqual(['om_stranded']);

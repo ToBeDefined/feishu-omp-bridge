@@ -61,6 +61,32 @@ export interface IntakeDeps {
   chatModeCache: ChatModeCache;
 }
 
+/**
+ * WS 抖动重推会把同一条消息送进来两次（同一 messageId），去重键就是 messageId。
+ * 有界 Map：超过 1000 条时按插入序淘汰最旧（Map 迭代序即插入序），防止无界增长。
+ */
+const SEEN_MESSAGE_ID_CAP = 1000;
+const seenMessageIds = new Map<string, number>();
+
+/** Whether this messageId has been seen since process start (bounded window). */
+export function messageIdSeen(messageId: string): boolean {
+  return seenMessageIds.has(messageId);
+}
+
+/** Record a messageId as seen; evicts the oldest entry past the cap. */
+export function rememberMessageId(messageId: string, now: number = Date.now()): void {
+  if (!messageIdSeen(messageId) && seenMessageIds.size >= SEEN_MESSAGE_ID_CAP) {
+    const oldest = seenMessageIds.keys().next().value;
+    if (oldest !== undefined) seenMessageIds.delete(oldest);
+  }
+  seenMessageIds.set(messageId, now);
+}
+
+/** 测试隔离用：清空去重表。 */
+export function resetSeenMessageIds(): void {
+  seenMessageIds.clear();
+}
+
 export async function intakeMessage(deps: IntakeDeps): Promise<void> {
   const {
     channel,
@@ -74,6 +100,15 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
     controls,
     chatModeCache,
   } = deps;
+
+  // WS 抖动重推：同一 messageId 直接丢掉，避免重复入队/重复执行。这是最便宜的
+  // 检查，放在访问控制之前。
+  if (messageIdSeen(msg.messageId)) {
+    log.info('intake', 'skip-duplicate-message', { messageId: msg.messageId });
+    return;
+  }
+  rememberMessageId(msg.messageId);
+
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
   // downstream consumer keys off these.

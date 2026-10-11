@@ -37,7 +37,7 @@ vi.mock('./prompt', () => ({ buildPrompt }));
 vi.mock('./quote', () => ({ fetchQuotedContext }));
 
 import type { IntakeDeps } from './intake';
-import { intakeMessage } from './intake';
+import { intakeMessage, messageIdSeen, rememberMessageId, resetSeenMessageIds } from './intake';
 
 function makeMsg(content: string, overrides: Partial<NormalizedMessage> = {}): NormalizedMessage {
   return {
@@ -77,6 +77,7 @@ function makeDeps(overrides: Partial<IntakeDeps> = {}): IntakeDeps {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetSeenMessageIds();
   tryHandleCommand.mockResolvedValue(false);
   addReaction.mockResolvedValue(undefined);
   isUserAllowed.mockReturnValue(true);
@@ -133,6 +134,7 @@ describe('intakeMessage mid-run routing', () => {
   it('a context-resetting command (/new, /cd <path>, /ws use) drops queued messages', async () => {
     for (const cmd of ['/new', '/reset', '/cd /repo', '/ws use x']) {
       vi.clearAllMocks();
+      resetSeenMessageIds();
       const deps = makeDeps();
       deps.msg = makeMsg(cmd);
       tryHandleCommand.mockResolvedValue(true);
@@ -161,6 +163,7 @@ describe('intakeMessage mid-run routing', () => {
       ['/ws undo', true],
     ] as Array<[string, boolean]>) {
       vi.clearAllMocks();
+      resetSeenMessageIds();
       const deps = makeDeps();
       deps.msg = makeMsg(content);
       tryHandleCommand.mockResolvedValue(true);
@@ -173,6 +176,7 @@ describe('intakeMessage mid-run routing', () => {
   it('starting a new conversation drops queued messages', async () => {
     for (const content of ['/new', '/reset', '/cd /repo']) {
       vi.clearAllMocks();
+      resetSeenMessageIds();
       const deps = makeDeps();
       deps.msg = makeMsg(content);
       tryHandleCommand.mockResolvedValue(true);
@@ -234,5 +238,58 @@ describe('intakeMessage mid-run routing', () => {
 
     expect(deps.pending.push).toHaveBeenCalledWith('oc_1', deps.msg);
     expect(submitPrompt).toHaveBeenCalled();
+  });
+});
+
+describe('messageId 去重', () => {
+  it('同一 messageId 重推只入队一次，不同 messageId 不受影响', async () => {
+    const deps1 = makeDeps();
+    deps1.msg = makeMsg('hello', { messageId: 'om_dup' });
+    await intakeMessage(deps1);
+    expect(deps1.pending.push).toHaveBeenCalledTimes(1);
+
+    // WS 抖动重推：同 id 静默丢弃
+    const deps2 = makeDeps();
+    deps2.msg = makeMsg('hello again', { messageId: 'om_dup' });
+    await intakeMessage(deps2);
+    expect(deps2.pending.push).not.toHaveBeenCalled();
+    expect(addReaction).toHaveBeenCalledTimes(1); // 只有 deps1 那次
+    expect(deps2.activeRuns.submitPrompt).not.toHaveBeenCalled();
+
+    // 不同 id 正常入队
+    const deps3 = makeDeps();
+    deps3.msg = makeMsg('other', { messageId: 'om_other' });
+    await intakeMessage(deps3);
+    expect(deps3.pending.push).toHaveBeenCalledTimes(1);
+  });
+
+  it('去重检查在白名单之前：重复消息即便来自未授权用户也已丢弃', async () => {
+    rememberMessageId('om_dup');
+    isUserAllowed.mockReturnValue(false);
+    const deps = makeDeps();
+    deps.msg = makeMsg('hello', { messageId: 'om_dup' });
+
+    await intakeMessage(deps);
+
+    // 走不到白名单检查，不会因为未授权打 skip 日志之外的路径——总之不再入队。
+    expect(deps.pending.push).not.toHaveBeenCalled();
+  });
+
+  it('rememberMessageId 是有界的：超过 1000 条淘汰最旧', () => {
+    resetSeenMessageIds();
+    for (let i = 0; i < 1000; i++) rememberMessageId(`om_${i}`, i);
+    expect(messageIdSeen('om_0')).toBe(true);
+    rememberMessageId('om_1000', 1000);
+    expect(messageIdSeen('om_0')).toBe(false);
+    expect(messageIdSeen('om_1')).toBe(true);
+    expect(messageIdSeen('om_1000')).toBe(true);
+    // 重复 remember 已存在的 id：不触发淘汰（只刷新时间戳，插入序不变）
+    rememberMessageId('om_1', 999);
+    expect(messageIdSeen('om_2')).toBe(true);
+    // 新 id 再入：淘汰插入序最旧的 om_1（重复 set 不改变 Map 插入序）
+    rememberMessageId('om_1001', 1001);
+    expect(messageIdSeen('om_1')).toBe(false);
+    expect(messageIdSeen('om_2')).toBe(true);
+    resetSeenMessageIds();
   });
 });

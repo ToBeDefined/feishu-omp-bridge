@@ -9,6 +9,7 @@ import {
   everyCard,
   execResultCard,
   helpCard,
+  inlineActions,
   md,
   newSessionCard,
   psCard,
@@ -224,6 +225,33 @@ describe('shared card kit', () => {
     expect(row.columns).toHaveLength(4);
     // Every button survives the re-layout.
     expect(JSON.stringify(rows)).toContain('"cmd":"d"');
+  });
+
+  it('lays inline actions side by side in one weighted row', () => {
+    const rows = inlineActions([
+      { text: '继续对话', value: { cmd: 'search.resume' }, style: 'primary' },
+      { text: '详情', value: { cmd: 'search.show' } },
+    ]);
+    expect(rows).toHaveLength(1);
+    const row = rows[0] as {
+      tag: string;
+      flex_mode: string;
+      columns: Array<{ width: string; weight: number; elements: Array<Record<string, unknown>> }>;
+    };
+    expect(row.tag).toBe('column_set');
+    // Unlike actions() (stretch → one full-width row per button), these stay
+    // side by side: equal weighted columns under `none`.
+    expect(row.flex_mode).toBe('none');
+    expect(row.columns.map((c) => [c.width, c.weight])).toEqual([
+      ['weighted', 1],
+      ['weighted', 1],
+    ]);
+    expect(row.columns[0]!.elements[0]).toMatchObject({
+      tag: 'button',
+      type: 'primary',
+      text: { content: '继续对话' },
+    });
+    expect(row.columns[1]!.elements[0]).toMatchObject({ text: { content: '详情' } });
   });
 
 });

@@ -2,7 +2,7 @@ import { codeSpan, escapeMd, summarizeMd } from '../utils/text';
 import { formatAgoOr } from '../utils/time';
 import {
   actions,
-  button,
+  inlineActions,
   md,
   panel,
   shortSessionId,
@@ -17,9 +17,10 @@ import {
  * - **The snippet is centred on the keyword**, not on the head of the message.
  *   A keyword match 2 000 characters into an answer used to render a prefix
  *   with no visible hit at all — the one thing a search result must show.
- * - **Rows are laid out as a `column_set`** (content | buttons) so each result
- *   is a compact block instead of a heading line + meta line + a full-width
- *   button row per hit group.
+ * - **A row is a vertical stack**: identity, meta, one grey block per matched
+ *   pair, then its two actions side by side at the bottom. A right-hand button
+ *   column made the buttons float next to the first line; at the bottom they
+ *   belong to the whole row and are a bigger tap target.
  * - **Matched content sits in a grey block** (`panel`/`stackedPanels`, the same
  *   rounded block /context and the run card use): it is the payload of the row,
  *   and the block's edges delimit rows better than a divider line between two
@@ -319,26 +320,24 @@ export function searchResultsCard(
     const visible = c.groups.slice(0, SEARCH_COMPACT_GROUPS);
     const hidden = c.groups.length - visible.length;
 
-    const rowButtons: object[] = [];
-    if (showButtons) {
-      rowButtons.push(
-        button({
-          text: '继续对话',
-          value: { cmd: 'search.resume', arg: c.sessionId },
-          style: 'primary',
-        }),
-        button({ text: '详情', value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` } }),
-      );
-    }
-    // Identity + meta + actions stay plain; every matched pair drops into its
-    // own grey block. Rows need no `hr` between them — the block edges (and the
-    // gap around them) already separate one result from the next.
-    elements.push(
-      ...columnRow(lines, rowButtons),
-      ...pairBlocks(visible, 'compact', keyword, c.matchCount > 1),
-    );
+    // Identity + meta stay plain; every matched pair drops into its own grey
+    // block, and the row's two actions sit side by side UNDER the blocks —
+    // they act on the whole row, not on its first line.
+    elements.push(...lines, ...pairBlocks(visible, 'compact', keyword, c.matchCount > 1));
     if (hidden > 0) {
       elements.push(md(`_另有 ${hidden} 处匹配，点「详情」看全部_`, 'notation'));
+    }
+    if (showButtons) {
+      elements.push(
+        ...inlineActions([
+          {
+            text: '继续对话',
+            value: { cmd: 'search.resume', arg: c.sessionId },
+            style: 'primary',
+          },
+          { text: '详情', value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` } },
+        ]),
+      );
     }
   });
 
@@ -357,7 +356,9 @@ export function searchResultsCard(
       });
     }
     pageButtons.push({ text: '完成', value: { cmd: 'search.done', arg: queryId } });
-    elements.push(...actions(pageButtons));
+    // Divider before the pager: it follows the last row's own button pair, and
+    // two adjacent button rows read as if the pager belonged to that row.
+    elements.push({ tag: 'hr' }, ...actions(pageButtons));
   }
   return {
     schema: '2.0',
@@ -374,26 +375,6 @@ export function searchResultsCard(
  */
 function greyBlock(lines: object[]): object[] {
   return lines.length > 0 ? stackedPanels([panel(lines)]) : [];
-}
-
-/**
- * Row layout: content in a weighted column, actions in an auto column.
- * `width` is only honoured under `flex_mode: 'none'`, and the weighted column
- * absorbs the slack — the same recipe /history uses for its rows.
- */
-function columnRow(lines: object[], buttons: object[]): object[] {
-  if (buttons.length === 0) return lines;
-  return [
-    {
-      tag: 'column_set',
-      flex_mode: 'none',
-      horizontal_spacing: 'small',
-      columns: [
-        { tag: 'column', width: 'weighted', weight: 1, vertical_align: 'center', elements: lines },
-        { tag: 'column', width: 'auto', vertical_align: 'center', elements: buttons },
-      ],
-    },
-  ];
 }
 
 /** Empty-hit card: friendlier than a bare text reply. */

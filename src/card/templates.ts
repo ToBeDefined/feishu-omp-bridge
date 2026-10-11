@@ -84,6 +84,32 @@ export function shortSessionId(id: string): string {
 }
 
 /**
+ * Action buttons side by side in ONE row, equal width.
+ *
+ * `actions()` stretches every button onto its own full-width row — right for a
+ * card footer, wrong for a button pair repeated on every list row (it turns two
+ * buttons into two rows and doubles the row's height). Equal `weighted`
+ * columns under `flex_mode: 'none'` stay side by side at every card width,
+ * unlike `auto` columns, which compress on narrow screens.
+ */
+export function inlineActions(buttons: ButtonSpec[]): object[] {
+  return [
+    {
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: 'small',
+      columns: buttons.map((spec) => ({
+        tag: 'column',
+        width: 'weighted',
+        weight: 1,
+        vertical_align: 'center',
+        elements: [button(spec)],
+      })),
+    },
+  ];
+}
+
+/**
  * Stack info panels one per row, each FULL width.
  *
  * A single multi-column `column_set` (even with `flex_mode: 'stretch'`) lays

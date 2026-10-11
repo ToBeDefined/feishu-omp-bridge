@@ -207,20 +207,35 @@ describe('searchResultsCard', () => {
     expect(searchDetailText({ sessionId: UUID, groups: [] })).toContain(UUID);
   });
 
-  it('lays each row out as content + actions columns', () => {
+  it('stacks identity → meta → block → buttons, with the buttons side by side', () => {
     const card = searchResultsCard('foo', [sampleContext()], 'q1') as {
       body: { elements: Array<Record<string, unknown>> };
     };
-    const row = card.body.elements.find((e) => e.tag === 'column_set') as {
+    const kinds = card.body.elements.map((e) => {
+      if (e.tag === 'hr') return 'hr';
+      if (e.tag === 'markdown') return 'md';
+      const grey =
+        (e.columns as Array<{ background_style?: string }>)[0]?.background_style === 'grey';
+      return grey ? 'grey-block' : 'button-row';
+    });
+    // 表头(md×2) → hr → 身份 → meta → 灰块 → 本行按钮 → hr → 分页按钮
+    expect(kinds).toEqual(['md', 'md', 'hr', 'md', 'md', 'grey-block', 'button-row', 'hr', 'button-row']);
+    // 按钮在整行最底下：身份与 meta 都是普通 markdown，不在按钮列里。
+    expect(card.body.elements[3]).toMatchObject({ tag: 'markdown', content: '**#1** · 🏷 **标题**' });
+
+    const row = card.body.elements.filter((e) => e.tag === 'column_set').at(-2) as {
       flex_mode: string;
-      columns: Array<{ width: string; elements: Array<Record<string, unknown>> }>;
+      columns: Array<{ width: string; weight: number; elements: Array<Record<string, unknown>> }>;
     };
     expect(row.flex_mode).toBe('none');
-    expect(row.columns.map((c) => c.width)).toEqual(['weighted', 'auto']);
-    const buttons = row.columns[1]!.elements.map(
-      (e) => (e.text as { content: string }).content,
-    );
-    expect(buttons).toEqual(['继续对话', '详情']);
+    expect(row.columns.map((c) => [c.width, c.weight])).toEqual([
+      ['weighted', 1],
+      ['weighted', 1],
+    ]);
+    expect(row.columns.map((c) => (c.elements[0] as { text: { content: string } }).text.content)).toEqual([
+      '继续对话',
+      '详情',
+    ]);
   });
 
   it('gives each matched pair its own grey block, labelled when there are several', () => {
@@ -258,13 +273,14 @@ describe('searchResultsCard', () => {
     expect(greyBlocks(card).some((b) => b.content.includes('另有'))).toBe(false);
   });
 
-  it('drops the divider between rows (the grey block separates them)', () => {
+  it('keeps dividers only around the header and the pager', () => {
     const many = Array.from({ length: 3 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
     const card = searchResultsCard('foo', many, 'q1') as {
       body: { elements: Array<Record<string, unknown>> };
     };
-    // 只有表头和表尾的 hr：行与行之间靠灰底块分界。
-    expect(card.body.elements.filter((e) => e.tag === 'hr')).toHaveLength(1);
+    // 表头后一条、分页前一条：行与行之间不加 hr（灰底块 + 行尾按钮已分界，
+    // 但分页按钮紧跟最后一行按钮时会被误读成那一行的操作）。
+    expect(card.body.elements.filter((e) => e.tag === 'hr')).toHaveLength(2);
   });
 
   it('caps snippets per row and points at 详情 for the rest', () => {

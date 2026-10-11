@@ -808,8 +808,8 @@ export function helpCard(): object {
   elements.push(
     ...inlineActions([
       { text: '🆕 新建会话', value: { cmd: 'new' }, style: 'primary' },
-      { text: '📊 状态', value: { cmd: 'status' } },
       { text: '🕘 恢复会话', value: { cmd: 'resume' } },
+      { text: '📊 状态', value: { cmd: 'status' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
     ]),
   );

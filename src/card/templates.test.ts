@@ -250,8 +250,8 @@ describe('shared card kit', () => {
     );
     // 4 个动作 → 每行最多 2 个 → 两行；新建会话在最前（速查卡里最常用）。
     expect(labels).toEqual([
-      ['🆕 新建会话', '📊 状态'],
-      ['🕘 恢复会话', '📂 工作空间'],
+      ['🆕 新建会话', '🕘 恢复会话'],
+      ['📊 状态', '📂 工作空间'],
     ]);
     const json = JSON.stringify(card);
     expect(json).toContain('"cmd":"new"');

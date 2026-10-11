@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { CommentEvent, LarkChannel } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter, AgentRun } from '../agent/types';
 import type { AppConfig } from '../config/schema';
-import type { WorkSessionStore } from '../session/work-store';
+import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { handleCommentMention } from './comments';
 
@@ -87,10 +87,10 @@ function makeDeps(channel: LarkChannel, agent: AgentAdapter) {
     channel,
     evt: makeEvt(),
     agent,
-    workSessions: {
-      currentSession: () => undefined,
-      bindSegment: () => {},
-    } as unknown as WorkSessionStore,
+    sessions: {
+      sessionFor: () => undefined,
+      bind: () => {},
+    } as unknown as SessionStore,
     workspaces: { cwdFor: () => '/repo', setCwd: () => {} } as unknown as WorkspaceStore,
     cfg: {} as AppConfig,
   };

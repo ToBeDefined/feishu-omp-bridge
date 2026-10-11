@@ -3,12 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { conversationCwd, resolveConversationCwd } from './current-cwd';
-import { WorkSessionStore } from './work-store';
+import { SessionStore } from './store';
 import { WorkspaceStore } from '../workspace/store';
 
 let dir: string;
 let file: string;
-let stores: WorkSessionStore[];
+let stores: SessionStore[];
 let spaces: WorkspaceStore[];
 
 beforeEach(async () => {
@@ -22,8 +22,8 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-async function stores_(): Promise<{ sessions: WorkSessionStore; workspaces: WorkspaceStore }> {
-  const sessions = new WorkSessionStore(file);
+async function stores_(): Promise<{ sessions: SessionStore; workspaces: WorkspaceStore }> {
+  const sessions = new SessionStore(file);
   stores.push(sessions);
   await sessions.load();
   const workspaces = new WorkspaceStore(join(dir, 'workspaces.json'));
@@ -36,7 +36,7 @@ describe('resolveConversationCwd（运行用）', () => {
   it('会话优先：聊天窗口的 cwd 与会话不一致时，用会话自己的目录并把它同步给窗口', async () => {
     const { sessions, workspaces } = await stores_();
     const sessionDir = await mkdtemp(join(tmpdir(), 'conv-'));
-    sessions.bindSegment('oc_1', 'sess-1', sessionDir, { startedAtMs: 1, lastActiveAtMs: 1 });
+    sessions.bind('oc_1', 'sess-1', sessionDir, { createdAtMs: 1, updatedAtMs: 1 });
     workspaces.setCwd('oc_1', dir); // 聊天窗口指到别处
 
     const out = await resolveConversationCwd(workspaces, sessions, 'oc_1');
@@ -57,7 +57,7 @@ describe('resolveConversationCwd（运行用）', () => {
   it('会话目录已不存在（被删/改名）→ 不假装能续，退回窗口 cwd', async () => {
     const { sessions, workspaces } = await stores_();
     const gone = join(dir, 'deleted-dir');
-    sessions.bindSegment('oc_1', 'sess-gone', gone, { startedAtMs: 1, lastActiveAtMs: 1 });
+    sessions.bind('oc_1', 'sess-gone', gone, { createdAtMs: 1, updatedAtMs: 1 });
     workspaces.setCwd('oc_1', dir);
 
     expect(await resolveConversationCwd(workspaces, sessions, 'oc_1')).toEqual({ cwd: dir });
@@ -78,7 +78,7 @@ describe('conversationCwd（只读口径）', () => {
   it('会话优先，且不写任何状态', async () => {
     const { sessions, workspaces } = await stores_();
     const sessionDir = await mkdtemp(join(tmpdir(), 'conv-'));
-    sessions.bindSegment('oc_1', 'sess-1', sessionDir, { startedAtMs: 1, lastActiveAtMs: 1 });
+    sessions.bind('oc_1', 'sess-1', sessionDir, { createdAtMs: 1, updatedAtMs: 1 });
     workspaces.setCwd('oc_1', dir);
 
     expect(conversationCwd(workspaces, sessions, 'oc_1')).toBe(sessionDir);

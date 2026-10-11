@@ -9,7 +9,7 @@ import {
 import { log } from '../core/logger';
 import type { MediaCache } from '../media/cache';
 import { attachTranscripts } from '../media/transcribe';
-import type { WorkSessionStore } from '../session/work-store';
+import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import type { ActiveRuns } from './active-runs';
 import type { ChatModeCache } from './chat-mode-cache';
@@ -50,7 +50,7 @@ export function resetsContext(cmd: string): boolean {
 export interface IntakeDeps {
   channel: LarkChannel;
   agent: AgentAdapter;
-  workSessions: WorkSessionStore;
+  sessions: SessionStore;
   workspaces: WorkspaceStore;
   activeRuns: ActiveRuns;
   media: MediaCache;
@@ -64,7 +64,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
   const {
     channel,
     agent,
-    workSessions,
+    sessions,
     workspaces,
     activeRuns,
     media,
@@ -139,7 +139,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
     msg,
     scope,
     chatMode,
-    workSessions,
+    sessions,
     workspaces,
     agent,
     activeRuns,

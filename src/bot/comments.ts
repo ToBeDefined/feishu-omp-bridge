@@ -5,7 +5,7 @@ import type { AppConfig } from '../config/schema';
 import { isUserAllowed } from '../config/schema';
 import { resolveConversationCwd } from '../session/current-cwd';
 import { log } from '../core/logger';
-import type { WorkSessionStore } from '../session/work-store';
+import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { addCommentReaction, removeCommentReaction } from './reaction';
 
@@ -13,7 +13,7 @@ export interface CommentDeps {
   channel: LarkChannel;
   evt: CommentEvent;
   agent: AgentAdapter;
-  workSessions: WorkSessionStore;
+  sessions: SessionStore;
   workspaces: WorkspaceStore;
   cfg: AppConfig;
 }
@@ -71,7 +71,7 @@ interface CommentContext {
  * a reply in the same comment thread.
  */
 export async function handleCommentMention(deps: CommentDeps): Promise<void> {
-  const { channel, evt, agent, workSessions, workspaces } = deps;
+  const { channel, evt, agent, sessions, workspaces } = deps;
   // Log every comment event we receive, regardless of whether we'll act on it.
   // `mentionedBot` and `replyId` here let us tell apart top-level comments
   // from thread replies (the latter requires SDK ≥ 1.65.0-alpha.0).
@@ -142,7 +142,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
     // 会话优先：文档评论的合成 scope 也一样，续它自己的会话与目录。
     const { cwd, sessionId: resumeFrom } = await resolveConversationCwd(
       workspaces,
-      workSessions,
+      sessions,
       synthChatId,
     );
     log.info('comment', 'session', { synthChatId, resumeFrom: resumeFrom ?? null, cwd });
@@ -168,7 +168,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
           case 'system':
             if (e.sessionId) {
               const effectiveCwd = e.cwd ?? cwd;
-              workSessions.bindSegment(synthChatId, e.sessionId, effectiveCwd);
+              sessions.bind(synthChatId, e.sessionId, effectiveCwd);
             }
             break;
           case 'error':

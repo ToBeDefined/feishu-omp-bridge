@@ -71,7 +71,7 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, cwd);
   // 切/撤回工作区 = 换目录 = 新 OMP 会话 = 新对话。
-  ctx.workSessions.startWorkSession(ctx.scope);
+  ctx.sessions.startNew(ctx.scope);
   const undoHint =
     prevCwd && prevCwd !== cwd
       ? `\n\n想撤回？发 \`/ws undo\` 回到 \`${prevCwd}\``
@@ -115,6 +115,6 @@ async function handleWsUndo(ctx: CommandContext): Promise<void> {
   ctx.workspaces.setCwd(ctx.scope, target);
   ctx.workspaces.clearUndo(ctx.scope);
   // 切/撤回工作区 = 换目录 = 新 OMP 会话 = 新对话。
-  ctx.workSessions.startWorkSession(ctx.scope);
+  ctx.sessions.startNew(ctx.scope);
   await reply(ctx, `↩️ 已撤回工作区切换，回到 \`${codeSpan(target)}\`\n（session 已重置）`);
 }

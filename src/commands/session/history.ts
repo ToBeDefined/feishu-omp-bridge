@@ -4,7 +4,7 @@ import { sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
 import { applyResume } from './resume';
 import { conversationCwd } from '../../session/current-cwd';
-import { listWorkSessions, scanSessionFiles } from './sessions';
+import { scanSessionFiles } from './sessions';
 
 export const historyHandlers: Record<string, Handler> = {
   '/history': handleHistory,
@@ -28,33 +28,17 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
 
   // A resume button carries the id of the conversation it points at (the
   // 继续对话 button). Hand it to applyResume, which owns the ownership / cwd
-  // guards and the work-session adoption.
+  // guards.
   if (tokens[0] === 'resume') {
     const id = tokens.slice(1).join('');
-    const ws =
-      ctx.workSessions.workSessionById(id) ?? ctx.workSessions.workSessionForSegment(id);
-    if (ws !== undefined) {
-      const seg = ws.segments.find((s) => s.sessionId === id);
-      await applyResume(ctx, {
-        workSessionId: ws.id,
-        // An id that IS one of the work session's segments = restore exactly
-        // that segment; otherwise resume the work session (its active segment).
-        ...(seg !== undefined ? { segmentId: id } : {}),
-        sessionId: id,
-        cwd: seg?.cwd ?? ws.cwd,
-        timestamp: new Date(seg?.startedAtMs ?? ws.createdAtMs).toISOString(),
-        ...(seg !== undefined ? { updatedAtMs: seg.lastActiveAtMs } : {}),
-      });
-      return;
-    }
-    // Unclaimed history file: its id IS its own OMP session id.
+    // 载荷就是会话 id（一个 OMP 会话 = 一个对话）。cwd/时间从会话文件现取，
+    // 缺了就是文件已被删 —— 不假装能恢复。
     const rec = (await scanSessionFiles(ctx)).find((s) => s.sessionId === id);
     if (!rec) {
       await reply(ctx, `❌ 未找到会话 \`${id}\`，可能已被删除。`);
       return;
     }
     await applyResume(ctx, {
-      workSessionId: rec.sessionId,
       sessionId: rec.sessionId,
       cwd: rec.cwd,
       timestamp: rec.startedAt,
@@ -73,8 +57,8 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
   const offset = offsetToken ? Number(offsetToken) : 0;
 
   // 默认视图 = 当前会话所在目录（会话优先；没有会话时才是聊天窗口的 cwd）。
-  const cwd = conversationCwd(ctx.workspaces, ctx.workSessions, ctx.scope);
-  const all = await listWorkSessions(ctx);
+  const cwd = conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope);
+  const all = await scanSessionFiles(ctx);
   // One row per work session; cwd mode filters on the work session's own cwd
   // (its LATEST segment), so a work session that crossed directories is not
   // dropped just because an older segment lived elsewhere.
@@ -92,15 +76,15 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
   const start = offset < scoped.length ? offset : 0;
   const rows: HistoryRow[] = scoped.map((s) => ({
     // 一个 OMP 会话 = 一个对话：行的身份就是那个会话，也正好是「继续对话」的载荷。
-    sessionId: s.activeSegmentId ?? s.workSessionId,
-    updatedAtMs: s.lastActiveAtMs,
+    sessionId: s.sessionId,
+    updatedAtMs: s.updatedAtMs,
     turns: s.turns,
     workspace: workspaceLabel(ctx, s.cwd),
     ...(s.title !== undefined ? { title: s.title } : {}),
-    ...(s.topic !== undefined ? { topic: s.topic } : {}),
+    ...(s.lastMessage ?? s.summary ? { topic: s.lastMessage ?? s.summary } : {}),
   }));
 
-  const currentSessionId = ctx.workSessions.activeWorkSession(ctx.scope)?.currentSegmentId;
+  const currentSessionId = ctx.sessions.sessionFor(ctx.scope)?.sessionId;
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(
     ctx.channel,

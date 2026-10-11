@@ -356,7 +356,7 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 | `~/.feishu-omp-bridge/secrets.enc` | 本地加密 secret keystore。 |
 | `~/.feishu-omp-bridge/.keystore.salt` | keystore salt。 |
 | `~/.feishu-omp-bridge/secrets-getter` | exec secret provider wrapper。 |
-| `~/.feishu-omp-bridge/sessions.json` | v2：各 scope 的当前会话指针 + timeout 覆盖，以及全部会话（标题 / cwd / 时间）。旧文件加载时自动迁移；含多段「工作会话」的 v2 文件会被就地规范化成「一段一对话」并备份为 `sessions.json.v2.bak`（v1 文件备份为 `sessions.json.v1.bak`）。 |
+| `~/.feishu-omp-bridge/sessions.json` | v3：`{ v, scopes, titles }` —— 每个 scope 只记**当前会话**（`sessionId`/`cwd`/`createdAt`/`updatedAt`，以及 `/timeout` 覆盖），会话名字按**会话 id** 存在 `titles` 里。旧文件加载时就地迁移（v1/v2 各留一份 `sessions.json.v<N>.bak`）；v2 的「工作会话 + 段」在迁移时收敛为「当前段 = 当前会话」。 |
 | `~/.feishu-omp-bridge/omp-sessions/` | bridge 专用 OMP JSONL session 文件。 |
 | `~/.feishu-omp-bridge/workspaces.json` | 命名工作空间。 |
 | `~/.feishu-omp-bridge/processes.json` | 本机 bridge 进程注册表。 |

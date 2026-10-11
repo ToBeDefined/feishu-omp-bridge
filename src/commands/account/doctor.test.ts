@@ -22,7 +22,7 @@ function makeCtx(activeRuns: ActiveRuns, run: () => unknown): CommandContext {
     scope: 'oc_1',
     chatMode: 'p2p',
     workspaces: { cwdFor: () => '/repo' },
-    workSessions: { resumeFor: () => undefined },
+    sessions: { resumeFor: () => undefined },
     activeRuns,
     agent: { run },
     controls: { cfg: { preferences: {} } },

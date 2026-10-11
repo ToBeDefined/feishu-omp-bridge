@@ -98,7 +98,7 @@ export async function ensureSecretsGetterWrapper(): Promise<string> {
 
 /** Serialises config writes so two concurrent read-modify-write callers
  * can't both read the same baseline and lose one update (mirrors
- * session/work-store.ts). */
+ * session/store.ts). */
 let saveChain: Promise<void> = Promise.resolve();
 
 export function saveConfig(cfg: AppConfig, path: string = paths.configFile): Promise<void> {

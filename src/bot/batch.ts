@@ -48,7 +48,7 @@ import { resolveConversationCwd } from '../session/current-cwd';
 import { log } from '../core/logger';
 import { attachTextExtracts, type MediaCache } from '../media/cache';
 import { attachTranscripts } from '../media/transcribe';
-import type { WorkSessionStore } from '../session/work-store';
+import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { recordModelUse } from '../session/model-history';
 import type { ChatMode } from './chat-mode-cache';
@@ -59,7 +59,7 @@ import { fetchQuotedContext, type QuotedContext } from './quote';
 export interface RunBatchDeps {
   channel: LarkChannel;
   agent: AgentAdapter;
-  workSessions: WorkSessionStore;
+  sessions: SessionStore;
   workspaces: WorkspaceStore;
   activeRuns: ActiveRuns;
   media: MediaCache;
@@ -167,7 +167,7 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
   const {
     channel,
     agent,
-    workSessions,
+    sessions,
     workspaces,
     activeRuns,
     media,
@@ -239,18 +239,17 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
   // 会话优先：有当前会话就在**它自己的**目录里续它（cwd 由会话携带）。
-  const { cwd, sessionId: resumeFrom } = await resolveConversationCwd(workspaces, workSessions, scope);
+  const { cwd, sessionId: resumeFrom } = await resolveConversationCwd(workspaces, sessions, scope);
   if (resumeFrom) {
     log.info('session', 'resume', { sessionId: resumeFrom, cwd });
   } else {
-    const active = workSessions.activeWorkSession(scope);
-    // Only a real current segment can be stale. A work session with no current
-    // segment (after /new, /cd, /ws use before the next run) must survive:
-    // `undefined !== cwd` used to match here and wipe it on the next message.
-    if (active?.currentSegmentId !== undefined && active.cwd !== cwd) {
-      log.info('session', 'stale-cleared', { staleCwd: active.cwd, newCwd: cwd });
+    const current = sessions.sessionFor(scope);
+    // 只有「有当前会话、但它的目录已经不可用」（被删/改名）才需要丢掉指针：
+    // `/new`、`/cd`、`/ws use` 之后本来就没有当前会话，不能顺手抹掉。
+    if (current !== undefined && current.cwd !== cwd) {
+      log.info('session', 'stale-cleared', { staleCwd: current.cwd, newCwd: cwd });
       // 目录换了 → 这次跑的必然是新 OMP 会话 = 新对话。
-      workSessions.startWorkSession(scope);
+      sessions.startNew(scope);
     } else {
       log.info('session', 'fresh', { cwd });
     }
@@ -295,7 +294,7 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
 
   // Resolve idle-timeout for this run: scope override (on SessionEntry) wins
   // over global default (preferences). 0 / undefined = no watchdog.
-  const scopeOverride = workSessions.getIdleTimeoutMinutes(scope);
+  const scopeOverride = sessions.getIdleTimeoutMinutes(scope);
   const idleTimeoutMs =
     scopeOverride !== undefined
       ? scopeOverride > 0
@@ -338,7 +337,7 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
         chatId,
         sendOpts,
         handle,
-        workSessions,
+        sessions,
         scope,
         cwd,
         idleTimeoutMs,
@@ -351,7 +350,7 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
         {
           markdown: async (ctrl) => {
             const q = coalesceLatest((text: string) => ctrl.setContent(text));
-            await processAgentStream(handle, workSessions, scope, cwd, idleTimeoutMs, async (state) => {
+            await processAgentStream(handle, sessions, scope, cwd, idleTimeoutMs, async (state) => {
               q.push(renderText(filter(state)));
             }, uiHooks);
             await q.flush();
@@ -364,7 +363,7 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
       // the run, then post the final rendered text once as a plain markdown
       // (msg_type=post) message — no card, no streaming, no typewriter.
       let finalState: RunState = initialState;
-      await processAgentStream(handle, workSessions, scope, cwd, idleTimeoutMs, async (state) => {
+      await processAgentStream(handle, sessions, scope, cwd, idleTimeoutMs, async (state) => {
         finalState = state;
       }, uiHooks);
       const body = renderText(filter(finalState));
@@ -396,7 +395,7 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
     log.warn('session', 'stale-cleared', { sessionId: resumeFrom, cwd });
     // 这段会话已经续不上了（文件没落盘 / model 丢失）：重放会在新 OMP 会话里
     // 跑，也就是开一段新对话；scope 的空闲超时等偏好不受影响。
-    workSessions.startWorkSession(scope);
+    sessions.startNew(scope);
     // The first attempt's claim was consumed by its register, and a /compact
     // deferred during the run may have taken the slot meanwhile. Reserve again
     // — if the slot is taken, the replay must not start a second agent on the
@@ -477,7 +476,7 @@ function createStreamSession(handle: RunHandle, idleTimeoutMs: number | undefine
 async function streamEvents(
   session: StreamSession,
   handle: RunHandle,
-  workSessions: WorkSessionStore,
+  sessions: SessionStore,
   scope: string,
   cwd: string,
   hooks: AgentStreamHooks | undefined,
@@ -511,7 +510,7 @@ async function streamEvents(
     if (evt.type === 'system') {
       if (evt.sessionId) {
         const effectiveCwd = evt.cwd ?? cwd;
-        workSessions.bindSegment(scope, evt.sessionId, effectiveCwd);
+        sessions.bind(scope, evt.sessionId, effectiveCwd);
         log.info('session', 'set', { sessionId: evt.sessionId });
       }
       continue;
@@ -590,7 +589,7 @@ function finalizeSessionState(
  */
 async function processAgentStream(
   handle: RunHandle,
-  workSessions: WorkSessionStore,
+  sessions: SessionStore,
   scope: string,
   cwd: string,
   idleTimeoutMs: number | undefined,
@@ -599,7 +598,7 @@ async function processAgentStream(
 ): Promise<void> {
   const session = createStreamSession(handle, idleTimeoutMs);
   try {
-    await streamEvents(session, handle, workSessions, scope, cwd, hooks, async (state) => {
+    await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
       await flush(state);
       return true;
     });
@@ -636,7 +635,7 @@ export async function streamCardPages(
   chatId: string,
   sendOpts: SendOpts,
   handle: RunHandle,
-  workSessions: WorkSessionStore,
+  sessions: SessionStore,
   scope: string,
   cwd: string,
   idleTimeoutMs: number | undefined,
@@ -672,7 +671,7 @@ export async function streamCardPages(
         session.carry = initialSplit.carry;
       }
       const overflow = await runCardPage(
-        channel, chatId, sendOpts, session, handle, workSessions, scope, cwd,
+        channel, chatId, sendOpts, session, handle, sessions, scope, cwd,
         idleTimeoutMs, hooks, filter, pageIndex, (messageId) => {
           inflightCardId = messageId;
         },
@@ -762,7 +761,7 @@ async function runCardPage(
   sendOpts: SendOpts,
   session: StreamSession,
   handle: RunHandle,
-  workSessions: WorkSessionStore,
+  sessions: SessionStore,
   scope: string,
   cwd: string,
   idleTimeoutMs: number | undefined,
@@ -811,7 +810,7 @@ async function runCardPage(
           }, {
             minIntervalMs: CARD_UPDATE_MIN_INTERVAL_MS,
           });
-          await streamEvents(session, handle, workSessions, scope, cwd, hooks, async (state) => {
+          await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
             // Tables first: Feishu rejects a card past five table components
             // (ErrCode 11310 "card table number over limit") no matter how
             // small it is, so a page must be cut at the table budget rather
@@ -914,7 +913,7 @@ const POST_DONE_EXIT_GRACE_MS = 2000;
 export interface ScheduledRunDeps {
   channel: LarkChannel;
   agent: AgentAdapter;
-  workSessions: WorkSessionStore;
+  sessions: SessionStore;
   workspaces: WorkspaceStore;
   activeRuns: ActiveRuns;
   controls: Controls;
@@ -926,7 +925,7 @@ export interface ScheduledRunDeps {
 }
 
 export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> {
-  const { channel, agent, workSessions, workspaces, activeRuns, controls, pool, chatId, prompt, claim } = deps;
+  const { channel, agent, sessions, workspaces, activeRuns, controls, pool, chatId, prompt, claim } = deps;
   const scope = chatId;
   const uiCards = new Map<string, UiCardEntry>();
   const uiHooks = createUiHooks({
@@ -944,7 +943,7 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
   let release: (() => void) | undefined;
   try {
     release = await pool.acquire();
-    const { cwd } = await resolveConversationCwd(workspaces, workSessions, scope);
+    const { cwd } = await resolveConversationCwd(workspaces, sessions, scope);
     const replyMode = getMessageReplyMode(controls.cfg);
     const runModel = getOmpModel(controls.cfg);
     if (runModel) await recordModelUse(runModel).catch(() => {});
@@ -960,7 +959,7 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
 
     const run = agent.run({
       prompt,
-      sessionId: workSessions.currentSession(scope)?.sessionId,
+      sessionId: sessions.sessionFor(scope)?.sessionId,
       cwd,
       model: runModel,
       thinking: getOmpThinking(controls.cfg),
@@ -982,7 +981,7 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
           chatId,
           {},
           handle,
-          workSessions,
+          sessions,
           scope,
           cwd,
           getRunIdleTimeoutMs(controls.cfg),
@@ -993,7 +992,7 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
         let finalState: RunState = initialState;
         await processAgentStream(
           handle,
-          workSessions,
+          sessions,
           scope,
           cwd,
           getRunIdleTimeoutMs(controls.cfg),

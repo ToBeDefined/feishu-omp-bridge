@@ -1,15 +1,15 @@
 import { mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { paths } from '../../config/paths';
 import { shortPath } from '../../card/templates';
 import type { CommandContext } from '../index';
 import { handleHistory } from './history';
-import { listWorkSessions, scanSessionFiles } from './sessions';
+import { scanSessionFiles } from './sessions';
 import { applyResume } from './resume';
 import { renderContext } from './context';
-import { WorkSessionStore } from '../../session/work-store';
+import { SessionStore } from '../../session/store';
 
 const { reply, recallMessage, sendManagedCard } = vi.hoisted(() => ({
   reply: vi.fn(async (_ctx: unknown, _text: string) => {}),
@@ -32,6 +32,7 @@ vi.mock('../../card/managed', () => ({
 
 const origDir = paths.ompSessionsDir;
 let tmp: string;
+const stores: SessionStore[] = [];
 
 beforeEach(async () => {
   tmp = await mkdtemp(join(tmpdir(), 'history-'));
@@ -42,6 +43,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  await Promise.all(stores.map((s) => s.flush()));
+  stores.length = 0;
   paths.ompSessionsDir = origDir;
   await rm(tmp, { recursive: true, force: true });
 });
@@ -77,26 +80,33 @@ async function writeSession(
   await utimes(file, secs, secs);
 }
 
-/** Captures the session/cwd the handler points the scope at. */
+/** A fresh tmp-backed store, tracked so afterEach can settle its async writes. */
+function makeStore(): SessionStore {
+  const store = new SessionStore(join(tmp, 'sessions.json'));
+  stores.push(store);
+  return store;
+}
+
+/** Captures the cwd/interrupt the handler points the scope at. */
 interface ResumeSpy {
-  bindSegment: ReturnType<typeof vi.fn>;
-  claimWorkSession: ReturnType<typeof vi.fn>;
-  setCwd: ReturnType<typeof vi.fn>;
-  interrupt: ReturnType<typeof vi.fn>;
-  currentSessionId: string | undefined;
+  setCwd: Mock;
+  interrupt: Mock;
 }
 
 function makeCtx(over: Partial<Record<string, unknown>> = {}): {
   ctx: CommandContext;
   spy: ResumeSpy;
+  store: SessionStore;
 } {
-  const spy: ResumeSpy = {
-    bindSegment: vi.fn(),
-    claimWorkSession: vi.fn(),
-    setCwd: vi.fn(),
-    interrupt: vi.fn(),
-    currentSessionId: undefined,
-  };
+  const override = over.sessions as SessionStore | undefined;
+  const store = override ?? makeStore();
+  if (override === undefined) {
+    // Default listing fixture: one named conversation (s1) owned by another
+    // scope, so the default oc_1 scope has no current session.
+    store.bind('oc_other', 's1', tmp);
+    store.setTitle('oc_other', '命名的会话');
+  }
+  const spy: ResumeSpy = { setCwd: vi.fn(), interrupt: vi.fn() };
   const ctx = {
     scope: 'oc_1',
     workspaces: {
@@ -104,34 +114,7 @@ function makeCtx(over: Partial<Record<string, unknown>> = {}): {
       listNamed: () => ({ bridge: tmp }),
       setCwd: spy.setCwd,
     },
-    workSessions: {
-      currentSession: () => undefined,
-      // listWorkSessions folds each work session's segments into one row; the
-      // raw scanSessionFiles still maps segmentId→title from here.
-      allWorkSessions: () => [
-        {
-          id: 's1',
-          scope: 'oc_1',
-          title: '命名的会话',
-          cwd: tmp,
-          createdAtMs: 0,
-          lastActiveAtMs: 0,
-          segments: [{ sessionId: 's1', cwd: tmp, startedAtMs: 0, lastActiveAtMs: 0 }],
-        },
-      ],
-      titleFor: (id?: string) => (id === 's1' ? '命名的会话' : undefined),
-      workSessionById: () => undefined,
-      workSessionForSegment: () => undefined,
-      activeWorkSession: () =>
-        spy.currentSessionId
-          ? { id: spy.currentSessionId, currentSegmentId: spy.currentSessionId, cwd: tmp }
-          : undefined,
-      chats: () => ['oc_1'],
-      bindSegment: spy.bindSegment,
-      claimWorkSession: spy.claimWorkSession,
-      // renderContext reads the scope's idle-timeout override.
-      getIdleTimeoutMinutes: () => undefined,
-    },
+    sessions: store,
     // renderContext (reached through applyResume) asks whether a run is live.
     activeRuns: { interrupt: spy.interrupt, has: () => false },
     agent: {},
@@ -141,7 +124,7 @@ function makeCtx(over: Partial<Record<string, unknown>> = {}): {
     fromCardAction: false,
     ...over,
   } as unknown as CommandContext;
-  return { ctx, spy };
+  return { ctx, spy, store };
 }
 
 /** The card the handler just handed to the managed-card API. */
@@ -177,75 +160,24 @@ describe('scanSessionFiles', () => {
       lastMessage: 'A 问题 2',
     });
   });
-});
 
-describe('listWorkSessions', () => {
-  it('renders one row per OMP session (one session = one conversation)', async () => {
-    await writeSession('g1.jsonl', { id: 'ws-1', cwd: tmp, ts: '2026-03-01T00:00:00Z' }, 2, Date.now() - 300_000);
-    await writeSession('g2.jsonl', { id: 'seg-2', cwd: tmp, ts: '2026-03-02T00:00:00Z' }, 3, Date.now() - 200_000);
-    await writeSession('g3.jsonl', { id: 'seg-3', cwd: tmp, ts: '2026-03-03T00:00:00Z' }, 4, Date.now() - 100_000);
-    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
-    await store.load();
-    store.bindSegment('oc_1', 'ws-1', tmp, { startedAtMs: 1_000, lastActiveAtMs: 1_000 });
-    store.bindSegment('oc_1', 'seg-2', tmp, { startedAtMs: 2_000, lastActiveAtMs: 2_000 });
-    store.bindSegment('oc_1', 'seg-3', tmp, { startedAtMs: 3_000, lastActiveAtMs: 3_000 });
+  it('marks the scope that currently holds each session, else null', async () => {
+    await writeSession('held.jsonl', { id: 'held', cwd: tmp, ts: '2026-01-01T00:00:00Z' }, 1, Date.now() - 1_000);
+    await writeSession('free.jsonl', { id: 'free', cwd: tmp, ts: '2026-01-01T00:00:00Z' }, 1, Date.now() - 2_000);
+    const store = makeStore();
+    store.bind('oc_9', 'held', tmp);
 
-    const rows = await listWorkSessions(makeCtx({ workSessions: store }).ctx);
-    // 三段会话 = 三行，各自带自己的轮数（step 2/3/4 不再并成一行）。
-    expect(rows.map((r) => r.workSessionId).sort()).toEqual(['seg-2', 'seg-3', 'ws-1']);
-    expect(rows.map((r) => r.turns).sort()).toEqual([2, 3, 4]);
-    expect(rows.every((r) => r.segmentCount === 1)).toBe(true);
-    await store.flush();
+    const records = await scanSessionFiles(makeCtx({ sessions: store }).ctx);
+    expect(records.find((r) => r.sessionId === 'held')?.scope).toBe('oc_9');
+    expect(records.find((r) => r.sessionId === 'free')?.scope).toBeNull();
   });
 
-  it('gives a file no work session claims its own row (workSessionId = sessionId)', async () => {
-    await writeSession('orphan.jsonl', { id: 'orphan-1', cwd: tmp, ts: '2026-04-01T00:00:00Z' }, 5, Date.now() - 50_000);
-    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
-    await store.load();
+  it('does not invent a row for a session whose JSONL is gone', async () => {
+    const store = makeStore();
+    store.bind('oc_1', 'ghost', tmp);
 
-    const rows = await listWorkSessions(makeCtx({ workSessions: store }).ctx);
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      workSessionId: 'orphan-1',
-      segmentCount: 1,
-      turns: 5,
-      cwd: tmp,
-      scope: null,
-    });
-    await store.flush();
-  });
-
-  it('sorts rows by last activity, newest first', async () => {
-    await writeSession('old.jsonl', { id: 'old-ws', cwd: tmp, ts: '2026-01-01T00:00:00Z' }, 1, Date.now() - 900_000);
-    await writeSession('new.jsonl', { id: 'new-ws', cwd: tmp, ts: '2026-01-02T00:00:00Z' }, 1, Date.now() - 10_000);
-    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
-    await store.load();
-    store.bindSegment('oc_1', 'old-ws', tmp, { startedAtMs: 1, lastActiveAtMs: 1 });
-    store.startWorkSession('oc_1'); // /work: the next segment opens a new work session
-    store.bindSegment('oc_1', 'new-ws', tmp, { startedAtMs: 2, lastActiveAtMs: 2 });
-
-    const rows = await listWorkSessions(makeCtx({ workSessions: store }).ctx);
-    expect(rows.map((r) => r.workSessionId)).toEqual(['new-ws', 'old-ws']);
-    await store.flush();
-  });
-
-  it('lists a conversation whose file was deleted without inventing data for it', async () => {
-    await writeSession('keep.jsonl', { id: 'ws-k', cwd: tmp, ts: '2026-05-01T00:00:00Z' }, 2, Date.now() - 100_000);
-    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
-    await store.load();
-    store.bindSegment('oc_1', 'ws-k', tmp, { startedAtMs: 1, lastActiveAtMs: 1 });
-    // 这段对话的会话文件不存在（没写过）。
-    store.bindSegment('oc_1', 'gone-seg', tmp, { startedAtMs: 2, lastActiveAtMs: 2 });
-
-    const rows = await listWorkSessions(makeCtx({ workSessions: store }).ctx);
-    const gone = rows.find((r) => r.workSessionId === 'gone-seg');
-    // 没有文件就没轮数/没有可恢复的段，但在清单里仍然占一行（点「继续对话」会明确报错）。
-    expect(gone).toMatchObject({ turns: 0, segmentCount: 1 });
-    expect(gone?.activeSegmentId).toBeUndefined();
-    const keep = rows.find((r) => r.workSessionId === 'ws-k');
-    expect(keep).toMatchObject({ turns: 2, segmentCount: 1 });
-    expect(keep?.activeSegmentId).toBe('ws-k');
-    await store.flush();
+    const records = await scanSessionFiles(makeCtx({ sessions: store }).ctx);
+    expect(records.map((r) => r.sessionId)).not.toContain('ghost');
   });
 });
 
@@ -286,18 +218,17 @@ describe('/history', () => {
   });
 
   it('defaults to the CURRENT conversation directory, not the chat window cwd', async () => {
-    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
-    await store.load();
-    // 一摊一段：先开 /repo/old 那段，再开 tmp 那段（= 当前会话）。
-    store.bindSegment('oc_1', 'there-ws', '/repo/old', { startedAtMs: 1, lastActiveAtMs: 1 });
-    store.startWorkSession('oc_1');
-    store.bindSegment('oc_1', 'here-ws', tmp, { startedAtMs: 2, lastActiveAtMs: 2 });
+    const store = makeStore();
+    // 先开 /repo/old 那段，再开 tmp 那段（= 当前会话）。
+    store.bind('oc_1', 'there-ws', '/repo/old');
+    store.startNew('oc_1');
+    store.bind('oc_1', 'here-ws', tmp);
     await writeSession('there.jsonl', { id: 'there-ws', cwd: '/repo/old', ts: '2026-01-01T00:00:00Z' }, 1, Date.now() - 100_000, 'OLD');
     await writeSession('here.jsonl', { id: 'here-ws', cwd: tmp, ts: '2026-01-02T00:00:00Z' }, 2, Date.now() - 50_000, 'NEW');
 
     // 聊天窗口的 cwd 故意指到别处：默认视图必须跟着**会话**走（会话在哪跑就看哪）。
     const { ctx } = makeCtx({
-      workSessions: store,
+      sessions: store,
       workspaces: { cwdFor: () => '/repo/elsewhere', listNamed: () => ({}), setCwd: () => {} },
     });
     await handleHistory('', ctx);
@@ -308,7 +239,6 @@ describe('/history', () => {
     // 行的身份就是会话 id（= 「继续对话」的载荷）。
     expect(card).toContain('🆔 here-ws');
     expect(card).not.toContain('there-ws');
-    await store.flush();
   });
 
   it('lists every workspace with /history all, labelled per row', async () => {
@@ -317,7 +247,6 @@ describe('/history', () => {
     expect(card).toContain('全部工作区 · 3 个会话');
     expect(card).toContain('📁 bridge');
     expect(card).toContain('📁 /repo/b');
-    expect(card).toContain('📁 bridge');
     expect(card).toContain('问题 0');
   });
 
@@ -350,31 +279,29 @@ describe('/history', () => {
   });
 
   it('resumes the session a 继续对话 button points at', async () => {
-    const { ctx, spy } = makeCtx();
+    const { ctx, spy, store } = makeCtx();
     await handleHistory('resume s3', ctx);
-    // s3 is unclaimed history, so resuming it opens ITS OWN work session — with
-    // that session's own start/last-active times (2026-01-02, active two
-    // minutes ago; not the moment of the click) — and interrupts any in-flight
-    // run in this scope.
-    expect(spy.claimWorkSession).toHaveBeenCalledWith('oc_1', 's3', tmp, {
-      startedAtMs: Date.parse('2026-01-02T00:00:00Z'),
-      lastActiveAtMs: expect.any(Number),
-    });
-    expect(spy.bindSegment).not.toHaveBeenCalled();
+    // s3 is unclaimed history: the scope binds to it with ITS OWN start time
+    // (from the session file), not the moment of the click, and any in-flight
+    // run in this scope is interrupted.
+    expect(store.sessionFor('oc_1')).toEqual({ sessionId: 's3', cwd: tmp });
+    const raw = store.getRaw('oc_1')!;
+    expect(raw.createdAt).toBe(Date.parse('2026-01-02T00:00:00Z'));
+    // 时间取会话文件的最后活动（≈2 分钟前），不是点击的此刻。
+    expect(Date.now() - raw.updatedAt).toBeGreaterThan(60_000);
     expect(spy.setCwd).toHaveBeenCalledWith('oc_1', tmp);
     expect(spy.interrupt).toHaveBeenCalledWith('oc_1');
-    // The listing is not re-sent — the card settles into 会话已恢复.
+    // The listing is not re-sent — the resume replies instead.
     expect(sendManagedCard).not.toHaveBeenCalled();
   });
 
-  it('继续无归属历史：自开一摊，不接当前工作会话的名字', async () => {
-    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
-    await store.load();
-    // The chat is mid-way through another piece of work, with a name.
-    store.bindSegment('oc_1', 's1', tmp);
+  it('继续无归属历史：自开一段对话，不顶着当前会话的名字', async () => {
+    const store = makeStore();
+    // The chat is mid-way through another conversation, with a name.
+    store.bind('oc_1', 's1', tmp);
     store.setTitle('oc_1', '别的活的名字');
 
-    const { ctx } = makeCtx({ workSessions: store });
+    const { ctx } = makeCtx({ sessions: store });
     await applyResume(ctx, {
       sessionId: 's3',
       cwd: tmp,
@@ -383,38 +310,27 @@ describe('/history', () => {
       summary: '',
     });
 
-    // s3 is unclaimed history: continuing it must NOT be absorbed into the
-    // chat's current work session (that made /ctx wear the other work's title).
-    const ws = store.activeWorkSession('oc_1');
-    expect(ws?.id).toBe('s3');
-    expect(ws?.title).toBeUndefined();
-    expect(ws?.segments).toEqual([
-      {
-        sessionId: 's3',
-        cwd: tmp,
-        startedAtMs: Date.parse('2026-01-02T00:00:00Z'),
-        lastActiveAtMs: 1_700_000_000_000,
-      },
-    ]);
-    // The other piece of work keeps its own segment and its own name.
-    expect(store.workSessionById('s1')?.segments.map((x) => x.sessionId)).toEqual(['s1']);
+    // s3 is unclaimed history: continuing it binds the scope to s3 with the
+    // session file's own times, never wearing the other conversation's name.
+    expect(store.sessionFor('oc_1')).toEqual({ sessionId: 's3', cwd: tmp });
+    const raw = store.getRaw('oc_1')!;
+    expect(raw.createdAt).toBe(Date.parse('2026-01-02T00:00:00Z'));
+    expect(raw.updatedAt).toBe(1_700_000_000_000);
     expect(store.titleFor('s1')).toBe('别的活的名字');
     expect(renderContext(ctx, {})).not.toContain('别的活的名字');
-    // Settle the store's async persist before afterEach removes tmp.
-    await store.flush();
   });
 
   it('refuses a 继续对话 payload whose session is gone', async () => {
-    const { ctx, spy } = makeCtx();
+    const { ctx, store } = makeCtx();
     await handleHistory('resume deleted-session', ctx);
-    expect(spy.bindSegment).not.toHaveBeenCalled();
+    expect(store.sessionFor('oc_1')).toBeUndefined();
     expect(reply.mock.calls[0]![1]).toContain('未找到会话');
   });
 
   it('marks the scope own session in the listing', async () => {
-    const { ctx, spy } = makeCtx();
-    // currentWorkSessionId is what the card uses to skip a no-op resume button.
-    spy.currentSessionId = 's3';
+    const store = makeStore();
+    store.bind('oc_1', 's3', tmp);
+    const { ctx } = makeCtx({ sessions: store });
     await handleHistory('all', ctx);
     expect(cardJson()).toContain('✅ 当前');
     // Rows for other sessions still carry the resume button.

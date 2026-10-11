@@ -10,7 +10,7 @@ import {
 function sampleContext(over: Partial<SearchContext> = {}): SearchContext {
   const messages = over.messages ?? [{ role: 'user' as const, content: '问题' }];
   return {
-    workSessionId: 'sess-1',
+    sessionId: 'sess-1',
     workspace: '~/repo',
     title: '标题',
     matchCount: 1,
@@ -49,7 +49,7 @@ describe('search-card T10 additions', () => {
       'kw',
       [
         sampleContext({
-          workSessionId: UUID,
+          sessionId: UUID,
           title: '会话 UI',
           workspace: '~/repo',
           matchCount: 3,
@@ -74,7 +74,7 @@ describe('search-card T10 additions', () => {
 
   it('shows relative time and pagination in the results card', () => {
     const contexts = Array.from({ length: 8 }, (_, i) => ({
-      ...sampleContext({ workSessionId: `s${i}` }),
+      ...sampleContext({ sessionId: `s${i}` }),
       messages: [
         {
           role: 'user' as const,
@@ -158,7 +158,7 @@ describe('searchResultsCard', () => {
   });
 
   it('pages results past the per-card cap', () => {
-    const many = Array.from({ length: 8 }, (_, i) => sampleContext({ workSessionId: `s${i}` }));
+    const many = Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
     const card = searchResultsCard('foo', many, 'q1', true);
     const body = JSON.stringify(card);
     // 8 items → first page renders #1..#6 headings; #7 rides page 2.
@@ -173,7 +173,7 @@ describe('searchResultsCard', () => {
   });
 
   it('renders all items in the done (settled) view', () => {
-    const many = Array.from({ length: 8 }, (_, i) => sampleContext({ workSessionId: `s${i}` }));
+    const many = Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
     const done = JSON.stringify(searchResultsCard('foo', many, 'q1', false));
     expect(done).toContain('"content":"#8 ·');
   });
@@ -193,7 +193,7 @@ describe('searchResultsCard', () => {
         'foo',
         [
           sampleContext({
-            workSessionId: 'ws-1',
+            sessionId: 'ws-1',
             groups: [
               {
                 segmentId: '019f9432-b808-7000-8bf4-073defc52637',

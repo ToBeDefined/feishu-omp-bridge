@@ -325,14 +325,8 @@ export function thinkingCancelledCard(): object {
 }
 
 export interface ResumeOption {
-  /** OMP session id (display handle). */
+  /** 一个 OMP 会话 = 一个对话：要恢复的就是这条会话（也是行上的显示句柄）。 */
   sessionId: string;
-  /** 遗留字段：单一会话模型下与会话 id 相同，保留以兼容调用方。 */
-  workSessionId?: string;
-  /** 遗留字段：单一会话模型下不再使用，保留以兼容调用方。 */
-  segmentId?: string;
-  /** 遗留字段：单一会话模型下不再渲染，保留以兼容调用方。 */
-  segmentCount?: number;
   cwd: string;
   /** Session start, ISO. */
   timestamp: string;
@@ -374,7 +368,7 @@ export function resumeCard(
 
   sessions.forEach((s, i) => {
     // One session = one conversation: the resume target is the session id.
-    const key = s.workSessionId ?? s.sessionId;
+    const key = s.sessionId;
     const isCurrent = current !== undefined && key === current;
     const num = `#${offset + i + 1}`;
     // Named session → title leads, summary becomes a detail line; unnamed →

@@ -7,7 +7,7 @@ import { paths } from '../../config/paths';
 import { searchSession, searchHandlers, workspaceLabel } from './search';
 import { loadSessionSummary } from './context';
 import { renderSearchContext, searchResultsCard } from '../../card/search-card';
-import { WorkSessionStore } from '../../session/work-store';
+import { SessionStore } from '../../session/store';
 
 const { reply } = vi.hoisted(() => ({
   reply: vi.fn(async (_ctx: unknown, _text: string) => {}),
@@ -19,7 +19,7 @@ vi.mock('../shared', async (importOriginal) => {
 });
 
 // Wrap loadSessionSummary so we can prove /search resolves identities from its
-// own scan instead of rescanning the session dir per work session.
+// own scan instead of rescanning the session dir per session.
 vi.mock('./context', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./context')>();
   return { ...actual, loadSessionSummary: vi.fn(actual.loadSessionSummary) };
@@ -30,11 +30,11 @@ let tmp: string | undefined;
 
 function ctxFor(
   workspaces: Record<string, string> = {},
-  workSessions?: { workSessionForSegment: (sessionId: string) => unknown },
+  sessions?: { titleFor: (sessionId: string | undefined) => string | undefined },
 ): CommandContext {
   return {
     workspaces: { listNamed: () => workspaces },
-    workSessions: workSessions ?? { workSessionForSegment: () => undefined },
+    sessions: sessions ?? { titleFor: () => undefined },
     controls: { cfg: {} },
   } as CommandContext;
 }
@@ -116,13 +116,13 @@ describe('searchSession', () => {
 
     expect(hits).toHaveLength(2);
     // Newest hit first: session B (11:00) precedes session A (10:00).
-    expect(hits[0]!.workSessionId).toBe('sessB');
+    expect(hits[0]!.sessionId).toBe('sessB');
     expect(hits[0]!.workspace).toBe('/repoB');
-    expect(hits[1]!.workSessionId).toBe('sessA');
+    expect(hits[1]!.sessionId).toBe('sessA');
     expect(hits[1]!.workspace).toBe('/repoA');
     // sessC (no keyword) and sessD (keyword only in thinking) are excluded.
-    expect(hits.map((h) => h.workSessionId)).not.toContain('sessC');
-    expect(hits.map((h) => h.workSessionId)).not.toContain('sessD');
+    expect(hits.map((h) => h.sessionId)).not.toContain('sessC');
+    expect(hits.map((h) => h.sessionId)).not.toContain('sessD');
   });
 
   it('resolves workspace label from a named workspace', async () => {
@@ -209,10 +209,10 @@ describe('searchSession', () => {
     }
 
     const capped = await searchSession('codegraph', ctxFor(), 2);
-    expect(capped.map((h) => h.workSessionId)).toEqual(['c', 'b']);
+    expect(capped.map((h) => h.sessionId)).toEqual(['c', 'b']);
 
     const all = await searchSession('codegraph', ctxFor());
-    expect(all.map((h) => h.workSessionId)).toEqual(['c', 'b', 'a']);
+    expect(all.map((h) => h.sessionId)).toEqual(['c', 'b', 'a']);
   });
 
   it('matches case-insensitively', async () => {
@@ -224,7 +224,7 @@ describe('searchSession', () => {
 
     const hits = await searchSession('codegraph', ctxFor());
     expect(hits).toHaveLength(1);
-    expect(hits[0]!.workSessionId).toBe('a');
+    expect(hits[0]!.sessionId).toBe('a');
   });
 
   it('returns an empty array when nothing matches', async () => {
@@ -289,37 +289,37 @@ describe('searchSession', () => {
     expect(out).not.toContain('\n# 大标题');
   });
 
-  it('uses the work session title as the row identity', async () => {
+  it('uses the session title as the row identity', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
     paths.ompSessionsDir = tmp;
     await writeSession(tmp, 'a.jsonl', { id: 'sessA', cwd: '/repoA', ts: '2026-08-15T10:00:00.000Z' }, [
       { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: 'codegraph 检索' }] },
     ]);
-    // sessB is not in any work session → stays unlabeled.
+    // sessB has no title → stays unlabeled (topic fallback instead).
     await writeSession(tmp, 'b.jsonl', { id: 'sessB', cwd: '/repoB', ts: '2026-08-15T11:00:00.000Z' }, [
       { role: 'user', ts: '2026-08-15T11:00:01.000Z', content: [{ type: 'text', text: 'codegraph 用法' }] },
     ]);
-    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    const store = new SessionStore(join(tmp, 'sessions.json'));
     await store.load();
-    store.bindSegment('oc_1', 'sessA', '/repoA');
+    store.bind('oc_1', 'sessA', '/repoA');
     store.setTitle('oc_1', '修搜索');
 
     const hits = await searchSession('codegraph', ctxFor({}, store));
-    const bySession = Object.fromEntries(hits.map((h) => [h.workSessionId, h.title]));
+    const bySession = Object.fromEntries(hits.map((h) => [h.sessionId, h.title]));
     expect(bySession.sessA).toBe('修搜索');
     expect(bySession.sessB).toBeUndefined();
     await store.flush();
   });
 
-  it('falls back to the latest segment last user message when the work session is unnamed', async () => {
+  it('falls back to the last user message when the session is unnamed', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
     paths.ompSessionsDir = tmp;
     await writeSession(tmp, 'segA.jsonl', { id: 'segA', cwd: '/repo', ts: '2026-08-15T10:00:00.000Z' }, [
       { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: '最后一条用户消息 codegraph' }] },
     ]);
-    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    const store = new SessionStore(join(tmp, 'sessions.json'));
     await store.load();
-    store.bindSegment('oc_1', 'segA', '/repo');
+    store.bind('oc_1', 'segA', '/repo');
 
     const hits = await searchSession('codegraph', ctxFor({}, store));
     expect(hits).toHaveLength(1);
@@ -328,15 +328,15 @@ describe('searchSession', () => {
     await store.flush();
   });
 
-  it('无名工作会话解析不触发额外目录扫描（不调 loadSessionSummary）', async () => {
+  it('无名会话解析不触发额外目录扫描（不调 loadSessionSummary）', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
     paths.ompSessionsDir = tmp;
     await writeSession(tmp, 'segA.jsonl', { id: 'segA', cwd: '/repo', ts: '2026-08-15T10:00:00.000Z' }, [
       { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: 'codegraph 最后一条' }] },
     ]);
-    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    const store = new SessionStore(join(tmp, 'sessions.json'));
     await store.load();
-    store.bindSegment('oc_1', 'segA', '/repo');
+    store.bind('oc_1', 'segA', '/repo');
     vi.mocked(loadSessionSummary).mockClear();
 
     const hits = await searchSession('codegraph', ctxFor({}, store));
@@ -347,16 +347,16 @@ describe('searchSession', () => {
     await store.flush();
   });
 
-  it('fabricates no title when a work session has neither name nor user message', async () => {
+  it('fabricates no title when a session has neither name nor user message', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
     paths.ompSessionsDir = tmp;
     // Assistant-only turn: no real user message to fall back to.
     await writeSession(tmp, 'segA.jsonl', { id: 'segA', cwd: '/repo', ts: '2026-08-15T10:00:00.000Z' }, [
       { role: 'assistant', ts: '2026-08-15T10:00:02.000Z', content: [{ type: 'text', text: 'codegraph 回答' }] },
     ]);
-    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    const store = new SessionStore(join(tmp, 'sessions.json'));
     await store.load();
-    store.bindSegment('oc_1', 'segA', '/repo');
+    store.bind('oc_1', 'segA', '/repo');
 
     const hits = await searchSession('codegraph', ctxFor({}, store));
     expect(hits).toHaveLength(1);
@@ -368,7 +368,7 @@ describe('searchSession', () => {
     await store.flush();
   });
 
-  it('每个 OMP 会话各占一行（一段一对话），标题或最后一条用户消息作为身份', async () => {
+  it('每个 OMP 会话各占一行，标题或最后一条用户消息作为身份', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
     paths.ompSessionsDir = tmp;
     await writeSession(tmp, 'segA.jsonl', { id: 'segA', cwd: '/repo', ts: '2026-08-15T10:00:00.000Z' }, [
@@ -377,21 +377,20 @@ describe('searchSession', () => {
     await writeSession(tmp, 'segB.jsonl', { id: 'segB', cwd: '/repo', ts: '2026-08-15T11:00:00.000Z' }, [
       { role: 'user', ts: '2026-08-15T11:00:01.000Z', content: [{ type: 'text', text: '第二段 codegraph' }] },
     ]);
-    const store = new WorkSessionStore(join(tmp, 'sessions.json'));
+    const store = new SessionStore(join(tmp, 'sessions.json'));
     await store.load();
-    store.bindSegment('oc_1', 'segA', '/repo');
+    store.bind('oc_1', 'segA', '/repo');
     // 新对话（/new 等）开新的一摊：segB 不并入 segA 的行。
-    store.startWorkSession('oc_1');
-    store.bindSegment('oc_1', 'segB', '/repo');
+    store.startNew('oc_1');
+    store.bind('oc_1', 'segB', '/repo');
 
     const hits = await searchSession('codegraph', ctxFor({}, store));
-    // 一个 OMP 会话 = 一个对话：两个会话 = 两行，各自一段，不再合并计数。
+    // 一个 OMP 会话 = 一个对话：两个会话 = 两行，不再合并计数。
     expect(hits).toHaveLength(2);
-    expect(hits.map((h) => h.workSessionId).sort()).toEqual(['segA', 'segB']);
-    expect(hits.every((h) => h.segmentCount === 1)).toBe(true);
+    expect(hits.map((h) => h.sessionId).sort()).toEqual(['segA', 'segB']);
     expect(hits.every((h) => h.groups.length === 1)).toBe(true);
     // 没名字时以最后一条用户消息作为身份。
-    const topicById = Object.fromEntries(hits.map((h) => [h.workSessionId, h.topic]));
+    const topicById = Object.fromEntries(hits.map((h) => [h.sessionId, h.topic]));
     expect(topicById.segA).toBe('第一段 codegraph');
     expect(topicById.segB).toBe('第二段 codegraph');
 
@@ -402,20 +401,20 @@ describe('searchSession', () => {
     await store.flush();
   });
 
-  it('shows an unclaimed segment as its own single row (identity = the segment)', async () => {
+  it('shows an untitled session as its own single row (identity = the session id)', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
     paths.ompSessionsDir = tmp;
     await writeSession(tmp, 'orphan.jsonl', { id: 'orphan-1', cwd: '/repo', ts: '2026-08-15T10:00:00.000Z' }, [
-      { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: 'codegraph 孤儿段' }] },
+      { role: 'user', ts: '2026-08-15T10:00:01.000Z', content: [{ type: 'text', text: 'codegraph 孤儿会话' }] },
     ]);
 
     const hits = await searchSession('codegraph', ctxFor());
     expect(hits).toHaveLength(1);
-    expect(hits[0]!.workSessionId).toBe('orphan-1');
-    expect(hits[0]!.segmentCount).toBe(1);
+    expect(hits[0]!.sessionId).toBe('orphan-1');
     expect(hits[0]!.title).toBeUndefined();
-    expect(hits[0]!.topic).toBeUndefined();
-    expect(hits[0]!.groups.map((g) => g.segmentId)).toEqual(['orphan-1']);
+    // No title → identity falls back to the session's own last user message.
+    expect(hits[0]!.topic).toBe('codegraph 孤儿会话');
+    expect(hits[0]!.groups).toHaveLength(1);
   });
 
   it('groups multiple hits from one session into a single context', async () => {
@@ -430,7 +429,7 @@ describe('searchSession', () => {
 
     const hits = await searchSession('codegraph', ctxFor());
     expect(hits).toHaveLength(1);
-    expect(hits[0]!.workSessionId).toBe('sessA');
+    expect(hits[0]!.sessionId).toBe('sessA');
     expect(hits[0]!.matchCount).toBe(2);
     expect(hits[0]!.groups).toHaveLength(1);
     // Representative is the newest matching pair inside the session.
@@ -448,7 +447,7 @@ describe('/search done with an expired cache', () => {
       msg: { chatId: 'oc_1', messageId: 'om_1' },
       fromCardAction: true,
       channel: { send: async () => {} },
-      workSessions: { activeWorkSession: vi.fn() },
+      sessions: { sessionFor: vi.fn() },
       controls: { cfg: {} },
     } as unknown as CommandContext;
     reply.mockClear();
@@ -460,6 +459,6 @@ describe('/search done with an expired cache', () => {
     expect(reply.mock.calls[0]![1]).toContain('过期');
     expect(reply.mock.calls[0]![1]).toContain('/search');
     // Never falls through to adopting the current chat session.
-    expect(ctx.workSessions.activeWorkSession).not.toHaveBeenCalled();
+    expect(ctx.sessions.sessionFor).not.toHaveBeenCalled();
   });
 });

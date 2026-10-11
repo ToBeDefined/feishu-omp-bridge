@@ -13,7 +13,7 @@ export const diffHandlers: Record<string, Handler> = {
 
 async function handleDiff(_args: string, ctx: CommandContext): Promise<void> {
   // 会话优先：diff 的是当前会话所在仓库。
-  const cwd = conversationCwd(ctx.workspaces, ctx.workSessions, ctx.scope);
+  const cwd = conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope);
   let stat: string;
   let diff: string;
   try {

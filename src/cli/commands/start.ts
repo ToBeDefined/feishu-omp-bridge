@@ -39,7 +39,7 @@ import {
   updateEntry,
   type ProcessEntry,
 } from '../../runtime/registry';
-import { WorkSessionStore } from '../../session/work-store';
+import { SessionStore } from '../../session/store';
 import { WorkspaceStore } from '../../workspace/store';
 
 // Prefer IPv4 — Node 20+ defaults to "verbatim" which respects whatever
@@ -99,8 +99,8 @@ export async function runStart(opts: StartOptions): Promise<void> {
     process.exit(1);
   }
 
-  const workSessions = new WorkSessionStore();
-  await workSessions.load();
+  const sessions = new SessionStore();
+  await sessions.load();
   const workspaces = new WorkspaceStore();
   await workspaces.load();
 
@@ -180,7 +180,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
       const next_bridge = await startChannel({
         cfg: next,
         agent,
-        workSessions,
+        sessions,
         workspaces,
         controls,
         scheduler,
@@ -261,7 +261,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
     },
   };
 
-  bridge = await startChannel({ cfg, agent, workSessions, workspaces, controls, scheduler });
+  bridge = await startChannel({ cfg, agent, sessions, workspaces, controls, scheduler });
 
   // Backfill the bot's display name into the registry once WS handshake is
   // done — future starts conflicting on this app can show it in the prompt
@@ -328,7 +328,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
     // Only real chat ids are valid receive_ids: session keys are scopes, and
     // cloud-doc comments (`doc:…`) / topic chats (`chatId:threadId`) would
     // fail every boot.
-    const targets = workSessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
+    const targets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
     for (const chatId of targets) {
       await bridge.channel
         .send(chatId, { card: onlineCard() }, {})

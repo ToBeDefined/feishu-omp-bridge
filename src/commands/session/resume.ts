@@ -10,7 +10,7 @@ import {
 import type { CommandContext, Handler } from '../index';
 import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
 import { renderContext, loadSessionSummary } from './context';
-import { listWorkSessions, pickActiveSegment, scanSessionFiles } from './sessions';
+import { scanSessionFiles } from './sessions';
 import { log } from '../../core/logger';
 
 export const resumeHandlers: Record<string, Handler> = {
@@ -26,36 +26,28 @@ const RESUME_PAGE_SIZE = 5;
  * 一个对话只应由一个 chat 恢复：同一 JSONL 被两个 OMP 进程 `--resume` 会让两边的
  * 回合交错写进同一个文件。
  */
-function occupyingScope(ctx: CommandContext, segmentIds: Iterable<string>): string | undefined {
-  const ids = new Set(segmentIds);
-  for (const scope of ctx.workSessions.chats()) {
+function otherScopeHolding(ctx: CommandContext, sessionId: string): string | undefined {
+  for (const scope of ctx.sessions.chats()) {
     if (scope === ctx.scope) continue;
-    const current = ctx.workSessions.activeWorkSession(scope)?.currentSegmentId;
-    if (current !== undefined && ids.has(current)) return scope;
+    if (ctx.sessions.sessionFor(scope)?.sessionId === sessionId) return scope;
   }
   return undefined;
 }
 
 export async function listResumableSessions(ctx: CommandContext): Promise<ResumeOption[]> {
-  // One row = one WORK session (same unit as /history). listWorkSessions already
-  // sorts newest-activity-first; its `activeSegmentId` is the segment /resume
-  // will adopt, so the picker and the resume target cannot diverge.
-  const rows = await listWorkSessions(ctx);
-  return rows
-    .filter((r) => occupyingScope(ctx, r.segments.map((s) => s.sessionId)) === undefined)
-    .map((r) => {
-      const startedAtMs = Number.isFinite(r.startedAtMs) ? r.startedAtMs : r.lastActiveAtMs;
-      return {
-        sessionId: r.activeSegmentId ?? r.workSessionId,
-        workSessionId: r.workSessionId,
-        segmentCount: r.segmentCount,
-        cwd: r.cwd,
-        timestamp: new Date(startedAtMs).toISOString(),
-        updatedAtMs: r.lastActiveAtMs,
-        ...(r.title !== undefined ? { title: r.title } : {}),
-        summary: r.topic ?? '',
-      };
-    });
+  // 一行 = 一个会话（一个 OMP 会话 = 一个对话），按最后活动倒序；被别的 scope
+  // 当前绑着的那些不列（同一 JSONL 不能两边同时 --resume）。
+  const files = await scanSessionFiles(ctx);
+  return files
+    .filter((f) => otherScopeHolding(ctx, f.sessionId) === undefined)
+    .map((f) => ({
+      sessionId: f.sessionId,
+      cwd: f.cwd,
+      timestamp: f.startedAt,
+      updatedAtMs: f.updatedAtMs,
+      ...(f.title !== undefined ? { title: f.title } : {}),
+      summary: f.lastMessage ?? f.summary ?? '',
+    }));
 }
 
 async function handleResume(args: string, ctx: CommandContext): Promise<void> {
@@ -64,7 +56,7 @@ async function handleResume(args: string, ctx: CommandContext): Promise<void> {
   if (sub === 'use') {
     const id = rest.join('');
     const sessions = await listResumableSessions(ctx);
-    const match = sessions.find((s) => s.workSessionId === id || s.sessionId === id);
+    const match = sessions.find((s) => s.sessionId === id);
     if (!match) {
       await reply(ctx, `❌ 未找到会话 \`${id}\`。`);
       return;
@@ -118,8 +110,7 @@ async function showResumePage(ctx: CommandContext, offset: number): Promise<void
     return;
   }
   const page = sessions.slice(offset, offset + RESUME_PAGE_SIZE);
-  // The card keys rows on workSessionId, so mark the current WORK session.
-  const currentId = ctx.workSessions.activeWorkSession(ctx.scope)?.id;
+  const currentId = ctx.sessions.sessionFor(ctx.scope)?.sessionId;
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(
     ctx.channel,
@@ -146,88 +137,43 @@ async function resolveSafeCwd(sessionCwd: string): Promise<string | null> {
 }
 
 export async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<void> {
-  // New payloads carry the work session id; older ones (or a bare
-  // `/resume <sessionId>`) only carry an OMP session id.
-  const foundWs =
-    match.workSessionId !== undefined
-      ? ctx.workSessions.workSessionById(match.workSessionId)
-      : ctx.workSessions.workSessionForSegment(match.sessionId);
-  // A work session with zero declared segments is extreme dirty data (every
-  // segment dropped from the store). It has no segment to pick or own, so treat
-  // it like an unclaimed file and fall back to binding `match.sessionId` alone.
-  const ws = foundWs !== undefined && foundWs.segments.length > 0 ? foundWs : undefined;
+  const target = match.sessionId;
 
-  // 一个 OMP 会话 = 一个对话：这一摊活只有那段会话。它的 cwd 就是它跑过的目录。
-  let target = match.sessionId;
-  let segmentCwd = match.cwd || homedir();
-  if (ws !== undefined) {
-    const alive = new Set((await scanSessionFiles(ctx)).map((s) => s.sessionId));
-    const picked =
-      ws.currentSegmentId !== undefined
-        ? ws.segments.find((s) => s.sessionId === ws.currentSegmentId)
-        : ws.segments[0];
-    if (picked === undefined || !alive.has(picked.sessionId)) {
-      // Ghost segment: the store still lists it but its file is gone. Adopting
-      // it would silently point the chat at nothing.
-      log.warn('command', 'resume-ghost-work-session', {
-        scope: ctx.scope,
-        workSessionId: ws.id,
-        ...(match.segmentId !== undefined ? { segmentId: match.segmentId } : {}),
-      });
-      await reply(ctx, '❌ 这段工作的会话文件已不存在（可能被清理），无法恢复。');
-      return;
-    }
-    target = picked.sessionId;
-    segmentCwd = picked.cwd || segmentCwd;
+  // 会话文件是恢复的唯一凭据：它可能已被清理（幽灵会话），此时不假装能续。
+  const alive = new Set((await scanSessionFiles(ctx)).map((f) => f.sessionId));
+  if (!alive.has(target)) {
+    log.warn('command', 'resume-ghost-session', { scope: ctx.scope, sessionId: target });
+    await reply(ctx, '❌ 这段会话的会话文件已不存在（可能被清理），无法恢复。');
+    return;
   }
 
-  // Ownership guard: another chat must not be actively using a segment of
-  // this work session (two OMP runs would interleave the same JSONL).
-  const segmentIds = ws !== undefined ? ws.segments.map((s) => s.sessionId) : [match.sessionId];
-  const owner = occupyingScope(ctx, segmentIds);
+  // Ownership guard: another chat must not be actively using this session (two
+  // OMP runs would interleave turns into the same JSONL).
+  const owner = otherScopeHolding(ctx, target);
   if (owner !== undefined) {
-    log.warn('command', 'resume-cross-scope-refused', {
-      scope: ctx.scope,
-      owner,
-      workSessionId: ws?.id,
-      sessionId: target,
-    });
-    await reply(
-      ctx,
-      `❌ ${
-        ws !== undefined ? `工作会话 \`${ws.id}\`` : `会话 \`${target}\``
-      } 已被另一个会话（\`${owner}\`）占用，不能在这里恢复。`,
-    );
+    log.warn('command', 'resume-cross-scope-refused', { scope: ctx.scope, owner, sessionId: target });
+    await reply(ctx, `❌ 会话 \`${target}\` 已被另一个会话（\`${owner}\`）占用，不能在这里恢复。`);
     return;
   }
 
-  const cwd = await resolveSafeCwd(segmentCwd);
+  // 会话的 cwd 是它跑过的目录，也是唯一能诚实 resume 它的目录；目录没了就拒绝，
+  // 不改写这条会话记录的工作目录。
+  const sessionCwd = match.cwd || homedir();
+  const cwd = await resolveSafeCwd(sessionCwd);
   if (!cwd) {
-    log.warn('command', 'resume-cwd-missing', {
-      scope: ctx.scope,
-      sessionId: target,
-      cwd: segmentCwd,
-    });
+    log.warn('command', 'resume-cwd-missing', { scope: ctx.scope, sessionId: target, cwd: sessionCwd });
     await reply(
       ctx,
-      `❌ 会话 \`${target}\` 的原目录 \`${segmentCwd}\` 已不存在，无法恢复（不会改写该会话记录的工作目录）。\n请发 \`/new\` 开始新会话，或先 \`/cd\` 切到该目录的上级后再试。`,
+      `❌ 会话 \`${target}\` 的原目录 \`${sessionCwd}\` 已不存在，无法恢复（不会改写该会话记录的工作目录）。\n请发 \`/new\` 开始新对话，或先 \`/cd\` 切到该目录的上级后再试。`,
     );
     return;
   }
 
-  const active = ctx.workSessions.activeWorkSession(ctx.scope);
-  const isCurrent =
-    ws !== undefined && active?.id === ws.id && active.currentSegmentId === target;
+  const isCurrent = ctx.sessions.sessionFor(ctx.scope)?.sessionId === target;
   if (isCurrent) {
-    log.info('command', 'resume-already-current', {
-      scope: ctx.scope,
-      workSessionId: ws.id,
-      sessionId: target,
-      cwd,
-    });
-    // Keep the workspace cwd in sync with the resolved cwd so /context and
-    // the card agree — even when it happens to equal the session's recorded
-    // cwd, writing it is a cheap no-op that guarantees consistency.
+    log.info('command', 'resume-already-current', { scope: ctx.scope, sessionId: target, cwd });
+    // 窗口 cwd 与会话保持一致（会话优先口径），即使本来就相同也写一次 —— 便宜的
+    // 幂等写，保证 /ctx、卡片、下一次运行三者口径一致。
     ctx.workspaces.setCwd(ctx.scope, cwd);
     const summary = await loadSessionSummary(ctx, target);
     if (ctx.fromCardAction) {
@@ -247,24 +193,15 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
     return;
   }
 
-  // Interrupt any active run, then adopt the work session: resumeFor(scope, cwd)
-  // matches its (now current) segment on the next run.
+  // 切到那条会话：它带着自己的开始/最后活动时间，别把「现在」当成它的历史。
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, cwd);
-  if (ws !== undefined) {
-    ctx.workSessions.adoptWorkSession(ctx.scope, ws.id, cwd, target);
-  } else {
-    // No work session claims this file (old/unclaimed history): continuing it
-    // STARTS its own work session — it must keep its own identity (no title,
-    // its own start/last-active times) instead of joining whatever work
-    // session this chat happens to be on.
-    const startedAtMs = Date.parse(match.timestamp);
-    ctx.workSessions.claimWorkSession(ctx.scope, target, cwd, {
-      ...(Number.isFinite(startedAtMs) && startedAtMs > 0 ? { startedAtMs } : {}),
-      ...(match.updatedAtMs !== undefined ? { lastActiveAtMs: match.updatedAtMs } : {}),
-    });
-  }
-  log.info('command', 'resume', { scope: ctx.scope, workSessionId: ws?.id, sessionId: target, cwd });
+  const createdAtMs = Date.parse(match.timestamp);
+  ctx.sessions.bind(ctx.scope, target, cwd, {
+    ...(Number.isFinite(createdAtMs) && createdAtMs > 0 ? { createdAtMs } : {}),
+    ...(match.updatedAtMs !== undefined ? { updatedAtMs: match.updatedAtMs } : {}),
+  });
+  log.info('command', 'resume', { scope: ctx.scope, sessionId: target, cwd });
   const summary = await loadSessionSummary(ctx, target);
   if (ctx.fromCardAction) {
     const msgId = ctx.msg.messageId;
@@ -280,7 +217,7 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
   } else {
     void reply(
       ctx,
-      `✅ 已恢复${ws !== undefined ? `工作会话 \`${ws.id}\`` : `会话 \`${target}\``}\n📁 cwd: \`${cwd}\`\n下一条消息从该会话继续。\n\n---\n\n${renderContext(ctx, summary)}`,
+      `✅ 已恢复会话 \`${target}\`\n📁 cwd: \`${cwd}\`\n下一条消息从该会话继续。\n\n---\n\n${renderContext(ctx, summary)}`,
     );
   }
 }

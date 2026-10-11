@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Shared from '../shared';
-import { WorkSessionStore } from '../../session/work-store';
+import { SessionStore } from '../../session/store';
 import { handlers, type CommandContext } from '../index';
 import { timeoutHandlers } from './timeout';
 
@@ -15,12 +15,12 @@ vi.mock('../shared', async (importOriginal) => {
 });
 
 let dir: string;
-let store: WorkSessionStore;
+let store: SessionStore;
 
 function makeCtx(): CommandContext {
   return {
     scope: 'oc_1',
-    workSessions: store,
+    sessions: store,
     channel: { send: vi.fn(async () => {}) },
     msg: { chatId: 'oc_1', messageId: 'om_1' },
     chatMode: 'p2p',
@@ -37,7 +37,7 @@ function lastReplyText(): string {
 beforeEach(async () => {
   reply.mockClear();
   dir = await mkdtemp(join(tmpdir(), 'timeout-cmd-'));
-  store = new WorkSessionStore(join(dir, 'sessions.json'));
+  store = new SessionStore(join(dir, 'sessions.json'));
   await store.load();
 });
 

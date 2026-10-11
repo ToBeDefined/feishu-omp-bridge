@@ -11,7 +11,7 @@ import { getMaxConcurrentRuns } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, withTrace, gcOldLogs } from '../core/logger';
 import { gcMediaCache, MediaCache, MEDIA_GC_MAX_AGE_MS } from '../media/cache';
-import type { WorkSessionStore } from '../session/work-store';
+import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns } from './active-runs';
 import { ChatModeCache } from './chat-mode-cache';
@@ -95,14 +95,14 @@ export interface BridgeChannel {
 export interface StartChannelDeps {
   cfg: AppConfig;
   agent: AgentAdapter;
-  workSessions: WorkSessionStore;
+  sessions: SessionStore;
   workspaces: WorkspaceStore;
   controls: Controls;
   scheduler?: Scheduler;
 }
 
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
-  const { cfg, agent, workSessions, workspaces, controls, scheduler } = deps;
+  const { cfg, agent, sessions, workspaces, controls, scheduler } = deps;
   const activeRuns = new ActiveRuns();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
@@ -197,7 +197,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         await runAgentBatch({
           channel,
           agent,
-          workSessions,
+          sessions,
           workspaces,
           activeRuns,
           media,
@@ -227,7 +227,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         intakeMessage({
           channel,
           agent,
-          workSessions,
+          sessions,
           workspaces,
           activeRuns,
           media,
@@ -246,7 +246,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         await handleCardAction({
           channel,
           evt,
-          workSessions,
+          sessions,
           workspaces,
           activeRuns,
           agent,
@@ -258,7 +258,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     },
     comment: async (evt) => {
       await withTrace({ chatId: 'comment' }, async () => {
-        await handleCommentMention({ channel, evt, agent, workSessions, workspaces, cfg }).catch((err) =>
+        await handleCommentMention({ channel, evt, agent, sessions, workspaces, cfg }).catch((err) =>
           log.fail('comment', err),
         );
       }).catch((err) => log.fail('comment', err));
@@ -352,7 +352,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       void runScheduledPrompt({
         channel,
         agent,
-        workSessions,
+        sessions,
         workspaces,
         activeRuns,
         controls,
@@ -386,7 +386,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       // bash), leaving the daemon bootout'd with no one to re-bootstrap it.
       // For an explicit user `exit` command (killRuns=true), kill fast.
       if (killRuns) await activeRuns.stopAll();
-      await Promise.allSettled([workSessions.flush(), workspaces.flush()]);
+      await Promise.allSettled([sessions.flush(), workspaces.flush()]);
     },
   };
 }

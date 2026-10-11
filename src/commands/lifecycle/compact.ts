@@ -52,7 +52,7 @@ async function compactIdle(
     // 会话优先：压缩的是**当前会话**，在它自己的目录里。
     const { cwd, sessionId } = await resolveConversationCwd(
       ctx.workspaces,
-      ctx.workSessions,
+      ctx.sessions,
       ctx.scope,
     );
     if (!sessionId) {

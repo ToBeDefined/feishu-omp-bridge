@@ -30,8 +30,8 @@ function makeCtx(overrides: {
     chatMode: 'p2p',
     // 会话优先的 cwd 口径：当前会话自带 cwd，且目录要真实存在（用系统临时目录）。
     workspaces: { cwdFor: () => overrides.cwd ?? tmpdir(), setCwd: () => {} },
-    workSessions: {
-      currentSession: () =>
+    sessions: {
+      sessionFor: () =>
         overrides.sessionId
           ? { sessionId: overrides.sessionId, cwd: overrides.cwd ?? tmpdir() }
           : undefined,
@@ -205,7 +205,7 @@ describe('/compact command', () => {
     const compactSession = vi.fn(async () => undefined);
     let sessionId: string | undefined = 's1';
     const ctx = makeCtx({ activeRuns, compactSession, sessionId: 's1' });
-    ctx.workSessions = { resumeFor: () => sessionId } as unknown as CommandContext['workSessions'];
+    ctx.sessions = { resumeFor: () => sessionId } as unknown as CommandContext['sessions'];
     const run = { events: (async function* () {})(), stop: async () => {}, waitForExit: async () => true };
     activeRuns.register('oc_1', run);
 

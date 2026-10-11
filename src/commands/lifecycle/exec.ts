@@ -98,7 +98,7 @@ async function handleExec(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   // 会话优先：在**当前会话**的目录里执行。
-  const cwd = conversationCwd(ctx.workspaces, ctx.workSessions, ctx.scope);
+  const cwd = conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope);
   const result = await runCommand(cmd, cwd, EXEC_TIMEOUT_MS);
   log.info('command', 'exec', {
     scope: ctx.scope,

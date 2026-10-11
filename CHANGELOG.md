@@ -343,6 +343,17 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Changed
+- **持久化单位回到会话本身（`sessions.json` v3）**：`{ v: 3, scopes, titles }` ——
+  每个 scope 只记**当前会话**（`sessionId`/`cwd`/`createdAt`/`updatedAt` + `/timeout`
+  覆盖），名字按**会话 id** 存在 `titles` 里（换走再换回来名字自然还在，不用搬）。
+  v1（chat 级会话）与 v2（工作会话 + 段）文件在加载时就地迁移，迁移前留
+  `sessions.json.v<N>.bak`（已存在不覆盖）；v2 的多段摊子在迁移时收敛为「当前段 =
+  当前会话」，其余段本来就以会话文件出现在 `/history` 里。
+  随之下线一整套死结构：`WorkSession`/`WorkSegment`/`WorkSessionStore`、
+  `pickActiveSegment`、`latestSegment`、`deriveWorkSession`、`display.ts` 的
+  展示助手、`snapshot`/`importSnapshot`；`/rename auto` 改按**会话 id** 写名字
+  （生成期间 `/new`、`/cd`、`/resume` 换掉当前会话也不落到别的会话上）。
+
 
 - **会话上下文跟着 OMP 会话走，不再跟着聊天窗口走**：cwd 由**会话**携带
   （`WorkSessionStore.currentSession()`），运行前的目录解析统一走

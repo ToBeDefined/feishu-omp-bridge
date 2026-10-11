@@ -31,7 +31,7 @@ export interface SearchHitGroup {
  */
 export interface SearchContext {
   /** OMP session id — the row's identity and the resume target. */
-  workSessionId: string;
+  sessionId: string;
   /** User-assigned title (/rename), when the session is named. */
   title?: string;
   /** Display fallback when unnamed: the session's last user message. */
@@ -161,7 +161,7 @@ export function searchResultsCard(
       ago ? `🕘 ${ago}` : '',
       c.matchCount > 1 ? `🔎 ${c.matchCount} 处匹配` : '',
       // Identity handle of the session — the full id is in 查看详情.
-      `🆔 ${shortSessionId(c.workSessionId)}`,
+      `🆔 ${shortSessionId(c.sessionId)}`,
     ]
       .filter(Boolean)
       .join(' · ');
@@ -178,7 +178,7 @@ export function searchResultsCard(
       blocks.push(
         ...actions([
           { text: '查看详情', value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` } },
-          { text: '继续对话', value: { cmd: 'search.resume', arg: c.workSessionId }, style: 'primary' },
+          { text: '继续对话', value: { cmd: 'search.resume', arg: c.sessionId }, style: 'primary' },
         ]),
       );
     }
@@ -230,7 +230,7 @@ export function searchEmptyCard(keyword: string): object {
 }
 
 export function searchDetailCard(
-  workSessionId: string | undefined,
+  sessionId: string | undefined,
   content: string,
   queryRef?: string,
   idx?: number,
@@ -247,7 +247,7 @@ export function searchDetailCard(
     workspace ? `📁 ${escapeMd(workspace)}` : '',
     // Full id here: this is the one place the work session can be identified
     // exactly (the list only carries an 8-char handle).
-    workSessionId ? `🆔 ${escapeMd(workSessionId)}` : '',
+    sessionId ? `🆔 ${escapeMd(sessionId)}` : '',
   ]
     .filter(Boolean)
     .join(' · ');
@@ -257,7 +257,7 @@ export function searchDetailCard(
     elements.push(
       { tag: 'hr' },
       ...actions([
-        { text: '继续对话', value: { cmd: 'search.resume', arg: workSessionId ?? '' }, style: 'primary' },
+        { text: '继续对话', value: { cmd: 'search.resume', arg: sessionId ?? '' }, style: 'primary' },
         { text: '完成', value: { cmd: 'search.done', arg: queryRef ?? '' } },
       ]),
     );

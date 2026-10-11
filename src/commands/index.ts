@@ -4,7 +4,7 @@ import type { ActiveRuns } from '../bot/active-runs';
 import type { AppConfig } from '../config/schema';
 import { isAdmin, isOwner } from '../config/schema';
 import { log } from '../core/logger';
-import type { WorkSessionStore } from '../session/work-store';
+import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { accountHandlers } from './account';
 import { lifecycleHandlers } from './lifecycle';
@@ -48,7 +48,7 @@ export interface CommandContext {
   /** Resolved chat mode for `msg.chatId`. Used by /status to surface the
    * scope semantic to the user (`topic` shows "话题独立 session"). */
   chatMode: 'p2p' | 'group' | 'topic';
-  workSessions: WorkSessionStore;
+  sessions: SessionStore;
   workspaces: WorkspaceStore;
   agent: AgentAdapter;
   activeRuns: ActiveRuns;

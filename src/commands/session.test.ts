@@ -1,33 +1,41 @@
 import { describe, expect, it } from 'vitest';
 import type { CommandContext } from './index';
 import { extractUserInput, renderContext } from './session';
-import type { WorkSession } from '../session/work-session';
 
 const ULID = '019f0000-0000-7000-0000-000000000000';
 
-/** A single-conversation WorkSession stub (one OMP session = one conversation). */
-function workSession(
-  over: {
-    id?: string;
-    title?: string;
-    cwd?: string;
-    createdAtMs?: number;
-    lastActiveAtMs?: number;
-  } = {},
-): WorkSession {
+/**
+ * 一个 scope 的 store 条目 stub（一个 OMP 会话 = 一个对话：只有会话 id + cwd +
+ * 时间，没有「工作会话 / 段」这一层）。
+ */
+interface EntryStub {
+  sessionId?: string;
+  cwd?: string;
+  updatedAt?: number;
+  createdAt?: number;
+}
+
+function sessionStub(over: { id?: string; title?: string; cwd?: string; createdAtMs?: number; updatedAtMs?: number } = {}) {
   const id = over.id ?? ULID;
   const cwd = over.cwd ?? '/home/proj';
   const at = over.createdAtMs ?? 0;
   return {
-    id,
-    scope: 'oc_1',
-    cwd,
-    ...(over.title !== undefined ? { title: over.title } : {}),
-    createdAtMs: at,
-    lastActiveAtMs: over.lastActiveAtMs ?? at,
-    currentSegmentId: id,
-    segments: [{ sessionId: id, cwd, startedAtMs: at, lastActiveAtMs: at }],
+    entry: { sessionId: id, cwd, createdAt: at, updatedAt: over.updatedAtMs ?? at } as EntryStub,
+    title: over.title,
   };
+}
+
+/** 把 fixture 拼成 SessionStore 形状的 stub。 */
+function stubStore(stub: { entry: EntryStub; title?: string } | undefined): never {
+  return {
+    getRaw: () => stub?.entry,
+    sessionFor: () =>
+      stub?.entry.sessionId !== undefined && stub.entry.cwd !== undefined
+        ? { sessionId: stub.entry.sessionId, cwd: stub.entry.cwd }
+        : undefined,
+    titleFor: () => stub?.title,
+    getIdleTimeoutMinutes: () => undefined,
+  } as never;
 }
 
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
@@ -49,13 +57,7 @@ function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
     },
     scope: 'oc_1',
     chatMode: 'p2p',
-    workSessions: {
-      activeWorkSession: () => workSession(),
-      titleFor: () => undefined,
-      // 当前会话（会话优先的 cwd 口径读它）；这个 stub 没有活跃会话。
-      currentSession: () => undefined,
-      getIdleTimeoutMinutes: () => undefined,
-    } as never,
+    sessions: stubStore(sessionStub()),
     workspaces: {
       cwdFor: () => '/home/proj',
       listNamed: () => ({ futu: '/home/futu' }),
@@ -121,11 +123,7 @@ describe('renderContext', () => {
   it('shows the session title when set (and nothing when it is not)', () => {
     const titled = renderContext(
       makeCtx({
-        workSessions: {
-          activeWorkSession: () => workSession({ title: '修搜索' }),
-          currentSession: () => undefined,
-          getIdleTimeoutMinutes: () => undefined,
-        } as never,
+        sessions: stubStore(sessionStub({ title: '修搜索' })),
       }),
     );
     expect(titled).toContain('**标题**: `修搜索`');
@@ -139,22 +137,14 @@ describe('renderContext', () => {
     expect(recent).toContain('最后活动');
     const fresh = renderContext(
       makeCtx({
-        workSessions: {
-          activeWorkSession: () => workSession({ lastActiveAtMs: Date.now() }),
-          currentSession: () => undefined,
-          getIdleTimeoutMinutes: () => undefined,
-        } as never,
+        sessions: stubStore(sessionStub({ updatedAtMs: Date.now() })),
       }),
     );
     expect(fresh).toContain('0 秒前');
     // No session → new work session
     const none = renderContext(
       makeCtx({
-        workSessions: {
-          activeWorkSession: () => undefined,
-          currentSession: () => undefined,
-          getIdleTimeoutMinutes: () => undefined,
-        } as never,
+        sessions: stubStore(undefined),
       }),
     );
     expect(none).toContain('（无，新会话）');
@@ -163,11 +153,7 @@ describe('renderContext', () => {
   it('shows conversation start time', () => {
     const started = renderContext(
       makeCtx({
-        workSessions: {
-          activeWorkSession: () => workSession({ lastActiveAtMs: Date.now(), createdAtMs: Date.now() }),
-          currentSession: () => undefined,
-          getIdleTimeoutMinutes: () => undefined,
-        } as never,
+        sessions: stubStore(sessionStub({ updatedAtMs: Date.now(), createdAtMs: Date.now() })),
       }),
     );
     expect(started).toContain('开始');
@@ -191,11 +177,7 @@ describe('renderContext', () => {
   it('标题只认 /rename 起的名字：没有就不显示这一行', () => {
     const named = renderContext(
       makeCtx({
-        workSessions: {
-          activeWorkSession: () => workSession({ title: '修搜索' }),
-          currentSession: () => undefined,
-          getIdleTimeoutMinutes: () => undefined,
-        } as never,
+        sessions: stubStore(sessionStub({ title: '修搜索' })),
       }),
       {},
     );
@@ -216,11 +198,7 @@ describe('renderContext', () => {
   it('无活跃会话时不崩，会话行提示下一条消息新建', () => {
     const out = renderContext(
       makeCtx({
-        workSessions: {
-          activeWorkSession: () => undefined,
-          currentSession: () => undefined,
-          getIdleTimeoutMinutes: () => undefined,
-        } as never,
+        sessions: stubStore(undefined),
       }),
     );
     expect(out).toContain('**会话**: （无，下一条消息新建）');

@@ -25,18 +25,18 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
   // 一个 OMP 会话 = 一个对话：/new 起一段**新对话**（下一条消息新建 OMP 会话），
   // 旧对话原样留在 /history 里、名字也留在它自己身上，新对话从无名开始。
-  ctx.workSessions.startWorkSession(ctx.scope);
+  ctx.sessions.startNew(ctx.scope);
   // A new session invalidates any pending /ws undo: rolling back would also
   // clear the session the user just started.
   ctx.workspaces.clearUndo(ctx.scope);
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
   const card = newSessionCard({
     // /new 之后没有当前会话，这里就是新对话将落在的目录。
-    cwd: conversationCwd(ctx.workspaces, ctx.workSessions, ctx.scope),
+    cwd: conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope),
     model: getOmpModel(ctx.controls.cfg),
     thinking: getOmpThinking(ctx.controls.cfg),
     idleLine: formatIdleLine(
-      ctx.workSessions.getIdleTimeoutMinutes(ctx.scope),
+      ctx.sessions.getIdleTimeoutMinutes(ctx.scope),
       globalMs ? Math.round(globalMs / 60_000) : 0,
     ),
     wasRunning,

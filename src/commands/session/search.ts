@@ -8,7 +8,6 @@ import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
 import { codeSpan } from '../../utils/text';
 import { extractUserInput, scanSessionFile } from './context';
 import { applyResume, listResumableSessions } from './resume';
-import { sessionName, sessionIdOf } from './display';
 import {
   renderSearchContext,
   searchDetailCard,
@@ -59,79 +58,70 @@ function messageText(msg: {
   return null;
 }
 
-/** Resolved display + identity of the work session a segment belongs to. */
-interface WorkSessionIdentity {
-  /** Work session id; an unclaimed segment falls back to its own id/file. */
-  workSessionId: string;
+/** Resolved display + identity of the OMP session a hit belongs to. */
+interface SessionIdentity {
+  /** OMP session id; a headerless file falls back to its own file name. */
+  sessionId: string;
   title?: string;
   topic?: string;
-  /** Declared work-session segment count (1 for an unclaimed segment). */
-  segmentCount: number;
 }
 
-/** One session file's matched pairs, before work-session identity is known. */
+/** One session file's matched pairs, before its identity is resolved. */
 interface RawHit {
   /** File header's OMP session id, when it had one. */
   sessionId?: string;
   /** JSONL file name — the identity fallback for a headerless file. */
   fileName: string;
   workspace: string;
-  /** Newest matching pair in the segment — the representative snippet. */
+  /** Newest matching pair in the file — the representative snippet. */
   messages: SearchHit[];
   hitIndex: number;
-  /** Matched Q&A pairs within this segment. */
+  /** Matched Q&A pairs in this file. */
   matchCount: number;
 }
 
-/** One session file's matched pairs, annotated with its work-session identity. */
-interface SegmentHit extends WorkSessionIdentity {
-  /** OMP segment id (the file's header id), when it had one. */
-  segmentId?: string;
+/** One session file's matched pairs, annotated with its resolved identity. */
+interface SessionHit extends SessionIdentity {
   workspace: string;
-  /** Newest matching pair in the segment — the representative snippet. */
+  /** Newest matching pair in the file — the representative snippet. */
   messages: SearchHit[];
   hitIndex: number;
-  /** Matched Q&A pairs within this segment. */
+  /** Matched Q&A pairs in this file. */
   matchCount: number;
 }
 
 /**
- * Resolve a segment's work-session identity + display name, memoised by work
- * session id so a hit is resolved once.
+ * Resolve a session's identity + display name, memoised by session id so a hit
+ * is resolved once.
  *
  * Unlike the /status-style helper, this never calls `loadSessionSummary`: both
  * the name (title, zero IO) and the unnamed topic fallback come from the
- * search's OWN scan — `lastUserBySegment` supplies the session's last user
- * message. That avoids one full-directory scan per unnamed session. A session
- * no work session claims is its own conversation (identity = the session),
- * never named.
+ * search's OWN scan — `lastUserBySession` supplies the session's last user
+ * message. That avoids one full-directory scan per unnamed session. A headerless
+ * file is its own conversation (identity = its file name), never named.
  */
-async function resolveSegmentIdentity(
+async function resolveSessionIdentity(
   ctx: CommandContext,
   sessionId: string | undefined,
   fileName: string,
-  cache: Map<string, WorkSessionIdentity>,
-  aliveIds: ReadonlySet<string>,
-  lastUserBySegment: ReadonlyMap<string, string>,
-): Promise<WorkSessionIdentity> {
-  const ws = sessionId !== undefined ? ctx.workSessions.workSessionForSegment(sessionId) : undefined;
-  const workSessionId = ws?.id ?? sessionId ?? fileName;
-  const cached = cache.get(workSessionId);
+  cache: Map<string, SessionIdentity>,
+  lastUserBySession: ReadonlyMap<string, string>,
+): Promise<SessionIdentity> {
+  // 一个 OMP 会话 = 一个对话：身份就是会话 id，名字按会话 id 查（/rename）。
+  const id = sessionId ?? fileName;
+  const cached = cache.get(id);
   if (cached) return cached;
-  const title = sessionName(ws);
+  const title = ctx.sessions.titleFor(id);
   let topic: string | undefined;
-  if (title === undefined && ws !== undefined) {
-    const displayId = sessionIdOf(ws);
-    const last = displayId !== undefined ? lastUserBySegment.get(displayId) : undefined;
-    topic = last?.trim() || undefined;
+  if (title === undefined) {
+    topic = lastUserBySession.get(id)?.trim() || undefined;
   }
-  const resolved: WorkSessionIdentity = {
-    workSessionId,
+  const resolved: SessionIdentity = {
+    sessionId: id,
     ...(title !== undefined ? { title } : {}),
     ...(topic !== undefined ? { topic } : {}),
-    segmentCount: ws?.segments.length ?? 1,
   };
-  cache.set(workSessionId, resolved);
+  cache.set(id, resolved);
   return resolved;
 }
 
@@ -146,24 +136,21 @@ function newestHitMs(hit: { messages: SearchHit[] }): number {
 }
 
 /** Search every session file (across workspaces), returning one context per
- * WORK session: every matched segment collapses under a single heading (the
- * newest pair is the representative snippet, `matchCount` the total across the
- * work session's segments). Newest first, capped at `limit` work sessions. */
+ * OMP session (= one conversation): every matched pair in that session collapses
+ * under a single heading (the newest pair is the representative snippet,
+ * `matchCount` the total across the session). Newest first, capped at `limit`
+ * sessions. */
 export async function searchSession(
   keyword: string,
   ctx: CommandContext,
   limit = 6,
 ): Promise<SearchContext[]> {
   const needle = keyword.toLowerCase();
-  const identityCache = new Map<string, WorkSessionIdentity>();
-  // Index built from search's OWN reads, so no per-work-session
-  // `loadSessionSummary` directory scan is needed:
-  //  - `aliveIds`: OMP session ids whose file is on disk (drives the shared
-  //    `pickDisplaySegmentId` rule, same口径 as /history);
-  //  - `lastUserBySegment`: each segment's last user message (the unnamed
-  //    work session's topic fallback).
-  const aliveIds = new Set<string>();
-  const lastUserBySegment = new Map<string, string>();
+  const identityCache = new Map<string, SessionIdentity>();
+  // `lastUserBySession` is built from search's OWN reads, so no per-session
+  // `loadSessionSummary` directory scan is needed: each session's last user
+  // message is the unnamed row's identity fallback.
+  const lastUserBySession = new Map<string, string>();
   let names: string[] = [];
   try {
     names = (await readdir(getOmpSessionDir(ctx.controls.cfg))).filter((n) => n.endsWith('.jsonl'));
@@ -181,58 +168,58 @@ export async function searchSession(
         const idx = cursor++;
         if (idx >= names.length) break;
         const name = names[idx]!;
-        const found = await scanSessionHits(name, needle, ctx, aliveIds, lastUserBySegment);
+        const found = await scanSessionHits(name, needle, ctx, lastUserBySession);
         if (found) rawHits.push(found);
       }
     }),
   );
-  // Resolve identity only AFTER the scan, once `aliveIds`/`lastUserBySegment`
-  // are complete — otherwise a concurrent worker could pick a segment before
-  // another worker has registered its file, giving a nondeterministic topic.
-  const results: SegmentHit[] = [];
+  // Resolve identity only AFTER the scan, once `lastUserBySession` is complete —
+  // otherwise a concurrent worker could resolve a topic before another worker
+  // has registered its file.
+  const results: SessionHit[] = [];
   for (const raw of rawHits) {
-    const identity = await resolveSegmentIdentity(
+    const identity = await resolveSessionIdentity(
       ctx,
       raw.sessionId,
       raw.fileName,
       identityCache,
-      aliveIds,
-      lastUserBySegment,
+      lastUserBySession,
     );
     results.push({
       ...identity,
-      ...(raw.sessionId !== undefined ? { segmentId: raw.sessionId } : {}),
       workspace: raw.workspace,
       messages: raw.messages,
       hitIndex: raw.hitIndex,
       matchCount: raw.matchCount,
     });
   }
-  // Newest hit first, so both the segment groups inside a work session and the
-  // work-session rows themselves come out newest-first.
+  // Newest hit first, so both the hit groups inside a conversation and the
+  // conversation rows themselves come out newest-first.
   results.sort((a, b) => newestHitMs(b) - newestHitMs(a));
-  // Collapse each work session's segments under one row; the first (newest)
-  // segment stays the representative snippet for the detail view.
+  // One OMP session = one conversation: collapse a session's hit groups under a
+  // single row; the first (newest) group stays the representative snippet for
+  // the detail view.
   const grouped = new Map<string, SearchContext>();
   for (const r of results) {
     const group: SearchHitGroup = {
-      ...(r.segmentId !== undefined ? { segmentId: r.segmentId } : {}),
       messages: r.messages,
       hitIndex: r.hitIndex,
       matchCount: r.matchCount,
     };
-    const existing = grouped.get(r.workSessionId);
+    const existing = grouped.get(r.sessionId);
     if (existing) {
       existing.groups.push(group);
       existing.matchCount += r.matchCount;
       continue;
     }
-    grouped.set(r.workSessionId, {
-      workSessionId: r.workSessionId,
+    grouped.set(r.sessionId, {
+      // The card's row-identity field still carries the legacy name
+      // `sessionId`; its value is the OMP session id (one session = one
+      // conversation).
+      sessionId: r.sessionId,
       ...(r.title !== undefined ? { title: r.title } : {}),
       ...(r.topic !== undefined ? { topic: r.topic } : {}),
       workspace: r.workspace,
-      segmentCount: r.segmentCount,
       matchCount: r.matchCount,
       groups: [group],
       messages: r.messages,
@@ -246,8 +233,7 @@ async function scanSessionHits(
   name: string,
   needle: string,
   ctx: CommandContext,
-  aliveIds: Set<string>,
-  lastUserBySegment: Map<string, string>,
+  lastUserBySession: Map<string, string>,
 ): Promise<RawHit | undefined> {
   let text: string;
   try {
@@ -255,16 +241,13 @@ async function scanSessionHits(
   } catch {
     return undefined;
   }
-  // Index EVERY readable file we read: presence (`aliveIds`) lets identity
-  // resolution pick the same active segment /history does, and the last user
-  // message is that segment's topic fallback — both sourced here so /search
-  // never re-scans the directory via loadSessionSummary.
+  // Index the file's last user message under its identity (the header session
+  // id, or the file name for a headerless file): identity resolution uses it as
+  // the unnamed row's topic fallback, sourced here so /search never re-scans the
+  // directory via loadSessionSummary.
   const fileScan = scanSessionFile(text);
   const sessionId = fileScan.meta?.id;
-  if (sessionId !== undefined) {
-    aliveIds.add(sessionId);
-    lastUserBySegment.set(sessionId, fileScan.lastUserMessage);
-  }
+  lastUserBySession.set(sessionId ?? name, fileScan.lastUserMessage);
   // Cheap prefilter: skip building hit pairs for files with no keyword.
   if (!text.toLowerCase().includes(needle)) return undefined;
 
@@ -358,11 +341,8 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     const targetId = rest.join('').trim();
     if (targetId) {
       const sessions = await listResumableSessions(ctx);
-      // The button carries a WORK session id; legacy options only expose the
-      // segment id, so fall back to that for pre-Task-9 listers.
-      const match = sessions.find(
-        (s) => s.sessionId === targetId || ('workSessionId' in s && s.workSessionId === targetId),
-      );
+      // The card button carries the target session id.
+      const match = sessions.find((s) => s.sessionId === targetId);
       if (!match) {
         await reply(ctx, `❌ 该会话已不存在或无法恢复：\`${targetId}\``);
         return;
@@ -370,16 +350,12 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       await applyResume(ctx, match);
       return;
     }
-    const active = ctx.workSessions.activeWorkSession(ctx.scope);
-    if (!active?.currentSegmentId) {
+    const current = ctx.sessions.sessionFor(ctx.scope);
+    if (current === undefined) {
       await reply(ctx, '当前没有可继续的会话。');
       return;
     }
-    await applyResume(ctx, {
-      sessionId: active.currentSegmentId,
-      cwd: active.cwd || homedir(),
-      timestamp: '',
-    });
+    await applyResume(ctx, { sessionId: current.sessionId, cwd: current.cwd, timestamp: '' });
     return;
   }
 
@@ -403,13 +379,13 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
           if (idxStr) {
             const idx = Number.parseInt(idxStr, 10);
             const context = contexts?.[idx - 1];
-            const workSessionId = context?.workSessionId;
+            const sessionId = context?.sessionId;
             const wsLabel = context?.workspace ?? '';
             const full = context ? renderSearchContext(context, 'detail') : '';
             await updateManagedCard(
               ctx.channel,
               msgId,
-              searchDetailCard(workSessionId, full, undefined, idx, true, wsLabel),
+              searchDetailCard(sessionId, full, undefined, idx, true, wsLabel),
             );
           } else {
             // Results list card: strip buttons, keep the list with the
@@ -443,16 +419,16 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       return;
     }
     const full = renderSearchContext(context, 'detail');
-    const workSessionId = context.workSessionId;
+    const sessionId = context.sessionId;
     const wsLabel = context.workspace ?? '';
     if (ctx.fromCardAction) {
       await sendManagedCard(
         ctx.channel,
         ctx.msg.chatId,
-        searchDetailCard(workSessionId, full, `${queryId} ${idx}`, idx, false, wsLabel),
+        searchDetailCard(sessionId, full, `${queryId} ${idx}`, idx, false, wsLabel),
       ).catch(() => {});
     } else {
-      await reply(ctx, `🆔 会话: \`${workSessionId}\`\n\n${full}`);
+      await reply(ctx, `🆔 会话: \`${sessionId}\`\n\n${full}`);
     }
     return;
   }

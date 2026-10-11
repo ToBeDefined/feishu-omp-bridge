@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Shared from '../shared';
 import { paths } from '../../config/paths';
-import { WorkSessionStore } from '../../session/work-store';
+import { SessionStore } from '../../session/store';
 import type { CommandContext } from '../index';
 import { handleRename, renameHandlers } from './rename';
 import { newHandlers } from './new';
@@ -21,7 +21,7 @@ vi.mock('../shared', async (importOriginal) => {
 const origSessionsDir = paths.ompSessionsDir;
 let tmp: string;
 let sessionsDir: string;
-let store: WorkSessionStore;
+let store: SessionStore;
 
 function agentYielding(...texts: string[]) {
   async function* events() {
@@ -53,7 +53,7 @@ function agentYieldingWith(text: string, during: () => void) {
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
   return {
     scope: 'oc_1',
-    workSessions: store,
+    sessions: store,
     agent: agentYielding() as never,
     workspaces: { cwdFor: () => '/repo' },
     controls: { cfg: {} },
@@ -89,7 +89,7 @@ function makeNewCtx(): { ctx: CommandContext; sent: unknown[] } {
   const ctx = {
     scope: 'oc_1',
     chatMode: 'p2p',
-    workSessions: store,
+    sessions: store,
     workspaces: { cwdFor: () => '/repo', clearUndo: vi.fn() },
     agent: {} as never,
     activeRuns: { interrupt: vi.fn().mockReturnValue(false) },
@@ -113,7 +113,7 @@ beforeEach(async () => {
   sessionsDir = join(tmp, 'omp-sessions');
   await mkdir(sessionsDir, { recursive: true });
   paths.ompSessionsDir = sessionsDir;
-  store = new WorkSessionStore(join(tmp, 'sessions.json'));
+  store = new SessionStore(join(tmp, 'sessions.json'));
   await store.load();
 });
 afterEach(async () => {
@@ -123,16 +123,16 @@ afterEach(async () => {
 });
 
 describe('/rename command', () => {
-  it('names the WORK session; after /new the name stays on that conversation', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+  it('names the current session; after /new the name stays on that conversation', async () => {
+    store.bind('oc_1', 'sess-a', '/repo');
     const ctx = makeCtx();
 
     await handleRename('bridge UI 调整', ctx);
-    expect(store.activeWorkSession('oc_1')?.title).toBe('bridge UI 调整');
+    expect(store.titleFor('sess-a')).toBe('bridge UI 调整');
 
     // 一个 OMP 会话 = 一个对话：/new 起一段新对话，名字属于旧对话，新对话无名。
-    store.startWorkSession('oc_1');
-    store.bindSegment('oc_1', 'sess-b', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
+    store.startNew('oc_1');
+    store.bind('oc_1', 'sess-b', '/repo');
     await handleRename('', ctx);
 
     // 新对话没有标题 → 如实说「没有标题」（不拿最后一条消息冒充）。
@@ -142,12 +142,12 @@ describe('/rename command', () => {
   });
 
   it('clears only the current conversation after /new (旧对话名字不受影响)', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.bind('oc_1', 'sess-a', '/repo');
     const ctx = makeCtx();
 
     await handleRename('旧标题', ctx);
-    store.startWorkSession('oc_1');
-    store.bindSegment('oc_1', 'sess-b', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
+    store.startNew('oc_1');
+    store.bind('oc_1', 'sess-b', '/repo');
     await handleRename('clear', ctx);
 
     // 新对话本就没有标题：clear 无事可清，也绝不该动到旧对话的名字。
@@ -170,14 +170,15 @@ describe('/rename command', () => {
       expect(call[1]).toBe('❌ 当前还没有会话，先发一条消息开始一段对话。');
     }
     // Nothing written to the store, and auto didn't even talk to the model.
-    expect(store.allWorkSessions()).toHaveLength(0);
+    expect(store.sessionFor('oc_1')).toBeUndefined();
+    expect(store.titlesBySessionId()).toEqual({});
     expect(agent.run).not.toHaveBeenCalled();
     await store.flush();
     await expect(readFile(join(tmp, 'sessions.json'), 'utf8')).rejects.toThrow();
   });
 
-  it('shows the current work session title with no args', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+  it('shows the current session title with no args', async () => {
+    store.bind('oc_1', 'sess-a', '/repo');
     const ctx = makeCtx();
 
     await handleRename('现有标题', ctx);
@@ -187,18 +188,18 @@ describe('/rename command', () => {
   });
 
   it('rejects an over-long title', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.bind('oc_1', 'sess-a', '/repo');
     const ctx = makeCtx();
 
     await handleRename('x'.repeat(61), ctx);
 
     expect(reply).toHaveBeenCalledWith(ctx, expect.stringContaining('过长'));
-    expect(store.activeWorkSession('oc_1')?.title).toBeUndefined();
+    expect(store.titleFor('sess-a')).toBeUndefined();
   });
 
-  it('auto samples only the latest segment, in an isolated session dir', async () => {
-    store.bindSegment('oc_1', 'sess-old', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
-    store.bindSegment('oc_1', 'sess-new', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
+  it('auto samples only the current session, in an isolated session dir', async () => {
+    store.bind('oc_1', 'sess-old', '/repo');
+    store.bind('oc_1', 'sess-new', '/repo');
     await writeSessionFile('sess-old', '旧段的消息');
     await writeSessionFile('sess-new', '最新段的消息');
 
@@ -207,7 +208,7 @@ describe('/rename command', () => {
     await handleRename('auto', ctx);
 
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已自动生成'));
-    expect(store.activeWorkSession('oc_1')?.title).toBe('新标题');
+    expect(store.titleFor('sess-new')).toBe('新标题');
 
     const runArgs = agent.run.mock.calls[0]?.[0] as { prompt: string; sessionDir?: string; sessionId?: string };
     expect(runArgs?.prompt).toContain('最新段的消息');
@@ -219,19 +220,19 @@ describe('/rename command', () => {
   });
 
   it('truncates an over-long generated title to 30 chars', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.bind('oc_1', 'sess-a', '/repo');
     await writeSessionFile('sess-a', '帮我改搜索逻辑');
     const longTitle = '这是一条特别长的自动生成标题测试内容用来验证截断逻辑是否正确生效超三十字';
     const ctx = makeCtx({ agent: agentYielding(longTitle) as never });
 
     await handleRename('auto', ctx);
 
-    const title = store.activeWorkSession('oc_1')?.title;
+    const title = store.titleFor('sess-a');
     expect(Array.from(title ?? '')).toHaveLength(30);
   });
 
   it('leaves the main session file untouched when generating', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.bind('oc_1', 'sess-a', '/repo');
     const file = await writeSessionFile('sess-a', '帮我改搜索逻辑');
     const before = await readFile(file, 'utf8');
     const ctx = makeCtx({ agent: agentYielding('好标题') as never });
@@ -243,87 +244,72 @@ describe('/rename command', () => {
   });
 
   it('fails gracefully when the model produces no text', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.bind('oc_1', 'sess-a', '/repo');
     await writeSessionFile('sess-a', '帮我改搜索逻辑');
     const ctx = makeCtx({ agent: agentYielding('   ') as never });
 
     await handleRename('auto', ctx);
 
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('无法生成标题'));
-    expect(store.activeWorkSession('oc_1')?.title).toBeUndefined();
+    expect(store.titleFor('sess-a')).toBeUndefined();
   });
 
   it('is registered as the /rename command', () => {
     expect(renameHandlers['/rename']).toBe(handleRename);
   });
 
-  it('auto lands on the work session that was active when generation started (user ran /work)', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+  it('auto lands on the session that was active when generation started (user ran /new)', async () => {
+    store.bind('oc_1', 'sess-a', '/repo');
     await writeSessionFile('sess-a', '帮我改搜索逻辑');
-    const target = store.activeWorkSession('oc_1')!.id;
+    const target = store.sessionFor('oc_1')!.sessionId;
 
-    // 生成期间用户 /work 归档了当前工作会话：不再有 active。
-    const agent = agentYieldingWith('新标题', () => store.startWorkSession('oc_1'));
+    // 生成期间用户 /new 起了一段新对话：当前会话已不挂在 scope 上。
+    const agent = agentYieldingWith('新标题', () => store.startNew('oc_1'));
     const ctx = makeCtx({ agent: agent as never });
 
     await handleRename('auto', ctx);
 
-    expect(store.activeWorkSession('oc_1')).toBeUndefined();
-    // 名字仍落在发起时那个工作会话上，而不是「报成功但没写」。
-    expect(store.workSessionById(target)?.title).toBe('新标题');
+    expect(store.sessionFor('oc_1')).toBeUndefined();
+    // 名字仍落在发起时那条会话上（名字表按会话 id 存，历史会话照样能起名）。
+    expect(store.titleFor(target)).toBe('新标题');
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已自动生成'));
   });
 
-  it('auto keeps its target when /resume switches to another work session', async () => {
-    // 第一摊活（生成发起时它是「切过去」的目的地）。
-    store.bindSegment('oc_1', 'sess-target', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+  it('auto keeps its target when /resume switches to another session', async () => {
+    // 第一段活（生成发起时它是「切过去」的目的地）。
+    store.bind('oc_1', 'sess-target', '/repo');
     store.setTitle('oc_1', '第一摊活');
     await writeSessionFile('sess-target', '第一摊活的消息');
-    const firstId = store.activeWorkSession('oc_1')!.id;
-    // 第二摊活，随后成为 active（生成发起时的目标）。
-    store.startWorkSession('oc_1', '当前活');
-    store.bindSegment('oc_1', 'sess-other', '/repo', { startedAtMs: 2, lastActiveAtMs: 2 });
+    const firstId = store.sessionFor('oc_1')!.sessionId;
+    // 第二段活，随后成为当前会话（生成发起时的目标）。
+    store.startNew('oc_1');
+    store.bind('oc_1', 'sess-other', '/repo');
+    store.setTitle('oc_1', '当前活');
     await writeSessionFile('sess-other', '第二摊活的消息');
-    const targetId = store.activeWorkSession('oc_1')!.id;
+    const targetId = store.sessionFor('oc_1')!.sessionId;
     expect(targetId).not.toBe(firstId);
-    expect(store.workSessionById(targetId)?.title).toBe('当前活');
+    expect(store.titleFor(targetId)).toBe('当前活');
 
-    // 生成期间用户 /resume 切回第一摊活。
+    // 生成期间用户 /resume 切回第一段活。
     const agent = agentYieldingWith('新标题', () => {
-      store.adoptWorkSession('oc_1', firstId);
+      store.bind('oc_1', firstId, '/repo');
     });
     const ctx = makeCtx({ agent: agent as never });
 
     await handleRename('auto', ctx);
 
-    expect(store.activeWorkSession('oc_1')?.id).toBe(firstId);
-    // 名字落在发起时的目标工作会话上，绝不覆盖切过去的那个活。
-    expect(store.workSessionById(targetId)?.title).toBe('新标题');
-    expect(store.workSessionById(firstId)?.title).toBe('第一摊活');
+    expect(store.sessionFor('oc_1')?.sessionId).toBe(firstId);
+    // 名字落在发起时的目标会话上，绝不覆盖切过去的那个活。
+    expect(store.titleFor(targetId)).toBe('新标题');
+    expect(store.titleFor(firstId)).toBe('第一摊活');
     expect(reply).toHaveBeenLastCalledWith(ctx, expect.stringContaining('已自动生成'));
-  });
-
-  it('auto reports the name was NOT saved when the target session is gone', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
-    await writeSessionFile('sess-a', '帮我改搜索逻辑');
-    const ctx = makeCtx({ agent: agentYielding('新标题') as never });
-    // 生成期间目标工作会话消失（按 id 写入失败）。
-    vi.spyOn(store, 'setTitleById').mockReturnValue(false);
-
-    await handleRename('auto', ctx);
-
-    expect(reply).toHaveBeenLastCalledWith(
-      ctx,
-      expect.stringContaining('目标会话已不存在'),
-    );
-    expect(store.activeWorkSession('oc_1')?.title).toBeUndefined();
   });
 
 });
 
 describe('/rename 与 /new：/new 起新对话，不背旧名字', () => {
   it('/rename 报当前对话的名字，/new 的卡片不带它（名字留在旧对话上）', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.bind('oc_1', 'sess-a', '/repo');
     store.setTitle('oc_1', 'KMP 导出');
 
     await handleRename('', makeCtx());
@@ -338,7 +324,7 @@ describe('/rename 与 /new：/new 起新对话，不背旧名字', () => {
   });
 
   it('both show no name when there is no title and no history', async () => {
-    store.bindSegment('oc_1', 'sess-a', '/repo', { startedAtMs: 1, lastActiveAtMs: 1 });
+    store.bind('oc_1', 'sess-a', '/repo');
 
     await handleRename('', makeCtx());
     expect(reply).toHaveBeenLastCalledWith(expect.anything(), expect.stringContaining('没有标题'));

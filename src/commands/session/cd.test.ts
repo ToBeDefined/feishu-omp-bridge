@@ -50,7 +50,7 @@ function makeCtx(cwd: string): {
     } as never,
     scope: 'oc_1',
     chatMode: 'p2p',
-    workSessions: { startWorkSession: start } as never,
+    sessions: { startNew: start } as never,
     workspaces: { cwdFor: () => cwd, setCwd, clearUndo } as never,
     agent: {} as never,
     activeRuns: { interrupt } as never,

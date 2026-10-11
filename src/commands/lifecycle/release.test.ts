@@ -46,7 +46,7 @@ function makeCtx(): { ctx: CommandContext; sent: string[]; restartProcess: Mock 
     msg: { chatId: 'oc_1', messageId: 'om_1', content: '' },
     scope: 'oc_1',
     chatMode: 'p2p',
-    workSessions: {},
+    sessions: {},
     workspaces: {},
     agent: {},
     activeRuns: {},

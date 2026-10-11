@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { stat } from 'node:fs/promises';
 import { log } from '../core/logger';
-import type { WorkSessionStore } from './work-store';
+import type { SessionStore } from './store';
 import type { WorkspaceStore } from '../workspace/store';
 
 /**
@@ -12,11 +12,11 @@ import type { WorkspaceStore } from '../workspace/store';
  */
 export function conversationCwd(
   workspaces: WorkspaceStore,
-  workSessions: WorkSessionStore,
+  sessions: SessionStore,
   scope: string,
   home: string = homedir(),
 ): string {
-  return workSessions.currentSession(scope)?.cwd ?? workspaces.cwdFor(scope) ?? home;
+  return sessions.sessionFor(scope)?.cwd ?? workspaces.cwdFor(scope) ?? home;
 }
 
 /**
@@ -36,11 +36,11 @@ export function conversationCwd(
  */
 export async function resolveConversationCwd(
   workspaces: WorkspaceStore,
-  workSessions: WorkSessionStore,
+  sessions: SessionStore,
   scope: string,
   home: string = homedir(),
 ): Promise<{ cwd: string; sessionId?: string }> {
-  const current = workSessions.currentSession(scope);
+  const current = sessions.sessionFor(scope);
   if (current !== undefined && (await isDirectory(current.cwd))) {
     if (workspaces.cwdFor(scope) !== current.cwd) {
       // 聊天窗口跟随会话：从此 cwd 的唯一真相是会话。

@@ -12,8 +12,6 @@ import { formatIdleLine } from '../shared';
 import { summarizeMd } from '../../utils/text';
 import { contextCard, type ContextInfo } from '../../card/templates';
 import { formatAgo, formatAgoOr, formatClockOr } from '../../utils/time';
-import type { WorkSession } from '../../session/work-session';
-import { sessionName } from './display';
 import { conversationCwd } from '../../session/current-cwd';
 
 export const contextHandlers: Record<string, Handler> = {
@@ -25,29 +23,28 @@ export function collectContextInfo(
   ctx: CommandContext,
   summary: { lastMessage?: string; lastReply?: string } = {},
 ): ContextInfo {
-  const active = ctx.workSessions.activeWorkSession(ctx.scope);
+  const entry = ctx.sessions.getRaw(ctx.scope);
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
   // 身份 = 会话（一个 OMP 会话 = 一个对话）：cwd 取它自己的目录（会话优先，聊天
-  // 窗口的 cwd 只是它没有会话时的落点），名字取 /rename 的 title，没有就回退到它
-  // 最后一条用户消息（调用方已取到的 summary）。
-  const cwd = conversationCwd(ctx.workspaces, ctx.workSessions, ctx.scope);
-  const sessionId = active?.currentSegmentId;
+  // 窗口的 cwd 只是它没有会话时的落点），名字取 /rename 的 title。
+  const cwd = conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope);
+  const sessionId = entry?.sessionId;
   // 名字 = 真标题（/rename 起的）。**不拿最后一条用户消息冒充标题**：那会让
   // 「标题」这一行看起来像用户起的名，实际只是他上一句话。
-  const name = sessionName(active);
+  const name = ctx.sessions.titleFor(sessionId);
   return {
     scope: ctx.scope,
     chatMode: ctx.chatMode,
     cwd,
     ...(sessionId !== undefined ? { sessionId } : {}),
     ...(name !== undefined ? { sessionName: name } : {}),
-    createdAt: active?.createdAtMs,
-    updatedAt: active?.lastActiveAtMs,
+    createdAt: entry?.createdAt,
+    updatedAt: entry?.updatedAt,
     running: ctx.activeRuns.has(ctx.scope),
     model: getOmpModel(ctx.controls.cfg),
     thinking: getOmpThinking(ctx.controls.cfg),
     idleLine: formatIdleLine(
-      ctx.workSessions.getIdleTimeoutMinutes(ctx.scope),
+      ctx.sessions.getIdleTimeoutMinutes(ctx.scope),
       globalMs ? Math.round(globalMs / 60_000) : 0,
     ),
     wsNames: Object.entries(ctx.workspaces.listNamed())
@@ -200,7 +197,7 @@ export async function loadSessionSummary(
 }
 
 async function handleContext(_args: string, ctx: CommandContext): Promise<void> {
-  const sessionId = ctx.workSessions.activeWorkSession(ctx.scope)?.currentSegmentId;
+  const sessionId = ctx.sessions.sessionFor(ctx.scope)?.sessionId;
   const summary =
     sessionId !== undefined
       ? await loadSessionSummary(ctx, sessionId)

@@ -273,14 +273,24 @@ describe('searchResultsCard', () => {
     expect(greyBlocks(card).some((b) => b.content.includes('另有'))).toBe(false);
   });
 
-  it('keeps dividers only around the header and the pager', () => {
+  it('divides every row boundary, plus the header and the pager', () => {
     const many = Array.from({ length: 3 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
     const card = searchResultsCard('foo', many, 'q1') as {
       body: { elements: Array<Record<string, unknown>> };
     };
-    // 表头后一条、分页前一条：行与行之间不加 hr（灰底块 + 行尾按钮已分界，
-    // 但分页按钮紧跟最后一行按钮时会被误读成那一行的操作）。
-    expect(card.body.elements.filter((e) => e.tag === 'hr')).toHaveLength(2);
+    // 表头后 1 条 + 行间 2 条 + 分页前 1 条。
+    expect(card.body.elements.filter((e) => e.tag === 'hr')).toHaveLength(4);
+    // 最后一条 hr 在分页按钮之前。
+    const tags = card.body.elements.map((e) => e.tag);
+    expect(tags.at(-2)).toBe('hr');
+    expect(tags.at(-1)).toBe('column_set');
+    // 结算视图（无分页）没有尾随的 hr。
+    const done = searchResultsCard('foo', many, 'q1', false) as {
+      body: { elements: Array<Record<string, unknown>> };
+    };
+    // 结算视图没有分页，所以最后一条 hr 之后就是最后一行本身（灰底命中块）。
+    expect(done.body.elements.at(-1)!.tag).toBe('column_set');
+    expect(done.body.elements.filter((e) => e.tag === 'hr')).toHaveLength(3);
   });
 
   it('caps snippets per row and points at 详情 for the rest', () => {

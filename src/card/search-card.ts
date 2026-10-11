@@ -340,6 +340,10 @@ export function searchResultsCard(
         ]),
       );
     }
+    // One divider per row boundary — after every row that has something below
+    // it (the next row, or the pager). Two rows in a row are dense blocks of
+    // small grey type; the line is what makes the seam visible.
+    if (i < shown.length - 1 || showButtons) elements.push({ tag: 'hr' });
   });
 
   if (showButtons) {
@@ -357,12 +361,11 @@ export function searchResultsCard(
       });
     }
     pageButtons.push({ text: '完成', value: { cmd: 'search.done', arg: queryId } });
-    // Divider before the pager: it follows the last row's own button pair, and
-    // two adjacent button rows read as if the pager belonged to that row.
-    // Side by side like the row buttons; the long 下一页 label gets extra room
-    // so equal thirds do not make it wrap on a phone.
+    // The divider before the pager is the one the last row already pushed (it
+    // follows that row's own button pair — without it the pager would read as
+    // that row's third action). Side by side like the row buttons; the long
+    // 下一页 label gets extra room so equal thirds do not make it wrap.
     elements.push(
-      { tag: 'hr' },
       ...inlineActions(
         pageButtons.map((b) => (b.text.includes('下一页') ? { ...b, weight: 1.6 } : b)),
       ),

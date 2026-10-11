@@ -1,5 +1,5 @@
 import type { Block, RunState } from './run-state';
-import { renderCard, type RunCard } from './run-renderer';
+import { renderCard } from './run-renderer';
 import { renderText } from './text-renderer';
 import { createTableBudget } from './tables';
 

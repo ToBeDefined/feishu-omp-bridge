@@ -1,4 +1,3 @@
-import { homedir } from 'node:os';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -7,11 +6,11 @@ import {
   getOmpThinking,
   getRunIdleTimeoutMs,
 } from '../../config/schema';
-import type { CommandContext, Handler } from '../index';
+import type { CommandContext } from '../index';
 import { formatIdleLine } from '../shared';
 import { summarizeMd } from '../../utils/text';
 import type { ContextInfo } from '../../card/templates';
-import { formatAgo, formatAgoOr, formatClockOr } from '../../utils/time';
+import { formatAgoOr, formatClockOr } from '../../utils/time';
 import { conversationCwd } from '../../session/current-cwd';
 
 /**

@@ -1,5 +1,5 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
-import { readFile, unlink, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import { compactCard, restartCard } from './templates';

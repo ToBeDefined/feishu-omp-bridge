@@ -5,7 +5,6 @@ import { getOmpSessionDir } from '../../config/schema';
 import { sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
 import { recallMessage, reply } from '../shared';
-import { codeSpan } from '../../utils/text';
 import { extractUserInput, scanSessionFile } from './context';
 import { applyResume, listResumableSessions } from './resume';
 import {

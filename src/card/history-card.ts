@@ -1,4 +1,4 @@
-import { inlineActions, md, panel, shortPath, stackedPanels } from './templates';
+import { inlineActions, panel, shortPath, stackedPanels } from './templates';
 import { escapeMd, summarizeMd } from '../utils/text';
 import { formatAgo, formatClock } from '../utils/time';
 

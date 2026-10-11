@@ -1,7 +1,5 @@
-import { homedir } from 'node:os';
 import type { CommandContext, Handler } from '../index';
 import { statusCard } from '../../card/templates';
-import { getRunIdleTimeoutMs } from '../../config/schema';
 import { collectContextInfo, loadSessionSummary } from './context';
 import { resolveConversationCwd } from '../../session/current-cwd';
 

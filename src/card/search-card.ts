@@ -6,7 +6,6 @@ import {
   panel,
   shortSessionId,
   stackedPanels,
-  type ButtonSpec,
 } from './templates';
 
 /**

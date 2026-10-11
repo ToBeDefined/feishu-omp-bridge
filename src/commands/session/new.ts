@@ -1,4 +1,3 @@
-import { homedir } from 'node:os';
 import type { CommandContext, Handler } from '../index';
 import { formatIdleLine, reply } from '../shared';
 import { newSessionCard } from '../../card/templates';

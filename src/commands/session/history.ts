@@ -1,4 +1,4 @@
-import { HISTORY_PAGE_SIZE, historyCard, type HistoryRow } from '../../card/history-card';
+import { historyCard, type HistoryRow } from '../../card/history-card';
 import { recallMessage, reply } from '../shared';
 import { sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';

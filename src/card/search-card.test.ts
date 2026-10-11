@@ -213,7 +213,7 @@ describe('searchResultsCard', () => {
       sampleContext({ sessionId: 'sess-other', title: '另一条' }),
     ];
     const lines = markdowns(
-      searchResultsCard('foo', contexts, 'q1', true, 0, { currentSessionId: 'sess-current' }),
+      searchResultsCard('foo', contexts, 'q1', 0, { currentSessionId: 'sess-current' }),
     );
     // 标记紧跟行号（埋在 meta 里就没人看得见），另一行不受影响。
     expect(lines.filter((l) => l.startsWith('**#'))).toEqual([
@@ -222,7 +222,7 @@ describe('searchResultsCard', () => {
     ]);
     // 当前对话不给「继续对话」（恢复它等于原地重启），只留「详情」。
     const json = JSON.stringify(
-      searchResultsCard('foo', contexts, 'q1', true, 0, { currentSessionId: 'sess-current' }),
+      searchResultsCard('foo', contexts, 'q1', 0, { currentSessionId: 'sess-current' }),
     );
     expect(json.match(/"text":"\{?"?继续对话/g) ?? json.match(/继续对话/g)).toHaveLength(1);
     expect(json.match(/详情/g)).toHaveLength(2);
@@ -243,12 +243,12 @@ describe('searchResultsCard', () => {
         (e.columns as Array<{ background_style?: string }>)[0]?.background_style === 'grey';
       return grey ? 'grey-block' : 'button-row';
     });
-    // 表头(md×2) → hr → 身份 → meta → 灰块 → 本行按钮 → hr → 分页按钮
-    expect(kinds).toEqual(['md', 'md', 'hr', 'md', 'md', 'grey-block', 'button-row', 'hr', 'button-row']);
+    // 表头(md×2) → hr → 身份 → meta → 灰块 → 本行按钮（单页没有分页行）
+    expect(kinds).toEqual(['md', 'md', 'hr', 'md', 'md', 'grey-block', 'button-row']);
     // 按钮在整行最底下：身份与 meta 都是普通 markdown，不在按钮列里。
     expect(card.body.elements[3]).toMatchObject({ tag: 'markdown', content: '**#1** · 🏷 **标题**' });
 
-    const row = card.body.elements.filter((e) => e.tag === 'column_set').at(-2) as {
+    const row = card.body.elements.filter((e) => e.tag === 'column_set').at(-1) as {
       flex_mode: string;
       columns: Array<{ width: string; weight: number; elements: Array<Record<string, unknown>> }>;
     };
@@ -303,19 +303,16 @@ describe('searchResultsCard', () => {
     const card = searchResultsCard('foo', many, 'q1') as {
       body: { elements: Array<Record<string, unknown>> };
     };
-    // 表头后 1 条 + 行间 2 条 + 分页前 1 条。
-    expect(card.body.elements.filter((e) => e.tag === 'hr')).toHaveLength(4);
-    // 最后一条 hr 在分页按钮之前。
-    const tags = card.body.elements.map((e) => e.tag);
-    expect(tags.at(-2)).toBe('hr');
-    expect(tags.at(-1)).toBe('column_set');
-    // 结算视图（无分页）没有尾随的 hr。
-    const done = searchResultsCard('foo', many, 'q1', false) as {
+    // 3 条一页放得下 → 表头后 1 条 + 行间 2 条，没有分页行也就没有分页前那条。
+    expect(card.body.elements.filter((e) => e.tag === 'hr')).toHaveLength(3);
+    expect(card.body.elements.at(-1)!.tag).toBe('column_set');
+    // 需要分页时：行间 2 条 + 分页前 1 条（分页行在最后）。
+    const paged = searchResultsCard('foo', Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` })), 'q1') as {
       body: { elements: Array<Record<string, unknown>> };
     };
-    // 结算视图没有分页，所以最后一条 hr 之后就是最后一行本身（灰底命中块）。
-    expect(done.body.elements.at(-1)!.tag).toBe('column_set');
-    expect(done.body.elements.filter((e) => e.tag === 'hr')).toHaveLength(3);
+    expect(paged.body.elements.filter((e) => e.tag === 'hr')).toHaveLength(1 + 5 + 1);
+    expect(paged.body.elements.at(-2)!.tag).toBe('hr');
+    expect(paged.body.elements.at(-1)!.tag).toBe('column_set');
   });
 
   it('caps snippets per row and points at 详情 for the rest', () => {
@@ -334,23 +331,23 @@ describe('searchResultsCard', () => {
     expect(card).toContain(`另有 ${4 - SEARCH_COMPACT_GROUPS} 处匹配，点「详情」看全部`);
   });
 
-  it('shows buttons when not done, hides them when done', () => {
-    const active = JSON.stringify(searchResultsCard('foo', [sampleContext()], 'q1', true));
-    expect(active).toContain('继续对话');
-    expect(active).toContain('详情');
-    expect(active).toContain('"arg":"q1 1"');
+  it('renders row actions always, and a pager only when there is another page', () => {
+    const single = JSON.stringify(searchResultsCard('foo', [sampleContext()], 'q1'));
+    expect(single).toContain('继续对话');
+    expect(single).toContain('详情');
+    expect(single).toContain('"arg":"q1 1"');
+    // 只有一页 → 没有分页行，也没有尾随的分隔线。
+    expect(single).not.toContain('上一页');
+    expect(single).not.toContain('下一页');
 
-    const done = JSON.stringify(searchResultsCard('foo', [sampleContext()], 'q1', false));
-    expect(done).not.toContain('查看详情');
-    expect(done).not.toContain('继续对话');
-    expect(done).toContain('✅ **搜索完成**');
-    expect(done).toContain('1 个对话 · 1 处匹配');
-    // 已结算视图仍保留灰底命中块，只是没有按钮。
-    expect(done).toContain('"background_style":"grey"');
+    const many = Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
+    const paged = JSON.stringify(searchResultsCard('foo', many, 'q1'));
+    expect(paged).toContain('下一页（剩 2）');
+    expect(paged).not.toContain('上一页');   // 第 1 页没有上一页
   });
 
   it('shows a match count when a session has multiple hits', () => {
-    const card = searchResultsCard('foo', [sampleContext({ matchCount: 3 })], 'q1', true);
+    const card = searchResultsCard('foo', [sampleContext({ matchCount: 3 })], 'q1');
     expect(JSON.stringify(card)).toContain('🔎 3 处匹配');
   });
 
@@ -365,7 +362,7 @@ describe('searchResultsCard', () => {
         },
       ],
     }));
-    const page1 = JSON.stringify(searchResultsCard('kw', contexts, 'q9', true, 0));
+    const page1 = JSON.stringify(searchResultsCard('kw', contexts, 'q9', 0));
     expect(page1).toContain('第 1-6 个');
     expect(page1).toContain('下一页（剩 2）');
     expect(page1).not.toContain('上一页');
@@ -374,7 +371,7 @@ describe('searchResultsCard', () => {
     expect(page1).toContain('**#6**');
     expect(page1).not.toContain('**#7**');
 
-    const page2 = JSON.stringify(searchResultsCard('kw', contexts, 'q9', true, 6));
+    const page2 = JSON.stringify(searchResultsCard('kw', contexts, 'q9', 6));
     expect(page2).toContain('第 7-8 个');
     expect(page2).toContain('上一页');
     expect(page2).toContain('"arg":"q9 0"');
@@ -385,7 +382,7 @@ describe('searchResultsCard', () => {
   it('lays the pager out side by side, giving the longer label more room', () => {
     // 14 条、第 2 页：既有上一页也有下一页，才会出现三键并排。
     const contexts = Array.from({ length: 14 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
-    const card = searchResultsCard('kw', contexts, 'q9', true, 6) as {
+    const card = searchResultsCard('kw', contexts, 'q9', 6) as {
       body: { elements: Array<Record<string, unknown>> };
     };
     // 最后一个是分页行：三键横排（不是「每键占满一行」的 actions）。
@@ -399,28 +396,20 @@ describe('searchResultsCard', () => {
     expect(pager.columns.map((c) => c.elements[0]!.text.content)).toEqual([
       '↑ 上一页',
       '↓ 下一页（剩 2）',
-      '完成',
     ]);
-    // 长标签多分宽度，短标签保持 1：等宽三等分会让「下一页（剩 N）」在手机上折行。
-    expect(pager.columns.map((c) => c.weight)).toEqual([1, 1.6, 1]);
+    // 长标签多分宽度，短标签保持 1：等宽会让「下一页（剩 N）」在手机上折行。
+    expect(pager.columns.map((c) => c.weight)).toEqual([1, 1.6]);
   });
 
   it('pages its row numbering off the page offset', () => {
     const many = Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
     // The 详情 payload must carry the GLOBAL row number, not the page-local one.
-    expect(JSON.stringify(searchResultsCard('kw', many, 'q9', true, 6))).toContain('"arg":"q9 7"');
-  });
-
-  it('renders every row in the done (settled) view', () => {
-    const many = Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
-    const done = JSON.stringify(searchResultsCard('foo', many, 'q1', false));
-    expect(done).toContain('**#8**');
-    expect(done).toContain('8 个对话');
+    expect(JSON.stringify(searchResultsCard('kw', many, 'q9', 6))).toContain('"arg":"q9 7"');
   });
 
   it('never advertises a segment count (one session = one conversation)', () => {
     const card = JSON.stringify(
-      searchResultsCard('foo', [sampleContext({ segmentCount: 3, matchCount: 4 })], 'q1', true),
+      searchResultsCard('foo', [sampleContext({ segmentCount: 3, matchCount: 4 })], 'q1'),
     );
     expect(card).not.toContain('🧵');
     expect(card).not.toContain('段');
@@ -429,7 +418,7 @@ describe('searchResultsCard', () => {
 
   it('renders a topic fallback when the conversation is unnamed', () => {
     const card = JSON.stringify(
-      searchResultsCard('foo', [sampleContext({ title: undefined, topic: '看下 FC1 在做什么' })], 'q1', true),
+      searchResultsCard('foo', [sampleContext({ title: undefined, topic: '看下 FC1 在做什么' })], 'q1'),
     );
     expect(card).toContain('**#1** · **看下 FC1 在做什么**');
     expect(card).not.toContain('🏷');
@@ -452,25 +441,25 @@ describe('searchResultsCard', () => {
 
 describe('searchDetailCard', () => {
   it('keeps number / workspace / full session id in the header', () => {
-    const done = searchDetailCard({
+    const card = searchDetailCard({
       sessionId: 'sess-9',
       workspace: '~/ws',
       index: 3,
       matchCount: 2,
       groups: [{ messages: [{ role: 'user', content: '内容' }], hitIndex: 0, matchCount: 1 }],
-      done: true,
     });
-    const json = JSON.stringify(done);
-    expect(json).toContain('✅ **搜索结果 #3**');
+    const json = JSON.stringify(card);
+    expect(json).toContain('📄 **搜索结果 #3**');
     expect(json).toContain('📁 ~/ws');
     expect(json).toContain('🔎 2 处匹配');
     expect(json).toContain('🆔 sess-9');
     expect(json).toContain('内容');
-    expect(json).not.toContain('继续对话');
+    // 页脚只有「继续对话」。
+    expect(json).toContain('继续对话');
     expect(json).not.toContain('完成');
   });
 
-  it('renders action buttons with the query ref when not done', () => {
+  it('leaves no pager or 完成 button anywhere on the detail card', () => {
     const active = JSON.stringify(
       searchDetailCard({
         sessionId: 'sess-9',
@@ -479,14 +468,11 @@ describe('searchDetailCard', () => {
         queryRef: 'q1 3',
       }),
     );
-    expect(active).toContain('📄 **搜索结果 #3**');
-    expect(active).toContain('继续对话');
-    expect(active).toContain('完成');
-    expect(active).toContain('q1 3');
-    expect(active).not.toContain('✅');
+    expect(active).not.toContain('完成');
+    expect(active).not.toContain('上一页');
   });
 
-  it('lays the detail footer out side by side too', () => {
+  it('renders the footer as one inline action', () => {
     const active = searchDetailCard({
       sessionId: 'sess-9',
       groups: [{ messages: [{ role: 'user', content: '内容' }], hitIndex: 0, matchCount: 1 }],
@@ -499,7 +485,6 @@ describe('searchDetailCard', () => {
     expect(footer.flex_mode).toBe('none');
     expect(footer.columns.map((c) => [c.elements[0]!.text.content, c.weight])).toEqual([
       ['继续对话', 1],
-      ['完成', 1],
     ]);
   });
 
@@ -515,7 +500,6 @@ describe('searchDetailCard', () => {
           },
         ],
         keyword: '关键命中',
-        done: true,
       }),
     );
     expect(card).toContain('**关键命中**');
@@ -539,7 +523,6 @@ describe('searchDetailCard', () => {
     expect(shape(list).blocks).toBe(2);
     // 详情卡仍是「全部命中 + 完整正文 + 按钮」。
     expect(JSON.stringify(detail)).toContain('继续对话');
-    expect(JSON.stringify(detail)).toContain('完成');
   });
 
   it('marks the detail card of the current conversation and drops its resume', () => {
@@ -556,8 +539,14 @@ describe('searchDetailCard', () => {
     });
     const json = JSON.stringify(current);
     expect(json).toContain('✅ 当前对话');
+    // 当前对话没有任何可执行动作 → 整个页脚（连同它的 hr）都不渲染。
     expect(json).not.toContain('继续对话');
-    expect(json).toContain('完成');
+    expect(json).not.toContain('完成');
+    const els = (current as { body: { elements: Array<Record<string, unknown>> } }).body.elements;
+    expect(els.at(-1)!.tag).toBe('column_set');
+    expect(
+      (els.at(-1)!.columns as Array<{ background_style?: string }>)[0]!.background_style,
+    ).toBe('grey');
     // 纯文本详情同样带标记。
     expect(searchDetailText({ sessionId: 'sess-current', current: true, groups })).toContain(
       '✅ 当前对话',

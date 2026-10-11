@@ -2,9 +2,9 @@ import { homedir } from 'node:os';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getOmpSessionDir } from '../../config/schema';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
+import { sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { recallMessage, reply } from '../shared';
 import { codeSpan } from '../../utils/text';
 import { extractUserInput, scanSessionFile } from './context';
 import { applyResume, listResumableSessions } from './resume';
@@ -41,7 +41,7 @@ export function detailInfoFor(
   context: SearchContext,
   queryId: string,
   index: number,
-  opts: { done?: boolean; keyword?: string; currentSessionId?: string } = {},
+  opts: { keyword?: string; currentSessionId?: string } = {},
 ): SearchDetailInfo {
   return {
     sessionId: context.sessionId,
@@ -50,7 +50,7 @@ export function detailInfoFor(
     matchCount: context.matchCount,
     groups: context.groups,
     ...(opts.keyword ? { keyword: opts.keyword } : {}),
-    ...(opts.done ? { done: true } : { queryRef: `${queryId} ${index}` }),
+    queryRef: `${queryId} ${index}`,
     ...(opts.currentSessionId !== undefined && opts.currentSessionId === context.sessionId
       ? { current: true }
       : {}),
@@ -171,10 +171,15 @@ function newestHitMs(hit: { messages: SearchHit[] }): number {
  * under a single heading (the newest pair is the representative snippet,
  * `matchCount` the total across the session). Newest first, capped at `limit`
  * sessions. */
+/** 结果上限（按对话数，最新的在前）。**必须大于卡片每页条数**（`SEARCH_PAGE_SIZE`），
+ * 否则「下一页」永远取不到东西 —— 上限 6 + 每页 6 时整块分页都渲染不出来。
+ * 扫描成本与上限无关（所有 session 文件本来都要读一遍），这里只决定列表长度。 */
+export const SEARCH_SESSION_LIMIT = 30;
+
 export async function searchSession(
   keyword: string,
   ctx: CommandContext,
-  limit = 6,
+  limit = SEARCH_SESSION_LIMIT,
 ): Promise<SearchContext[]> {
   const needle = keyword.toLowerCase();
   const identityCache = new Map<string, SessionIdentity>();
@@ -355,12 +360,12 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     const offset = Number.parseInt(rest[1] ?? '', 10);
     const cached = searchCache.get(queryId);
     const keyword = searchKeywords.get(queryId) ?? '';
-    if (cached && Number.isFinite(offset) && offset >= 0) {
+    if (cached && Number.isFinite(offset) && offset >= 0 && offset < cached.length) {
       if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
       await sendManagedCard(
         ctx.channel,
         ctx.msg.chatId,
-        searchResultsCard(keyword, cached, queryId, true, offset, {
+        searchResultsCard(keyword, cached, queryId, offset, {
           currentSessionId: currentSessionId(ctx),
         }),
       );
@@ -389,60 +394,6 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       return;
     }
     await applyResume(ctx, { sessionId: current.sessionId, cwd: current.cwd, timestamp: '' });
-    return;
-  }
-
-  if (sub === 'done') {
-    const queryRef = rest.join(' ').trim();
-    const [queryId, idxStr] = queryRef.split(/\s+/);
-    const contexts = searchCache.get(queryId ?? '');
-    const keyword = searchKeywords.get(queryId ?? '') ?? '';
-    // Cache expired (LRU eviction / restart): the detail card can no longer be
-    // rebuilt, and its 继续对话 arg would be empty — an empty target must NEVER
-    // fall through to resuming the current chat session. Tell the user to
-    // search again instead.
-    if (contexts === undefined) {
-      await reply(ctx, '搜索结果已过期，请重新 `/search`。');
-      return;
-    }
-    if (ctx.fromCardAction) {
-      const msgId = ctx.msg.messageId;
-      void (async () => {
-        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-        try {
-          if (idxStr) {
-            const idx = Number.parseInt(idxStr, 10);
-            const context = contexts?.[idx - 1];
-            if (context) {
-              await updateManagedCard(
-                ctx.channel,
-                msgId,
-                searchDetailCard(
-                  detailInfoFor(context, queryId ?? '', idx, {
-                    done: true,
-                    keyword,
-                    currentSessionId: currentSessionId(ctx),
-                  }),
-                ),
-              );
-            }
-          } else {
-            // Results list card: strip buttons, keep the list intact — with the
-            // real keyword, so every snippet stays centred on its hit.
-            await updateManagedCard(
-              ctx.channel,
-              msgId,
-              searchResultsCard(keyword, contexts ?? [], queryId ?? '', false, 0, {
-                currentSessionId: currentSessionId(ctx),
-              }),
-            );
-          }
-        } catch {
-          /* ignore */
-        }
-        forgetManagedCard(msgId);
-      })();
-    }
     return;
   }
 
@@ -497,7 +448,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   await sendManagedCard(
     ctx.channel,
     ctx.msg.chatId,
-    searchResultsCard(keyword, contexts, queryId, true, 0, {
+    searchResultsCard(keyword, contexts, queryId, 0, {
       currentSessionId: currentSessionId(ctx),
     }),
   );

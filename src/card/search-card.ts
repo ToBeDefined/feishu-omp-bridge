@@ -267,7 +267,7 @@ function rowIdentity(ctx: SearchContext): string {
   return '_未命名会话_';
 }
 
-const SEARCH_PAGE_SIZE = 6;
+export const SEARCH_PAGE_SIZE = 6;
 
 export interface SearchResultsOpts {
   /** OMP session id the calling scope is already on: that row is marked
@@ -280,30 +280,40 @@ export function searchResultsCard(
   keyword: string,
   contexts: SearchContext[],
   queryId: string,
-  showButtons = true,
   offset = 0,
   opts: SearchResultsOpts = {},
 ): object {
-  const done = !showButtons;
-  const shown = done ? contexts : contexts.slice(offset, offset + SEARCH_PAGE_SIZE);
+  const shown = contexts.slice(offset, offset + SEARCH_PAGE_SIZE);
   const remaining = contexts.length - (offset + shown.length);
   const totalMatches = contexts.reduce((n, c) => n + c.matchCount, 0);
   const range =
-    offset > 0 || remaining > 0
+    shown.length > 0 && (offset > 0 || remaining > 0)
       ? ` · 第 ${offset + 1}-${offset + shown.length} 个`
       : '';
   // Only the card title is heading-sized; everything else stays small so six
   // rows fit on a phone screen without half a page of oversized type.
-  const elements: object[] = done
-    ? [
-        md('✅ **搜索完成**', 'heading'),
-        md(`${contexts.length} 个对话 · ${totalMatches} 处匹配`, 'notation'),
-      ]
-    : [
-        md(`🔍 **搜索** \`${codeSpan(keyword)}\``, 'heading'),
-        md(`找到 ${contexts.length} 个对话 · ${totalMatches} 处匹配${range}`, 'notation'),
-      ];
-  elements.push({ tag: 'hr' });
+  const elements: object[] = [
+    md(`🔍 **搜索** \`${codeSpan(keyword)}\``, 'heading'),
+    md(`找到 ${contexts.length} 个对话 · ${totalMatches} 处匹配${range}`, 'notation'),
+    { tag: 'hr' },
+  ];
+  // Pager buttons, built before the rows so the last row knows whether a
+  // divider is needed below it.
+  const pageButtons: Array<{ text: string; value: Record<string, unknown>; weight?: number }> = [];
+  if (offset > 0) {
+    pageButtons.push({
+      text: '↑ 上一页',
+      value: { cmd: 'search.page', arg: `${queryId} ${Math.max(0, offset - SEARCH_PAGE_SIZE)}` },
+    });
+  }
+  if (remaining > 0) {
+    pageButtons.push({
+      text: `↓ 下一页（剩 ${remaining}）`,
+      value: { cmd: 'search.page', arg: `${queryId} ${offset + SEARCH_PAGE_SIZE}` },
+      // 长标签多分宽度，否则等宽三等分会在手机上折行。
+      weight: 1.6,
+    });
+  }
 
   shown.forEach((c, i) => {
     const globalIdx = offset + i;
@@ -339,54 +349,31 @@ export function searchResultsCard(
     if (hidden > 0) {
       elements.push(md(`_另有 ${hidden} 处匹配，点「详情」看全部_`, 'notation'));
     }
-    if (showButtons) {
-      elements.push(
-        ...inlineActions([
-          // 当前对话不给「继续对话」：恢复它等于原地重启一次会话。
-          ...(isCurrent
-            ? []
-            : [
-                {
-                  text: '继续对话',
-                  value: { cmd: 'search.resume', arg: c.sessionId },
-                  style: 'primary' as const,
-                },
-              ]),
-          { text: '详情', value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` } },
-        ]),
-      );
-    }
+    elements.push(
+      ...inlineActions([
+        // 当前对话不给「继续对话」：恢复它等于原地重启一次会话。
+        ...(isCurrent
+          ? []
+          : [
+              {
+                text: '继续对话',
+                value: { cmd: 'search.resume', arg: c.sessionId },
+                style: 'primary' as const,
+              },
+            ]),
+        { text: '详情', value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` } },
+      ]),
+    );
     // One divider per row boundary — after every row that has something below
     // it (the next row, or the pager). Two rows in a row are dense blocks of
     // small grey type; the line is what makes the seam visible.
-    if (i < shown.length - 1 || showButtons) elements.push({ tag: 'hr' });
+    if (i < shown.length - 1 || pageButtons.length > 0) elements.push({ tag: 'hr' });
   });
 
-  if (showButtons) {
-    const pageButtons: ButtonSpec[] = [];
-    if (offset > 0) {
-      pageButtons.push({
-        text: '↑ 上一页',
-        value: { cmd: 'search.page', arg: `${queryId} ${Math.max(0, offset - SEARCH_PAGE_SIZE)}` },
-      });
-    }
-    if (remaining > 0) {
-      pageButtons.push({
-        text: `↓ 下一页（剩 ${remaining}）`,
-        value: { cmd: 'search.page', arg: `${queryId} ${offset + SEARCH_PAGE_SIZE}` },
-      });
-    }
-    pageButtons.push({ text: '完成', value: { cmd: 'search.done', arg: queryId } });
-    // The divider before the pager is the one the last row already pushed (it
-    // follows that row's own button pair — without it the pager would read as
-    // that row's third action). Side by side like the row buttons; the long
-    // 下一页 label gets extra room so equal thirds do not make it wrap.
-    elements.push(
-      ...inlineActions(
-        pageButtons.map((b) => (b.text.includes('下一页') ? { ...b, weight: 1.6 } : b)),
-      ),
-    );
-  }
+  // The divider before the pager is the one the last row already pushed (it
+  // follows that row's own button pair — without it the pager would read as
+  // that row's third action). Side by side like the row buttons.
+  if (pageButtons.length > 0) elements.push(...inlineActions(pageButtons));
   return {
     schema: '2.0',
     config: { summary: { content: '搜索结果' } },
@@ -428,9 +415,8 @@ export interface SearchDetailInfo {
   /** Every matched pair of the conversation, newest first. */
   groups: SearchHitGroup[];
   keyword?: string;
-  /** `<queryId> <index>` — carried by the 完成 button. */
+  /** `<queryId> <index>` — kept for the card's own bookkeeping. */
   queryRef?: string;
-  done?: boolean;
   /** This conversation is the scope's current one — marked, and its 继续对话
    * button (a no-op) is dropped. */
   current?: boolean;
@@ -438,11 +424,7 @@ export interface SearchDetailInfo {
 
 export function searchDetailCard(info: SearchDetailInfo): object {
   const label = info.index !== undefined ? `搜索结果 #${info.index}` : '搜索详情';
-  // Done state keeps the full header (number / workspace / session id) — only
-  // the buttons are stripped. "✅" marks it as settled.
-  const elements: object[] = [
-    md(info.done ? `✅ **${label}**` : `📄 **${label}**`, 'heading'),
-  ];
+  const elements: object[] = [md(`📄 **${label}**`, 'heading')];
   const metaLine = [
     info.current ? '✅ 当前对话' : '',
     info.workspace ? `📁 ${escapeMd(info.workspace)}` : '',
@@ -460,20 +442,17 @@ export function searchDetailCard(info: SearchDetailInfo): object {
     { tag: 'hr' },
     ...pairBlocks(info.groups, 'detail', info.keyword, info.groups.length > 1),
   );
-  if (!info.done) {
+  // 当前对话没有可执行的动作（继续它等于原地重启），此时整个页脚都不渲染 ——
+  // 不给一条光秃秃的分隔线收尾。
+  if (!info.current) {
     elements.push(
       { tag: 'hr' },
       ...inlineActions([
-        ...(info.current
-          ? []
-          : [
-              {
-                text: '继续对话',
-                value: { cmd: 'search.resume', arg: info.sessionId },
-                style: 'primary' as const,
-              },
-            ]),
-        { text: '完成', value: { cmd: 'search.done', arg: info.queryRef ?? '' } },
+        {
+          text: '继续对话',
+          value: { cmd: 'search.resume', arg: info.sessionId },
+          style: 'primary' as const,
+        },
       ]),
     );
   }

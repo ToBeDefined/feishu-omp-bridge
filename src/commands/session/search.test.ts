@@ -4,9 +4,15 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommandContext } from '../index';
 import { paths } from '../../config/paths';
-import { detailInfoFor, searchSession, searchHandlers, workspaceLabel } from './search';
+import {
+  detailInfoFor,
+  searchSession,
+  searchHandlers,
+  SEARCH_SESSION_LIMIT,
+  workspaceLabel,
+} from './search';
 import { loadSessionSummary } from './context';
-import { renderSearchContext, searchResultsCard } from '../../card/search-card';
+import { renderSearchContext, SEARCH_PAGE_SIZE, searchResultsCard } from '../../card/search-card';
 import { SessionStore } from '../../session/store';
 
 const { reply } = vi.hoisted(() => ({
@@ -55,11 +61,8 @@ describe('detailInfoFor', () => {
     // 别的会话 / 没有当前会话 → 不标记，保留「继续对话」。
     expect(detailInfoFor(hit, 'q1', 1, { currentSessionId: 'sess-b' }).current).toBeUndefined();
     expect(detailInfoFor(hit, 'q1', 1, {}).current).toBeUndefined();
-    // 结算态不带 queryRef（按钮已撤），但仍带标记。
-    const done = detailInfoFor(hit, 'q1', 1, { done: true, currentSessionId: 'sess-a' });
-    expect(done.done).toBe(true);
-    expect(done.queryRef).toBeUndefined();
-    expect(done.current).toBe(true);
+    // 永远带 queryRef（卡片自身记作用）。
+    expect(marked.queryRef).toBe('q1 1');
   });
 });
 
@@ -390,7 +393,7 @@ describe('searchSession', () => {
     expect(hits[0]!.title).toBeUndefined();
     expect(hits[0]!.topic).toBeUndefined();
     // Heading is just the row number — no invented identity.
-    const card = JSON.stringify(searchResultsCard('codegraph', hits, 'q1', true));
+    const card = JSON.stringify(searchResultsCard('codegraph', hits, 'q1'));
     // 行身份是普通字号（`**#1** · _未命名会话_`），只有卡片标题是 heading。
     expect(card).toContain('"content":"**#1** · _未命名会话_"');
     await store.flush();
@@ -423,7 +426,7 @@ describe('searchSession', () => {
     expect(topicById.segB).toBe('第二段 codegraph');
 
     // 卡片：一行一个会话（`**#1**` / `**#2**` 普通字号行），只有卡片标题是 heading。
-    const card = JSON.stringify(searchResultsCard('codegraph', hits, 'q1', true));
+    const card = JSON.stringify(searchResultsCard('codegraph', hits, 'q1'));
     expect(card.match(/"text_size":"heading"/g)).toHaveLength(1);
     // 按最后活动倒序：较新的 segB 是 #1。
     expect(card).toContain('"content":"**#1** · **第二段 codegraph**"');
@@ -471,7 +474,117 @@ describe('searchSession', () => {
   });
 });
 
-describe('/search done with an expired cache', () => {
+describe('/search 卡片按钮链路', () => {
+  /** Fake SDK surface for the managed-card path (cardkit create + im reply). */
+  function cardCtx(over: Partial<CommandContext> = {}): { ctx: CommandContext; cards: string[] } {
+    const cards: string[] = [];
+    const rawClient = {
+      cardkit: {
+        v1: {
+          card: {
+            create: async (req: { data: { data: string } }) => {
+              cards.push(req.data.data);
+              return { data: { card_id: `card_${cards.length}` } };
+            },
+            update: async () => ({ data: {} }),
+          },
+        },
+      },
+      im: {
+        v1: {
+          message: {
+            reply: async () => ({ data: { message_id: 'om_card' } }),
+            create: async () => ({ data: { message_id: 'om_msg' } }),
+            patch: async () => ({ data: {} }),
+          },
+        },
+      },
+    };
+    return {
+      cards,
+      ctx: {
+        scope: 'oc_1',
+        msg: { chatId: 'oc_1', messageId: 'om_1', content: '' },
+        chatMode: 'p2p',
+        channel: { send: async () => {}, rawClient },
+        workspaces: { cwdFor: () => undefined, setCwd: () => {}, listNamed: () => ({}), clearUndo: () => {} },
+        sessions: { sessionFor: () => undefined, titleFor: () => undefined },
+        activeRuns: { interrupt: () => false, has: () => false, register: () => true, unregister: () => {} },
+        agent: {},
+        controls: { cfg: {} },
+        ...over,
+      } as unknown as CommandContext,
+    };
+  }
+
+  /** 8 sessions matching `kwhit`, newest first. */
+  async function seed(dir: string): Promise<void> {
+    for (let i = 0; i < 8; i++) {
+      const hour = String(10 + i).padStart(2, '0');
+      await writeSession(
+        dir,
+        `hit${i}.jsonl`,
+        { id: `sess-hit-${i}`, cwd: `/repo/${i}`, ts: `2026-08-15T${hour}:00:00.000Z` },
+        [{ role: 'user', ts: `2026-08-15T${hour}:00:01.000Z`, content: [{ type: 'text', text: `kwhit ${i}` }] }],
+      );
+    }
+  }
+
+  function queryIdOf(card: string): string {
+    const qid = /"arg":"(s[a-z0-9]+) 1"/.exec(card)?.[1];
+    expect(qid).toBeTruthy();
+    return qid!;
+  }
+
+  it('结果上限大于卡片每页条数（否则分页永远不可达）', () => {
+    expect(SEARCH_SESSION_LIMIT).toBeGreaterThan(SEARCH_PAGE_SIZE);
+  });
+
+  it('page 复用缓存按 offset 重发卡片，show 渲染详情卡', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    await seed(tmp);
+
+    const { ctx, cards } = cardCtx();
+    await searchHandlers['/search']!('kwhit', ctx);
+    expect(cards[0]).toContain('**#1**');
+    const qid = queryIdOf(cards[0]!);
+
+    cards.length = 0;
+    await searchHandlers['/search']!(`page ${qid} 6`, { ...ctx, fromCardAction: true } as CommandContext);
+    // 第二页：从 #7 起，页码区间跟着走。
+    expect(cards[0]).toContain('**#7**');
+    expect(cards[0]).toContain('第 7-8 个');
+    expect(cards[0]).not.toContain('**#1**');
+
+    cards.length = 0;
+    await searchHandlers['/search']!(`show ${qid} 1`, { ...ctx, fromCardAction: true } as CommandContext);
+    expect(cards[0]).toContain('搜索结果 #1');
+    expect(cards[0]).toContain('继续对话');
+  });
+
+  it('show 命中当前会话时带「✅ 当前对话」且不给继续对话', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    await seed(tmp);
+
+    const { ctx, cards } = cardCtx();
+    await searchHandlers['/search']!('kwhit', ctx);
+    const qid = queryIdOf(cards[0]!);
+    const newest = 'sess-hit-7';   // 最新的那条是 #1
+
+    cards.length = 0;
+    await searchHandlers['/search']!(`show ${qid} 1`, {
+      ...ctx,
+      fromCardAction: true,
+      sessions: { sessionFor: () => ({ sessionId: newest, cwd: '/repo/7' }), titleFor: () => undefined },
+    } as unknown as CommandContext);
+    expect(cards[0]).toContain('✅ 当前对话');
+    expect(cards[0]).not.toContain('继续对话');
+  });
+});
+
+describe('/search with an expired cache', () => {
   it('asks the user to re-search instead of resuming the current session', async () => {
     const ctx = {
       scope: 'oc_1',
@@ -484,7 +597,7 @@ describe('/search done with an expired cache', () => {
     reply.mockClear();
 
     // The query id is not in the (module-level) cache — evicted or lost on restart.
-    await searchHandlers['/search']!('done s-expired 1', ctx);
+    await searchHandlers['/search']!('show s-expired 1', ctx);
 
     expect(reply).toHaveBeenCalledTimes(1);
     expect(reply.mock.calls[0]![1]).toContain('过期');

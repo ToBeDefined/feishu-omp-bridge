@@ -9,6 +9,7 @@ import {
   searchEmptyCard,
   searchResultsCard,
   type SearchContext,
+  type SearchHitGroup,
 } from './search-card';
 
 function sampleContext(over: Partial<SearchContext> = {}): SearchContext {
@@ -24,6 +25,21 @@ function sampleContext(over: Partial<SearchContext> = {}): SearchContext {
     ...over,
   };
 }
+
+  /** Every grey block of a card: background, padding and its first content line. */
+function greyBlocks(card: object): Array<{ padding?: string; content: string }> {
+    const els = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements;
+    return els
+      .filter(
+        (e) =>
+          e.tag === 'column_set' &&
+          (e.columns as Array<{ background_style?: string }>)[0]?.background_style === 'grey',
+      )
+      .map((e) => {
+        const col = (e.columns as Array<{ padding?: string; elements: Array<{ content?: string }> }>)[0]!;
+        return { padding: col.padding, content: col.elements[0]?.content ?? '' };
+      });
+  }
 
 /** Every markdown element content string (descending into column rows), for
  * layout assertions. */
@@ -207,25 +223,39 @@ describe('searchResultsCard', () => {
     expect(buttons).toEqual(['继续对话', '详情']);
   });
 
-  it('packs the matched content into a grey block after the row identity', () => {
-    const card = searchResultsCard('foo', [sampleContext({ matchCount: 2 })], 'q1') as {
-      body: { elements: Array<Record<string, unknown>> };
-    };
-    const rowIdx = card.body.elements.findIndex((e) => e.tag === 'column_set');
-    // 行 = [身份+meta | 按钮]，紧跟着命中内容的灰底块。
-    const row = card.body.elements[rowIdx] as { columns: Array<{ width: string }> };
-    expect(row.columns.map((c) => c.width)).toEqual(['weighted', 'auto']);
-    const block = card.body.elements[rowIdx + 1] as {
-      tag: string;
-      columns: Array<{ background_style?: string; padding?: string; elements: Array<{ content?: string }> }>;
-    };
-    expect(block.tag).toBe('column_set');
-    expect(block.columns).toHaveLength(1);
-    expect(block.columns[0]!.background_style).toBe('grey');
-    expect(block.columns[0]!.padding).toBe('8px');
-    expect(block.columns[0]!.elements[0]!.content).toContain('问题');
-    // 命中块是行的最后一段：没有把 meta 行也塞进灰底里。
-    expect(block.columns[0]!.elements[0]!.content).not.toContain('🆔');
+  it('gives each matched pair its own grey block, labelled when there are several', () => {
+    const two = sampleContext({
+      matchCount: 2,
+      groups: [
+        { messages: [{ role: 'user', content: '新的一处' }], hitIndex: 0, matchCount: 1 },
+        { messages: [{ role: 'user', content: '更早一处' }], hitIndex: 0, matchCount: 1 },
+      ],
+    });
+    const card = searchResultsCard('foo', [two], 'q1');
+    const blocks = greyBlocks(card);
+    expect(blocks).toHaveLength(2);
+    expect(blocks.every((b) => b.padding === '8px')).toBe(true);
+    expect(blocks[0]!.content).toContain('新的一处');
+    expect(blocks[1]!.content).toContain('更早一处');
+    // 灰块里只有命中内容：meta（工作区 / id）留在块外的小灰字行。
+    expect(blocks[0]!.content).not.toContain('🆔');
+    expect(markdowns(card).filter((c) => c.startsWith('**第 '))).toEqual(['**第 1 处**', '**第 2 处**']);
+    // 单处命中不加标签。
+    const single = markdowns(searchResultsCard('foo', [sampleContext()], 'q1'));
+    expect(single.some((c) => c.startsWith('**第 '))).toBe(false);
+    expect(greyBlocks(searchResultsCard('foo', [sampleContext()], 'q1'))).toHaveLength(1);
+  });
+
+  it('keeps the 另有 N 处 hint outside the block, as a meta line', () => {
+    const groups = Array.from({ length: 4 }, (_, i) => ({
+      messages: [{ role: 'user' as const, content: `第 ${i + 1} 处命中` }],
+      hitIndex: 0,
+      matchCount: 1,
+    }));
+    const card = searchResultsCard('foo', [sampleContext({ groups, matchCount: 4 })], 'q1');
+    const hint = markdowns(card).find((c) => c.includes('另有'));
+    expect(hint).toContain('另有 2 处匹配，点「详情」看全部');
+    expect(greyBlocks(card).some((b) => b.content.includes('另有'))).toBe(false);
   });
 
   it('drops the divider between rows (the grey block separates them)', () => {
@@ -401,22 +431,24 @@ describe('searchDetailCard', () => {
     expect(card).toContain('…');
   });
 
-  it('packs each matched pair of the detail view into its own grey block', () => {
-    const card = searchDetailCard({
-      sessionId: 'sess-9',
-      groups: [
-        { messages: [{ role: 'user', content: '一' }], hitIndex: 0, matchCount: 1 },
-        { messages: [{ role: 'user', content: '二' }], hitIndex: 0, matchCount: 1 },
-      ],
-    }) as { body: { elements: Array<Record<string, unknown>> } };
-    const blocks = card.body.elements.filter(
-      (e) =>
-        e.tag === 'column_set' &&
-        (e.columns as Array<{ background_style?: string }>)[0]?.background_style === 'grey',
-    );
-    expect(blocks).toHaveLength(2);
-    const titles = markdowns(card).filter((c) => c.startsWith('**第 '));
-    expect(titles).toEqual(['**第 1 处**', '**第 2 处**']);
+  it('uses the same per-pair grey blocks as the result list', () => {
+    const groups: SearchHitGroup[] = [
+      { messages: [{ role: 'user', content: '一' }], hitIndex: 0, matchCount: 1 },
+      { messages: [{ role: 'user', content: '二' }], hitIndex: 0, matchCount: 1 },
+    ];
+    const detail = searchDetailCard({ sessionId: 'sess-9', groups });
+    const list = searchResultsCard('foo', [sampleContext({ groups, matchCount: 2 })], 'q1');
+    // 两张卡同款：同样的块数、同样的「第 k 处」标签。
+    const shape = (card: object) => ({
+      blocks: greyBlocks(card).length,
+      labels: markdowns(card).filter((c) => c.startsWith('**第 ')),
+    });
+    expect(shape(detail)).toEqual({ blocks: 2, labels: ['**第 1 处**', '**第 2 处**'] });
+    expect(shape(list).labels).toEqual(shape(detail).labels);
+    expect(shape(list).blocks).toBe(2);
+    // 详情卡仍是「全部命中 + 完整正文 + 按钮」。
+    expect(JSON.stringify(detail)).toContain('继续对话');
+    expect(JSON.stringify(detail)).toContain('完成');
   });
 
   it('renders the text variant with the session id and every pair', () => {

@@ -200,6 +200,29 @@ export function renderSearchContext(
 }
 
 /**
+ * One matched pair as a grey block, preceded by its `第 k 处` label when the
+ * conversation matched more than once. The result list and the detail view
+ * both go through here: the list simply renders fewer pairs and shorter
+ * excerpts, so the two cards cannot drift into different looks.
+ */
+function pairBlocks(
+  groups: SearchHitGroup[],
+  mode: 'compact' | 'detail',
+  keyword: string | undefined,
+  labelled: boolean,
+): object[] {
+  const out: object[] = [];
+  groups.forEach((g, i) => {
+    if (labelled) out.push(md(`**第 ${i + 1} 处**`));
+    const body = md(renderSearchContext(g, mode, keyword));
+    // Empty groups cannot happen (a group exists because it matched), but an
+    // empty block would render as a stray grey box.
+    out.push(...greyBlock([body]));
+  });
+  return out;
+}
+
+/**
  * Every matched pair of one conversation, newest first. Multiple pairs get
  * `第 k 处` labels so the detail view is navigable when a conversation matched
  * several times; a single pair stays unlabelled (the label would be noise).
@@ -290,16 +313,11 @@ export function searchResultsCard(
         'notation',
       ),
     ];
-    // One session = one conversation: a row shows its newest matched pairs and
+    // One session = one conversation: a row renders its newest matched pairs,
+    // each as its own grey block (same block style as the detail view), and
     // keeps the rest behind 详情 (dumping every pair made rows unbounded).
     const visible = c.groups.slice(0, SEARCH_COMPACT_GROUPS);
-    const snippets: object[] = visible.map((g) =>
-      md(renderSearchContext(g, 'compact', keyword)),
-    );
     const hidden = c.groups.length - visible.length;
-    if (hidden > 0) {
-      snippets.push(md(`_另有 ${hidden} 处匹配，点「详情」看全部_`, 'notation'));
-    }
 
     const rowButtons: object[] = [];
     if (showButtons) {
@@ -312,10 +330,16 @@ export function searchResultsCard(
         button({ text: '详情', value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` } }),
       );
     }
-    // Identity + meta + actions stay plain; the matched content drops into a
-    // grey block. Rows need no `hr` between them — the block edges (and the
+    // Identity + meta + actions stay plain; every matched pair drops into its
+    // own grey block. Rows need no `hr` between them — the block edges (and the
     // gap around them) already separate one result from the next.
-    elements.push(...columnRow(lines, rowButtons), ...greyBlock(snippets));
+    elements.push(
+      ...columnRow(lines, rowButtons),
+      ...pairBlocks(visible, 'compact', keyword, c.matchCount > 1),
+    );
+    if (hidden > 0) {
+      elements.push(md(`_另有 ${hidden} 处匹配，点「详情」看全部_`, 'notation'));
+    }
   });
 
   if (showButtons) {
@@ -420,12 +444,10 @@ export function searchDetailCard(info: SearchDetailInfo): object {
     .filter(Boolean)
     .join(' · ');
   if (metaLine) elements.push(md(metaLine, 'notation'));
-  elements.push({ tag: 'hr' });
-  const multi = info.groups.length > 1;
-  info.groups.forEach((g, i) => {
-    if (multi) elements.push(md(`**第 ${i + 1} 处**`));
-    elements.push(...greyBlock([md(renderSearchContext(g, 'detail', info.keyword))]));
-  });
+  elements.push(
+    { tag: 'hr' },
+    ...pairBlocks(info.groups, 'detail', info.keyword, info.groups.length > 1),
+  );
   if (!info.done) {
     elements.push(
       { tag: 'hr' },

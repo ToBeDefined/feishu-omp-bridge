@@ -251,7 +251,7 @@ describe('shared card kit', () => {
     // 4 个动作 → 每行最多 2 个 → 两行；新建会话在最前（速查卡里最常用）。
     expect(labels).toEqual([
       ['🆕 新建会话', '🕘 恢复会话'],
-      ['📊 状态', '📂 工作空间'],
+      ['📊 会话状态', '📂 工作空间'],
     ]);
     const json = JSON.stringify(card);
     expect(json).toContain('"cmd":"new"');
@@ -262,13 +262,13 @@ describe('shared card kit', () => {
   it('folds a third button onto its own row instead of compressing the labels', () => {
     // 回归：/help 页脚三个跳转等宽一行时，「📂 工作空间」在手机上被压到看不见文字。
     const rows = inlineActions([
-      { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
+      { text: '📊 会话状态', value: { cmd: 'status' }, style: 'primary' },
       { text: '🕘 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
     ]);
     expect(rows).toHaveLength(2);
     const [first, second] = rows as Array<{ columns: Array<{ elements: Array<{ text: { content: string } }> }> }>;
-    expect(first!.columns.map((c) => c.elements[0]!.text.content)).toEqual(['📊 状态', '🕘 恢复会话']);
+    expect(first!.columns.map((c) => c.elements[0]!.text.content)).toEqual(['📊 会话状态', '🕘 恢复会话']);
     // 折下来的那个独占一行 = 整行宽（不再三等分）。
     expect(second!.columns).toHaveLength(1);
     expect(second!.columns[0]!.elements[0]!.text.content).toBe('📂 工作空间');

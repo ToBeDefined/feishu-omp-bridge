@@ -330,7 +330,7 @@ export function cwdChangedCard(cwd: string, scopeNote?: string): object {
     { tag: 'hr' },
     ...inlineActions([
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
-      { text: '📊 状态', value: { cmd: 'status' } },
+      { text: '📊 会话状态', value: { cmd: 'status' } },
     ]),
   ]);
 }
@@ -809,7 +809,7 @@ export function helpCard(): object {
     ...inlineActions([
       { text: '🆕 新建会话', value: { cmd: 'new' }, style: 'primary' },
       { text: '🕘 恢复会话', value: { cmd: 'resume' } },
-      { text: '📊 状态', value: { cmd: 'status' } },
+      { text: '📊 会话状态', value: { cmd: 'status' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
     ]),
   );

@@ -128,11 +128,8 @@ export function configFormCard(opts: ConfigFormOpts): object {
             },
             {
               tag: 'markdown',
-              // 一行说清：谁、为什么只读、没有时怎么办。
-              content:
-                `\n**归属者**(只读):${opts.owner ? `\`${opts.owner}\`` : '_未设置_'}` +
-                ' · _高危命令只认它；只能在机器上改 `config.json`(防远端提权)，' +
-                '未设置时取 `admins` 第一个_',
+              // 只显示「归属者是谁」；为什么只读 / 没有时怎么回落不在这张卡上展开。
+              content: `\n**归属者**(只读):${opts.owner ? `\`${opts.owner}\`` : '_未设置_'}`,
             },
             {
               tag: 'markdown',

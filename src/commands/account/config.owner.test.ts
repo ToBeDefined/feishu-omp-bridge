@@ -142,9 +142,10 @@ describe('/config submit 与 access.owner', () => {
     );
     expect(card).toContain('归属者');
     expect(card).toContain('ou_3a4845d7ce8becd003e2728ab7774666');
-    expect(card).toContain('归属者');
-    // 收紧成一行：不再有整段说明。
-    expect(card).not.toContain('两者都没有则高危命令对所有人拒绝');
+    expect(card).toContain('**归属者**(只读):`ou_3a4845d7ce8becd003e2728ab7774666`');
+    // 只要这一行：不再带「为什么只读 / 怎么回落」的解释。
+    expect(card).not.toContain('防远端提权');
+    expect(card).not.toContain('admins 第一个');
     // 不是表单控件：没有 name=owner 的输入框。
     expect(card).not.toContain('"name":"owner"');
   });

@@ -48,34 +48,52 @@ export function md(content: string, size?: 'heading' | 'notation'): object {
     : { tag: 'markdown', content, text_size: size };
 }
 
+/** 动作行里的一列：元素 + 相对宽度（默认 1）。 */
+export interface RowItem {
+  element: object;
+  /** 相对宽度 —— 长标签（「↓ 下一页（剩 N）」）给 1.6，免得等宽把它挤到折行。 */
+  weight?: number;
+}
+
 /**
- * Quick-action buttons, one per row (full width).
+ * 卡片动作布局规则（全站统一）：
  *
- * `flex_mode: 'stretch'` turns each column into its own full-width row, so a
- * button row can never be laid out badly:
- * - `auto`/`weighted` column widths are only honoured by `flex_mode: 'none'`,
- *   which *compresses* the row on narrow screens — that is what squeezed the
- *   labels together on a phone;
- * - `flow` ignores `width` entirely and spreads the columns to both edges of a
- *   wide (desktop) card — the「继续对话 …… 完成」look.
- * Stretch is the only mode that behaves the same at every card width.
+ * 1. **同一层级的并列动作等宽并排一行** —— 确认 / 否、保存 / 取消、切换 / 删除、
+ *    继续对话 / 详情、上一页 / 下一页、页脚的几个跳转：一律 `inlineRow`
+ *    （`inlineActions` 是它的按钮 spec 版）。**单个动作也走它** —— 一列就是整行宽。
+ * 2. **退路动作「取消」单独一行、铺满整宽，放在并列动作下方** —— 它语义不同
+ *    （放弃当前操作），挤在正向动作旁边既容易误点，也把正向动作拽到同一视觉层级：
+ *    用 `confirmActions(choices, cancel)` 一步到位。
+ * 3. **危险动作（删除 / 退出）排在同一行的最右**。
+ *
+ * 元素版 `inlineRow` 给表单里的按钮用 —— 表单按钮带 `name` /
+ * `form_action_type` / `behaviors`，不是 `ButtonSpec` 那套 value。
  */
-export function actions(buttons: ButtonSpec[]): object[] {
-  // Schema 2.0 has no `action` container — buttons ride in a column_set row.
+export function inlineRow(items: RowItem[]): object[] {
   return [
     {
       tag: 'column_set',
-      flex_mode: 'stretch',
+      flex_mode: 'none',
       horizontal_spacing: 'small',
-      columns: buttons.map((spec) => ({
+      columns: items.map((item) => ({
         tag: 'column',
-        width: 'auto',
+        width: 'weighted',
+        weight: item.weight ?? 1,
         vertical_align: 'center',
-        elements: [button(spec)],
+        elements: [item.element],
       })),
     },
   ];
 }
+
+/** 并列动作并排 + 退路动作「取消」单独一行铺满（规则 1 + 2 的合成）。 */
+export function confirmActions(choices: InlineActionSpec[], cancel?: InlineActionSpec): object[] {
+  return [
+    ...(choices.length > 0 ? inlineActions(choices) : []),
+    ...(cancel !== undefined ? inlineActions([cancel]) : []),
+  ];
+}
+
 
 /** 8-char session-id handle. Singular "this is your session" lines show the
  * id in full (26-36 chars); lists need only enough to tell rows apart. */
@@ -86,27 +104,17 @@ export function shortSessionId(id: string): string {
 /**
  * Action buttons side by side in ONE row, equal width.
  *
- * `actions()` stretches every button onto its own full-width row — right for a
- * card footer, wrong for a button pair repeated on every list row (it turns two
- * buttons into two rows and doubles the row's height). Equal `weighted`
- * columns under `flex_mode: 'none'` stay side by side at every card width,
- * unlike `auto` columns, which compress on narrow screens.
+ * Equal `weighted` columns under `flex_mode: 'none'` stay side by side at every
+ * card width, unlike `auto` columns, which compress on narrow screens.
  */
+/** `inlineRow` 的按钮 spec 版：按上面的规则并排。 */
 export function inlineActions(buttons: InlineActionSpec[]): object[] {
-  return [
-    {
-      tag: 'column_set',
-      flex_mode: 'none',
-      horizontal_spacing: 'small',
-      columns: buttons.map((spec) => ({
-        tag: 'column',
-        width: 'weighted',
-        weight: spec.weight ?? 1,
-        vertical_align: 'center',
-        elements: [button(spec)],
-      })),
-    },
-  ];
+  return inlineRow(
+    buttons.map((spec) => ({
+      element: button(spec),
+      ...(spec.weight !== undefined ? { weight: spec.weight } : {}),
+    })),
+  );
 }
 
 /** A button in an {@link inlineActions} row. */
@@ -235,7 +243,7 @@ export function workspacesCard(current: string | undefined, named: Record<string
   }
 
   elements.push(HR);
-  elements.push(...actions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
+  elements.push(...inlineActions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
 
   return shell('📂 工作空间', elements);
 }
@@ -312,7 +320,7 @@ export function cwdChangedCard(cwd: string, scopeNote?: string): object {
     md(`新的 cwd：\`${escapeCode(tildePath(cwd))}\``),
     md('_session 已重置，下一条消息在新目录开始。_', 'notation'),
     { tag: 'hr' },
-    ...actions([
+    ...inlineActions([
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
       { text: '📊 状态', value: { cmd: 'status' } },
     ]),
@@ -788,7 +796,7 @@ export function helpCard(): object {
   });
   elements.push(md('_发送 `/help` 随时查看；其他内容直接交给 OMP。_', 'notation'));
   elements.push(
-    ...actions([
+    ...inlineActions([
       { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
       { text: '🕘 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },

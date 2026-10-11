@@ -1,6 +1,6 @@
 import type { AgentUiRequest, AgentUiResponse } from '../agent/types';
 import { escapeMd } from '../utils/text';
-import { panel, stackedPanels } from './templates';
+import { inlineRow, panel, stackedPanels } from './templates';
 
 export const OMP_UI_MARKER = '__omp_ui';
 export const OMP_UI_VALUE_FIELD = 'omp_ui_value';
@@ -54,16 +54,16 @@ export function renderOmpUiRequestCard(request: AgentUiRequest, scope?: string):
         panel([{ tag: 'markdown', content: request.message, text_size: 'notation' }]),
       ]),
     );
-    elements.push({
-      tag: 'column_set',
-      flex_mode: 'flow',
-      horizontal_spacing: 'small',
-      columns: [
-        { tag: 'column', width: 'auto', elements: [button('确认', 'primary', callbackValue(request, 'confirm', scope))] },
-        { tag: 'column', width: 'auto', elements: [button('否', 'default', callbackValue(request, 'deny', scope))] },
-        { tag: 'column', width: 'auto', elements: [button('取消', 'danger', callbackValue(request, 'cancel', scope))] },
-      ],
-    });
+    // 规则 1 + 2：确认 / 否 并排，退路动作「取消」单独一行铺满。
+    // 这里刻意保留 `behaviors`（表单按钮同款）而不换成顶层 `value` —— OMP 扩展 UI 的
+    // 回包链路最关键，不动它的投递方式；`inlineRow` 只负责排版。
+    elements.push(
+      ...inlineRow([
+        { element: uiButton('确认', 'primary', callbackValue(request, 'confirm', scope)) },
+        { element: uiButton('否', 'default', callbackValue(request, 'deny', scope)) },
+      ]),
+      ...inlineRow([{ element: uiButton('取消', 'danger', callbackValue(request, 'cancel', scope)) }]),
+    );
   } else if (request.method === 'select') {
     elements.push(form(request, [
       {
@@ -120,38 +120,8 @@ function form(request: AgentUiRequest, elements: object[], scope?: string): obje
     name: `omp_ui_${request.id}`,
     elements: [
       ...elements,
-      {
-        tag: 'column_set',
-        flex_mode: 'flow',
-        horizontal_spacing: 'small',
-        columns: [
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: '提交' },
-                type: 'primary',
-                form_action_type: 'submit',
-                behaviors: [{ type: 'callback', value: callbackValue(request, 'submit', scope) }],
-              },
-            ],
-          },
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: '取消' },
-                type: 'danger',
-                behaviors: [{ type: 'callback', value: callbackValue(request, 'cancel', scope) }],
-              },
-            ],
-          },
-        ],
-      },
+      ...inlineRow([{ element: { tag: 'button', text: { tag: 'plain_text', content: '提交' }, type: 'primary', form_action_type: 'submit', behaviors: [{ type: 'callback', value: callbackValue(request, 'submit', scope) }], } }]),
+      ...inlineRow([{ element: { tag: 'button', text: { tag: 'plain_text', content: '取消' }, type: 'danger', behaviors: [{ type: 'callback', value: callbackValue(request, 'cancel', scope) }], } }]),
     ],
   };
 }
@@ -168,7 +138,13 @@ function markdown(content: string): object {
   return { tag: 'markdown', content };
 }
 
-function button(text: string, type: 'primary' | 'default' | 'danger', value: object): object {
+
+/** OMP 交互按钮：点回包走 `behaviors`（与表单按钮同一套投递方式）。 */
+function uiButton(
+  text: string,
+  type: 'primary' | 'default' | 'danger',
+  value: Record<string, unknown>,
+): object {
   return {
     tag: 'button',
     text: { tag: 'plain_text', content: text },
@@ -177,7 +153,11 @@ function button(text: string, type: 'primary' | 'default' | 'danger', value: obj
   };
 }
 
-function callbackValue(request: AgentUiRequest, action: string, scope?: string): object {
+function callbackValue(
+  request: AgentUiRequest,
+  action: string,
+  scope?: string,
+): Record<string, unknown> {
   return {
     [OMP_UI_MARKER]: true,
     requestId: request.id,

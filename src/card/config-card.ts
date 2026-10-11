@@ -1,4 +1,5 @@
 import type { MessageReplyMode } from '../config/schema';
+import { inlineRow } from './templates';
 
 export interface ConfigFormOpts {
   messageReply: MessageReplyMode;
@@ -164,39 +165,8 @@ export function configFormCard(opts: ConfigFormOpts): object {
               placeholder: { tag: 'plain_text', content: 'ou_xxx, ou_yyy（留空=不限制）' },
               input_type: 'text',
             },
-            {
-              tag: 'column_set',
-              flex_mode: 'flow',
-              horizontal_spacing: 'small',
-              columns: [
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    {
-                      tag: 'button',
-                      name: 'submit_btn',
-                      text: { tag: 'plain_text', content: '提交' },
-                      type: 'primary',
-                      form_action_type: 'submit',
-                      behaviors: [{ type: 'callback', value: { cmd: 'config.submit' } }],
-                    },
-                  ],
-                },
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    {
-                      tag: 'button',
-                      name: 'cancel_btn',
-                      text: { tag: 'plain_text', content: '取消' },
-                      behaviors: [{ type: 'callback', value: { cmd: 'config.cancel' } }],
-                    },
-                  ],
-                },
-              ],
-            },
+            ...inlineRow([{ element: { tag: 'button', name: 'submit_btn', text: { tag: 'plain_text', content: '提交' }, type: 'primary', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { cmd: 'config.submit' } }], } }]),
+            ...inlineRow([{ element: { tag: 'button', name: 'cancel_btn', text: { tag: 'plain_text', content: '取消' }, behaviors: [{ type: 'callback', value: { cmd: 'config.cancel' } }], } }]),
           ],
         },
       ],

@@ -1,5 +1,5 @@
 import type { TenantBrand } from '../config/schema';
-import { md, panel, stackedPanels } from './templates';
+import { inlineRow, md, panel, stackedPanels } from './templates';
 
 function maskAppId(id: string): string {
   if (id.length < 12) return id;
@@ -85,39 +85,8 @@ export function accountFormCard(opts: FormCardOpts = {}): object {
           { text: { tag: 'plain_text', content: 'Lark (海外)' }, value: 'lark' },
         ],
       },
-      {
-        tag: 'column_set',
-        flex_mode: 'flow',
-        horizontal_spacing: 'small',
-        columns: [
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [
-              {
-                tag: 'button',
-                name: 'submit_btn',
-                text: { tag: 'plain_text', content: '提交' },
-                type: 'primary',
-                form_action_type: 'submit',
-                behaviors: [{ type: 'callback', value: { cmd: 'account.submit' } }],
-              },
-            ],
-          },
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [
-              {
-                tag: 'button',
-                name: 'cancel_btn',
-                text: { tag: 'plain_text', content: '取消' },
-                behaviors: [{ type: 'callback', value: { cmd: 'account.cancel' } }],
-              },
-            ],
-          },
-        ],
-      },
+      ...inlineRow([{ element: { tag: 'button', name: 'submit_btn', text: { tag: 'plain_text', content: '提交' }, type: 'primary', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { cmd: 'account.submit' } }], } }]),
+      ...inlineRow([{ element: { tag: 'button', name: 'cancel_btn', text: { tag: 'plain_text', content: '取消' }, behaviors: [{ type: 'callback', value: { cmd: 'account.cancel' } }], } }]),
     ],
   });
 

@@ -2,14 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { resumeCard, resumeSavedCard, type ResumeOption } from './model-card';
 import type { RunCard } from './run-renderer';
 import {
-  actions,
   compactCard,
   contextCard,
   cwdChangedCard,
   everyCard,
   execResultCard,
+  confirmActions,
   helpCard,
   inlineActions,
+  inlineRow,
   md,
   newSessionCard,
   psCard,
@@ -207,24 +208,35 @@ describe('shared card kit', () => {
     });
     expect(md('x', 'notation')).toMatchObject({ text_size: 'notation' });
     expect(panel([md('k')])).toMatchObject({ tag: 'column', background_style: 'grey' });
-    expect(actions([{ text: 'go', value: { cmd: 'x' } }])[0]).toMatchObject({
+    expect(inlineActions([{ text: 'go', value: { cmd: 'x' } }])[0]).toMatchObject({
       tag: 'column_set',
     });
+    expect(inlineRow([{ element: md('go') }])[0]).toMatchObject({ tag: 'column_set' });
   });
 
-  it('stacks each button on its own full-width row', () => {
-    const rows = actions(
-      ['a', 'b', 'c', 'd'].map((t) => ({ text: t, value: { cmd: t } })),
+  it('lays parallel actions side by side, cancel full width underneath', () => {
+    const rows = confirmActions(
+      [
+        { text: '确认', value: { cmd: 'a' }, style: 'primary' },
+        { text: '否', value: { cmd: 'b' } },
+      ],
+      { text: '取消', value: { cmd: 'c' }, style: 'danger' },
     );
-    // ONE column_set in stretch mode: every column becomes its own 100%-wide
-    // row. `none` compresses the labels on a narrow screen and `flow` ignores
-    // `width` (spreading columns to both card edges on desktop).
-    expect(rows).toHaveLength(1);
-    const row = rows[0] as { flex_mode: string; columns: Array<Record<string, unknown>> };
-    expect(row.flex_mode).toBe('stretch');
-    expect(row.columns).toHaveLength(4);
-    // Every button survives the re-layout.
-    expect(JSON.stringify(rows)).toContain('"cmd":"d"');
+    // 规则 1：并列动作一行等宽；规则 2：取消单独一行铺满（一列 = 整行宽）。
+    expect(rows).toHaveLength(2);
+    const [pair, cancel] = rows as Array<{
+      flex_mode: string;
+      columns: Array<{ width: string; weight: number; elements: Array<Record<string, unknown>> }>;
+    }>;
+    expect(pair!.flex_mode).toBe('none');
+    expect(pair!.columns.map((c) => c.weight)).toEqual([1, 1]);
+    expect((pair!.columns[0]!.elements[0] as { text: { content: string } }).text.content).toBe('确认');
+    expect(cancel!.columns).toHaveLength(1);
+    expect(cancel!.columns[0]!.width).toBe('weighted');
+    expect((cancel!.columns[0]!.elements[0] as { text: { content: string } }).text.content).toBe('取消');
+
+    // 没有取消时只有并列那行。
+    expect(confirmActions([{ text: '只有我', value: { cmd: 'x' } }])).toHaveLength(1);
   });
 
   it('lays inline actions side by side in one weighted row', () => {

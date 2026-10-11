@@ -1,8 +1,9 @@
 import { summarizeMd } from '../utils/text';
 import { isOmpThinkingLevel, OMP_THINKING_LEVELS } from '../config/schema';
 import {
-  actions,
+  confirmActions,
   inlineActions,
+  inlineRow,
   panel,
   shortPath,
   shortSessionId,
@@ -171,39 +172,8 @@ export function modelSelectCard(
               options,
             },
             thinkingSelect(thinking),
-            {
-              tag: 'column_set',
-              flex_mode: 'flow',
-              horizontal_spacing: 'small',
-              columns: [
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    {
-                      tag: 'button',
-                      name: 'submit_btn',
-                      text: { tag: 'plain_text', content: '切换' },
-                      type: 'primary',
-                      form_action_type: 'submit',
-                      behaviors: [{ type: 'callback', value: { cmd: 'model.submit' } }],
-                    },
-                  ],
-                },
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    {
-                      tag: 'button',
-                      name: 'cancel_btn',
-                      text: { tag: 'plain_text', content: '取消' },
-                      behaviors: [{ type: 'callback', value: { cmd: 'model.cancel' } }],
-                    },
-                  ],
-                },
-              ],
-            },
+            ...inlineRow([{ element: { tag: 'button', name: 'submit_btn', text: { tag: 'plain_text', content: '切换' }, type: 'primary', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { cmd: 'model.submit' } }], } }]),
+            ...inlineRow([{ element: { tag: 'button', name: 'cancel_btn', text: { tag: 'plain_text', content: '取消' }, behaviors: [{ type: 'callback', value: { cmd: 'model.cancel' } }], } }]),
           ],
         },
       ],
@@ -267,39 +237,8 @@ export function thinkingCard(current?: string): object {
                 value: lv,
               })),
             },
-            {
-              tag: 'column_set',
-              flex_mode: 'flow',
-              horizontal_spacing: 'small',
-              columns: [
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    {
-                      tag: 'button',
-                      name: 'submit_btn',
-                      text: { tag: 'plain_text', content: '切换' },
-                      type: 'primary',
-                      form_action_type: 'submit',
-                      behaviors: [{ type: 'callback', value: { cmd: 'thinking.submit' } }],
-                    },
-                  ],
-                },
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    {
-                      tag: 'button',
-                      name: 'cancel_btn',
-                      text: { tag: 'plain_text', content: '取消' },
-                      behaviors: [{ type: 'callback', value: { cmd: 'thinking.cancel' } }],
-                    },
-                  ],
-                },
-              ],
-            },
+            ...inlineRow([{ element: { tag: 'button', name: 'submit_btn', text: { tag: 'plain_text', content: '切换' }, type: 'primary', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { cmd: 'thinking.submit' } }], } }]),
+            ...inlineRow([{ element: { tag: 'button', name: 'cancel_btn', text: { tag: 'plain_text', content: '取消' }, behaviors: [{ type: 'callback', value: { cmd: 'thinking.cancel' } }], } }]),
           ],
         },
       ],
@@ -445,7 +384,6 @@ export function resumeCard(
       value: { cmd: 'resume.more', arg: String(offset + sessions.length) },
     });
   }
-  footer.push({ text: '取消', value: { cmd: 'resume.cancel', arg: '' } });
   elements.push(
     { tag: 'hr' },
     {
@@ -453,8 +391,11 @@ export function resumeCard(
       content: `第 ${offset + 1}-${offset + pageSize} 条 / 共 ${total} 条`,
       text_size: 'notation',
     },
-    // Natural-width buttons in one wrapping row (see actions()).
-    ...actions(footer),
+    // 分页并排，退路动作「取消」单独一行铺满（规则 1 + 2）。
+    ...confirmActions(
+      footer.map((b) => (b.text.includes('更早') ? { ...b, weight: 1.6 } : b)),
+      { text: '取消', value: { cmd: 'resume.cancel', arg: '' } },
+    ),
   );
   return {
     schema: '2.0',

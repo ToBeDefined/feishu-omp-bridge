@@ -1,4 +1,4 @@
-import { actions, inlineActions, md, panel, shortPath, stackedPanels } from './templates';
+import { inlineActions, md, panel, shortPath, stackedPanels } from './templates';
 import { escapeMd, summarizeMd } from '../utils/text';
 import { formatAgo, formatClock } from '../utils/time';
 
@@ -139,8 +139,12 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
       value: { cmd: 'history.page', arg: `${opts.mode} ${opts.offset + HISTORY_PAGE_SIZE}` },
     });
   }
-  // Shared action-row layout (each button on its own full-width row).
-  if (pager.length > 0) elements.push(...actions(pager));
+  // 分页按钮并排（规则 1）；长标签多分宽度。
+  if (pager.length > 0) {
+    elements.push(
+      ...inlineActions(pager.map((b) => (b.text.includes('更早') ? { ...b, weight: 1.6 } : b))),
+    );
+  }
   elements.push({
     tag: 'markdown',
     content: '_点「继续对话」接着聊（等同 `/resume <id>`），检索内容用 `/search`。_',

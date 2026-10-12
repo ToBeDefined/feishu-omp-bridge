@@ -131,6 +131,19 @@ describe('/release', () => {
     // 非强制路径由 waitForRunsToDrain 的单测覆盖（这里若没跳过排空会等满 5 分钟）。
   });
 
+  it('force 也不能绕过「失败即止」：流水线失败就不重启', async () => {
+    vi.mocked(runRelease).mockResolvedValue({
+      ok: false,
+      step: 'test',
+      exitCode: 1,
+      output: 'boom',
+    });
+    const { ctx, sent, restartProcess } = makeCtx(true);
+    await releaseHandlers['/release']!('force', ctx);
+    expect(sent.at(-1)).toContain('发布失败于');
+    expect(restartProcess).not.toHaveBeenCalled();
+  });
+
   it('force 的别名 --force / -f 等价', async () => {
     vi.mocked(runRelease).mockResolvedValue({ ok: true });
     for (const arg of ['--force', '-f', 'FORCE']) {

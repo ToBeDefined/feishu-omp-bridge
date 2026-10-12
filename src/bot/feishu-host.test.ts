@@ -235,7 +235,7 @@ describe('feishu_send_card', () => {
     expect(card.body.elements[0]).toMatchObject({ tag: 'markdown', text_size: 'heading' });
     const buttonRow = card.body.elements.find(
       (e: { columns?: unknown[] }) => Array.isArray(e.columns),
-    ) as { columns: Array<{ elements: Array<{ behaviors: Array<{ value: unknown }> }> }> };
+    ) as { columns: Array<{ elements: Array<{ behaviors: Array<{ value: Record<string, unknown> }> }> }> };
     const value = buttonRow.columns[0]!.elements[0]!.behaviors[0]!.value;
     expect(value).toMatchObject({ action: 'deploy', __codex_cb: true, __omp_scope: 'chat-1' });
     expect(typeof value.__omp_iat).toBe('number');

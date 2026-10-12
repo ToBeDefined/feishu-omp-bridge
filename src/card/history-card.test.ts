@@ -103,29 +103,55 @@ describe('historyCard', () => {
       row({ sessionId: `019f9432-0000-7000-8bf4-${String(i).padStart(12, '0')}` }),
     );
     const first = historyCard(rows, { mode: 'all', offset: 0, total: 20 });
-    expect(buttonValues(first)).toEqual([{ cmd: 'history.page', arg: `all ${HISTORY_PAGE_SIZE}` }]);
+    // Pager first, then the 工作区范围切换键（all → cwd）。
+    expect(buttonValues(first)).toEqual([
+      { cmd: 'history.page', arg: `all ${HISTORY_PAGE_SIZE}` },
+      { cmd: 'history.page', arg: 'cwd 0' },
+    ]);
     expect(JSON.stringify(first)).toContain('第 1-8 个');
-    expect(JSON.stringify(first)).toContain('↓ 更早（剩 12）');
+    expect(JSON.stringify(first)).toContain('↓ 下一页（剩 12）');
 
     // Middle page: both directions, each pointing one page back/forward.
     const middle = historyCard(rows, { mode: 'all', offset: 8, total: 20 });
     expect(buttonValues(middle)).toEqual([
       { cmd: 'history.page', arg: 'all 0' },
       { cmd: 'history.page', arg: 'all 16' },
+      { cmd: 'history.page', arg: 'cwd 0' },
     ]);
-    expect(JSON.stringify(middle)).toContain('↓ 更早（剩 4）');
-    // `↑ 较新的` renders before `↓ 更早`.
+    expect(JSON.stringify(middle)).toContain('↓ 下一页（剩 4）');
+    // `↑ 上一页` renders before `↓ 下一页`.
     const middleJson = JSON.stringify(middle);
-    expect(middleJson.indexOf('较新的')).toBeLessThan(middleJson.indexOf('更早'));
+    expect(middleJson.indexOf('上一页')).toBeLessThan(middleJson.indexOf('下一页'));
 
     // Last page: back only.
     const last = historyCard(rows, { mode: 'all', offset: 16, total: 20 });
-    expect(buttonValues(last)).toEqual([{ cmd: 'history.page', arg: 'all 8' }]);
+    expect(buttonValues(last)).toEqual([
+      { cmd: 'history.page', arg: 'all 8' },
+      { cmd: 'history.page', arg: 'cwd 0' },
+    ]);
   });
 
-  it('has no pager on a single short page and says where to go instead', () => {
+  it('exposes an explicit all-workspaces entry that reuses the pager pipeline', () => {
+    // cwd 模式 → 一键切到 all（第一页），用户不必知道有 `/history all`。
+    const cwd = historyCard([row()], { mode: 'cwd', offset: 0, total: 1 });
+    expect(allButtons(cwd)).toContainEqual({
+      cmd: 'history.page',
+      arg: 'all 0',
+      label: '🌐 全部工作区',
+    });
+    // all 模式 → 一键切回当前工作区。
+    const all = historyCard([row()], { mode: 'all', offset: 0, total: 1 });
+    expect(allButtons(all)).toContainEqual({
+      cmd: 'history.page',
+      arg: 'cwd 0',
+      label: '📂 当前工作区',
+    });
+  });
+
+  it('has no pager on a single short page but still offers the scope switch', () => {
     const card = historyCard([row(), row({ sessionId: 's2' })], { mode: 'cwd', offset: 0, total: 2 });
-    expect(buttonValues(card)).toEqual([]);
+    // 没有翻页键，但工作区范围入口仍在（这是默认视图唯一通往 all 的路）。
+    expect(buttonValues(card)).toEqual([{ cmd: 'history.page', arg: 'all 0' }]);
     expect(JSON.stringify(card)).toContain('点「继续对话」接着聊');
   });
 
@@ -142,19 +168,13 @@ describe('historyCard', () => {
         arg: '019f9432-b808-7000-8bf4-073defc52637',
         label: '继续对话',
       },
+      { cmd: 'history.page', arg: 'all 0', label: '🌐 全部工作区' },
     ]);
     // Row = grey content block, then its action side by side underneath.
     const parsed = card as { body: { elements: Array<Record<string, unknown>> } };
     expect(greyBlocks(parsed)).toHaveLength(1);
-    const actionRow = parsed.body.elements.filter((e) => e.tag === 'column_set').at(-1) as {
-      flex_mode: string;
-      columns: Array<{ width: string; elements: Array<Record<string, unknown>> }>;
-    };
-    expect(actionRow.flex_mode).toBe('none');
-    expect(actionRow.columns.map((c) => c.width)).toEqual(['weighted']);
-    expect((actionRow.columns[0]!.elements[0] as { text: { content: string } }).text.content).toBe(
-      '继续对话',
-    );
+    // 1 个灰底行块 + 1 个行动作块（继续对话）+ 1 个页脚范围切换块。
+    expect(parsed.body.elements.filter((e) => e.tag === 'column_set')).toHaveLength(3);
   });
 
   it('marks the current session instead of offering a no-op resume', () => {
@@ -178,8 +198,8 @@ describe('historyCard', () => {
     // The current row keeps its grey block but has no action row at all.
     const parsed = card as { body: { elements: Array<Record<string, unknown>> } };
     expect(greyBlocks(parsed)).toHaveLength(2);
-    // 2 个行尾动作块（只有另一行有）+ 2 个灰底块 = 4 个 column_set。
-    expect(parsed.body.elements.filter((e) => e.tag === 'column_set')).toHaveLength(3);
+    // 2 个灰底块 + 1 个非当前行的动作块 + 页脚的工作区范围切换块 = 4。
+    expect(parsed.body.elements.filter((e) => e.tag === 'column_set')).toHaveLength(4);
   });
 
   it('carries exactly one 继续对话 button per row', () => {
@@ -187,6 +207,7 @@ describe('historyCard', () => {
       historyCard([row(), row({ sessionId: 's2' })], { mode: 'cwd', offset: 0, total: 2 }),
     );
     const buttons = allButtons(JSON.parse(card) as object);
-    expect(buttons.map((b) => b.label)).toEqual(['继续对话', '继续对话']);
+    // 每行一个 继续对话，页脚再挂一个工作区范围切换键。
+    expect(buttons.map((b) => b.label)).toEqual(['继续对话', '继续对话', '🌐 全部工作区']);
   });
 });

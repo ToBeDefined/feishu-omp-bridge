@@ -40,7 +40,7 @@ export function detailInfoFor(
   context: SearchContext,
   queryId: string,
   index: number,
-  opts: { keyword?: string; currentSessionId?: string } = {},
+  opts: { keyword?: string; currentSessionId?: string; offset?: number } = {},
 ): SearchDetailInfo {
   return {
     sessionId: context.sessionId,
@@ -50,6 +50,9 @@ export function detailInfoFor(
     groups: context.groups,
     ...(opts.keyword ? { keyword: opts.keyword } : {}),
     queryRef: `${queryId} ${index}`,
+    // 详情卡带回去原结果页的坐标：queryId + 进入时的 offset，返回时复用分页缓存。
+    queryId,
+    ...(opts.offset !== undefined ? { offset: opts.offset } : {}),
     ...(opts.currentSessionId !== undefined && opts.currentSessionId === context.sessionId
       ? { current: true }
       : {}),
@@ -352,24 +355,29 @@ async function scanSessionHits(
 async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   const [sub, ...rest] = args.trim().split(/\s+/);
 
-  if (sub === 'page') {
-    // 卡片翻页：args = page <queryId> <offset>。cache 未命中则回退为
-    // 关键词检索（queryId 是内部格式，正常不会撞词）。
-    const queryId = rest[0] ?? '';
+  if (sub === 'page' && rest[0]) {
+    // 卡片翻页 / 详情卡的「返回结果」：args = page <queryId> <offset>，复用缓存里
+    // 的结果集。缓存过期（被挤出或进程重启）就不再拿 `page …` 当关键词乱搜，
+    // 明确告诉用户重新检索 —— 这是「返回」唯一的失败路径。
+    const queryId = rest[0];
     const offset = Number.parseInt(rest[1] ?? '', 10);
     const cached = searchCache.get(queryId);
-    const keyword = searchKeywords.get(queryId) ?? '';
-    if (cached && Number.isFinite(offset) && offset >= 0 && offset < cached.length) {
-      if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-      await sendManagedCard(
-        ctx.channel,
-        ctx.msg.chatId,
-        searchResultsCard(keyword, cached, queryId, offset, {
-          currentSessionId: currentSessionId(ctx),
-        }),
-      );
+    if (!cached) {
+      await reply(ctx, '搜索结果已过期，请重新 `/search`。');
       return;
     }
+    const keyword = searchKeywords.get(queryId) ?? '';
+    // 页码越界（陈旧按钮）夹回第一页，不渲染空页。
+    const page = Number.isFinite(offset) && offset >= 0 && offset < cached.length ? offset : 0;
+    if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+    await sendManagedCard(
+      ctx.channel,
+      ctx.msg.chatId,
+      searchResultsCard(keyword, cached, queryId, page, {
+        currentSessionId: currentSessionId(ctx),
+      }),
+    );
+    return;
   }
 
   if (sub === 'resume') {
@@ -399,6 +407,9 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   if (sub === 'show') {
     const queryId = rest[0] ?? '';
     const idx = Number.parseInt(rest[1] ?? '', 10);
+    // 详情按钮把进入时的结果页 offset 一并带来（`show <queryId> <index> <offset>`），
+    // 返回时回到同一页；旧格式缺 offset 时由卡片按 index 推算。
+    const offset = Number.parseInt(rest[2] ?? '', 10);
     const contexts = searchCache.get(queryId);
     if (!contexts) {
       await reply(ctx, '搜索结果已过期，请重新 `/search`。');
@@ -413,6 +424,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     const info = detailInfoFor(context, queryId, idx, {
       keyword,
       currentSessionId: currentSessionId(ctx),
+      ...(Number.isFinite(offset) ? { offset } : {}),
     });
     if (ctx.fromCardAction) {
       await sendManagedCard(ctx.channel, ctx.msg.chatId, searchDetailCard(info)).catch(() => {});
@@ -420,6 +432,12 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       await reply(ctx, searchDetailText(info));
     }
     return;
+  }
+
+  // 空态卡的「🔄 重新搜索」：cmd `search.do` → `do <keyword>`，与直接输入关键词
+  // 同义（重跑一次检索）。只有带了关键词才当作子命令，否则 `/search do` 就是搜 do。
+  if (sub === 'do' && rest.length > 0) {
+    args = rest.join(' ');
   }
 
   const keyword = args.trim();

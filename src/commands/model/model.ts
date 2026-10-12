@@ -12,12 +12,21 @@ import {
 import { recentModels } from '../../session/model-history';
 import type { CommandContext, Handler } from '../index';
 import { recallMessage, reply, settleManagedCard } from '../shared';
-import { loadModelData } from './data';
+import { isChatModel, loadModelData } from './data';
 import { log } from '../../core/logger';
 
 export const modelHandlers: Record<string, Handler> = {
   '/model': handleModel,
 };
+
+/**
+ * 「最近使用」里可能躺着非对话模型（此前被用户直接 `/model <selector>` 指定过，
+ * 或者过滤规则上线前用过）—— 卡片只放对话模型，否则点一下就会把会话指向一个
+ * 答不了话的模型。
+ */
+async function recentChatModels(): Promise<string[]> {
+  return (await recentModels()).filter((selector) => isChatModel(selector));
+}
 
 async function handleModel(args: string, ctx: CommandContext): Promise<void> {
   const trimmed = args.trim();
@@ -58,7 +67,7 @@ async function refreshModels(ctx: CommandContext, current: string | undefined): 
     byProvider.set(m.provider, (byProvider.get(m.provider) ?? 0) + 1);
   }
   const providers = [...byProvider.entries()].map(([provider, count]) => ({ provider, count }));
-  const recents = await recentModels();
+  const recents = await recentChatModels();
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(
     ctx.channel,
@@ -70,7 +79,7 @@ async function refreshModels(ctx: CommandContext, current: string | undefined): 
 async function showModelProviders(ctx: CommandContext, current: string | undefined): Promise<void> {
   const [data, recents] = await Promise.all([
     loadModelData(ctx.controls.cfg, false),
-    recentModels(),
+    recentChatModels(),
   ]);
   const byProvider = new Map<string, number>();
   for (const m of data.list) {
@@ -92,7 +101,7 @@ async function showModelPicker(
 ): Promise<void> {
   const [data, recents] = await Promise.all([
     loadModelData(ctx.controls.cfg, false),
-    recentModels(),
+    recentChatModels(),
   ]);
   const pick = data.list.filter((m) => m.provider === provider);
   if (pick.length === 0) {
@@ -147,7 +156,9 @@ async function persistModelPreferences(
 async function submitModel(ctx: CommandContext): Promise<void> {
   const selector = String(ctx.formValue?.model_selector ?? '').trim();
   if (!selector) {
-    await reply(ctx, '未选择模型,已取消。');
+    // 跨提供方打开选择卡时故意不预选（见 modelSelectCard）：用户没选就提交，
+    // 必须明确回「未选择」，不能静默用列表里第一个。
+    await reply(ctx, '❌ 未选择模型，未做修改。');
     return;
   }
   const cfg = ctx.controls.cfg;

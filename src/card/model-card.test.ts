@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { THINKING_FOLLOW_DEFAULT, modelProviderCard, modelSelectCard } from './model-card';
+import {
+  THINKING_FOLLOW_DEFAULT,
+  modelProviderCard,
+  modelSelectCard,
+  thinkingCard,
+} from './model-card';
 import { OMP_THINKING_LEVELS } from '../config/schema';
 
 const MODELS = [
@@ -11,6 +16,7 @@ interface SelectStatic {
   name?: unknown;
   options?: unknown[];
   initial_option?: unknown;
+  placeholder?: unknown;
 }
 
 function isSelectStatic(value: unknown): value is SelectStatic {
@@ -51,6 +57,19 @@ function findSelect(card: object, name: string): SelectStatic {
   return sel;
 }
 
+/** option 的 value（`unknown` → 收窄，不做 unchecked cast）。 */
+function optionValue(option: unknown): unknown {
+  return typeof option === 'object' && option !== null && 'value' in option ? option.value : undefined;
+}
+
+/** option 的文本 content。 */
+function optionText(option: unknown): string {
+  if (typeof option !== 'object' || option === null || !('text' in option)) return '';
+  const { text } = option;
+  if (typeof text !== 'object' || text === null || !('content' in text)) return '';
+  return typeof text.content === 'string' ? text.content : '';
+}
+
 function cardMarkdown(card: object): string {
   if (!('body' in card)) return '';
   const body = card.body;
@@ -78,12 +97,38 @@ describe('modelSelectCard', () => {
     expect(sel.initial_option).toBe('zhipu-coding-plan/glm-5.3');
   });
 
-  it('falls back to the first option when current is not in this provider list', () => {
-    const sel = findSelect(
-      modelSelectCard('zhipu-coding-plan', 'other/provider-model', MODELS),
-      'model_selector',
+  it('does NOT preselect the first option when current is not in this provider list', () => {
+    // 回归：provider=cursor 而 current=futu/… 时曾预选 cursor/claude-4-sonnet，
+    // 用户「看一眼就点切换」就把模型换了。
+    const card = modelSelectCard('zhipu-coding-plan', 'other/provider-model', MODELS);
+    const sel = findSelect(card, 'model_selector');
+    expect(sel.initial_option).toBeUndefined();
+    expect(sel.placeholder).toEqual({ tag: 'plain_text', content: '选择一个模型' });
+    expect(sel.options).toHaveLength(2);
+    // meta 行点出「当前模型不属于该提供方」。
+    expect(cardMarkdown(card)).toContain('当前模型不属于该提供方');
+  });
+
+  it('does not preselect either when no model is set at all', () => {
+    const sel = findSelect(modelSelectCard('zhipu-coding-plan', undefined, MODELS), 'model_selector');
+    expect(sel.initial_option).toBeUndefined();
+  });
+
+  it('shows the recents hint only when THIS provider actually has recent models', () => {
+    const cursor = [
+      { provider: 'cursor', selector: 'cursor/claude-4-sonnet' },
+      { provider: 'cursor', selector: 'cursor/gpt-5' },
+    ];
+    // 全局 recents 非空但本提供方一个都没命中 → 不提「最近用过的排在前面」。
+    const noHit = cardMarkdown(
+      modelSelectCard('cursor', 'futu/x', cursor, undefined, ['futu/deepseek-v4.1-flash']),
     );
-    expect(sel.initial_option).toBe('zhipu-coding-plan/glm-5.2');
+    expect(noHit).not.toContain('下拉里最近用过的排在前面');
+    // 命中一个 → 提，并且把它排到下拉最前面。
+    const card = modelSelectCard('cursor', undefined, cursor, undefined, ['cursor/gpt-5']);
+    expect(cardMarkdown(card)).toContain('下拉里最近用过的排在前面');
+    const json = JSON.stringify(findSelect(card, 'model_selector'));
+    expect(json.indexOf('cursor/gpt-5')).toBeLessThan(json.indexOf('cursor/claude-4-sonnet'));
   });
 
   it('includes a thinking-level select next to the model picker', () => {
@@ -161,5 +206,101 @@ describe('modelProviderCard', () => {
     const rows = card.body.elements.filter((e) => e.tag === 'column_set');
     // 3 个最近使用 → 2 行（每行 ≤2）；提供方 2 个 → 1 行；回退默认 + 取消各 1 行。
     expect(rows.map((r) => (r.columns as unknown[]).length)).toEqual([2, 1, 2, 1, 1]);
+  });
+
+  /** 提供方按钮的排列顺序（按 JSON 里出现的位置）。 */
+  const providerOrder = (card: object): string[] =>
+    [...JSON.stringify(card).matchAll(/"cmd":"model\.provider","arg":"([^"]+)"/g)].map((m) => m[1]!);
+
+  // 本机实测的 Map 插入序（cursor 永远第一），计数取真实缓存里的量级。
+  const realProviders = [
+    { provider: 'cursor', count: 8 },
+    { provider: 'futu', count: 132 },
+    { provider: 'kimi-code', count: 12 },
+    { provider: 'opencode-go', count: 12 },
+    { provider: 'zhipu-coding-plan', count: 40 },
+  ];
+
+  it('puts the current provider first, then by model count desc, ties alphabetical', () => {
+    expect(providerOrder(modelProviderCard('futu/deepseek-v4.1-flash', realProviders))).toEqual([
+      'futu',
+      'zhipu-coding-plan',
+      'kimi-code',
+      'opencode-go',
+      'cursor',
+    ]);
+    // 当前模型不属于任何提供方（或没设）→ 纯按计数降序、同数按字母。
+    expect(providerOrder(modelProviderCard(undefined, realProviders))).toEqual([
+      'futu',
+      'zhipu-coding-plan',
+      'kimi-code',
+      'opencode-go',
+      'cursor',
+    ]);
+    // 当前提供方拿 primary 样式（且只有一个）。
+    const json = JSON.stringify(modelProviderCard('cursor/gpt-5', realProviders));
+    expect(json).toContain('"text":{"tag":"plain_text","content":"cursor (8)"},"type":"primary"');
+  });
+});
+
+describe('thinkingCard', () => {
+  const optionValues = (card: object): unknown[] =>
+    (findSelect(card, 'thinking_level').options ?? []).map(optionValue);
+
+  it('offers 跟随默认 (__default) so the card path can go back to the OMP default', () => {
+    const sel = findSelect(thinkingCard('high'), 'thinking_level');
+    expect(sel.options?.[0]).toEqual({
+      text: { tag: 'plain_text', content: '跟随 OMP 默认' },
+      value: THINKING_FOLLOW_DEFAULT,
+    });
+    expect(sel.initial_option).toBe('high');
+  });
+
+  it('preselects 跟随默认 when no level is set — title and preselect agree', () => {
+    const card = thinkingCard(undefined);
+    const sel = findSelect(card, 'thinking_level');
+    expect(sel.initial_option).toBe(THINKING_FOLLOW_DEFAULT);
+    expect(cardMarkdown(card)).toContain('当前：_跟随 OMP 默认_');
+    // 旧行为：标题写「跟随 OMP 默认」，下拉却预选 `auto`。
+    expect(cardMarkdown(card)).not.toContain('当前：`auto`');
+  });
+
+  it('filters the levels by the model capability (futu/deepseek-v4.1-flash: low|high|max)', () => {
+    const sel = findSelect(thinkingCard('high', ['low', 'high', 'max']), 'thinking_level');
+    expect(optionValues(thinkingCard('high', ['low', 'high', 'max']))).toEqual([
+      THINKING_FOLLOW_DEFAULT,
+      'low',
+      'high',
+      'max',
+    ]);
+    expect(sel.initial_option).toBe('high');
+  });
+
+  it('keeps only 跟随默认 and says so when the model does not support thinking', () => {
+    // 328 个模型里 110 个 `thinking` 为空 —— 旧卡片照样列 8 档。
+    const card = thinkingCard(undefined, []);
+    expect(optionValues(card)).toEqual([THINKING_FOLLOW_DEFAULT]);
+    expect(findSelect(card, 'thinking_level').initial_option).toBe(THINKING_FOLLOW_DEFAULT);
+    expect(cardMarkdown(card)).toContain('该模型不支持思考强度');
+  });
+
+  it('does not restrict the levels when the capability is unknown', () => {
+    expect(findSelect(thinkingCard(undefined, undefined), 'thinking_level').options).toHaveLength(
+      1 + OMP_THINKING_LEVELS.length,
+    );
+  });
+
+  it('keeps a current level the model no longer supports, so title and preselect agree', () => {
+    // 换过模型：ompThinking 还是 medium，新模型只支持 low|high|max。
+    const card = thinkingCard('medium', ['low', 'high', 'max']);
+    expect(optionValues(card)).toEqual([THINKING_FOLLOW_DEFAULT, 'medium', 'low', 'high', 'max']);
+    expect(findSelect(card, 'thinking_level').initial_option).toBe('medium');
+    expect(cardMarkdown(card)).toContain('当前：`medium`');
+  });
+
+  it('describes every level in the option text', () => {
+    const texts = (findSelect(thinkingCard('high', ['low', 'high', 'max']), 'thinking_level').options ?? [])
+      .map(optionText);
+    expect(texts).toEqual(['跟随 OMP 默认', 'low（低）', 'high（高）', 'max（最高）']);
   });
 });

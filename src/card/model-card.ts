@@ -49,6 +49,33 @@ function formatCurrent(value: string | undefined): string {
   return value ? `\`${value}\`` : '_跟随 OMP 默认_';
 }
 
+/** 思考档位的中文说明 —— 写进 option 文本里（每档一句话），不额外加说明块：
+ * 8 档各占一行说明会把卡片撑过半屏。 */
+const THINKING_HINTS: Record<string, string> = {
+  auto: '自动',
+  off: '关闭思考',
+  minimal: '最少',
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '很高',
+  max: '最高',
+};
+
+function thinkingOption(level: string): object {
+  const hint = THINKING_HINTS[level];
+  return {
+    text: { tag: 'plain_text', content: hint ? `${level}（${hint}）` : level },
+    value: level,
+  };
+}
+
+/** 「跟随 OMP 默认」（= 清掉 ompThinking）；`/model`、`/thinking` 两张卡共用。 */
+const FOLLOW_DEFAULT_OPTION: object = {
+  text: { tag: 'plain_text', content: '跟随 OMP 默认' },
+  value: THINKING_FOLLOW_DEFAULT,
+};
+
 function thinkingSelect(current?: string): object {
   const initial = current && isOmpThinkingLevel(current) ? current : THINKING_FOLLOW_DEFAULT;
   return {
@@ -56,13 +83,7 @@ function thinkingSelect(current?: string): object {
     name: 'thinking_level',
     placeholder: { tag: 'plain_text', content: '思考强度' },
     initial_option: initial,
-    options: [
-      { text: { tag: 'plain_text', content: '跟随 OMP 默认' }, value: THINKING_FOLLOW_DEFAULT },
-      ...OMP_THINKING_LEVELS.map((lv) => ({
-        text: { tag: 'plain_text', content: lv },
-        value: lv,
-      })),
-    ],
+    options: [FOLLOW_DEFAULT_OPTION, ...OMP_THINKING_LEVELS.map(thinkingOption)],
   };
 }
 
@@ -83,10 +104,20 @@ export function modelProviderCard(
   // 是这张卡最高频的动作，理应排在最前（此前常用在前，最近使用在中间）。
   const recentSection = section('🕘 最近使用', recents);
   const commonSection = section('⭐ 常用', commons);
+  // 提供方按钮：**当前提供方置首**，其余按模型数降序、同数按字母序 —— 打开这张卡
+  // 多半是想在当前提供方里换个模型，先看到它（此前按 Map 插入序，cursor 永远第一）。
+  const currentProvider = (current?.split('/')[0] ?? '').toLowerCase();
+  const orderedProviders = [...providers].sort((a, b) => {
+    const aCurrent = a.provider.toLowerCase() === currentProvider ? 0 : 1;
+    const bCurrent = b.provider.toLowerCase() === currentProvider ? 0 : 1;
+    if (aCurrent !== bCurrent) return aCurrent - bCurrent;
+    if (a.count !== b.count) return b.count - a.count;
+    return a.provider.localeCompare(b.provider);
+  });
   const providerButtons = inlineActions(
-    providers.map((p) => ({
+    orderedProviders.map((p) => ({
       text: `${p.provider} (${p.count})`,
-      style: p.provider.toLowerCase() === (current?.split('/')[0] ?? '') ? ('primary' as const) : ('default' as const),
+      style: p.provider.toLowerCase() === currentProvider ? ('primary' as const) : ('default' as const),
       value: { cmd: 'model.provider', arg: p.provider },
     })),
   );
@@ -135,16 +166,22 @@ export function modelSelectCard(
   ];
   // options 的 value 是完整 selector（provider/model）。用半段 id 永远匹配
   // 不上任何 option —— 预选会静默落到 sorted[0]，用户看到错误的"当前模型"。
-  const initial =
-    current && sorted.some((m) => m.selector === current)
-      ? current
-      : sorted[0]?.selector;
+  //
+  // 预选只认「本提供方列表里真的有这个模型」：`current` 属于别的提供方时，
+  // 预选 sorted[0] 会让用户「看一眼就点切换」就把模型换成别的（实测 provider=cursor、
+  // current=futu/… 时预选 cursor/claude-4-sonnet）。这种情况**不预选**，只留
+  // placeholder；真提交了也由 submit 明确回「未选择模型」，绝不静默用第一个。
+  const inList = current !== undefined && sorted.some((m) => m.selector === current);
+  const foreignCurrent = current !== undefined && !inList;
   const options = sorted.map((m) => {
     // 卡片标题已给出提供方，下拉里只留模型段；名字不同时附在后面。
     const short = modelShortLabel(m.selector);
     const label = m.name && m.name !== short ? `${short} (${m.name})` : short;
     return { text: { tag: 'plain_text', content: label }, value: m.selector };
   });
+  // 「最近用过的排在前面」只在**本提供方命中** recents 时才提 —— 否则 cursor 卡上
+  // 明明一个最近用过的都没有，却在说这句话。
+  const recentHits = sorted.filter((m) => rank.has(m.selector)).length;
   return {
     schema: '2.0',
     config: { summary: { content: `选择 ${provider} 模型` } },
@@ -154,7 +191,8 @@ export function modelSelectCard(
         {
           tag: 'markdown',
           content: `当前 ${formatCurrent(current)} · 思考 ${formatCurrent(thinking)}` +
-            (recents.length > 0 ? ' · _下拉里最近用过的排在前面_' : ''),
+            (foreignCurrent ? ' · ⚠️ 当前模型不属于该提供方' : '') +
+            (recentHits > 0 ? ' · _下拉里最近用过的排在前面_' : ''),
           text_size: 'notation',
         },
         {
@@ -164,8 +202,8 @@ export function modelSelectCard(
             {
               tag: 'select_static',
               name: 'model_selector',
-              placeholder: { tag: 'plain_text', content: '模型' },
-              initial_option: initial,
+              placeholder: { tag: 'plain_text', content: '选择一个模型' },
+              ...(inList ? { initial_option: current } : {}),
               options,
             },
             thinkingSelect(thinking),
@@ -195,18 +233,22 @@ export function modelSavedCard(model: string, thinking?: string): object {
   };
 }
 
-/** Thinking level picker form card. */
-export function thinkingCard(current?: string): object {
-  const levels = [
-    'auto',
-    'off',
-    'minimal',
-    'low',
-    'medium',
-    'high',
-    'xhigh',
-    'max',
-  ];
+/**
+ * Thinking level picker form card.
+ *
+ * `supported` 是当前模型的能力集合（缓存里的 `ModelInfo.thinking`）：
+ * - `undefined` = **不知道**（没设模型 / 模型不在缓存里，例如被过滤后直接指定的）
+ *   → 不限制档位，全都放出来；
+ * - `[]` = 模型明确不支持思考强度（本机 328 个模型里 110 个如此）→ 只留「跟随默认」。
+ */
+export function thinkingCard(current?: string, supported?: string[]): object {
+  const cap = supported === undefined ? undefined : new Set(supported.filter(isOmpThinkingLevel));
+  const currentLevel = current && isOmpThinkingLevel(current) ? current : undefined;
+  let levels = OMP_THINKING_LEVELS.filter((lv) => cap === undefined || cap.has(lv));
+  // 当前档位不在支持集合里（换过模型）时也要留在列表里：否则预选只能落到「跟随默认」，
+  // 与标题上写的当前值互相矛盾。
+  if (currentLevel && !levels.includes(currentLevel)) levels = [currentLevel, ...levels];
+  const unsupported = cap !== undefined && cap.size === 0;
   return {
     schema: '2.0',
     config: { summary: { content: '切换思考强度' } },
@@ -217,8 +259,9 @@ export function thinkingCard(current?: string): object {
           text_size: 'heading',
           content:
             `🧠 **思考强度**\n` +
-            `当前：` + (current ? `\`${current}\`` : '_跟随 OMP 默认_') +
-            `\n\n_只作用于当前模型,不影响模型切换_`,
+            `当前：` + (currentLevel ? `\`${currentLevel}\`` : '_跟随 OMP 默认_') +
+            (unsupported ? '（该模型不支持思考强度）' : '') +
+            `\n\n_只作用于当前模型，不影响模型切换_`,
         },
         { tag: 'hr' },
         {
@@ -228,11 +271,10 @@ export function thinkingCard(current?: string): object {
             {
               tag: 'select_static',
               name: 'thinking_level',
-              initial_option: current ?? 'auto',
-              options: levels.map((lv) => ({
-                text: { tag: 'plain_text', content: lv },
-                value: lv,
-              })),
+              placeholder: { tag: 'plain_text', content: '思考强度' },
+              // 预选必须与标题一致：`current` 没设就是「跟随默认」，不再预选 `auto`。
+              initial_option: currentLevel ?? THINKING_FOLLOW_DEFAULT,
+              options: [FOLLOW_DEFAULT_OPTION, ...levels.map(thinkingOption)],
             },
             ...inlineRow([{ element: { tag: 'button', name: 'submit_btn', text: { tag: 'plain_text', content: '切换' }, type: 'primary', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { cmd: 'thinking.submit' } }], } }]),
             ...inlineRow([{ element: { tag: 'button', name: 'cancel_btn', text: { tag: 'plain_text', content: '取消' }, behaviors: [{ type: 'callback', value: { cmd: 'thinking.cancel' } }], } }]),
@@ -244,6 +286,8 @@ export function thinkingCard(current?: string): object {
 }
 
 export function thinkingSavedCard(level: string): object {
+  // 卡片路径也能「回到默认」（`__default`）：这时显示的是跟随默认，不是那个哨兵值。
+  const label = level === THINKING_FOLLOW_DEFAULT ? '_跟随 OMP 默认_' : `\`${level}\``;
   return {
     schema: '2.0',
     config: { summary: { content: '思考强度已切换' } },
@@ -251,7 +295,7 @@ export function thinkingSavedCard(level: string): object {
       elements: [
         {
           tag: 'markdown',
-          content: `✅ **思考强度已设为** \`${level}\``,
+          content: `✅ **思考强度已设为** ${label}`,
           text_size: 'heading',
         },
         { tag: 'markdown', content: '_下一条消息生效。_', text_size: 'notation' },

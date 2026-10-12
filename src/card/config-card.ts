@@ -1,4 +1,5 @@
 import type { MessageReplyMode } from '../config/schema';
+import { escapeMd } from '../utils/text';
 import { inlineRow } from './templates';
 
 export interface ConfigFormOpts {
@@ -225,6 +226,53 @@ export function configCancelledCard(): object {
     config: { summary: { content: '已取消' } },
     body: {
       elements: [{ tag: 'markdown', content: '已取消,未做任何修改。' }],
+    },
+  };
+}
+
+/**
+ * 提交被拒绝（数值非法 / 越界等）：逐条说清**哪一项、为什么不合法**，不写盘。
+ *
+ * 与「已取消」分开：旧行为是静默 clamp（`999` → 50、`abc` → 旧值）或吞掉解析错误，
+ * 卡片却回「✅ 偏好已保存」—— 用户以为改了，其实没改（或被改成了别的值）。
+ * 这里不原地替换表单卡（那会连用户其它改动一起丢掉），而是另发一张卡。
+ */
+export function configInvalidCard(errors: string[]): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '偏好未保存' } },
+    body: {
+      elements: [
+        { tag: 'markdown', content: '⚠️ **提交被拒绝，未做任何修改**', text_size: 'heading' },
+        { tag: 'markdown', content: errors.map((e) => `· ${escapeMd(e)}`).join('\n') },
+        {
+          tag: 'markdown',
+          content: '_原来的卡片还能继续改：修正上面的输入再点「提交」即可。_',
+          text_size: 'notation',
+        },
+      ],
+    },
+  };
+}
+
+/**
+ * 写盘失败：说清失败原因，不假装「已取消」（旧行为把卡换成
+ * `configCancelledCard` 并吞掉异常，用户以为命令被忽略了）。
+ */
+export function configSaveFailedCard(reason: string): object {
+  return {
+    schema: '2.0',
+    config: { summary: { content: '偏好保存失败' } },
+    body: {
+      elements: [
+        { tag: 'markdown', content: '❌ **偏好保存失败，未生效**', text_size: 'heading' },
+        { tag: 'markdown', content: `原因：${escapeMd(reason)}` },
+        {
+          tag: 'markdown',
+          content: '_配置未改动，请稍后重试（日志在 `~/.feishu-omp-bridge/logs/`）。_',
+          text_size: 'notation',
+        },
+      ],
     },
   };
 }

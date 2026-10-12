@@ -231,7 +231,12 @@ describe('feishu_send_card', () => {
     const cardCall = cardCreated[0] as { data: { type: string; data: string } };
     expect(cardCall.data.type).toBe('card_json');
     const card = JSON.parse(cardCall.data.data);
-    const value = card.body.elements[1].columns[0].elements[0].behaviors[0].value;
+    // agent 卡自本批起首元素是 heading（标题也进 summary），按钮行不再是 elements[1]。
+    expect(card.body.elements[0]).toMatchObject({ tag: 'markdown', text_size: 'heading' });
+    const buttonRow = card.body.elements.find(
+      (e: { columns?: unknown[] }) => Array.isArray(e.columns),
+    ) as { columns: Array<{ elements: Array<{ behaviors: Array<{ value: unknown }> }> }> };
+    const value = buttonRow.columns[0]!.elements[0]!.behaviors[0]!.value;
     expect(value).toMatchObject({ action: 'deploy', __codex_cb: true, __omp_scope: 'chat-1' });
     expect(typeof value.__omp_iat).toBe('number');
     // 没有 activeRuns（无在跑 run）时不盖 run 标记。

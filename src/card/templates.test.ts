@@ -91,6 +91,53 @@ describe('releaseCard', () => {
     );
     expect(out).toContain('已发布上线');
   });
+
+  it('renders the drain wait as the current step, with count and cap', () => {
+    const card = releaseCard({
+      phase: 'running',
+      steps: [
+        { name: 'typecheck', status: 'ok' },
+        { name: 'test', status: 'ok' },
+        { name: 'build', status: 'ok' },
+      ],
+      drain: { runningCount: 3, timeoutMs: 5 * 60_000 },
+    });
+    assertNoBareColumns(card);
+    const out = JSON.stringify(card);
+    // 排空阶段不再是「三个步骤全打勾、后面空着」的假死画面。
+    expect(out).toContain('⏳ 等待 3 个在跑的会话收尾（最多 5 分钟）');
+    expect(out).toContain('✅ 构建');
+    expect(out).not.toContain('⭕️ 构建');
+  });
+
+  it('keeps the drain step visible when no pipeline step reported yet', () => {
+    const out = JSON.stringify(
+      releaseCard({
+        phase: 'running',
+        steps: [],
+        drain: { runningCount: 1, timeoutMs: 60_000 },
+      }),
+    );
+    expect(out).toContain('等待 1 个在跑的会话收尾（最多 1 分钟）');
+    expect(out).toContain('column_set');
+  });
+});
+describe('releaseCard force cost', () => {
+  it('spells out how many running runs a forced restart cuts off', () => {
+    const out = JSON.stringify(
+      releaseCard({ steps: [], phase: 'restarting', forced: true, interruptedCount: 2 }),
+    );
+    expect(out).toContain('强制重启');
+    expect(out).toContain('中断 2 个在跑的会话');
+  });
+
+  it('says nothing was running instead of 「中断 0 个」', () => {
+    const out = JSON.stringify(
+      releaseCard({ steps: [], phase: 'restarting', forced: true, interruptedCount: 0 }),
+    );
+    expect(out).toContain('无在跑会话');
+    expect(out).not.toContain('中断 0 个');
+  });
 });
 describe('restartCard', () => {
   it('renders starting, done, and failed states as distinct headings', () => {
@@ -102,6 +149,34 @@ describe('restartCard', () => {
   it('marks a forced restart, so a cut-off run is not read as an anomaly', () => {
     expect(JSON.stringify(restartCard('starting', undefined, { forced: true }))).toContain('强制重启');
     expect(JSON.stringify(restartCard('starting'))).not.toContain('强制重启');
+  });
+
+  it('shows the drain wait with the running count and cap', () => {
+    const out = JSON.stringify(
+      restartCard('draining', undefined, { runningCount: 2, timeoutMs: 5 * 60_000 }),
+    );
+    expect(out).toContain('正在等待 2 个在跑的会话收尾');
+    expect(out).toContain('收尾');
+    expect(out).toContain('最多 5 分钟');
+  });
+
+  it('says nothing about waiting when no run is in flight', () => {
+    const out = JSON.stringify(restartCard('starting', undefined, { runningCount: 0 }));
+    expect(out).toContain('服务即将重启');
+    expect(out).not.toContain('收尾');
+    expect(out).not.toContain('等待');
+  });
+
+  it('writes the interrupted count for force, and no 「中断 0 个」', () => {
+    const busy = JSON.stringify(
+      restartCard('starting', undefined, { forced: true, runningCount: 3 }),
+    );
+    expect(busy).toContain('强制重启');
+    expect(busy).toContain('中断 3 个在跑的会话');
+
+    const idle = JSON.stringify(restartCard('starting', undefined, { forced: true, runningCount: 0 }));
+    expect(idle).toContain('无在跑会话');
+    expect(idle).not.toContain('中断 0 个');
   });
 });
 

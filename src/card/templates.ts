@@ -624,6 +624,14 @@ export interface ReleaseProgress {
   phase: 'running' | 'restarting' | 'success' | 'failed';
   /** `force`：用户显式跳过 run 排空，卡片上写明，免得把中断当成异常。 */
   forced?: boolean;
+  /**
+   * 排空阶段：流水线已跑完，正在等在跑的 run 收尾 —— 当作**当前步骤**渲染，
+   * 否则卡片停在「typecheck ✅、后面全空」，用户读到的就是卡死。数量由
+   * `waitForRunsToDrain` 的回调刷新。
+   */
+  drain?: { runningCount: number; timeoutMs: number };
+  /** `force`：跳过排空、重启时会被中断的在跑 run 数（0 时不写数字）。 */
+  interruptedCount?: number;
   /** Failure details from the failing step. */
   failStep?: ReleaseStepName;
   failNote?: string;
@@ -636,6 +644,28 @@ const STEP_MARK: Record<ReleaseStepState, string> = {
   ok: '✅',
   failed: '❌',
 };
+
+/**
+ * 排空等待的时限文案。`timeoutMs` 省略时的兜底值必须与
+ * `commands/lifecycle/release.ts` 的 `RELEASE_DRAIN_MAX_MS` 一致 —— 卡片层不反向
+ * import 命令层（会成环），所以两处常量要一起改。
+ */
+const DRAIN_DEFAULT_TIMEOUT_MS = 5 * 60_000;
+
+function drainEtaLabel(timeoutMs: number): string {
+  const minutes = timeoutMs / 60_000;
+  return `最多 ${Number.isInteger(minutes) ? minutes : minutes.toFixed(1)} 分钟`;
+}
+
+/**
+ * `force` 重启的代价文案。0 个在跑时**不写**「中断 0 个」这种废话（读起来像故障），
+ * 改成明说当前无在跑会话。`/release` 与 `/restart` 共用同一句话。
+ */
+function forceInterruptNote(runningCount: number): string {
+  return runningCount > 0
+    ? `_强制重启：立即中断 ${runningCount} 个在跑的会话，服务马上重启。_`
+    : '_强制重启：当前无在跑会话，服务马上重启。_';
+}
 
 export function releaseCard(progress: ReleaseProgress): RunCard {
   const icon =
@@ -657,6 +687,16 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
   const steps = progress.steps.map((s) =>
     md(`${STEP_MARK[s.status]} ${RELEASE_STEP_LABEL[s.name]}`),
   );
+  // 排空等待也是「当前步骤」：不加这一行，卡片就停在所有流水线步骤打勾、
+  // 后面空着的样子 —— 正是用户以为发布卡死的画面。
+  const drain = progress.drain;
+  if (drain) {
+    steps.push(
+      md(
+        `${STEP_MARK.running} 等待 ${drain.runningCount} 个在跑的会话收尾（${drainEtaLabel(drain.timeoutMs)}）`,
+      ),
+    );
+  }
   const elements: object[] = [
     md(`${icon} ${title}`, 'heading'),
     { tag: 'hr' },
@@ -683,7 +723,7 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
     elements.push(
       md(
         progress.forced
-          ? '_强制重启：未等待在跑的 run 收尾（任务会被中断）。_'
+          ? forceInterruptNote(progress.interruptedCount ?? 0)
           : '_新进程启动后会确认上线。_',
         'notation',
       ),
@@ -691,9 +731,11 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
   } else {
     elements.push(
       md(
-        progress.forced
-          ? '_typecheck → test → build → 强制重启（不等在跑的 run）_'
-          : '_typecheck → test → build → 自动重启_',
+        drain
+          ? '_排空完成后自动重启加载新产物。_'
+          : progress.forced
+            ? '_typecheck → test → build → 强制重启（不等在跑的 run）_'
+            : '_typecheck → test → build → 自动重启_',
         'notation',
       ),
     );
@@ -716,11 +758,14 @@ export function staleNoticeCard(): object {
   };
 }
 /** /restart status card. A real launchd restart leaves the starting card in
- * place; the new process supplies the separate boot confirmation. */
+ * place; the new process supplies the separate boot confirmation.
+ *
+ * `draining` is the visible waiting state: 非 force 时要等在跑的 run 收尾
+ * （最长 5 分钟），卡片只说「正在重启」会让用户以为卡死。 */
 export function restartCard(
-  phase: 'starting' | 'done' | 'failed',
+  phase: 'draining' | 'starting' | 'done' | 'failed',
   error?: string,
-  options: { forced?: boolean } = {},
+  options: { forced?: boolean; runningCount?: number; timeoutMs?: number } = {},
 ): object {
   if (phase === 'done') {
     return shell('🚀 重启完成', [
@@ -734,11 +779,21 @@ export function restartCard(
       md(error ? escapeMd(error) : '_bot 仍在线，请稍后重试。_', 'notation'),
     ]);
   }
+  if (phase === 'draining') {
+    const running = options.runningCount ?? 0;
+    return shell('⏳ 等待在跑的会话收尾', [
+      md(`⏳ **正在等待 ${running} 个在跑的会话收尾**`, 'heading'),
+      md(
+        `_${drainEtaLabel(options.timeoutMs ?? DRAIN_DEFAULT_TIMEOUT_MS)}；收尾结束后立即重启服务。_`,
+        'notation',
+      ),
+    ]);
+  }
   return shell('🔄 正在重启', [
     md('🔄 **正在重启**', 'heading'),
     md(
       options.forced
-        ? '_强制重启：未等待在跑的 run 收尾（任务会被中断），立即重启。_'
+        ? forceInterruptNote(options.runningCount ?? 0)
         : '_服务即将重启；重新上线后会继续接收消息。_',
       'notation',
     ),

@@ -115,6 +115,15 @@ export class ActiveRuns {
   }
 
   /**
+   * 在跑 + 已占位的 run 数。`/release`、`/restart` 的排空等待要在卡片上写清
+   * 「还在等几个会话收尾」（以及 `force` 会中断几个）——只说「正在等待」正是
+   * 用户以为卡死的原因。计数口径与 {@link idle} 一致。
+   */
+  runningCount(): number {
+    return this.handles.size + this.claims.size;
+  }
+
+  /**
    * Whether any run is active for this chat across scopes: the bare chat
    * id (p2p / plain group) or any topic scope `${chatId}:${threadId}`.
    * The scheduler stores tasks by bare chat id, so its busy-check must

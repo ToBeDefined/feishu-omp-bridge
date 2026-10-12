@@ -9,7 +9,11 @@ import {
   type ReleaseStepName,
 } from '../../release/run';
 import { clearOnlineNotice, markOnlineNotice } from '../../bot/online-notify';
-import { releaseCard, type ReleaseStepState } from '../../card/templates';
+import {
+  releaseCard,
+  type ReleaseProgress,
+  type ReleaseStepState,
+} from '../../card/templates';
 import { sendManagedCard, updateManagedCard } from '../../card/managed';
 
 let inFlight = false;
@@ -18,19 +22,67 @@ let inFlight = false;
  * 但会把它写进日志与卡片，免得用户以为「什么都没发生」。 */
 export const RELEASE_DRAIN_MAX_MS = 5 * 60_000;
 
+/** 轮询间隔：只在空闲判断上花的时间，不是卡片更新频率（见 `DRAIN_REPORT_MIN_MS`）。 */
+const DRAIN_POLL_MS = 500;
+
+/** `onWait` 的最小上报间隔：卡片 patch 有配额，不能每个轮询都写一遍。 */
+const DRAIN_REPORT_MIN_MS = 2000;
+
+/** `waitForRunsToDrain` 需要的 activeRuns 视图（`ActiveRuns` 直接满足）。 */
+export interface DrainableRuns {
+  idle(): boolean;
+  runningCount(): number;
+}
+
+/** 排空等待的进度快照，喂给 {@link DrainOptions.onWait}。 */
+export interface DrainProgress {
+  /** 当前在跑的 run 数（含已占位未起跑）。 */
+  runningCount: number;
+  /** 从开始等待算起已经过去的毫秒数。 */
+  waitedMs: number;
+  /** 本次等待的上限毫秒数。 */
+  timeoutMs: number;
+}
+
+export interface DrainOptions {
+  /**
+   * 等待期间的进度回调：进入等待时立刻一次，之后**至少间隔
+   * {@link DRAIN_REPORT_MIN_MS}** 才再报一次。调用方据此更新卡片，
+   * 不能等半天卡片上一片空白。
+   */
+  onWait?: (progress: DrainProgress) => void | Promise<void>;
+}
+
 /**
  * 等到进程内没有在跑的 run 再重启。kickstart 会连带杀掉正在执行的 OMP run：
  * 那条消息已经被 ack、队列又只在内存里，重启后就**彻底丢了**（实测一次发布
  * 吞掉一个提问），还会给它的卡片补一条「进程中断」。
+ *
+ * `options.onWait` 让这段最长 5 分钟的等待在卡片上可见（含在跑数量与已等时长）。
  */
 export async function waitForRunsToDrain(
-  activeRuns: { idle(): boolean },
+  activeRuns: DrainableRuns,
   timeoutMs: number = RELEASE_DRAIN_MAX_MS,
+  options: DrainOptions = {},
 ): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+  const { onWait } = options;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  // 负数起步：第一次进循环必须立即上报，之后才按节流间隔走。
+  let lastReportAt = -Infinity;
   while (!activeRuns.idle()) {
-    if (Date.now() >= deadline) return false;
-    await new Promise((r) => setTimeout(r, 500));
+    const now = Date.now();
+    if (now - lastReportAt >= DRAIN_REPORT_MIN_MS) {
+      lastReportAt = now;
+      await onWait?.({
+        runningCount: activeRuns.runningCount(),
+        waitedMs: now - startedAt,
+        timeoutMs,
+      });
+    }
+    if (now >= deadline) return false;
+    // Executor form: tsconfig lib 是 ES2022，`Promise.withResolvers` 需要 Node 22+（本包支持 20+）。
+    await new Promise((r) => setTimeout(r, DRAIN_POLL_MS));
   }
   return true;
 }
@@ -59,8 +111,17 @@ async function handleRelease(args: string, ctx: CommandContext): Promise<void> {
   inFlight = true;
   const steps = RELEASE_STEPS.map((s) => ({ name: s.name, status: 'pending' as ReleaseStepState }));
   let messageId: string | undefined;
+  // 排空阶段的状态：由 waitForRunsToDrain 的回调刷新，push 时带上。
+  let drain: ReleaseProgress['drain'];
+  // force 时重启会中断的在跑 run 数：在决定跳过排空的那一刻数，卡片上写明代价。
+  let interruptedCount: number | undefined;
   const push = async (): Promise<void> => {
-    const card = releaseCard({ steps, phase: 'running', forced: force });
+    const card = releaseCard({
+      steps,
+      phase: 'running',
+      forced: force,
+      ...(drain ? { drain } : {}),
+    });
     if (!messageId) {
       const sent = await sendManagedCard(ctx.channel, ctx.msg.chatId, card, ctx.msg.messageId, {
         track: true,
@@ -84,6 +145,7 @@ async function handleRelease(args: string, ctx: CommandContext): Promise<void> {
         steps,
         phase,
         forced: force,
+        ...(interruptedCount !== undefined ? { interruptedCount } : {}),
         ...(phase === 'failed'
           ? { failStep: failingStep, failNote, output }
           : {}),
@@ -110,10 +172,21 @@ async function handleRelease(args: string, ctx: CommandContext): Promise<void> {
     // 重启后无法恢复（等于静默丢失）。
     if (force) {
       // 显式强制：不等在跑的 run 收尾 —— kickstart 会立刻杀掉它们（消息只在内存
-      // 队列里，重启后丢失）。日志记下当时是否真有 run，便于事后对账。
-      log.info('command', 'release-force', { busy: !ctx.activeRuns.idle() });
+      // 队列里，重启后丢失）。数量写进卡片，免得用户不知道这次 force 的代价。
+      interruptedCount = ctx.activeRuns.runningCount();
+      log.info('command', 'release-force', { runningCount: interruptedCount });
     } else {
-      const drained = await waitForRunsToDrain(ctx.activeRuns);
+      // 排空阶段必须自己在卡上留痕：进度卡本来停在「typecheck ✅、test/build 全空」，
+      // 用户看不出还在等在跑的 run。数量节流刷新（同一个数不重复 patch）。
+      let shownCount = -1;
+      const drained = await waitForRunsToDrain(ctx.activeRuns, RELEASE_DRAIN_MAX_MS, {
+        onWait: async ({ runningCount, timeoutMs }) => {
+          if (runningCount === shownCount) return;
+          shownCount = runningCount;
+          drain = { runningCount, timeoutMs };
+          await push().catch((err) => log.fail('command', err, { step: 'release-card' }));
+        },
+      });
       if (!drained) {
         log.warn('command', 'release-drain-timeout', { maxMs: RELEASE_DRAIN_MAX_MS });
       }

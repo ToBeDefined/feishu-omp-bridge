@@ -1,6 +1,6 @@
 import type { CommandContext, Handler } from '../index';
 import { RESTART_FLUSH_GRACE_MS, parseForceArg, reply } from '../shared';
-import { waitForRunsToDrain } from './release';
+import { RELEASE_DRAIN_MAX_MS, waitForRunsToDrain } from './release';
 import { log } from '../../core/logger';
 import { clearOnlineNotice, markOnlineNotice } from '../../bot/online-notify';
 import { restartCard } from '../../card/templates';
@@ -17,13 +17,20 @@ async function handleRestart(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   const { force } = parsed;
-  log.info('command', 'restart', { scope: ctx.scope, force });
+  const runningCount = ctx.activeRuns.runningCount();
+  log.info('command', 'restart', { scope: ctx.scope, force, runningCount });
   let messageId: string | undefined;
   try {
     const sent = await sendManagedCard(
       ctx.channel,
       ctx.msg.chatId,
-      restartCard('starting', undefined, { forced: force }),
+      // 非 force 且真有 run 在跑时先说清在等谁 —— 最长 5 分钟，只写「正在重启」
+      // 用户只会以为卡死。没有在跑的 run 就还是原来的「服务即将重启」。
+      restartCard(!force && runningCount > 0 ? 'draining' : 'starting', undefined, {
+        forced: force,
+        runningCount,
+        timeoutMs: RELEASE_DRAIN_MAX_MS,
+      }),
       ctx.msg.messageId,
       { track: true, kind: 'restart' },
     );
@@ -37,9 +44,30 @@ async function handleRestart(args: string, ctx: CommandContext): Promise<void> {
     // 那条消息就彻底丢了。与 /release 同一处理。
     if (force) {
       // 显式强制：立即重启，不等在跑的 run（它们会被 kickstart 杀掉）。
-      log.info('command', 'restart-force', { busy: !ctx.activeRuns.idle() });
-    } else {
-      await waitForRunsToDrain(ctx.activeRuns);
+      log.info('command', 'restart-force', { runningCount });
+    } else if (runningCount > 0) {
+      // 等待可见：数量变化时刷新卡片（节流在 waitForRunsToDrain 里，≥2s 一次）。
+      // 起手卡已经写着当前数量，所以从它开始比：进等待的第一次回调不重复 patch。
+      let shownCount = runningCount;
+      const updateWaitCard = async (count: number): Promise<void> => {
+        if (!messageId || count === shownCount) return;
+        shownCount = count;
+        await updateManagedCard(
+          ctx.channel,
+          messageId,
+          restartCard('draining', undefined, { runningCount: count, timeoutMs: RELEASE_DRAIN_MAX_MS }),
+        ).catch((err) => log.fail('command', err, { step: 'restart-card' }));
+      };
+      const drained = await waitForRunsToDrain(ctx.activeRuns, RELEASE_DRAIN_MAX_MS, {
+        onWait: ({ runningCount: current }) => updateWaitCard(current),
+      });
+      if (!drained) log.warn('command', 'restart-drain-timeout', { maxMs: RELEASE_DRAIN_MAX_MS });
+      // 排空结束、真要重启了：切回「服务即将重启」，别让等待态留在屏幕上。
+      if (messageId) {
+        await updateManagedCard(ctx.channel, messageId, restartCard('starting')).catch((err) =>
+          log.fail('command', err, { step: 'restart-card' }),
+        );
+      }
     }
     // The new process sends the boot confirmation for a real launchd restart.
     await markOnlineNotice(ctx.msg.chatId, 'notify', undefined, messageId);

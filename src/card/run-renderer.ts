@@ -325,15 +325,11 @@ function statusLine(state: RunState, now: number): string {
   );
 }
 
-/** 用量行（只有 token 与费用）：已用时长归下面的状态行，别重复。 */
+/** 用量行（只有 token）：已用时长归下面的状态行；花费不再显示（用户要求）。 */
 function usageLine(state: RunState): string | undefined {
   const usage = state.usage;
   if (!usage) return undefined;
-  const parts: string[] = [];
-  const tokens = tokensText(usage);
-  if (tokens) parts.push(tokens);
-  if (usage.costUsd !== undefined) parts.push(`💰 ${formatCost(usage.costUsd)}`);
-  return parts.length > 0 ? parts.join(' · ') : undefined;
+  return tokensText(usage);
 }
 
 function footerLabel(status: FooterStatus): string | undefined {
@@ -369,10 +365,9 @@ export function formatDuration(ms: number): string {
   return rest === 60 ? `${mins + 1} 分` : `${mins} 分 ${rest} 秒`;
 }
 
-/** Bottom notation line: 用时 / token 数 / 费用, whichever we actually have —
- *  no usage event means no token or cost text, and nothing at all means no
- *  line (never an empty placeholder). While running the elapsed clock already
- *  ticks in the header row, so a live card only adds tokens/cost here. */
+/** Bottom notation line: 用时 / token 数, whichever we actually have —
+ *  no usage event means no token text, and nothing at all means no line (never
+ *  an empty placeholder). 花费不显示（用户要求：过程中与结束都不要）。 */
 function usageNote(state: RunState, now: number): object | undefined {
   const parts: string[] = [];
   if (state.terminal !== 'running') {
@@ -383,7 +378,6 @@ function usageNote(state: RunState, now: number): object | undefined {
   if (usage) {
     const tokens = tokensText(usage);
     if (tokens) parts.push(tokens);
-    if (usage.costUsd !== undefined) parts.push(`💰 ${formatCost(usage.costUsd)}`);
   }
   return parts.length > 0 ? noteMd(parts.join(' · ')) : undefined;
 }
@@ -409,14 +403,6 @@ export function formatTokens(n: number): string {
 function trimZero(v: number): string {
   const s = v.toFixed(1);
   return s.endsWith('.0') ? s.slice(0, -2) : s;
-}
-
-/** 0.01234 → `$0.0123`; sub-cent amounts do not round to a free-looking $0.0000.
- *  Shared with /doctor's footer. */
-export function formatCost(usd: number): string {
-  if (usd === 0) return '$0';
-  if (usd < 0.0001) return '<$0.0001';
-  return `$${usd.toFixed(4)}`;
 }
 
 function uiContextPanel(ui: UiState, tables: TableBudget): object | undefined {

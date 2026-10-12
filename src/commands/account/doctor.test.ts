@@ -112,7 +112,7 @@ describe('/doctor 结果卡用量行', () => {
     const json = createdCard(ctx);
     expect(json).toContain('⏱ 用时');
     expect(json).toContain('🧮 12.3k tok');
-    expect(json).toContain('💰 $0.0123');
+    expect(json).not.toContain('💰'); // 花费不显示
     expect(activeRuns.has('oc_1')).toBe(false);
   });
 

@@ -56,13 +56,13 @@ It fits these situations:
 - Shows tool-call starts, incremental updates and final results.
 - Shows token usage (when OMP RPC reports usage).
 - Supports interruption: `/stop` sends `abort` to OMP and then terminates the process after a grace period.
-- Keeps a bottom control block on the running card: a divider, then the token/cost line and the live
+- Keeps a bottom control block on the running card: a divider, then the token line and the live
   status line (`🧠 正在思考 · ⏱ 用时 1 分 32 秒`) stacked on the left, with ⏹ stop vertically centred
   to their right. When a reply is split into several cards, only the newest page shows that block —
   earlier pages carry just their content plus a「⬇️ 已分页，下一条消息继续」 note.
-- Closes with a one-line footer — elapsed time, tokens (in/out) and cost, whichever OMP reports;
-  failures, idle timeouts and interruptions render as a bold result line **above** the body instead of
-  a small grey note at the end.
+- Closes with a one-line footer — elapsed time and tokens (in/out), whichever OMP reports. Cost is
+  deliberately not shown (neither while running nor at the end). Failures, idle timeouts and
+  interruptions render as a bold result line **above** the body instead of a small grey note at the end.
 - Re-renders about every 5 s while running, so a long tool call (a full test suite) no longer looks
   frozen. The card carries **no title**: the first line is the answer itself (or the failure headline).
   The same usage footer shows up on the `/doctor` card.

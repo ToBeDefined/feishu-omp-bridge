@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import type { AgentEvent } from '../../agent/types';
 import { getAgentStopGraceMs } from '../../config/schema';
-import { formatCost, formatDuration, formatTokens, renderCard } from '../../card/run-renderer';
+import { formatDuration, formatTokens, renderCard } from '../../card/run-renderer';
 import {
   finalizeIfRunning,
   initialState,
@@ -138,7 +138,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
       if (usage && (usage.inputTokens !== undefined || usage.outputTokens !== undefined)) {
         parts.push(`🧮 ${formatTokens((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0))} tok`);
       }
-      if (usage?.costUsd !== undefined) parts.push(`💰 ${formatCost(usage.costUsd)}`);
+      // 花费不显示（与运行卡一致：过程中与结束都不要）。
       return parts.join(' · ');
     };
     const render = (state: RunState): object => renderCard(state, { bottomNote: footerLine() });

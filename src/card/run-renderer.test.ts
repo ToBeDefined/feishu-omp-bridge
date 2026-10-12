@@ -313,7 +313,8 @@ describe('renderCard', () => {
     const lines = controlLines(renderCard(state));
     expect(lines).toHaveLength(2);
     expect(lines[0]).toContain('tok');
-    expect(lines[0]).toContain('💰');
+    expect(lines[0]).toContain('🧮');
+    expect(lines[0]).not.toContain('💰'); // 花费不显示
     expect(lines[1]).toContain('正在输出');
     expect(lines[1]).toContain('⏱ 用时 12.4s');
     expect(lines[1]).not.toContain('tok');
@@ -348,8 +349,8 @@ describe('renderCard', () => {
     // 同一状态作为「最新一页」渲染时，脚注照旧。
     const last = JSON.stringify(renderCard(state));
     expect(last).toContain('⏱ 用时 12.4s');
-    expect(last).toContain('🧮 2.3k tok');
-    expect(last).toContain('💰 $0.5000');
+    expect(last).toContain('🧮 2.3k tok（入 2k / 出 300）');
+    expect(last).not.toContain('💰'); // 花费一律不显示
   });
 
   it('没有 usage 时底部控制区只留状态行（不留空占位）', () => {
@@ -461,7 +462,7 @@ describe('renderCard', () => {
           renderCard({ ...base, usage: { inputTokens: 11_100, outputTokens: 1_200, costUsd: 0.01234 } }),
         ),
       ),
-    ).toContain('⏱ 用时 12.4s · 🧮 12.3k tok（入 11.1k / 出 1.2k） · 💰 $0.0123');
+    ).toContain('⏱ 用时 12.4s · 🧮 12.3k tok（入 11.1k / 出 1.2k）');
 
     // 脚注排在正文之后。
     const elements = cardElements(renderCard({ ...base, usage: { costUsd: 0.01234 } }));
@@ -498,13 +499,13 @@ describe('renderCard', () => {
     };
     const lines = controlLines(renderCard(state));
     expect(lines).toHaveLength(2);
-    // 用量行只有 token 与费用，用时留给下面那行状态。
-    expect(lines[0]).toBe('🧮 2.3k tok（入 2k / 出 300） · 💰 $0.5000');
+    // 用量行给 token 总量与入/出明细（但不再有花费），用时留给下面那行状态。
+    expect(lines[0]).toBe('🧮 2.3k tok（入 2k / 出 300）');
     expect(lines[0]).not.toContain('用时');
     expect(lines[1]).toContain('⏱ 用时 12.4s');
   });
 
-  it('usage 事件经 reduce 进状态后，脚注就带上 token 与费用', () => {
+  it('usage 事件经 reduce 进状态后，脚注就带上 token', () => {
     // batch 收到 usage 后不再只写日志：reduce 进 session.state，卡的终态脚注
     // 因此有东西可显示（这里一路跑到 done，验证接得上）。
     const startedAt = Date.now() - 12_400;
@@ -514,7 +515,7 @@ describe('renderCard', () => {
     state = reduce(state, { type: 'done' });
     expect(notationMarkdown(cardElements(renderCard(state)))).toContainEqual(
       expect.stringMatching(
-        /^⏱ 用时 12\.\ds · 🧮 12\.3k tok（入 11\.1k \/ 出 1\.2k） · 💰 \$0\.0123$/,
+        /^⏱ 用时 12\.\ds · 🧮 12\.3k tok（入 11\.1k \/ 出 1\.2k）$/,
       ),
     );
   });

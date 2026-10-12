@@ -124,7 +124,7 @@ describe('renderCard', () => {
           ? [JSON.stringify((e as { header: { title: { content: string } } }).header)]
           : [],
       )
-      .filter((t) => t.includes('工具调用'));
+      .filter((t) => t.includes('工具'));
     expect(titles).toHaveLength(2);
     expect(titles[0]).toContain('×1');
     expect(titles[1]).toContain('×2');
@@ -189,7 +189,7 @@ describe('renderCard', () => {
       border: { color: 'red' },
       header: {
         // Merged title: thinking first, tools last (failure count at the end).
-        title: { content: '🧠 **思考** ×1 · 🛠 **工具调用** ×3（1 失败）' },
+        title: { content: '🧠 **思考** ×1 · 🛠 **工具** ×3（1 失败）' },
       },
       elements: [
         // Chronological inside: the thinking segment came before the calls.
@@ -206,19 +206,19 @@ describe('renderCard', () => {
     expect(groupJson).toContain('**Error**');
   });
 
-  it('工具术语全卡统一为「工具调用」：合并行与单类行的写法不再打架', () => {
-    // 合并行曾是「🧠 思考 ×N · 🛠 工具 ×M」，单类行是「🛠 工具调用 ×N」——
-    // 同一个概念两个词，用户以为在说两件事。
+  it('工具术语全卡统一为「工具」：合并行与单类行用同一个短标签', () => {
+    // 曾经合并行是「🛠 工具」、单类行是「🛠 工具调用」；统一成「工具调用」后用户
+    // 又要求用更短的「工具」，所以现在的约束是：全卡只有一个词，且它很短。
     const state = longRunState(0);
     state.blocks.push({ kind: 'thinking', content: '先看调用链', active: false });
     state.blocks.push({ kind: 'tool', tool: tool(1) });
     state.blocks.push({ kind: 'text', content: '中间段落', streaming: false });
     state.blocks.push({ kind: 'tool', tool: tool(2) });
     const json = JSON.stringify(renderCard({ ...state, terminal: 'done', footer: null }));
-    expect(json).toContain('🧠 **思考** ×1 · 🛠 **工具调用** ×1');
-    expect(json).toContain('🛠 **工具调用** ×1');
-    // 旧词（没有「调用」二字）在任何面板标题里都不该再出现。
-    expect(json).not.toContain('🛠 **工具** ×');
+    expect(json).toContain('🧠 **思考** ×1 · 🛠 **工具** ×1');
+    expect(json).toContain('🛠 **工具** ×1');
+    // 长词「工具调用」在任何面板标题里都不该再出现。
+    expect(json).not.toContain('工具调用** ×');
     // 巡检：工具箱 emoji 全仓未使用，卡片也不引入。
     expect(json).not.toContain('🧰');
   });
@@ -239,13 +239,13 @@ describe('renderCard', () => {
       { kind: 'tool', tool: tool(2) },
     ]);
     expect(toolsOnly).toHaveLength(1);
-    expect(toolsOnly[0]).toContain('工具调用** ×2');
+    expect(toolsOnly[0]).toContain('工具** ×2');
     expect(toolsOnly[0]).not.toContain('思考过程');
 
     const thinkingOnly = panelsOf([{ kind: 'thinking', content: '只有一个思考段', active: false }]);
     expect(thinkingOnly).toHaveLength(1);
     expect(thinkingOnly[0]).toContain('思考过程');
-    expect(thinkingOnly[0]).not.toContain('工具调用');
+    expect(thinkingOnly[0]).not.toContain('工具');
   });
 
   it('renders a long text block in full (no silent truncation — reduce splits it first)', () => {
@@ -562,7 +562,7 @@ describe('renderCard', () => {
       });
     // [0] the standalone thinking segment; [1] the merged tools+thinking row.
     expect(panelTitles[0]).toContain('思考过程');
-    expect(panelTitles[1]).toContain('🧠 **思考** ×1 · 🛠 **工具调用** ×1');
+    expect(panelTitles[1]).toContain('🧠 **思考** ×1 · 🛠 **工具** ×1');
     expect(longMarkdown(elements, 'A 的结论')).toBeDefined();
     expect(longMarkdown(elements, 'B 的结论')).toBeDefined();
   });

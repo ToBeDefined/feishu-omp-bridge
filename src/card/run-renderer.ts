@@ -66,7 +66,7 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
 
   // Answer text renders inline; a contiguous stretch of process elements
   // (tool runs + thinking segments with no text in between) collapses into
-  // ONE outer row —「🧠 思考 ×N · 🛠 工具调用 ×M」when both kinds are
+  // ONE outer row —「🧠 思考 ×N · 🛠 工具 ×M」when both kinds are
   // present, or the plain tool/thinking row when only one kind is.
   const bodyElements: object[] = [];
   for (const op of collectOps(state.blocks)) {
@@ -194,8 +194,8 @@ function collectOps(blocks: Block[]): RenderOp[] {
 /**
  * Render one process stretch as a single outer row.
  *
- * Single kind → the plain row (「🛠 工具调用 ×N」/「🧠 思考过程」), unchanged.
- * Both kinds → one merged row titled「🧠 思考 ×N · 🛠 工具调用 ×M」whose
+ * Single kind → the plain row (「🛠 工具 ×N」/「🧠 思考过程」), unchanged.
+ * Both kinds → one merged row titled「🧠 思考 ×N · 🛠 工具 ×M」whose
  * children are the individual calls and thinking segments IN CHRONOLOGICAL
  * ORDER (so tool,thinking,tool reads top-to-bottom inside one group instead
  * of stacking three separate rows).
@@ -215,9 +215,9 @@ function renderProcessRun(items: ProcessItem[], tables: TableBudget): object {
   // Thinking first, tools last: the stretch usually opens with reasoning, and
   // trailing the tool count lets its failure count sit at the end of the
   // title instead of dangling next to an unrelated count. The noun is
-  // 「工具调用」 — the same word the tools-only row uses.
+  // 「工具」 — 与只有工具的那种行用同一个词（用户要求短标签）。
   return collapsiblePanel({
-    title: `🧠 **思考** ×${thinkingCount} · 🛠 **工具调用** ×${toolCount}${suffix}`,
+    title: `🧠 **思考** ×${thinkingCount} · 🛠 **工具** ×${toolCount}${suffix}`,
     expanded: false,
     border: failed > 0 ? 'red' : 'grey',
     elements: items.flatMap((it) =>
@@ -263,13 +263,13 @@ function reasoningPanel(content: string, active: boolean, tables: TableBudget): 
   });
 }
 
-/** Outer「🛠 工具调用」group: one collapsed row for a burst of consecutive
+/** Outer「🛠 工具」group: one collapsed row for a burst of consecutive
  * tool calls. Red border when any call failed; the count shows in the title. */
 function toolGroupPanel(tools: ToolEntry[]): object {
   const failed = tools.filter((t) => t.status === 'error').length;
   const suffix = failed > 0 ? `（${failed} 失败）` : '';
   return collapsiblePanel({
-    title: `🛠 **工具调用** ×${tools.length}${suffix}`,
+    title: `🛠 **工具** ×${tools.length}${suffix}`,
     expanded: false,
     border: failed > 0 ? 'red' : 'grey',
     elements: tools.map((t) => toolPanel(t)),

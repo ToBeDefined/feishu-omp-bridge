@@ -14,6 +14,11 @@
 ## [Unreleased]
 
 ### Added
+- **`/release force` / `/restart force`**（也认 `--force` / `-f`）：显式跳过"等在跑的 run 排空"
+  那一环，立即重启；正在跑的 run 会被 kickstart 中断，卡片上写明「强制重启」以免被当成异常。
+  日志记 `release-force` / `restart-force`（含当时是否真有 run）。参数拼错不会被静默降级：
+  只认上述写法，其它 token 回用法提示且什么都不做（否则 `/release frce` 会退化成等满 5 分钟）。
+### Added
 - **`/history`（别名 `/sessions`）命令**：对话历史清单，按最后活动时间倒序。`/history` 只看当前
   工作目录，`/history all` 看全部工作目录（跨 workspace，每行标注目录）；每行
   显示最后活动时间、对话轮数、标题或最后一条用户消息、session id 句柄，并带

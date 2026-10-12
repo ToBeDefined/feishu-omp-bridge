@@ -526,6 +526,8 @@ export interface ReleaseProgress {
   /** `restarting` is the pre-boot state: build succeeded, process is being
    * bounced. The NEW process flips it to `success` once it is actually up. */
   phase: 'running' | 'restarting' | 'success' | 'failed';
+  /** `force`：用户显式跳过 run 排空，卡片上写明，免得把中断当成异常。 */
+  forced?: boolean;
   /** Failure details from the failing step. */
   failStep?: ReleaseStepName;
   failNote?: string;
@@ -582,9 +584,23 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
   } else if (progress.phase === 'success') {
     elements.push(md('_进程已发布并重启。_', 'notation'));
   } else if (progress.phase === 'restarting') {
-    elements.push(md('_新进程启动后会确认上线。_', 'notation'));
+    elements.push(
+      md(
+        progress.forced
+          ? '_强制重启：未等待在跑的 run 收尾（任务会被中断）。_'
+          : '_新进程启动后会确认上线。_',
+        'notation',
+      ),
+    );
   } else {
-    elements.push(md('_typecheck → test → build → 自动重启_', 'notation'));
+    elements.push(
+      md(
+        progress.forced
+          ? '_typecheck → test → build → 强制重启（不等在跑的 run）_'
+          : '_typecheck → test → build → 自动重启_',
+        'notation',
+      ),
+    );
   }
   return shell(`${icon} 发布`, elements);
 }
@@ -604,7 +620,11 @@ export function staleNoticeCard(): object {
 }
 /** /restart status card. A real launchd restart leaves the starting card in
  * place; the new process supplies the separate boot confirmation. */
-export function restartCard(phase: 'starting' | 'done' | 'failed', error?: string): object {
+export function restartCard(
+  phase: 'starting' | 'done' | 'failed',
+  error?: string,
+  options: { forced?: boolean } = {},
+): object {
   if (phase === 'done') {
     return shell('🚀 重启完成', [
       md('🚀 **重启完成**', 'heading'),
@@ -619,7 +639,12 @@ export function restartCard(phase: 'starting' | 'done' | 'failed', error?: strin
   }
   return shell('🔄 正在重启', [
     md('🔄 **正在重启**', 'heading'),
-    md('_服务即将重启；重新上线后会继续接收消息。_', 'notation'),
+    md(
+      options.forced
+        ? '_强制重启：未等待在跑的 run 收尾（任务会被中断），立即重启。_'
+        : '_服务即将重启；重新上线后会继续接收消息。_',
+      'notation',
+    ),
   ]);
 }
 
@@ -681,7 +706,7 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
     items: [
       ['/stop', '终止当前任务（等同卡片 ⏹ 按钮）'],
       ['/reconnect', '强制重连 WebSocket'],
-      ['/restart', '重启当前 bot（launchd 拉起新实例）'],
+      ['/restart [force]', '重启当前 bot；force 跳过等待在跑的 run'],
     ],
   },
   {
@@ -691,7 +716,7 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
       ['/exit <id|#>', '关闭指定 bot'],
       ['/doctor [描述]', '日志 + 描述交给 OMP 自助诊断'],
       ['/exec <命令> · /run', '在当前 cwd 执行 shell（admin）'],
-      ['/release', '自发布：typecheck→test→build→重启'],
+      ['/release [force]', '自发布：typecheck→test→build→重启；force 跳过排空'],
     ],
   },
 ];

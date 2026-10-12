@@ -403,7 +403,7 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 | `/stop` | 终止当前正在执行的 OMP run。 |
 | `/timeout [N\|off\|default]` | 设置当前 session 的 idle timeout，或关闭 / 恢复全局默认。 |
 | `/ps` | 列出本机所有 bridge 进程，并标识当前回复进程。 |
-| `/release` | 自发布：`pnpm typecheck` → `pnpm test` → `pnpm build` 后重启 daemon 加载新代码。失败即中止、不重启。 |
+| `/release [force]` | 自发布：`pnpm typecheck` → `pnpm test` → `pnpm build` 后重启 daemon 加载新代码。失败即中止、不重启。`force` 跳过等待在跑的 run。 |
 | `/exec <命令>`、`/run` | 在当前 cwd 下执行 shell 命令并回退出码 + 输出（30s 超时，输出截断 1000 字符）。admin 命令。 |
 | `/exit <id\|#>` | 关闭指定 bridge 进程。 |
 | `/reconnect` | 强制重连 WebSocket。 |
@@ -513,6 +513,10 @@ feishu://message/<message_id>
 - **排空差异**：聊天里的 `/release`、`/restart` 会先等在跑的 run 收尾（上限 5 分钟），
   不会把正在回答的提问切断；而 CLI 的 `feishu-omp-bridge release` / `restart` 看不到
   那些内存中的 run（独立进程），会立即重启 —— 有 run 在跑时优先用聊天里的 `/release`。
+- **强制**：给命令加 `force`（`/release force`、`/restart force`，也认 `--force` / `-f`）
+  可显式跳过排空，立即重启；正在跑的 run 会被中断，卡片上会写明「强制重启」。
+- **参数拼错不会被静默降级**：只认这几个写法，其它 token 会回一条用法提示、什么都不做
+  （否则 `/release frce` 会退化成等满 5 分钟排空，看起来就像卡死）。
 - `feishu-omp-bridge rollback [sha]`：**发布后运行时才发现坏掉**时用（故意做成 CLI 命令，
   因为此时 bot 可能已经无法接收聊天命令）。默认目标是自愈状态里的 `lastGoodSha`，没有则
   `HEAD~1`；执行顺序：脏工作区直接拒绝 → `git revert --no-commit <target>..HEAD` + 一条

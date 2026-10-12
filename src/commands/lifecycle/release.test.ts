@@ -34,7 +34,9 @@ vi.mock('../../card/managed', () => ({
   forgetManagedCard: async () => {},
 }));
 
-function makeCtx(): { ctx: CommandContext; sent: string[]; restartProcess: Mock } {
+function makeCtx(
+  busy = false,
+): { ctx: CommandContext; sent: string[]; restartProcess: Mock } {
   h.sent.length = 0;
   const restartProcess = vi.fn(async () => true);
   const ctx = {
@@ -49,8 +51,8 @@ function makeCtx(): { ctx: CommandContext; sent: string[]; restartProcess: Mock 
     sessions: {},
     workspaces: {},
     agent: {},
-    // 发布前要等 run 排空：这里视为空闲（排空行为另有单测）。
-    activeRuns: { idle: () => true },
+    // 发布前要等 run 排空：默认视为空闲（排空行为另有单测）；busy=true 模拟有 run 在跑。
+    activeRuns: { idle: () => !busy },
     controls: { restartProcess },
   } as unknown as CommandContext;
   return { ctx, sent: h.sent, restartProcess };
@@ -119,6 +121,31 @@ describe('/release', () => {
     resolveFirst({ ok: true });
     await first;
     expect(restartProcess).toHaveBeenCalledTimes(1);
+  });
+  it('force：有 run 在跑也不等排空，立即重启并在卡片上写明', async () => {
+    vi.mocked(runRelease).mockResolvedValue({ ok: true });
+    const { ctx, sent, restartProcess } = makeCtx(true);
+    await releaseHandlers['/release']!('force', ctx);
+    expect(sent.at(-1)).toContain('强制重启');
+    expect(restartProcess).toHaveBeenCalledTimes(1);
+    // 非强制路径由 waitForRunsToDrain 的单测覆盖（这里若没跳过排空会等满 5 分钟）。
+  });
+
+  it('force 的别名 --force / -f 等价', async () => {
+    vi.mocked(runRelease).mockResolvedValue({ ok: true });
+    for (const arg of ['--force', '-f', 'FORCE']) {
+      const { ctx, restartProcess } = makeCtx(true);
+      await releaseHandlers['/release']!(arg, ctx);
+      expect(restartProcess).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('无法识别的参数：只报用法，不发布也不重启', async () => {
+    const { ctx, sent, restartProcess } = makeCtx();
+    await releaseHandlers['/release']!('frce', ctx);
+    expect(sent.at(-1)).toContain('无法识别的参数');
+    expect(runRelease).not.toHaveBeenCalled();
+    expect(restartProcess).not.toHaveBeenCalled();
   });
 });
 

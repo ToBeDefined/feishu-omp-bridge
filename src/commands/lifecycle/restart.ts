@@ -1,5 +1,5 @@
 import type { CommandContext, Handler } from '../index';
-import { RESTART_FLUSH_GRACE_MS, reply } from '../shared';
+import { RESTART_FLUSH_GRACE_MS, parseForceArg, reply } from '../shared';
 import { waitForRunsToDrain } from './release';
 import { log } from '../../core/logger';
 import { clearOnlineNotice, markOnlineNotice } from '../../bot/online-notify';
@@ -10,14 +10,20 @@ export const restartHandlers: Record<string, Handler> = {
   '/restart': handleRestart,
 };
 
-async function handleRestart(_args: string, ctx: CommandContext): Promise<void> {
-  log.info('command', 'restart', { scope: ctx.scope });
+async function handleRestart(args: string, ctx: CommandContext): Promise<void> {
+  const parsed = parseForceArg(args, '/restart [force]');
+  if (!parsed.ok) {
+    await reply(ctx, parsed.message);
+    return;
+  }
+  const { force } = parsed;
+  log.info('command', 'restart', { scope: ctx.scope, force });
   let messageId: string | undefined;
   try {
     const sent = await sendManagedCard(
       ctx.channel,
       ctx.msg.chatId,
-      restartCard('starting'),
+      restartCard('starting', undefined, { forced: force }),
       ctx.msg.messageId,
       { track: true, kind: 'restart' },
     );
@@ -29,7 +35,12 @@ async function handleRestart(_args: string, ctx: CommandContext): Promise<void> 
   try {
     // 先等在跑的 run 收尾：kickstart 会连带杀掉它们，队列只在内存里，重启后
     // 那条消息就彻底丢了。与 /release 同一处理。
-    await waitForRunsToDrain(ctx.activeRuns);
+    if (force) {
+      // 显式强制：立即重启，不等在跑的 run（它们会被 kickstart 杀掉）。
+      log.info('command', 'restart-force', { busy: !ctx.activeRuns.idle() });
+    } else {
+      await waitForRunsToDrain(ctx.activeRuns);
+    }
     // The new process sends the boot confirmation for a real launchd restart.
     await markOnlineNotice(ctx.msg.chatId, 'notify', undefined, messageId);
     await new Promise((resolve) => setTimeout(resolve, RESTART_FLUSH_GRACE_MS));

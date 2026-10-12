@@ -39,6 +39,24 @@ export async function reply(ctx: CommandContext, markdown: string): Promise<void
   }
 }
 
+/**
+ * 解析 `/release force` / `/restart force` 的布尔开关。
+ *
+ * 只认 `force` / `--force` / `-f`（大小写不敏感）。**别的 token 一律报用法**而不是
+ * 当作「没写 force」继续：否则打错一个字就会退化成等 5 分钟排空，用户只会觉得命令卡住。
+ */
+export function parseForceArg(
+  args: string,
+  usage: string,
+): { ok: true; force: boolean } | { ok: false; message: string } {
+  let force = false;
+  for (const token of args.trim().split(/\s+/).filter(Boolean)) {
+    if (/^(?:force|--force|-f)$/i.test(token)) force = true;
+    else return { ok: false, message: `⚠️ 无法识别的参数「${token}」。用法：${usage}` };
+  }
+  return { ok: true, force };
+}
+
 export function expandTilde(p: string): string {
   if (p === '~') return homedir();
   if (p.startsWith('~/')) return `${homedir()}${p.slice(1)}`;

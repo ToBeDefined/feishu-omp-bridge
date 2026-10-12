@@ -244,6 +244,9 @@ feishu-omp-bridge rollback <sha>    # or an explicit commit/ref
 > finish (up to 5 minutes) so an active request is not cut off mid-answer. The CLI
 > `feishu-omp-bridge release` / `restart` cannot see those in-memory runs (separate process), so
 > they bounce the daemon immediately — prefer `/release` in chat when a run is active.
+>
+> Append `force` (`/release force`, `/restart force`, also `--force` / `-f`) to skip the drain
+> explicitly: the bounce happens at once and any in-flight run is cut off (the card says so).
 
 What it does, in order: refuses to run on a dirty worktree → `git revert --no-commit
 <target>..HEAD` + one revert commit (**history is never rewritten**) → runs the same
@@ -435,7 +438,7 @@ Semantics:
 | `/stop` | Abort the OMP run currently executing. |
 | `/timeout [N\|off\|default]` | Set the current session's idle timeout, or turn it off / fall back to the global default. |
 | `/ps` | List every bridge process on this machine and mark the one replying now. |
-| `/release` | Self-release: `pnpm typecheck` → `pnpm test` → `pnpm build`, then restart the daemon to load the new code. Any failure aborts without restarting. |
+| `/release [force]` | Self-release: `pnpm typecheck` → `pnpm test` → `pnpm build`, then restart the daemon to load the new code. Any failure aborts without restarting. `force` skips waiting for in-flight runs (KEEPS any failure abort). |
 | `/exec <command>`, `/run` | Run a shell command in the current cwd and return its exit code + output (30 s timeout, output truncated to 1000 chars). Admin command. |
 | `/exit <id\|#>` | Shut down the given bridge process. |
 | `/reconnect` | Force a WebSocket reconnect. |

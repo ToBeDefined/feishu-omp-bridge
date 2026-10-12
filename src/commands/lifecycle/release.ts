@@ -1,5 +1,5 @@
 import type { CommandContext, Handler } from '../index';
-import { reply, RESTART_FLUSH_GRACE_MS } from '../shared';
+import { parseForceArg, reply, RESTART_FLUSH_GRACE_MS } from '../shared';
 import { log } from '../../core/logger';
 import {
   repoRoot,
@@ -45,7 +45,13 @@ function failureNote(result: ReleaseResult): string {
   return result.exitCode !== undefined ? `退出码 ${result.exitCode}` : '未知错误';
 }
 
-async function handleRelease(_args: string, ctx: CommandContext): Promise<void> {
+async function handleRelease(args: string, ctx: CommandContext): Promise<void> {
+  const parsed = parseForceArg(args, '/release [force]');
+  if (!parsed.ok) {
+    await reply(ctx, parsed.message);
+    return;
+  }
+  const { force } = parsed;
   if (inFlight) {
     await reply(ctx, '⚠️ 已有一次发布正在进行，请稍候。');
     return;
@@ -54,7 +60,7 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
   const steps = RELEASE_STEPS.map((s) => ({ name: s.name, status: 'pending' as ReleaseStepState }));
   let messageId: string | undefined;
   const push = async (): Promise<void> => {
-    const card = releaseCard({ steps, phase: 'running' });
+    const card = releaseCard({ steps, phase: 'running', forced: force });
     if (!messageId) {
       const sent = await sendManagedCard(ctx.channel, ctx.msg.chatId, card, ctx.msg.messageId, {
         track: true,
@@ -77,6 +83,7 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
       releaseCard({
         steps,
         phase,
+        forced: force,
         ...(phase === 'failed'
           ? { failStep: failingStep, failNote, output }
           : {}),
@@ -101,9 +108,15 @@ async function handleRelease(_args: string, ctx: CommandContext): Promise<void> 
     }
     // 先等在跑的 run 收尾再重启：kickstart 会杀掉它们，消息在内存队列里、
     // 重启后无法恢复（等于静默丢失）。
-    const drained = await waitForRunsToDrain(ctx.activeRuns);
-    if (!drained) {
-      log.warn('command', 'release-drain-timeout', { maxMs: RELEASE_DRAIN_MAX_MS });
+    if (force) {
+      // 显式强制：不等在跑的 run 收尾 —— kickstart 会立刻杀掉它们（消息只在内存
+      // 队列里，重启后丢失）。日志记下当时是否真有 run，便于事后对账。
+      log.info('command', 'release-force', { busy: !ctx.activeRuns.idle() });
+    } else {
+      const drained = await waitForRunsToDrain(ctx.activeRuns);
+      if (!drained) {
+        log.warn('command', 'release-drain-timeout', { maxMs: RELEASE_DRAIN_MAX_MS });
+      }
     }
     await close('restarting').catch((err) => log.fail('command', err, { step: 'release-card' }));
     // Carry the card's messageId so the NEW process can confirm 「已发布上线」

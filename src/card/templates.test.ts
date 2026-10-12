@@ -96,6 +96,11 @@ describe('restartCard', () => {
     expect(JSON.stringify(restartCard('done'))).toContain('重启完成');
     expect(JSON.stringify(restartCard('failed', 'launchctl failed'))).toContain('launchctl failed');
   });
+
+  it('marks a forced restart, so a cut-off run is not read as an anomaly', () => {
+    expect(JSON.stringify(restartCard('starting', undefined, { forced: true }))).toContain('强制重启');
+    expect(JSON.stringify(restartCard('starting'))).not.toContain('强制重启');
+  });
 });
 
 describe('compactCard', () => {

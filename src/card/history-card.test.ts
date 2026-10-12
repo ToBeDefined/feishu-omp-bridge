@@ -38,6 +38,15 @@ function buttonValues(card: object): Array<{ cmd: string; arg: string }> {
     .map(({ cmd, arg }) => ({ cmd, arg }));
 }
 
+/** Every grey content block of a card. */
+function greyBlocks(card: { body: { elements: Array<Record<string, unknown>> } }): unknown[] {
+  return card.body.elements.filter(
+    (e) =>
+      e.tag === 'column_set' &&
+      (e.columns as Array<{ background_style?: string }>)[0]?.background_style === 'grey',
+  );
+}
+
 describe('historyCard', () => {
   it('renders the identity, activity time, turn count and id handle per row', () => {
     const card = JSON.stringify(
@@ -49,7 +58,7 @@ describe('historyCard', () => {
       }),
     );
     expect(card).toContain('🏷 **会话 UI 优化**');
-    expect(card).toContain('💬 12 轮');
+    expect(card).toContain('🔁 12 轮');
     expect(card).toContain('🆔 019f9432…');
     // A named session still shows what the conversation contained.
     expect(card).toContain('按钮在电脑上很奇怪');
@@ -71,17 +80,14 @@ describe('historyCard', () => {
   it('renders each row identity exactly ONCE', () => {
     // Regression: the identity was pushed as a top-level element AND again
     // inside the row's column, so every row showed its title twice.
-    const rows = [
-      row({ title: '会话 UI 优化' }),
-      row({ sessionId: 'x'.repeat(26), topic: '看下 FC1 在做什么' }),
-    ];
+    const rows = [row({ title: '会话 UI 优化' }), row({ sessionId: 'x'.repeat(26), topic: '看下 FC1 在做什么' })];
     const card = historyCard(rows, { mode: 'all', offset: 0, total: 2 });
     const text = JSON.stringify(card);
     expect(text.match(/会话 UI 优化/g)?.length).toBe(1);
     expect(text.match(/看下 FC1 在做什么/g)?.length).toBe(1);
-    // Exactly one row container per row.
-    const elements = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements;
-    expect(elements.filter((e) => e.tag === 'column_set' && e.flex_mode === 'none')).toHaveLength(2);
+    // Exactly one grey row block per row.
+    const parsed = card as { body: { elements: Array<Record<string, unknown>> } };
+    expect(greyBlocks(parsed)).toHaveLength(2);
   });
 
   it("shows each row's workspace only in all-mode", () => {
@@ -137,14 +143,18 @@ describe('historyCard', () => {
         label: '继续对话',
       },
     ]);
-    // Row = weighted content column + auto button column: `width` only applies
-    // under flex_mode 'none', and weighted absorbs the slack so the button is
-    // neither stretched across the card nor squeezed.
-    const rowSet = (card as { body: { elements: Array<Record<string, unknown>> } }).body
-      .elements.filter((e) => e.tag === 'column_set')[0]!;
-    const cols = rowSet.columns as Array<Record<string, unknown>>;
-    expect(rowSet.flex_mode).toBe('none');
-    expect(cols.map((c) => c.width)).toEqual(['weighted', 'auto']);
+    // Row = grey content block, then its action side by side underneath.
+    const parsed = card as { body: { elements: Array<Record<string, unknown>> } };
+    expect(greyBlocks(parsed)).toHaveLength(1);
+    const actionRow = parsed.body.elements.filter((e) => e.tag === 'column_set').at(-1) as {
+      flex_mode: string;
+      columns: Array<{ width: string; elements: Array<Record<string, unknown>> }>;
+    };
+    expect(actionRow.flex_mode).toBe('none');
+    expect(actionRow.columns.map((c) => c.width)).toEqual(['weighted']);
+    expect((actionRow.columns[0]!.elements[0] as { text: { content: string } }).text.content).toBe(
+      '继续对话',
+    );
   });
 
   it('marks the current session instead of offering a no-op resume', () => {
@@ -155,7 +165,9 @@ describe('historyCard', () => {
     );
     const buttons = allButtons(card);
     // Only the OTHER row can be resumed.
-    expect(buttons.map((b) => b.arg)).toEqual(['other-session-id-0000']);
+    expect(buttons.filter((b) => b.cmd === 'history.resume').map((b) => b.arg)).toEqual([
+      'other-session-id-0000',
+    ]);
     // The marker sits right behind the row number, not in the small meta line.
     expect(JSON.stringify(card)).toContain('**#1** ✅ 当前 · 🏷 **bridge UI 调整**');
     const markdown = [...JSON.stringify(card).matchAll(/"tag":"markdown","content":"((?:[^"\\]|\\.)*)"/g)].map(
@@ -163,11 +175,18 @@ describe('historyCard', () => {
     );
     expect(markdown.some((c) => c.includes('✅ 当前'))).toBe(true);
     expect(markdown.some((c) => c.includes('🆔') && c.includes('✅ 当前'))).toBe(false);
-    // The current row is a single-column layout (no button column).
-    const sets = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements.filter(
-      (e) => e.tag === 'column_set',
+    // The current row keeps its grey block but has no action row at all.
+    const parsed = card as { body: { elements: Array<Record<string, unknown>> } };
+    expect(greyBlocks(parsed)).toHaveLength(2);
+    // 2 个行尾动作块（只有另一行有）+ 2 个灰底块 = 4 个 column_set。
+    expect(parsed.body.elements.filter((e) => e.tag === 'column_set')).toHaveLength(3);
+  });
+
+  it('carries exactly one 继续对话 button per row', () => {
+    const card = JSON.stringify(
+      historyCard([row(), row({ sessionId: 's2' })], { mode: 'cwd', offset: 0, total: 2 }),
     );
-    expect((sets[0]!.columns as unknown[]).length).toBe(1);
-    expect((sets[1]!.columns as unknown[]).length).toBe(2);
+    const buttons = allButtons(JSON.parse(card) as object);
+    expect(buttons.map((b) => b.label)).toEqual(['继续对话', '继续对话']);
   });
 });

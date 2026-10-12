@@ -2,7 +2,13 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { clearOnlineNotice, markOnlineNotice, takeOnlineNotice } from './online-notify';
+import {
+  clearOnlineNotice,
+  markOnlineNotice,
+  shouldAnnounceOrdinaryBoot,
+  takeOnlineNotice,
+  withinAnnounceWindow,
+} from './online-notify';
 
 /** Marker + (absent) legacy path pair, so the test never touches app state. */
 async function tmpPaths(): Promise<[string, string]> {
@@ -60,5 +66,34 @@ describe('online notify marker', () => {
   it('tolerates clearing a marker that does not exist', async () => {
     const [path] = await tmpPaths();
     await expect(clearOnlineNotice(path)).resolves.toBeUndefined();
+  });
+});
+
+describe('shouldAnnounceOrdinaryBoot（普通 boot 宣布节流）', () => {
+  const T0 = 1_700_000_000_000;
+  const WINDOW = 10 * 60 * 1000;
+
+  it('首次（无记录）宣布并落时间戳；窗口内再宣布返回 false', async () => {
+    const [path] = await tmpPaths();
+    expect(await shouldAnnounceOrdinaryBoot(WINDOW, path, T0)).toBe(true);
+    expect(await shouldAnnounceOrdinaryBoot(WINDOW, path, T0 + 60_000)).toBe(false);
+  });
+
+  it('超过窗口后重新允许宣布（避免崩溃循环里每次 boot 都刷屏）', async () => {
+    const [path] = await tmpPaths();
+    expect(await shouldAnnounceOrdinaryBoot(WINDOW, path, T0)).toBe(true);
+    expect(await shouldAnnounceOrdinaryBoot(WINDOW, path, T0 + WINDOW + 1)).toBe(true);
+  });
+
+  it('记录损坏按「从未宣布」处理，返回 true 且不抛', async () => {
+    const [path] = await tmpPaths();
+    await writeFile(path, 'not json', 'utf8');
+    expect(await shouldAnnounceOrdinaryBoot(WINDOW, path, T0)).toBe(true);
+  });
+
+  it('withinAnnounceWindow：缺记录=窗口外、窗口内=true、超窗口=false', () => {
+    expect(withinAnnounceWindow(undefined, 1_000, 100)).toBe(false);
+    expect(withinAnnounceWindow(950, 1_000, 100)).toBe(true);
+    expect(withinAnnounceWindow(800, 1_000, 100)).toBe(false);
   });
 });

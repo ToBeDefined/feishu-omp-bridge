@@ -1,6 +1,6 @@
 import type { AppConfig, TenantBrand } from '../../config/schema';
 import { secretKeyForApp } from '../../config/schema';
-import { setSecret } from '../../config/keystore';
+import { removeSecret, setSecret } from '../../config/keystore';
 import { buildEncryptedAccountConfig, saveConfig } from '../../config/store';
 import {
   accountCurrentCard,
@@ -8,10 +8,10 @@ import {
   accountFormCard,
   accountSuccessCard,
 } from '../../card/account-cards';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
+import { sendManagedCard } from '../../card/managed';
 import { validateAppCredentials } from '../../utils/feishu-auth';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { FORM_SETTLE_MS, recallMessage, reply, updateOrFallback } from '../shared';
 
 export const accountCmdHandlers: Record<string, Handler> = {
   '/account': handleAccount,
@@ -60,7 +60,6 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
   const appSecret = String(fv.app_secret ?? '').trim();
   const tenant = (fv.tenant === 'lark' ? 'lark' : 'feishu') as TenantBrand;
 
-  const formMsgId = ctx.msg.messageId;
   const channel = ctx.channel;
   const configPath = ctx.controls.configPath;
   const restart = ctx.controls.restart;
@@ -80,17 +79,16 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
 
     const finishSuccess = async (card: object): Promise<void> => {
       await waitForSettle();
-      await updateManagedCard(channel, formMsgId, card).catch((err) =>
-        console.warn('[account] form update failed:', err),
-      );
-      forgetManagedCard(formMsgId);
+      await updateOrFallback(ctx, card, '✅ 已更换应用凭据，正在重连…');
     };
 
     const finishFailure = async (errorMessage: string): Promise<void> => {
       await waitForSettle();
-      await updateManagedCard(channel, formMsgId, accountFailureCard(errorMessage))
-        .catch((err) => console.warn('[account] mark old form failed:', err));
-      forgetManagedCard(formMsgId);
+      await updateOrFallback(
+        ctx,
+        accountFailureCard(errorMessage),
+        `❌ 更换凭据失败：${errorMessage}`,
+      );
       const retry = accountFormCard({
         initialTenant: tenant,
         prefillAppId: appId,
@@ -118,8 +116,17 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
         tenant,
         ctx.controls.cfg.preferences,
       );
-      await setSecret(secretKeyForApp(appId), appSecret);
-      await saveConfig(newCfg, configPath);
+      const secretKey = secretKeyForApp(appId);
+      await setSecret(secretKey, appSecret);
+      try {
+        await saveConfig(newCfg, configPath);
+      } catch (err) {
+        // saveConfig 失败时，刚写入 keystore 的 secret 成了孤儿（config.json
+        // 仍指向旧凭据，这条密钥查无出处）。best-effort 删除后再抛，失败
+        // 本身不掩盖原始错误。
+        await removeSecret(secretKey).catch(() => {});
+        throw err;
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       await finishFailure(`保存凭据失败：${msg}`);

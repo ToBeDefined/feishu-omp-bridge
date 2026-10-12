@@ -1,12 +1,13 @@
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getAgentStopGraceMs, getOmpModel, getOmpSessionDir } from '../../config/schema';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
-import { codeSpan } from '../../utils/text';
+import { codeSpan, summarizeMd } from '../../utils/text';
 import { extractUserInput } from './context';
 import { summarize } from '../../utils/text';
+import { conversationCwd } from '../../session/current-cwd';
 
 export const renameHandlers: Record<string, Handler> = {
   '/rename': handleRename,
@@ -14,6 +15,8 @@ export const renameHandlers: Record<string, Handler> = {
 
 const MAX_TITLE_LENGTH = 60;
 const AUTO_TITLE_MAX = 30;
+/** 没有当前会话时的统一提示：读、清、写都走它，不做任何写入。 */
+const NO_SESSION = '❌ 当前还没有会话，先发一条消息开始一段对话。';
 /** Internal marker told to the model not to emit; no longer used for
  * history stripping since generation runs in an isolated session dir. */
 const RENAME_AUTO_MARKER = '<rename-auto-title>';
@@ -21,12 +24,23 @@ const RENAME_AUTO_MARKER = '<rename-auto-title>';
 export async function handleRename(args: string, ctx: CommandContext): Promise<void> {
   const title = args.trim();
 
+  // /rename 命名的是**当前会话**（读、清、写同一目标）。没有当前会话时
+  // 读/清/写/auto 一律给同一条提示，且不动盘。
+  const target = ctx.sessions.sessionFor(ctx.scope)?.sessionId;
+  if (target === undefined) {
+    await reply(ctx, NO_SESSION);
+    return;
+  }
+
   if (!title) {
-    const current = ctx.sessions.getRaw(ctx.scope)?.title;
+    // 只认真标题（/rename 起的，同步零 IO）。无名就如实说没有 —— 从前这里拿最后
+    // 一条用户消息当标题念出来，用户以为那句就是会话名。标题文本经 `codeSpan`
+    // 转义 + 截断，不能被 `*`/`` ` `` 破坏代码段或被长文本撑爆消息体。
+    const display = ctx.sessions.titleFor(target);
     await reply(
       ctx,
-      current
-        ? `当前会话标题：\`${current}\`\n\n发 \`/rename <新标题>\` 修改，\`/rename auto\` 用 LLM 生成，\`/rename clear\` 清除。`
+      display
+        ? `当前会话标题：\`${codeSpan(summarizeMd(display, 40))}\`\n\n发 \`/rename <新标题>\` 修改，\`/rename auto\` 用 LLM 生成，\`/rename clear\` 清除。`
         : '当前会话没有标题。\n\n用法：`/rename <标题>` — 给当前会话起名，`/rename auto` 用 LLM 生成，`/rename clear` 清除。',
     );
     return;
@@ -40,13 +54,15 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
 
   if (title === 'auto') {
     await reply(ctx, '🤖 正在用 LLM 生成标题…');
-    const generated = await generateTitleWithLlm(ctx);
+    const generated = await generateTitleWithLlm(ctx, target);
     if (!generated) {
       await reply(ctx, '❌ 无法生成标题（会话内容太少或生成失败），请手动 `/rename <标题>`。');
       return;
     }
-    ctx.sessions.setTitle(ctx.scope, generated);
-    await reply(ctx, `✅ 已自动生成标题：\`${codeSpan(generated)}\``);
+    // 按**发起时**的会话 id 写：生成期间 /new、/cd、/resume 都可能换会话，名字仍要
+    // 落在发起时那一条上（名字表按会话 id 存，历史会话同样认得）；
+    ctx.sessions.setTitleFor(target, generated);
+    await reply(ctx, `✅ 已自动生成会话标题：\`${codeSpan(generated)}\``);
     return;
   }
 
@@ -56,7 +72,7 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
   }
 
   ctx.sessions.setTitle(ctx.scope, title);
-  await reply(ctx, `✅ 已设置当前会话标题：\`${title}\``);
+  await reply(ctx, `✅ 已设置当前会话标题：\`${codeSpan(title)}\``);
 }
 
 /** Ask the agent to title the session from the user's recent messages. A
@@ -69,11 +85,9 @@ export async function handleRename(args: string, ctx: CommandContext): Promise<v
  * and can carry echoed generation prompts that skew the title. Isolation also
  * means the generation prompt never lands in the main session file or gets
  * echoed back by the bridge. */
-async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null> {
-  const sess = ctx.sessions.getRaw(ctx.scope);
-  if (!sess?.sessionId) return null;
-
-  const messages = await loadRecentUserMessages(ctx, sess.sessionId);
+async function generateTitleWithLlm(ctx: CommandContext, sessionId: string): Promise<string | null> {
+  // 取样窗口 = 这条会话自己的会话文件。
+  const messages = await loadRecentUserMessages(ctx, sessionId);
   if (messages.length === 0) return null;
   const list = messages.map((m, i) => `${i + 1}. ${summarize(m, 200)}`).join('\n');
 
@@ -98,7 +112,7 @@ async function generateTitleWithLlm(ctx: CommandContext): Promise<string | null>
   const run = ctx.agent.run({
     prompt,
     sessionDir,
-    cwd: ctx.workspaces.cwdFor(ctx.scope) ?? homedir(),
+    cwd: conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope),
     model: getOmpModel(ctx.controls.cfg),
     stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),
   });

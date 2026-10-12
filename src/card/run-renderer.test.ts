@@ -307,6 +307,21 @@ describe('renderCard', () => {
     expect(longMarkdown(elements, '❌ 子代理 `scout` _失败_')).toBeDefined();
   });
 
+  it('子代理名放进 code span 不留可见反斜杠（escapeMd 在 `...` 里无效）', () => {
+    const state = longRunState(0);
+    state.subagents = [
+      { id: 'sa-1', agent: 'a_b*reviewer', status: 'completed' },
+      { id: 'sa-2', agent: 'with`tick', status: 'started' },
+    ];
+    const elements = cardElements(renderCard({ ...state, terminal: 'done' }));
+    const line = longMarkdown(elements, '✅ 子代理 `a_b*reviewer` _完成_');
+    expect(line).toBeDefined();
+    // escapeMd 的产物（\_ / \*）不该出现在 code span 里
+    expect(JSON.stringify(elements)).not.toContain('a\\_b');
+    // 反引号把 span 提前闭合的问题同样由 codeSpan 处理掉
+    expect(longMarkdown(elements, "🤖 子代理 `with'tick` _工作中_")).toBeDefined();
+  });
+
   it('caps table components per card at the Feishu limit (ErrCode 11310)', () => {
     // A production answer with six markdown tables was rejected wholesale:
     // "card table number over limit". Table count is invisible to the
@@ -341,3 +356,4 @@ describe('renderCard', () => {
     expect(demoted).toContain('```');
   });
 });
+

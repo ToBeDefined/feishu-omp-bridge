@@ -53,3 +53,16 @@ describe('WorkspaceStore', () => {
     expect(await readdir(dir)).toEqual(['workspaces.json']);
   });
 });
+
+describe('坏形状文件的容忍（审查补强）', () => {
+  it('文件内容为 null 时不抛异常，按空状态处理', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ws-null-'));
+    const file = join(dir, 'workspaces.json');
+    await writeFile(file, 'null', 'utf8');
+    const store = new WorkspaceStore(file);
+    await expect(store.load()).resolves.toBeUndefined();
+    expect(store.cwdFor('oc_1')).toBeUndefined();
+    expect(store.listNamed()).toEqual({});
+    await rm(dir, { recursive: true, force: true });
+  });
+});

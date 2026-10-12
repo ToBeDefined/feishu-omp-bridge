@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { resumeCard, resumeSavedCard, type ResumeOption } from './model-card';
+import { resumeSavedCard } from './model-card';
 import type { RunCard } from './run-renderer';
 import {
-  actions,
   compactCard,
-  contextCard,
   cwdChangedCard,
   everyCard,
   execResultCard,
+  confirmActions,
   helpCard,
+  inlineActions,
+  inlineRow,
+  INLINE_ROW_MAX,
   md,
   newSessionCard,
   psCard,
@@ -18,6 +20,7 @@ import {
   restartCard,
   shell,
   statusCard,
+  type ContextInfo,
   workspacesCard,
 } from './templates';
 
@@ -93,6 +96,11 @@ describe('restartCard', () => {
     expect(JSON.stringify(restartCard('done'))).toContain('重启完成');
     expect(JSON.stringify(restartCard('failed', 'launchctl failed'))).toContain('launchctl failed');
   });
+
+  it('marks a forced restart, so a cut-off run is not read as an anomaly', () => {
+    expect(JSON.stringify(restartCard('starting', undefined, { forced: true }))).toContain('强制重启');
+    expect(JSON.stringify(restartCard('starting'))).not.toContain('强制重启');
+  });
 });
 
 describe('compactCard', () => {
@@ -101,8 +109,8 @@ describe('compactCard', () => {
       compactCard({ phase: 'started', tokensK: '690', mb: '10.0', eta: '15分30秒', cap: '46分' }),
     );
     expect(out).toContain('正在压缩会话上下文');
-    expect(out).toContain('690k token');
-    expect(out).toContain('10.0 MB');
+    expect(out).toContain('**690k** token');
+    expect(out).toContain('**10.0** MB');
     expect(out).toContain('15分30秒');
     expect(out).toContain('46分');
   });
@@ -206,51 +214,134 @@ describe('shared card kit', () => {
     });
     expect(md('x', 'notation')).toMatchObject({ text_size: 'notation' });
     expect(panel([md('k')])).toMatchObject({ tag: 'column', background_style: 'grey' });
-    expect(actions([{ text: 'go', value: { cmd: 'x' } }])[0]).toMatchObject({
+    expect(inlineActions([{ text: 'go', value: { cmd: 'x' } }])[0]).toMatchObject({
       tag: 'column_set',
     });
+    expect(inlineRow([{ element: md('go') }])[0]).toMatchObject({ tag: 'column_set' });
   });
 
-  it('stacks each button on its own full-width row', () => {
-    const rows = actions(
-      ['a', 'b', 'c', 'd'].map((t) => ({ text: t, value: { cmd: t } })),
+  it('lays parallel actions side by side, cancel full width underneath', () => {
+    const rows = confirmActions(
+      [
+        { text: '确认', value: { cmd: 'a' }, style: 'primary' },
+        { text: '否', value: { cmd: 'b' } },
+      ],
+      { text: '取消', value: { cmd: 'c' }, style: 'danger' },
     );
-    // ONE column_set in stretch mode: every column becomes its own 100%-wide
-    // row. `none` compresses the labels on a narrow screen and `flow` ignores
-    // `width` (spreading columns to both card edges on desktop).
+    // 规则 1：并列动作一行等宽；规则 2：取消单独一行铺满（一列 = 整行宽）。
+    expect(rows).toHaveLength(2);
+    const [pair, cancel] = rows as Array<{
+      flex_mode: string;
+      columns: Array<{ width: string; weight: number; elements: Array<Record<string, unknown>> }>;
+    }>;
+    expect(pair!.flex_mode).toBe('none');
+    expect(pair!.columns.map((c) => c.weight)).toEqual([1, 1]);
+    expect((pair!.columns[0]!.elements[0] as { text: { content: string } }).text.content).toBe('确认');
+    expect(cancel!.columns).toHaveLength(1);
+    expect(cancel!.columns[0]!.width).toBe('weighted');
+    expect((cancel!.columns[0]!.elements[0] as { text: { content: string } }).text.content).toBe('取消');
+
+    // 没有取消时只有并列那行。
+    expect(confirmActions([{ text: '只有我', value: { cmd: 'x' } }])).toHaveLength(1);
+  });
+
+  it('offers a 新建会话 jump on the help card footer', () => {
+    const card = helpCard() as { body: { elements: Array<Record<string, unknown>> } };
+    const rows = card.body.elements.filter((e) => e.tag === 'column_set');
+    const labels = rows.map((r) =>
+      (r.columns as Array<{ elements: Array<{ text: { content: string } }> }>).map(
+        (c) => c.elements[0]!.text.content,
+      ),
+    );
+    // 4 个动作 → 每行最多 2 个 → 两行；新建会话在最前（速查卡里最常用）。
+    expect(labels).toEqual([
+      ['🆕 新建会话', '🕘 恢复会话'],
+      ['📊 会话状态', '📂 工作空间'],
+    ]);
+    const json = JSON.stringify(card);
+    expect(json).toContain('"cmd":"new"');
+    // 按钮名 → `/new`（handlers 里注册的键），不是 `/🆕 新建会话`。
+    expect(json).not.toContain('cmd":"🆕');
+  });
+
+  it('folds a third button onto its own row instead of compressing the labels', () => {
+    // 回归：/help 页脚三个跳转等宽一行时，「📂 工作空间」在手机上被压到看不见文字。
+    const rows = inlineActions([
+      { text: '📊 会话状态', value: { cmd: 'status' }, style: 'primary' },
+      { text: '🕘 恢复会话', value: { cmd: 'resume' } },
+      { text: '📂 工作空间', value: { cmd: 'ws.list' } },
+    ]);
+    expect(rows).toHaveLength(2);
+    const [first, second] = rows as Array<{ columns: Array<{ elements: Array<{ text: { content: string } }> }> }>;
+    expect(first!.columns.map((c) => c.elements[0]!.text.content)).toEqual(['📊 会话状态', '🕘 恢复会话']);
+    // 折下来的那个独占一行 = 整行宽（不再三等分）。
+    expect(second!.columns).toHaveLength(1);
+    expect(second!.columns[0]!.elements[0]!.text.content).toBe('📂 工作空间');
+    expect(INLINE_ROW_MAX).toBe(2);
+  });
+
+  it('lays inline actions side by side in one weighted row', () => {
+    const rows = inlineActions([
+      { text: '继续对话', value: { cmd: 'search.resume' }, style: 'primary' },
+      { text: '详情', value: { cmd: 'search.show' } },
+    ]);
     expect(rows).toHaveLength(1);
-    const row = rows[0] as { flex_mode: string; columns: Array<Record<string, unknown>> };
-    expect(row.flex_mode).toBe('stretch');
-    expect(row.columns).toHaveLength(4);
-    // Every button survives the re-layout.
-    expect(JSON.stringify(rows)).toContain('"cmd":"d"');
+    const row = rows[0] as {
+      tag: string;
+      flex_mode: string;
+      columns: Array<{ width: string; weight: number; elements: Array<Record<string, unknown>> }>;
+    };
+    expect(row.tag).toBe('column_set');
+    // Unlike actions() (stretch → one full-width row per button), these stay
+    // side by side: equal weighted columns under `none`.
+    expect(row.flex_mode).toBe('none');
+    expect(row.columns.map((c) => [c.width, c.weight])).toEqual([
+      ['weighted', 1],
+      ['weighted', 1],
+    ]);
+    expect(row.columns[0]!.elements[0]).toMatchObject({
+      tag: 'button',
+      type: 'primary',
+      text: { content: '继续对话' },
+    });
+    expect(row.columns[1]!.elements[0]).toMatchObject({ text: { content: '详情' } });
+
+    // 长标签可以多分宽度（等宽会让它在手机上折行）。
+    const wide = inlineActions([
+      { text: '↑ 上一页', value: { cmd: 'a' } },
+      { text: '↓ 下一页（剩 2）', value: { cmd: 'b' }, weight: 1.6 },
+    ])[0] as { columns: Array<{ weight: number }> };
+    expect(wide.columns.map((c) => c.weight)).toEqual([1, 1.6]);
   });
 
 });
 
-function statusFixture(extra: Partial<Parameters<typeof statusCard>[0]> = {}) {
+/** 合并后 `/status` · `/context` · `/ctx` 共用这一份输入。 */
+function statusFixture(extra: Partial<ContextInfo> = {}): ContextInfo {
   return {
     cwd: '/repo',
-    sessionId: 's1',
+    sessionId: 'ws-1',
     sessionStale: false,
     agentName: 'omp',
     scope: 'oc_1',
-    chatMode: 'p2p' as const,
+    chatMode: 'p2p',
     idleLine: '全局 30 分钟',
     running: false,
+    wsNames: [],
+    summary: {},
     ...extra,
   };
 }
 
 describe('statusCard', () => {
-  it('shows the session title when set', () => {
-    const withTitle = JSON.stringify(
-      statusCard(statusFixture({ sessionTitle: '修搜索' })),
-    );
-    expect(withTitle).toContain('修搜索');
+  it('shows the session name when set, and no title line when there is none', () => {
+    const withName = JSON.stringify(statusCard(statusFixture({ sessionName: '修搜索' })));
+    expect(withName).toContain('修搜索');
 
+    // 没有名字就不渲染标题行：占位的「未命名」会让人以为会话有名字。
     const without = JSON.stringify(statusCard(statusFixture()));
-    expect(without).not.toContain('标题');
+    expect(without).not.toContain('未命名');
+    expect(without).not.toContain('🏷');
   });
 
   it('renders as a schema 2.0 card with session and environment panels', () => {
@@ -258,7 +349,7 @@ describe('statusCard', () => {
       statusFixture({
         model: 'zhipu-coding-plan/glm-5.3',
         thinking: 'high',
-        lastActive: Date.now() - 5 * 60_000,
+        updatedAt: Date.now() - 5 * 60_000,
         running: true,
       }),
     );
@@ -274,9 +365,30 @@ describe('statusCard', () => {
     expect(out).toContain('任务执行中');
   });
 
+  it('carries the agent name and the workspace quick-dirs (the old /status + /ctx union)', () => {
+    const out = JSON.stringify(
+      statusCard(statusFixture({ agentName: 'OMP', wsNames: ['bridge', 'notes'] })),
+    );
+    expect(out).toContain('🤖 OMP');
+    expect(out).toContain('bridge');
+    expect(out).toContain('notes');
+  });
+
   it('warns when the session belongs to an old cwd', () => {
     const out = JSON.stringify(statusCard(statusFixture({ sessionStale: true })));
     expect(out).toContain('旧 cwd');
+  });
+
+  it('reports the session id as a single identity line (no segment layer)', () => {
+    const out = JSON.stringify(
+      statusCard(
+        statusFixture({
+          sessionId: 'ws-first',
+        }),
+      ),
+    );
+    expect(out).toContain('会话');
+    expect(out).toContain('`ws-first`');
   });
 
   it('is informational — no action buttons', () => {
@@ -295,38 +407,23 @@ describe('statusCard', () => {
 describe('session id rendering', () => {
   const ULID = '01J8Z9K2ABCDEFGHJKLMNPQRST';
 
-  it('shows the full session id on the status/context cards', () => {
-    expect(JSON.stringify(statusCard(statusFixture({ sessionId: ULID })))).toContain(ULID);
-    const ctx = contextCard({
-      scope: 'oc_x',
-      chatMode: 'p2p',
-      cwd: '/repo',
-      sessionId: ULID,
-      running: false,
-      idleLine: '探活：跟随全局',
-      wsNames: [],
-      summary: {},
-    } as never);
-    expect(JSON.stringify(ctx)).toContain(ULID);
+  it('shows the full session id on the merged status card', () => {
+    const out = JSON.stringify(
+      statusCard(
+        statusFixture({ sessionId: ULID, sessionName: '长 id 会话', agentName: 'OMP' }),
+      ),
+    );
+    expect(out).toContain(ULID);
     // No truncated form leaks through.
-    expect(JSON.stringify(ctx)).not.toContain('01J8Z9K2…');
+    expect(out).not.toContain('01J8Z9K2…');
   });
 
-  it('shows the full id on the singular /resume lines but a short handle per row', () => {
+  it('shows the full id on the singular /resume confirmation card', () => {
     const saved = resumeSavedCard(ULID, '/repo/sub');
-    expect(JSON.stringify(saved)).toContain(ULID);
-
-    const card = JSON.stringify(
-      resumeCard(ULID, [
-        { sessionId: ULID, cwd: '/repo', timestamp: new Date().toISOString(), summary: '当前会话' },
-        { sessionId: '01J8Z9K2ZZZZZZZZZZZZZZZZZZ', cwd: '/repo', timestamp: new Date().toISOString(), summary: '另一个' },
-      ]),
-    );
-    // Header: full id, so you can copy it or match it with /resume.
-    expect(card).toContain('当前：`' + ULID + '`');
-    // Rows: 8-char handle only (the summary is the identity).
-    expect(card).toContain('01J8Z9K2…');
-    expect(card).not.toContain('ZZZZZZZZZZZZZZZZZZZZ');
+    const out = JSON.stringify(saved);
+    expect(out).toContain(ULID);
+    // 恢复确认卡里的 id 是完整可复制的（列表行才用 8 字符句柄）。
+    expect(out).not.toContain('01J8Z9K2…');
   });
 });
 
@@ -389,16 +486,17 @@ describe('workspacesCard', () => {
   });
 });
 
-describe('contextCard', () => {
-  const base = {
+describe('statusCard — 最近内容 / 工作空间 / 占位（原 /context 的能力）', () => {
+  const base: ContextInfo = {
     scope: 'oc_1',
-    chatMode: 'p2p' as const,
+    chatMode: 'p2p',
     cwd: '/repo',
     sessionId: '019f3a2b-7c8d-73e1-9f2a-4b5c6d7e8f90',
-    sessionTitle: '修搜索',
+    sessionName: '修搜索',
     createdAt: Date.now() - 86_400_000,
     updatedAt: Date.now() - 120_000,
     running: false,
+    agentName: 'OMP',
     model: 'p/m',
     thinking: 'high',
     idleLine: '全局 30 分钟',
@@ -406,8 +504,8 @@ describe('contextCard', () => {
     summary: { lastMessage: '你好  abc', lastReply: '答完了' },
   };
 
-  it('renders the three panels with digested recent content', () => {
-    const out = JSON.stringify(contextCard(base));
+  it('renders the panels with agent, workspace quick-dirs and digested recent content', () => {
+    const out = JSON.stringify(statusCard(base));
     expect(out).toContain('会话');
     expect(out).toContain('环境');
     expect(out).toContain('最近内容');
@@ -419,17 +517,15 @@ describe('contextCard', () => {
     expect(out).toContain('全局 30 分钟');
   });
 
-  it('carries no action buttons — /ctx is informational, /status is the console', () => {
-    const out = JSON.stringify(contextCard(base));
+  it('carries no action buttons — it is informational', () => {
+    const out = JSON.stringify(statusCard(base));
     expect(out).not.toContain('"tag":"button"');
-    // The buttons it used to carry were circular (状态 re-renders these same
-    // panels) / duplicated (/status already offers 恢复会话).
     expect(out).not.toContain('"cmd":"status"');
     expect(out).not.toContain('"cmd":"resume"');
   });
 
   it('stacks the panels full-width instead of laying them side by side', () => {
-    const out = contextCard(base) as { body: { elements: Array<Record<string, unknown>> } };
+    const out = statusCard(base) as { body: { elements: Array<Record<string, unknown>> } };
     const sets = out.body.elements.filter((e) => e.tag === 'column_set');
     // One single-column column_set per panel — stacked at every card width,
     // unlike a multi-column row that goes side by side on a desktop card.
@@ -442,10 +538,10 @@ describe('contextCard', () => {
 
   it('drops the recent panel and placeholders when nothing to show', () => {
     const out = JSON.stringify(
-      contextCard({
+      statusCard({
         ...base,
         sessionId: undefined,
-        sessionTitle: undefined,
+        sessionName: undefined,
         createdAt: undefined,
         updatedAt: undefined,
         model: undefined,
@@ -455,63 +551,11 @@ describe('contextCard', () => {
       }),
     );
     expect(out).not.toContain('最近内容');
-    expect(out).toContain('未命名');
+    // 没名字 → 没有标题行（也不拿占位冒充）。
+    expect(out).not.toContain('未命名');
+    expect(out).not.toContain('🏷');
     expect(out).toContain('跟随默认');
     expect(out).toContain('（当前目录无快捷方式）');
-  });
-});
-
-describe('resumeCard', () => {
-  it('shows the title ahead of the summary', () => {
-    const sessions: ResumeOption[] = [
-      { sessionId: 's1', cwd: '/repo', timestamp: 't', title: '已命名', summary: '旧摘要' },
-      { sessionId: 's2', cwd: '/repo2', timestamp: 't2', summary: '摘要B' },
-    ];
-    const out = JSON.stringify(resumeCard('s1', sessions));
-
-    // Titled session shows its title; the untitled one leads with its summary.
-    expect(out).toContain('🏷 **已命名**');
-    expect(out).toContain('摘要B');
-    // Exactly one titled row — s2 stays unlabeled.
-    expect((out.match(/🏷/g) ?? []).length).toBe(1);
-  });
-
-  it('renders a relative time from the session timestamp', () => {
-    const sessions: ResumeOption[] = [
-      {
-        sessionId: 's1',
-        cwd: '/repo',
-        timestamp: new Date(Date.now() - 3 * 60_000).toISOString(),
-        summary: '摘要',
-      },
-    ];
-    const out = JSON.stringify(resumeCard('s1', sessions));
-    expect(out).toContain('3 分钟前');
-    // Untitled + summary → the summary is the row identity.
-    expect(out).toContain('**摘要**');
-  });
-
-  it('marks the current session and keeps full ids in button values', () => {
-    const sessions: ResumeOption[] = [
-      { sessionId: 's1', cwd: '/repo', timestamp: 't', title: 'A' },
-      { sessionId: 's2', cwd: '/repo', timestamp: 't', title: 'B' },
-    ];
-    const out = JSON.stringify(resumeCard('s1', sessions));
-    expect(out).toContain('✓ 当前');
-    expect(out).toContain('"arg":"s1"');
-    expect(out).toContain('"arg":"s2"');
-  });
-
-  it('keeps pagination range and older/newer navigation', () => {
-    const page: ResumeOption[] = Array.from({ length: 5 }, (_, i) => ({
-      sessionId: `s${i}`,
-      cwd: '/repo',
-      timestamp: 't',
-    }));
-    const out = JSON.stringify(resumeCard(undefined, page, { offset: 5, total: 12 }));
-    expect(out).toContain('第 6-10 条 / 共 12 条');
-    expect(out).toContain('"cmd":"resume.back","arg":"0"');
-    expect(out).toContain('"cmd":"resume.more","arg":"10"');
   });
 });
 
@@ -542,7 +586,7 @@ describe('newSessionCard', () => {
     });
     const out = JSON.stringify(card);
     expect(card).toMatchObject({ schema: '2.0' });
-    expect(out).toContain('已中断当前任务并开始新会话');
+    expect(out).toContain('已中断当前任务并重置上下文');
     expect(out).toContain('/repo');
     expect(out).toContain('p/m');
     expect(out).toContain('high');
@@ -561,7 +605,7 @@ describe('newSessionCard', () => {
       }),
     );
     expect(out).not.toContain('已中断');
-    expect(out).toContain('已开始新会话');
+    expect(out).toContain('已重置上下文');
   });
 
   it('carries the topic scope note when provided', () => {

@@ -25,18 +25,38 @@ export interface SessionRecord {
   summary?: string;
   /** Last real user message. */
   lastMessage?: string;
+  /**
+   * 哪个 scope 现在绑着这条会话（对话是它的「当前会话」）；没人绑就是 `null`。
+   * `/history` 用它区分「本窗口的对话」与「别处/更早的历史」。
+   */
+  scope: string | null;
 }
 
 /**
- * Every session file in the OMP session dir, NEWEST ACTIVITY FIRST.
+ * 会话 id → 名字（/rename 起的）。名字本来就按会话 id 存，这里只是转发，
+ * 让列表面（/history、/resume、/search）不必各自认识 store。
+ */
+export function titlesBySession(ctx: CommandContext): Record<string, string> {
+  return ctx.sessions.titlesBySessionId();
+}
+
+/**
+ * Every session JSONL in the OMP session dir, NEWEST ACTIVITY FIRST.
  *
  * Reads each file's JSONL once and stats it for the activity time; files
  * whose header is unreadable (or lacks an id/cwd) are skipped rather than
- * failing the listing.
+ * failing the listing. One row = one OMP session = one conversation; both
+ * /history and /resume's picker list exactly these.
  */
-export async function listSessions(ctx: CommandContext): Promise<SessionRecord[]> {
+export async function scanSessionFiles(ctx: CommandContext): Promise<SessionRecord[]> {
   const dir = getOmpSessionDir(ctx.controls.cfg);
-  const titles = ctx.sessions.titlesBySessionId();
+  const titles = titlesBySession(ctx);
+  // 会话 → 绑着它的 scope（同一会话只可能被一个 scope 绑：恢复时的占用校验）。
+  const owner = new Map<string, string>();
+  for (const scope of ctx.sessions.chats()) {
+    const bound = ctx.sessions.sessionFor(scope)?.sessionId;
+    if (bound !== undefined) owner.set(bound, scope);
+  }
   let names: string[];
   try {
     names = (await readdir(dir)).filter((n) => n.endsWith('.jsonl'));
@@ -57,6 +77,7 @@ export async function listSessions(ctx: CommandContext): Promise<SessionRecord[]
         startedAt: meta.timestamp ?? name,
         updatedAtMs: info.mtimeMs,
         turns,
+        scope: owner.get(meta.id) ?? null,
         ...(title !== undefined ? { title } : {}),
         ...(lastAssistant ? { summary: lastAssistant } : {}),
         ...(lastUserMessage ? { lastMessage: lastUserMessage } : {}),

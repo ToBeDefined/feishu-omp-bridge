@@ -1,8 +1,8 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
-import { readFile, unlink, writeFile } from 'node:fs/promises';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
-import { restartCard } from './templates';
+import { compactCard, restartCard } from './templates';
 
 interface ManagedEntry {
   cardId: string;
@@ -14,7 +14,7 @@ interface ManagedEntry {
  * it: a `/restart` card must become「重启完成」, a streaming reply must keep
  * its content and be marked interrupted, etc.
  */
-export type RunningCardKind = 'stream' | 'release' | 'restart' | 'form';
+export type RunningCardKind = 'stream' | 'release' | 'restart' | 'compact' | 'form';
 
 /**
  * Card left in-flight when the process died. `card` is the LAST rendered
@@ -29,6 +29,10 @@ interface PersistedRunningCard {
   chatId: string;
   kind: RunningCardKind;
   card?: object;
+  /** How many times a boot has already failed to finalize this leftover. */
+  attempts?: number;
+  /** 退避到期时间（ISO）：到期前不再尝试补卡。 */
+  nextAttemptAt?: string;
 }
 
 // Module-local because state is per-process. Lost on restart, which is fine —
@@ -175,39 +179,64 @@ async function readRunningCards(): Promise<PersistedRunningCard[]> {
   }
 }
 
-/** Serialize writes so concurrent snapshot updates can't lose each other. */
-let writeChain: Promise<void> = Promise.resolve();
+/**
+ * 串行化「读—改—写」整段：只串行 write 不够 —— 两个读改写交错时，后写的会覆盖前写
+ * 的结果。实测过的坑：`rememberStreamingCard` 紧跟 `forgetStreamingCard`（一次**成功**
+ * 回合的正常收尾）时，forget 的 read 赶在 remember 的 write 之前 → 读到空文件 → 跳过
+ * 写 → remember 的记录残留下来，下次启动的兜底会给这张**已完成**的卡片补上「进程中断，
+ * 以上为已输出的部分内容」。
+ */
+let cardsChain: Promise<void> = Promise.resolve();
+
+function mutateRunningCards<T>(fn: () => Promise<T>): Promise<T> {
+  const run = (): Promise<T> => fn();
+  const result = cardsChain.then(run, run);
+  cardsChain = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
 
 async function writeRunningCards(list: PersistedRunningCard[]): Promise<void> {
-  const next = writeChain.then(() =>
-    writeFile(paths.runningCardsFile, JSON.stringify(list.slice(-RUNNING_CARDS_MAX)), 'utf8'),
-  );
-  writeChain = next.catch(() => {});
-  await next.catch((err) => {
+  // 调用方必须在 mutateRunningCards(cardsChain) 内；这里只负责落盘。
+  // tmp + rename 原子替换：链外的读者（测试断言、崩溃恢复扫描）直接
+  // readFile，非原子写会让它们看到 truncate 后的空文件。
+  const tmp = `${paths.runningCardsFile}.${process.pid}.tmp`;
+  try {
+    await writeFile(tmp, JSON.stringify(list.slice(-RUNNING_CARDS_MAX)), 'utf8');
+    await rename(tmp, paths.runningCardsFile);
+  } catch (err) {
     log.warn('card', 'running-cards-persist-failed', { err: String(err) });
-  });
+  }
 }
 
 /** Insert or replace the entry for a card still in flight. */
-async function upsertRunningCard(entry: PersistedRunningCard): Promise<void> {
-  const list = await readRunningCards();
-  const next = [...list.filter((c) => c.messageId !== entry.messageId), entry];
-  await writeRunningCards(next);
+function upsertRunningCard(entry: PersistedRunningCard): Promise<void> {
+  return mutateRunningCards(async () => {
+    const list = await readRunningCards();
+    const next = [...list.filter((c) => c.messageId !== entry.messageId), entry];
+    await writeRunningCards(next);
+  });
 }
 
 /** Refresh the persisted snapshot for one card (called on every render). */
-async function updateRunningCardSnapshot(messageId: string, card: object): Promise<void> {
-  const list = await readRunningCards();
-  const entry = list.find((c) => c.messageId === messageId);
-  if (!entry) return;
-  entry.card = card;
-  await writeRunningCards(list);
+function updateRunningCardSnapshot(messageId: string, card: object): Promise<void> {
+  return mutateRunningCards(async () => {
+    const list = await readRunningCards();
+    const entry = list.find((c) => c.messageId === messageId);
+    if (!entry) return;
+    entry.card = card;
+    await writeRunningCards(list);
+  });
 }
 
-async function removeFromRunningCards(messageId: string): Promise<void> {
-  const list = await readRunningCards();
-  const next = list.filter((c) => c.messageId !== messageId);
-  if (next.length !== list.length) await writeRunningCards(next);
+function removeFromRunningCards(messageId: string): Promise<void> {
+  return mutateRunningCards(async () => {
+    const list = await readRunningCards();
+    const next = list.filter((c) => c.messageId !== messageId);
+    if (next.length !== list.length) await writeRunningCards(next);
+  });
 }
 
 /**
@@ -216,6 +245,7 @@ async function removeFromRunningCards(messageId: string): Promise<void> {
  *   restart → 「🚀 重启完成」(the restart we were asked to perform finished)
  *   stream  → replay the last snapshot minus running chrome + interruption note
  *   release → 「⚠️ 发布被中断」
+ *   compact → 「❌ 压缩失败」(the oneshot compactor died with the process)
  *   form    → 「此卡片已过期」
  * Returns true when a `/restart` card was finalized (the caller then skips the
  * separate「已上线」text notice).
@@ -225,32 +255,96 @@ export async function finalizeInterruptedCards(
   excludeMessageId?: string,
 ): Promise<boolean> {
   const leftovers = await readRunningCards();
-  await unlink(paths.runningCardsFile).catch(() => {});
+  const retry: PersistedRunningCard[] = [];
   let finalizedRestart = false;
-  for (const { messageId, kind, card } of leftovers) {
+  for (const entry of leftovers) {
+    const { messageId, kind, card } = entry;
     // Cards claimed by the boot-notice marker are finished by the caller
     // instead (the new process confirms /release and /restart themselves).
     if (messageId === excludeMessageId) continue;
     if (!messageId || messageId === 'om_sent' || !messageId.startsWith('om_')) continue;
-    try {
-      const finalCard = finalizeByKind(kind, card);
-      await channel.rawClient.im.v1.message.patch({
-        path: { message_id: messageId },
-        data: { content: JSON.stringify(finalCard) },
-      });
-      if (kind === 'restart') finalizedRestart = true;
-      log.info('card', 'interrupted-finalized', { messageId, kind, hadSnapshot: Boolean(card) });
-    } catch (err) {
-      log.warn('card', 'interrupted-finalize-failed', { messageId, kind, err: String(err) });
+    // 退避未到期：保留记录但不外呼（崩溃循环里每 10s 一次 patch 会拖垮机器）。
+    if (entry.nextAttemptAt && Date.parse(entry.nextAttemptAt) > Date.now()) {
+      retry.push(entry);
+      continue;
     }
+    if (await deliverInterruptCard(channel, messageId, kind, card)) {
+      if (kind === 'restart') finalizedRestart = true;
+      continue;
+    }
+    // 补不上就**留着**：这张卡还停在运行态（带 ⏹ 终止按钮），记录的寿命必须跟着
+    // 它 —— 从前这里无论成败都清空记录，于是补卡被飞书拒一次，那个终止按钮就永
+    // 远挂在那里了。但也**不能无限外呼**：launchd 每 10s 拉起一次，若补卡永远被拒
+    // （消息被撤回/删除、token 失效），每 10s 一次 patch 会把机器拖垮。所以失败
+    // 累加 attempts，超过上限后转入**一小时退避**：记录保留（⏹ 仍有救回的希望），
+    // 但期间不再外呼。真正不可救（消息已删）时这一步不会更差。
+    const attempts = (entry.attempts ?? 0) + 1;
+    if (attempts > INTERRUPT_FINALIZE_MAX_ATTEMPTS) {
+      const nextAttemptAt = new Date(Date.now() + INTERRUPT_FINALIZE_BACKOFF_MS).toISOString();
+      log.warn('card', 'interrupted-finalize-backoff', { messageId, kind, attempts, nextAttemptAt });
+      retry.push({ ...entry, attempts, nextAttemptAt });
+      continue;
+    }
+    retry.push({ ...entry, attempts });
   }
+  await mutateRunningCards(() => writeRunningCards(retry));
   return finalizedRestart;
+}
+
+/** Boots that may try to patch one leftover card before we give up on it.
+ *  Bounds外呼: a card we can never patch (recalled message, dead token) must
+ *  not trigger one failed patch per launchd retry forever. */
+const INTERRUPT_FINALIZE_MAX_ATTEMPTS = 3;
+/** 超过补卡重试上限后的退避时长：保留记录但停止频繁外呼。 */
+const INTERRUPT_FINALIZE_BACKOFF_MS = 60 * 60 * 1000;
+
+/** Feishu rejects a card patch past ~30KB (ErrCode 200800 / HTTP 400). */
+const CARD_PATCH_MAX_BYTES = 28 * 1024;
+
+/**
+ * 把一张遗留的运行态卡片补成终态。优先保留已输出的内容（`finalizeByKind`），
+ * 但**超长卡片必被飞书拒**（正是 400 的常见来源），所以放不下 / 被拒时退回一张
+ * 极小终态卡：此处唯一重要的是让用户看不到一个永远不消失的 ⏹。
+ */
+async function deliverInterruptCard(
+  channel: LarkChannel,
+  messageId: string,
+  kind: RunningCardKind,
+  card: object | undefined,
+): Promise<boolean> {
+  const pretty = finalizeByKind(kind, card);
+  const fits = Buffer.byteLength(JSON.stringify(pretty), 'utf8') <= CARD_PATCH_MAX_BYTES;
+  if (fits && (await tryPatchCard(channel, messageId, pretty))) {
+    log.info('card', 'interrupted-finalized', { messageId, kind, hadSnapshot: Boolean(card) });
+    return true;
+  }
+  if (await tryPatchCard(channel, messageId, finalizeByKind(kind, undefined))) {
+    log.info('card', 'interrupted-finalized-short', { messageId, kind, fits });
+    return true;
+  }
+  return false;
+}
+
+async function tryPatchCard(channel: LarkChannel, messageId: string, card: object): Promise<boolean> {
+  try {
+    await channel.rawClient.im.v1.message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(card) },
+    });
+    return true;
+  } catch (err) {
+    log.warn('card', 'interrupted-finalize-failed', { messageId, err: String(err) });
+    return false;
+  }
 }
 
 /** Terminal card for a leftover entry, by kind. */
 export function finalizeByKind(kind: RunningCardKind, card: object | undefined): object {
   if (kind === 'restart') return restartCard('done');
   if (kind === 'release') return noteCard('⚠️ **发布被中断，进程在构建/重启期间退出。**');
+  if (kind === 'compact') {
+    return compactCard({ phase: 'failed', error: '进程在压缩期间退出，压缩未完成。' });
+  }
   if (kind === 'form') return noteCard('_⚠️ 此卡片已过期，请使用最新发出的卡片。_');
   return card
     ? stripRunningState(card)
@@ -272,7 +366,15 @@ function noteCard(content: string): object {
  */
 export function stripRunningState(card: object): object {
   const elements = (card as { body?: { elements?: unknown[] } }).body?.elements;
-  const kept = (Array.isArray(elements) ? elements : []).filter((el) => !isRunningStateElement(el));
+  const list = Array.isArray(elements) ? elements : [];
+  const kept = list.filter((el) => !isRunningStateElement(el));
+  // 卡片已经处于**终态**（有内容，且没有任何运行态元素被剥掉）时不要再贴
+  // 「进程中断」：run 已经跑完、只是崩溃恢复记录没来得及删的卡片，贴上去就是
+  // 误报（用户看到一条完整的回复被标成"中断"）。
+  const finished = list.length > 0 && kept.length === list.length;
+  if (finished) {
+    return { schema: '2.0', config: { update_multi: true }, body: { elements: kept } };
+  }
   kept.push({ tag: 'markdown', content: '---', text_size: 'notation' });
   kept.push({
     tag: 'markdown',
@@ -303,6 +405,11 @@ export function rememberStreamingCard(messageId: string, chatId: string, card?: 
 /** Refresh a streaming card's persisted snapshot (called on every render). */
 export function snapshotStreamingCard(messageId: string, card: object): void {
   void updateRunningCardSnapshot(messageId, card);
+}
+
+/** 等所有在途的 running-cards 读改写排空（测试与优雅关停用）。 */
+export function runningCardsSettled(): Promise<void> {
+  return cardsChain;
 }
 
 /** Remove a streaming card from the crash-recovery persistence. */

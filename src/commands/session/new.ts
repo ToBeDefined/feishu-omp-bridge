@@ -1,9 +1,9 @@
-import { homedir } from 'node:os';
 import type { CommandContext, Handler } from '../index';
 import { formatIdleLine, reply } from '../shared';
 import { newSessionCard } from '../../card/templates';
 import { escapeMd } from '../../utils/text';
 import { createBoundChat, defaultChatName } from './group';
+import { conversationCwd } from '../../session/current-cwd';
 import { getOmpModel, getOmpThinking, getRunIdleTimeoutMs } from '../../config/schema';
 import { log } from '../../core/logger';
 
@@ -22,13 +22,16 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
   }
 
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
-  ctx.sessions.clear(ctx.scope);
+  // 一个 OMP 会话 = 一个对话：/new 起一段**新对话**（下一条消息新建 OMP 会话），
+  // 旧对话原样留在 /history 里、名字也留在它自己身上，新对话从无名开始。
+  ctx.sessions.startNew(ctx.scope);
   // A new session invalidates any pending /ws undo: rolling back would also
   // clear the session the user just started.
   ctx.workspaces.clearUndo(ctx.scope);
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
   const card = newSessionCard({
-    cwd: ctx.workspaces.cwdFor(ctx.scope) ?? homedir(),
+    // /new 之后没有当前会话，这里就是新对话将落在的目录。
+    cwd: conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope),
     model: getOmpModel(ctx.controls.cfg),
     thinking: getOmpThinking(ctx.controls.cfg),
     idleLine: formatIdleLine(
@@ -42,7 +45,7 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
   } catch (err) {
     log.fail('command', err, { step: 'new-card' });
-    await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
+    await reply(ctx, wasRunning ? '已中断当前任务并重置上下文。' : '已重置上下文。');
   }
 }
 

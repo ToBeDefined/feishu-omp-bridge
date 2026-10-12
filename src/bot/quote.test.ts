@@ -65,6 +65,35 @@ describe('parseMessageContent', () => {
     expect(parseMessageContent('post', post)).toBe('line1\nline2\nline3');
   });
 
+  it('prefixes the post title and appends a-element links at the end', () => {
+    const post = JSON.stringify({
+      title: '发布计划',
+      content: [
+        [{ tag: 'a', href: 'https://example.com' }, { tag: 'text', text: '详见文档' }],
+      ],
+    });
+    expect(parseMessageContent('post', post)).toBe(
+      '【发布计划】\n详见文档\nhttps://example.com',
+    );
+  });
+
+  it('renders a link-only post without dropping it to empty', () => {
+    const post = JSON.stringify({
+      content: [[{ tag: 'a', href: 'https://example.com/x' }]],
+    });
+    const out = parseMessageContent('post', post);
+    expect(out).toBe('https://example.com/x');
+  });
+
+  it('falls back to a non-empty marker for an empty post', () => {
+    expect(parseMessageContent('post', JSON.stringify({ content: [] }))).toBe(
+      '[富文本/链接卡片]',
+    );
+    expect(parseMessageContent('post', JSON.stringify({ title: 't', content: [] }))).toBe(
+      '【t】',
+    );
+  });
+
   it('falls back to a type marker for other types', () => {
     expect(parseMessageContent('image', JSON.stringify({ image_key: 'img_1' }))).toContain('[image]');
   });

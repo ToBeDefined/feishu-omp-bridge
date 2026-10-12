@@ -1,4 +1,5 @@
 import type { MessageReplyMode } from '../config/schema';
+import { inlineRow } from './templates';
 
 export interface ConfigFormOpts {
   messageReply: MessageReplyMode;
@@ -13,6 +14,9 @@ export interface ConfigFormOpts {
   allowedChats: string;
   /** Comma-separated admin open_id list; empty string = no admin gating. */
   admins: string;
+  /** 归属者（`access.owner`）。**只读**：不在表单里，只能在机器上改；这里只是显示
+   * 现状，免得「管理员」一栏空着让人以为没人管。 */
+  owner?: string;
 }
 
 /** Form card for `/config`. */
@@ -124,6 +128,11 @@ export function configFormCard(opts: ConfigFormOpts): object {
             },
             {
               tag: 'markdown',
+              // 只显示「归属者是谁」；为什么只读 / 没有时怎么回落不在这张卡上展开。
+              content: `\n**归属者**(只读):${opts.owner ? `\`${opts.owner}\`` : '_未设置_'}`,
+            },
+            {
+              tag: 'markdown',
               content:
                 '\n**用户白名单**(`allowedUsers`)\n' +
                 '_只允许列表内的 open_id 跟 bot 交互。多个用英文逗号分隔。留空 = 不限制_\n' +
@@ -164,39 +173,8 @@ export function configFormCard(opts: ConfigFormOpts): object {
               placeholder: { tag: 'plain_text', content: 'ou_xxx, ou_yyy（留空=不限制）' },
               input_type: 'text',
             },
-            {
-              tag: 'column_set',
-              flex_mode: 'flow',
-              horizontal_spacing: 'small',
-              columns: [
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    {
-                      tag: 'button',
-                      name: 'submit_btn',
-                      text: { tag: 'plain_text', content: '提交' },
-                      type: 'primary',
-                      form_action_type: 'submit',
-                      behaviors: [{ type: 'callback', value: { cmd: 'config.submit' } }],
-                    },
-                  ],
-                },
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    {
-                      tag: 'button',
-                      name: 'cancel_btn',
-                      text: { tag: 'plain_text', content: '取消' },
-                      behaviors: [{ type: 'callback', value: { cmd: 'config.cancel' } }],
-                    },
-                  ],
-                },
-              ],
-            },
+            ...inlineRow([{ element: { tag: 'button', name: 'submit_btn', text: { tag: 'plain_text', content: '提交' }, type: 'primary', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { cmd: 'config.submit' } }], } }]),
+            ...inlineRow([{ element: { tag: 'button', name: 'cancel_btn', text: { tag: 'plain_text', content: '取消' }, behaviors: [{ type: 'callback', value: { cmd: 'config.cancel' } }], } }]),
           ],
         },
       ],
@@ -228,6 +206,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +
             `**并发上限**:\`${opts.maxConcurrentRuns}\`\n` +
             `**run 探活**:\`${opts.runIdleTimeoutMinutes > 0 ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}\`\n` +
+          `**归属者**:${opts.owner ? `\`${opts.owner}\`` : '_(未设置)_'}\n` +
             `**群里需要 @ bot**:\`${opts.requireMentionInGroup ? '是' : '否'}\`\n\n` +
             '🔒 **访问控制**\n' +
             `**用户白名单**:${summarizeList(opts.allowedUsers)}\n` +

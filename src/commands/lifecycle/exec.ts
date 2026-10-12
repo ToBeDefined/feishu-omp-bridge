@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
-import { homedir } from 'node:os';
 import { execResultCard } from '../../card/templates';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
+import { conversationCwd } from '../../session/current-cwd';
 import { log } from '../../core/logger';
 
 export const EXEC_TIMEOUT_MS = 30_000;
@@ -96,7 +96,8 @@ async function handleExec(args: string, ctx: CommandContext): Promise<void> {
     await reply(ctx, '用法：`/exec <shell 命令>`');
     return;
   }
-  const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
+  // 会话优先：在**当前会话**的目录里执行。
+  const cwd = conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope);
   const result = await runCommand(cmd, cwd, EXEC_TIMEOUT_MS);
   log.info('command', 'exec', {
     scope: ctx.scope,

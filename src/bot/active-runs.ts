@@ -27,6 +27,14 @@ export class ActiveRuns {
   private readonly handles = new Map<string, RunHandle>();
   /** Scopes reserved but not yet carrying a run. */
   private readonly claims = new Map<string, symbol>();
+  /**
+   * Claims that were cancelled while still waiting (pool slot / media download /
+   * chat-mode lookup) — `interrupt()` marks them, `register()` refuses them.
+   * 没有这一步，出队途中（已 claim、未 register）的批次拦不住：/new、/cd、/ws use
+   * 的 interrupt 找不到 handle 直接返回 false，那个旧批次随后照跑，并把刚被重置的
+   * scope 重新绑成「以旧对话为首轮」的会话。
+   */
+  private readonly cancelledClaims = new Set<symbol>();
 
   /**
    * Reserve `scope` without a run. Returns undefined when the scope already
@@ -43,6 +51,7 @@ export class ActiveRuns {
   /** Drop a claim that never became a run (error path). No-op once consumed. */
   releaseClaim(claim: RunClaim): void {
     if (this.claims.get(claim.scope) === claim.token) this.claims.delete(claim.scope);
+    this.cancelledClaims.delete(claim.token);
   }
 
   /**
@@ -56,6 +65,13 @@ export class ActiveRuns {
       return undefined;
     }
     if (claim) {
+      if (this.cancelledClaims.has(claim.token)) {
+        // 出队途中被 /new、/cd、/ws use、/stop 取消：这个批次属于旧上下文，别再跑。
+        this.cancelledClaims.delete(claim.token);
+        if (this.claims.get(scope) === claim.token) this.claims.delete(scope);
+        log.info('runs', 'register-cancelled', { scope });
+        return undefined;
+      }
       if (this.claims.get(scope) !== claim.token) {
         log.warn('runs', 'register-claim-lost', { scope });
         return undefined;
@@ -91,6 +107,11 @@ export class ActiveRuns {
 
   has(chatId: string): boolean {
     return this.handles.has(chatId) || this.claims.has(chatId);
+  }
+
+  /** 进程内是否没有任何在跑/占位的 run（发布/重启前的排空判断）。 */
+  idle(): boolean {
+    return this.handles.size === 0 && this.claims.size === 0;
   }
 
   /**
@@ -152,7 +173,17 @@ export class ActiveRuns {
    */
   interrupt(chatId: string): boolean {
     const h = this.handles.get(chatId);
-    if (!h) return false;
+    if (!h) {
+      // 已 claim 但还没 register（在等池子 / 下载媒体 / 查 chat 模式）：把 claim 标记为
+      // 取消，register 时会拒绝并让调用方杀掉子进程 —— 否则 /new 之后这个旧批次仍会跑。
+      const token = this.claims.get(chatId);
+      if (token !== undefined) {
+        this.cancelledClaims.add(token);
+        log.info('runs', 'claim-cancelled', { scope: chatId });
+        return true;
+      }
+      return false;
+    }
     h.interrupted = true;
     void h.run.stop().catch(() => {
       /* stop errors are non-fatal */

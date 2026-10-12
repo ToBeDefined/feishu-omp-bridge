@@ -3,6 +3,7 @@ dist/
 coverage/
 *.log
 *.tsbuildinfo
+.worktrees/
 
 .env
 .env.local

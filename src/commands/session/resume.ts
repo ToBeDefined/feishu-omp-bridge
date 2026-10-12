@@ -1,124 +1,70 @@
 import { homedir } from 'node:os';
 import { stat } from 'node:fs/promises';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
-import {
-  resumeCard,
-  resumeCancelledCard,
-  resumeSavedCard,
-  type ResumeOption,
-} from '../../card/model-card';
+import { forgetManagedCard, updateManagedCard } from '../../card/managed';
+import { resumeSavedCard, type ResumeOption } from '../../card/model-card';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { FORM_SETTLE_MS, reply } from '../shared';
 import { renderContext, loadSessionSummary } from './context';
-import { listSessions } from './sessions';
+import { scanSessionFiles } from './sessions';
 import { log } from '../../core/logger';
 
+/**
+ * `/resume` / `/session` —— **带参数**时才走到这里：`/resume <会话 id|前缀>` 直接恢复。
+ * 不带参数时由 `session/index.ts` 转发给 `/history`（两者的清单卡片曾是重复能力，
+ * 选择器卡片连同分页 / 取消 / 按钮分支一并下线）。
+ */
 export const resumeHandlers: Record<string, Handler> = {
   '/resume': handleResume,
   '/session': handleResume,
 };
 
-const RESUME_PAGE_SIZE = 5;
-
-/** Map sessionId → the scope currently bound to it. A session is a single
- * JSONL file: letting two chats resume it would make both OMP processes
- * `--resume` the same file and interleave their turns. */
-function boundScopeBySession(ctx: CommandContext): Map<string, string> {
-  const map = new Map<string, string>();
+/**
+ * 若另一个 scope 的**当前会话**落在给定会话集合里，返回那个 scope。
+ *
+ * 一个对话只应由一个 chat 恢复：同一 JSONL 被两个 OMP 进程 `--resume` 会让两边的
+ * 回合交错写进同一个文件。
+ */
+function otherScopeHolding(ctx: CommandContext, sessionId: string): string | undefined {
   for (const scope of ctx.sessions.chats()) {
-    const entry = ctx.sessions.getRaw(scope);
-    if (entry?.sessionId) map.set(entry.sessionId, scope);
+    if (scope === ctx.scope) continue;
+    if (ctx.sessions.sessionFor(scope)?.sessionId === sessionId) return scope;
   }
-  return map;
+  return undefined;
 }
 
 export async function listResumableSessions(ctx: CommandContext): Promise<ResumeOption[]> {
-  const bound = boundScopeBySession(ctx);
-  // Newest session first by START time (the picker's historical order), not
-  // by last activity: the shared lister is activity-sorted for /history.
-  return (await listSessions(ctx))
-    .filter((s) => {
-      // Never offer a session another scope already owns.
-      const owner = bound.get(s.sessionId);
-      return owner === undefined || owner === ctx.scope;
-    })
-    .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
-    .map((s) => ({
-      sessionId: s.sessionId,
-      cwd: s.cwd,
-      timestamp: s.startedAt,
-      ...(s.title !== undefined ? { title: s.title } : {}),
-      summary: s.summary ?? '',
-      lastMessage: s.lastMessage,
+  // 一行 = 一个会话（一个 OMP 会话 = 一个对话），按最后活动倒序；被别的 scope
+  // 当前绑着的那些不列（同一 JSONL 不能两边同时 --resume）。
+  const files = await scanSessionFiles(ctx);
+  return files
+    .filter((f) => otherScopeHolding(ctx, f.sessionId) === undefined)
+    .map((f) => ({
+      sessionId: f.sessionId,
+      cwd: f.cwd,
+      timestamp: f.startedAt,
+      updatedAtMs: f.updatedAtMs,
+      ...(f.title !== undefined ? { title: f.title } : {}),
+      summary: f.lastMessage ?? f.summary ?? '',
     }));
 }
 
 async function handleResume(args: string, ctx: CommandContext): Promise<void> {
-  const [sub, ...rest] = args.trim().split(/\s+/);
-
-  if (sub === 'use') {
-    const sessionId = rest.join('');
-    const sessions = await listResumableSessions(ctx);
-    const match = sessions.find((s) => s.sessionId === sessionId);
-    if (!match) {
-      await reply(ctx, `❌ 未找到会话 \`${sessionId}\`。`);
-      return;
-    }
-    await applyResume(ctx, match);
+  const target = args.trim();
+  if (!target) {
+    // 正常路径由 session/index.ts 转发给 /history；直接调用 handler 时给用法，
+    // 绝不能落进下面的前缀匹配（空前缀会匹配到任意一条会话）。
+    await reply(ctx, '用法：`/resume <会话 id>`；不带参数时等同 `/history`。');
     return;
   }
-
-  if (sub === 'more' || sub === 'back') {
-    const offset = Number.parseInt(rest.join(''), 10);
-    if (!Number.isFinite(offset) || offset < 0) {
-      await reply(ctx, '❌ 无效的分页偏移。');
-      return;
-    }
-    await showResumePage(ctx, offset);
-    return;
-  }
-
-  if (sub === 'cancel') {
-    if (ctx.fromCardAction) {
-      const msgId = ctx.msg.messageId;
-      void (async () => {
-        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-        await updateManagedCard(ctx.channel, msgId, resumeCancelledCard()).catch(() => {});
-        forgetManagedCard(msgId);
-      })();
-    }
-    return;
-  }
-
-  if (!sub) {
-    await showResumePage(ctx, 0);
-    return;
-  }
-
-  // Direct resume by id prefix: find the session anywhere in history.
+  // Direct resume by id / id prefix: one session = one conversation, so that id
+  // IS the conversation.
   const sessions = await listResumableSessions(ctx);
-  const match = sessions.find((s) => s.sessionId.startsWith(sub));
+  const match = sessions.find((s) => s.sessionId.startsWith(target));
   if (!match) {
-    await reply(ctx, `❌ 未找到会话 \`${sub}\`。发 \`/resume\` 查看可恢复的会话列表。`);
+    await reply(ctx, `❌ 未找到会话 \`${target}\`。发 \`/history\` 查看历史会话清单。`);
     return;
   }
   await applyResume(ctx, match);
-}
-
-async function showResumePage(ctx: CommandContext, offset: number): Promise<void> {
-  const sessions = await listResumableSessions(ctx);
-  if (sessions.length === 0) {
-    await reply(ctx, '没有找到可恢复的历史会话。');
-    return;
-  }
-  const page = sessions.slice(offset, offset + RESUME_PAGE_SIZE);
-  const currentId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
-  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(
-    ctx.channel,
-    ctx.msg.chatId,
-    resumeCard(currentId, page, { offset, total: sessions.length }),
-  );
 }
 
 /**
@@ -139,41 +85,45 @@ async function resolveSafeCwd(sessionCwd: string): Promise<string | null> {
 }
 
 export async function applyResume(ctx: CommandContext, match: ResumeOption): Promise<void> {
-  // Defensive copy of the ownership guard in listResumableSessions: a card
-  // button carries a session id that another chat may have claimed since.
-  const owner = boundScopeBySession(ctx).get(match.sessionId);
-  if (owner !== undefined && owner !== ctx.scope) {
-    log.warn('command', 'resume-cross-scope-refused', {
-      scope: ctx.scope,
-      owner,
-      sessionId: match.sessionId,
-    });
-    await reply(ctx, `❌ 会话 \`${match.sessionId}\` 已被另一个会话（\`${owner}\`）占用，不能在这里恢复。`);
+  const target = match.sessionId;
+
+  // 会话文件是恢复的唯一凭据：它可能已被清理（幽灵会话），此时不假装能续。
+  const alive = new Set((await scanSessionFiles(ctx)).map((f) => f.sessionId));
+  if (!alive.has(target)) {
+    log.warn('command', 'resume-ghost-session', { scope: ctx.scope, sessionId: target });
+    await reply(ctx, '❌ 这段会话的会话文件已不存在（可能被清理），无法恢复。');
     return;
   }
+
+  // Ownership guard: another chat must not be actively using this session (two
+  // OMP runs would interleave turns into the same JSONL).
+  const owner = otherScopeHolding(ctx, target);
+  if (owner !== undefined) {
+    log.warn('command', 'resume-cross-scope-refused', { scope: ctx.scope, owner, sessionId: target });
+    await reply(ctx, `❌ 会话 \`${target}\` 已被另一个会话（\`${owner}\`）占用，不能在这里恢复。`);
+    return;
+  }
+
+  // 会话的 cwd 是它跑过的目录，也是唯一能诚实 resume 它的目录；目录没了就拒绝，
+  // 不改写这条会话记录的工作目录。
   const sessionCwd = match.cwd || homedir();
   const cwd = await resolveSafeCwd(sessionCwd);
   if (!cwd) {
-    log.warn('command', 'resume-cwd-missing', {
-      scope: ctx.scope,
-      sessionId: match.sessionId,
-      cwd: sessionCwd,
-    });
+    log.warn('command', 'resume-cwd-missing', { scope: ctx.scope, sessionId: target, cwd: sessionCwd });
     await reply(
       ctx,
-      `❌ 会话 \`${match.sessionId}\` 的原目录 \`${sessionCwd}\` 已不存在，无法恢复（不会改写该会话记录的工作目录）。\n请发 \`/new\` 开始新会话，或先 \`/cd\` 切到该目录的上级后再试。`,
+      `❌ 会话 \`${target}\` 的原目录 \`${sessionCwd}\` 已不存在，无法恢复（不会改写该会话记录的工作目录）。\n请发 \`/new\` 开始新对话，或先 \`/cd\` 切到该目录的上级后再试。`,
     );
     return;
   }
-  const currentId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
-  const isCurrent = currentId !== undefined && match.sessionId === currentId;
+
+  const isCurrent = ctx.sessions.sessionFor(ctx.scope)?.sessionId === target;
   if (isCurrent) {
-    log.info('command', 'resume-already-current', { scope: ctx.scope, sessionId: match.sessionId, cwd });
-    // Keep the workspace cwd in sync with the resolved cwd so /context and
-    // the card agree — even when it happens to equal the session's recorded
-    // cwd, writing it is a cheap no-op that guarantees consistency.
+    log.info('command', 'resume-already-current', { scope: ctx.scope, sessionId: target, cwd });
+    // 窗口 cwd 与会话保持一致（会话优先口径），即使本来就相同也写一次 —— 便宜的
+    // 幂等写，保证 /ctx、卡片、下一次运行三者口径一致。
     ctx.workspaces.setCwd(ctx.scope, cwd);
-    const summary = await loadSessionSummary(ctx, match.sessionId);
+    const summary = await loadSessionSummary(ctx, target);
     if (ctx.fromCardAction) {
       const msgId = ctx.msg.messageId;
       void (async () => {
@@ -181,7 +131,7 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
         await updateManagedCard(
           ctx.channel,
           msgId,
-          resumeSavedCard(match.sessionId, cwd, renderContext(ctx, summary)),
+          resumeSavedCard(target, cwd, renderContext(ctx, summary)),
         ).catch(() => {});
         forgetManagedCard(msgId);
       })();
@@ -190,13 +140,17 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
     }
     return;
   }
-  // Interrupt any active run, then re-point this chat's session + cwd at
-  // the historical session. resumeFor(scope, cwd) will match next run.
+
+  // 切到那条会话：它带着自己的开始/最后活动时间，别把「现在」当成它的历史。
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, cwd);
-  ctx.sessions.set(ctx.scope, match.sessionId, cwd);
-  log.info('command', 'resume', { scope: ctx.scope, sessionId: match.sessionId, cwd });
-  const summary = await loadSessionSummary(ctx, match.sessionId);
+  const createdAtMs = Date.parse(match.timestamp);
+  ctx.sessions.bind(ctx.scope, target, cwd, {
+    ...(Number.isFinite(createdAtMs) && createdAtMs > 0 ? { createdAtMs } : {}),
+    ...(match.updatedAtMs !== undefined ? { updatedAtMs: match.updatedAtMs } : {}),
+  });
+  log.info('command', 'resume', { scope: ctx.scope, sessionId: target, cwd });
+  const summary = await loadSessionSummary(ctx, target);
   if (ctx.fromCardAction) {
     const msgId = ctx.msg.messageId;
     void (async () => {
@@ -204,16 +158,14 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
       await updateManagedCard(
         ctx.channel,
         msgId,
-        resumeSavedCard(match.sessionId, cwd, renderContext(ctx, summary)),
+        resumeSavedCard(target, cwd, renderContext(ctx, summary)),
       ).catch(() => {});
       forgetManagedCard(msgId);
     })();
   } else {
     void reply(
       ctx,
-      `✅ 已恢复会话 \`${match.sessionId}\`\n📁 cwd: \`${cwd}\`\n下一条消息从该会话继续。\n\n---\n\n${renderContext(ctx, summary)}`,
+      `✅ 已恢复会话 \`${target}\`\n📁 cwd: \`${cwd}\`\n下一条消息从该会话继续。\n\n---\n\n${renderContext(ctx, summary)}`,
     );
   }
 }
-
-

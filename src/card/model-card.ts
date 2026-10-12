@@ -1,8 +1,6 @@
-import { summarizeMd } from '../utils/text';
 import { isOmpThinkingLevel, OMP_THINKING_LEVELS } from '../config/schema';
-import { actions, shortPath, shortSessionId, type ButtonSpec } from './templates';
-import { escapeCode, escapeMd } from '../utils/text';
-import { formatAgo } from '../utils/time';
+import { inlineActions, inlineRow, shortPath } from './templates';
+import { escapeCode } from '../utils/text';
 
 /** Form value meaning "clear ompThinking / follow OMP default". */
 export const THINKING_FOLLOW_DEFAULT = '__default';
@@ -20,26 +18,31 @@ export interface ModelProviderInfo {
   count: number;
 }
 
-/** Recent model selector buttons, shown as quick-set. */
-function modelRecentButtons(current: string | undefined, recents: string[]): object[] {
-  const items = recents.filter((m) => m !== current);
-  return items.map((m) => ({
-    tag: 'button',
-    text: { tag: 'plain_text', content: m },
-    type: 'default',
-    value: { cmd: 'model.use', arg: m },
-  }));
+/** 最近使用 / 常用两个快捷区各自最多展示几个 —— 再多就把卡片撑成按钮墙
+ * （模型历史存 20 条，常用角色也可能十几条）。 */
+const QUICK_SET_MAX = 4;
+
+/**
+ * Quick-set 按钮（最近使用 / 常用）：并排、每行最多 2 个（`inlineRow` 的规则），
+ * 当前模型不出现（再点一次是无操作）。标签只留模型段 —— 卡片标题已给出提供方，
+ * 每个按钮都重复 `provider/` 只是噪音。
+ *
+ * 先剔当前模型再截断到 4 个：否则当前模型占掉一个名额，可见按钮只剩 3 个。
+ */
+function quickSetButtons(current: string | undefined, models: string[]): object[] {
+  const items = models.filter((m) => m !== current).slice(0, QUICK_SET_MAX);
+  return inlineActions(
+    items.map((m) => ({
+      text: modelShortLabel(m),
+      value: { cmd: 'model.use', arg: m },
+    })),
+  );
 }
 
-/** Common (modelRoles) model buttons, shown as quick-set. */
-function modelCommonButtons(current: string | undefined, commons: string[]): object[] {
-  const items = commons.filter((m) => m !== current);
-  return items.map((m) => ({
-    tag: 'button',
-    text: { tag: 'plain_text', content: m },
-    type: 'default',
-    value: { cmd: 'model.use', arg: m },
-  }));
+/** `provider/model` → `model`（提供方已由卡片标题/分组说明给出）。 */
+function modelShortLabel(selector: string): string {
+  const slash = selector.indexOf('/');
+  return slash >= 0 ? selector.slice(slash + 1) : selector;
 }
 
 function formatCurrent(value: string | undefined): string {
@@ -71,49 +74,43 @@ export function modelProviderCard(
   commons: string[] = [],
   thinking?: string,
 ): object {
-  const lines = [
-    `当前模型：` + formatCurrent(current),
-    `思考强度：` + formatCurrent(thinking),
-  ];
-  const commonButtons = modelCommonButtons(current, commons);
-  const commonBlock: object[] =
-    commonButtons.length > 0
-      ? [{ tag: 'markdown', content: '\n**常用**' }, ...commonButtons, { tag: 'hr' }]
-      : [];
-  const recentButtons = modelRecentButtons(current, recents);
-  const recentBlock: object[] =
-    recentButtons.length > 0
-      ? [{ tag: 'markdown', content: '\n**最近使用**' }, ...recentButtons, { tag: 'hr' }]
-      : [];
-  const buttons = providers.map((p) => ({
-    tag: 'button',
-    text: { tag: 'plain_text', content: `${p.provider} (${p.count})` },
-    type: p.provider.toLowerCase() === (current?.split('/')[0] ?? '') ? 'primary' : 'default',
-    value: { cmd: 'model.provider', arg: p.provider },
-  }));
-  buttons.push({
-    tag: 'button',
-    text: { tag: 'plain_text', content: '回退默认' },
-    type: current ? 'default' : 'primary',
-    value: { cmd: 'model.reset', arg: '' },
-  });
-  buttons.push({
-    tag: 'button',
-    text: { tag: 'plain_text', content: '取消' },
-    type: 'default',
-    value: { cmd: 'model.cancel', arg: '' },
-  });
+  /** 一段快捷选择（标题 + 并排按钮），空段整块不渲染。 */
+  const section = (title: string, models: string[]): object[] => {
+    const buttons = quickSetButtons(current, models);
+    return buttons.length > 0 ? [{ tag: 'markdown', content: `**${title}**` }, ...buttons] : [];
+  };
+  // 顺序：最近使用 → 常用 → 提供方。最近使用是「我刚才在用的那个」，
+  // 是这张卡最高频的动作，理应排在最前（此前常用在前，最近使用在中间）。
+  const recentSection = section('🕘 最近使用', recents);
+  const commonSection = section('⭐ 常用', commons);
+  const providerButtons = inlineActions(
+    providers.map((p) => ({
+      text: `${p.provider} (${p.count})`,
+      style: p.provider.toLowerCase() === (current?.split('/')[0] ?? '') ? ('primary' as const) : ('default' as const),
+      value: { cmd: 'model.provider', arg: p.provider },
+    })),
+  );
   return {
     schema: '2.0',
     config: { summary: { content: '切换模型' } },
     body: {
       elements: [
         { tag: 'markdown', content: '🎛 **切换模型**', text_size: 'heading' },
-        { tag: 'markdown', content: lines.join('\n') },
-        ...commonBlock,
-        ...recentBlock,
-        { tag: 'markdown', content: '\n**选择提供方**' },
-        ...buttons,
+        {
+          tag: 'markdown',
+          content: `当前 ${formatCurrent(current)} · 思考 ${formatCurrent(thinking)}`,
+          text_size: 'notation',
+        },
+        ...(recentSection.length > 0 || commonSection.length > 0 ? [{ tag: 'hr' }] : []),
+        ...recentSection,
+        ...(recentSection.length > 0 && commonSection.length > 0 ? [{ tag: 'markdown', content: '\n' }] : []),
+        ...commonSection,
+        { tag: 'hr' },
+        { tag: 'markdown', content: '**📦 提供方**' },
+        ...providerButtons,
+        // 全局动作各占一行铺满：回退默认（不是提供方，单列）与退路「取消」。
+        ...inlineActions([{ text: '回退默认', value: { cmd: 'model.reset', arg: '' } }]),
+        ...inlineActions([{ text: '取消', value: { cmd: 'model.cancel', arg: '' } }]),
       ],
     },
   };
@@ -125,8 +122,17 @@ export function modelSelectCard(
   current: string | undefined,
   models: ModelInfo[],
   thinking?: string,
+  /** 全局最近使用的 selector，最新在前：本提供方命中的那些排到下拉最前面。 */
+  recents: string[] = [],
 ): object {
-  const sorted = [...models].sort((a, b) => a.selector.localeCompare(b.selector));
+  const alphabetical = [...models].sort((a, b) => a.selector.localeCompare(b.selector));
+  // 顺序：最近使用（按 recency）→ 其余按字母。模型列表有几十条时，「我刚用过」
+  // 比「按字母排」有用得多。
+  const rank = new Map(recents.map((sel, i) => [sel, i]));
+  const sorted = [
+    ...alphabetical.filter((m) => rank.has(m.selector)).sort((a, b) => rank.get(a.selector)! - rank.get(b.selector)!),
+    ...alphabetical.filter((m) => !rank.has(m.selector)),
+  ];
   // options 的 value 是完整 selector（provider/model）。用半段 id 永远匹配
   // 不上任何 option —— 预选会静默落到 sorted[0]，用户看到错误的"当前模型"。
   const initial =
@@ -134,7 +140,9 @@ export function modelSelectCard(
       ? current
       : sorted[0]?.selector;
   const options = sorted.map((m) => {
-    const label = m.name && m.name !== m.selector ? `${m.selector} (${m.name})` : m.selector;
+    // 卡片标题已给出提供方，下拉里只留模型段；名字不同时附在后面。
+    const short = modelShortLabel(m.selector);
+    const label = m.name && m.name !== short ? `${short} (${m.name})` : short;
     return { text: { tag: 'plain_text', content: label }, value: m.selector };
   });
   return {
@@ -142,15 +150,13 @@ export function modelSelectCard(
     config: { summary: { content: `选择 ${provider} 模型` } },
     body: {
       elements: [
+        { tag: 'markdown', content: `🎛 **${provider} 模型**`, text_size: 'heading' },
         {
           tag: 'markdown',
-          text_size: 'heading',
-          content:
-            `🎛 **${provider} 模型**\n` +
-            `当前模型：` + formatCurrent(current) +
-            `\n思考强度：` + formatCurrent(thinking),
+          content: `当前 ${formatCurrent(current)} · 思考 ${formatCurrent(thinking)}` +
+            (recents.length > 0 ? ' · _下拉里最近用过的排在前面_' : ''),
+          text_size: 'notation',
         },
-        { tag: 'hr' },
         {
           tag: 'form',
           name: 'model_form',
@@ -163,39 +169,8 @@ export function modelSelectCard(
               options,
             },
             thinkingSelect(thinking),
-            {
-              tag: 'column_set',
-              flex_mode: 'flow',
-              horizontal_spacing: 'small',
-              columns: [
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    {
-                      tag: 'button',
-                      name: 'submit_btn',
-                      text: { tag: 'plain_text', content: '切换' },
-                      type: 'primary',
-                      form_action_type: 'submit',
-                      behaviors: [{ type: 'callback', value: { cmd: 'model.submit' } }],
-                    },
-                  ],
-                },
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    {
-                      tag: 'button',
-                      name: 'cancel_btn',
-                      text: { tag: 'plain_text', content: '取消' },
-                      behaviors: [{ type: 'callback', value: { cmd: 'model.cancel' } }],
-                    },
-                  ],
-                },
-              ],
-            },
+            ...inlineRow([{ element: { tag: 'button', name: 'submit_btn', text: { tag: 'plain_text', content: '切换' }, type: 'primary', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { cmd: 'model.submit' } }], } }]),
+            ...inlineRow([{ element: { tag: 'button', name: 'cancel_btn', text: { tag: 'plain_text', content: '取消' }, behaviors: [{ type: 'callback', value: { cmd: 'model.cancel' } }], } }]),
           ],
         },
       ],
@@ -259,39 +234,8 @@ export function thinkingCard(current?: string): object {
                 value: lv,
               })),
             },
-            {
-              tag: 'column_set',
-              flex_mode: 'flow',
-              horizontal_spacing: 'small',
-              columns: [
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    {
-                      tag: 'button',
-                      name: 'submit_btn',
-                      text: { tag: 'plain_text', content: '切换' },
-                      type: 'primary',
-                      form_action_type: 'submit',
-                      behaviors: [{ type: 'callback', value: { cmd: 'thinking.submit' } }],
-                    },
-                  ],
-                },
-                {
-                  tag: 'column',
-                  width: 'auto',
-                  elements: [
-                    {
-                      tag: 'button',
-                      name: 'cancel_btn',
-                      text: { tag: 'plain_text', content: '取消' },
-                      behaviors: [{ type: 'callback', value: { cmd: 'thinking.cancel' } }],
-                    },
-                  ],
-                },
-              ],
-            },
+            ...inlineRow([{ element: { tag: 'button', name: 'submit_btn', text: { tag: 'plain_text', content: '切换' }, type: 'primary', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { cmd: 'thinking.submit' } }], } }]),
+            ...inlineRow([{ element: { tag: 'button', name: 'cancel_btn', text: { tag: 'plain_text', content: '取消' }, behaviors: [{ type: 'callback', value: { cmd: 'thinking.cancel' } }], } }]),
           ],
         },
       ],
@@ -325,9 +269,14 @@ export function thinkingCancelledCard(): object {
 }
 
 export interface ResumeOption {
+  /** 一个 OMP 会话 = 一个对话：要恢复的就是这条会话（也是行上的显示句柄）。 */
   sessionId: string;
   cwd: string;
+  /** Session start, ISO. */
   timestamp: string;
+  /** Session file's last write (ms epoch) = when the conversation was last
+   * active. Binding the chat to this session must not claim "now". */
+  updatedAtMs?: number;
   /** User-assigned display title (/rename), if any. Shown ahead of the
    * auto summary so the user can tell sessions apart by name. */
   title?: string;
@@ -338,133 +287,6 @@ export interface ResumeOption {
   lastMessage?: string;
 }
 
-/** Session picker card for `/resume`. One compact row per session:
- * title/summary + time · cwd · id on the left, a one-click 恢复 button
- * on the right. */
-export function resumeCard(
-  current: string | undefined,
-  sessions: ResumeOption[],
-  opts: { offset?: number; total?: number } = {},
-): object {
-  const offset = opts.offset ?? 0;
-  const total = opts.total ?? sessions.length;
-  const elements: object[] = [
-    { tag: 'markdown', content: '🕘 **恢复会话**', text_size: 'heading' },
-    {
-      tag: 'markdown',
-      content:
-        '当前：' +
-        (current ? `\`${escapeCode(current)}\`` : '_无_') +
-        ' · 点击右侧按钮一键恢复',
-      text_size: 'notation',
-    },
-    { tag: 'hr' },
-  ];
-
-  sessions.forEach((s, i) => {
-    const isCurrent = current !== undefined && s.sessionId === current;
-    const num = `#${offset + i + 1}`;
-    // Named session → title leads, summary becomes a detail line; unnamed →
-    // the summary IS the identity; neither → placeholder.
-    const heading = s.title
-      ? `${num} 🏷 **${escapeMd(s.title)}**`
-      : s.summary
-        ? `${num} **${summarizeMd(s.summary, 24)}**`
-        : `${num} _未命名会话_`;
-    const tsMs = Date.parse(s.timestamp);
-    const metaParts = [
-      Number.isFinite(tsMs) ? formatAgo(Date.now() - tsMs) : '',
-      `\`${escapeCode(shortPath(s.cwd))}\``,
-      escapeMd(shortSessionId(s.sessionId)),
-    ].filter(Boolean);
-    const details: object[] = [
-      { tag: 'markdown', content: heading },
-      {
-        tag: 'markdown',
-        content: metaParts.join(' · '),
-        text_size: 'notation',
-      },
-    ];
-    if (s.title && s.summary) {
-      details.push({
-        tag: 'markdown',
-        content: `📝 ${summarizeMd(s.summary, 48)}`,
-        text_size: 'notation',
-      });
-    }
-    if (s.lastMessage) {
-      details.push({
-        tag: 'markdown',
-        content: `💬 ${summarizeMd(s.lastMessage, 48)}`,
-        text_size: 'notation',
-      });
-    }
-    elements.push({
-      tag: 'column_set',
-      flex_mode: 'none',
-      horizontal_spacing: 'small',
-      columns: [
-        { tag: 'column', width: 'weighted', weight: 1, vertical_align: 'center', elements: details },
-        {
-          tag: 'column',
-          width: 'auto',
-          vertical_align: 'center',
-          elements: [
-            {
-              tag: 'button',
-              text: { tag: 'plain_text', content: isCurrent ? '✓ 当前' : '恢复' },
-              type: isCurrent ? 'default' : 'primary',
-              // Keep the value so the click still resolves to this session, but a
-              // current-session switch is a no-op in applyResume.
-              value: { cmd: 'resume.use', arg: s.sessionId },
-            },
-          ],
-        },
-      ],
-    });
-    if (i < sessions.length - 1) elements.push({ tag: 'hr' });
-  });
-
-  const remaining = Math.max(0, total - (offset + sessions.length));
-  const pageSize = sessions.length;
-  const footer: ButtonSpec[] = [];
-  if (offset > 0) {
-    footer.push({
-      text: '↑ 较新的会话',
-      value: { cmd: 'resume.back', arg: String(Math.max(0, offset - pageSize)) },
-    });
-  }
-  if (remaining > 0) {
-    footer.push({
-      text: `↓ 更早（剩 ${remaining}）`,
-      value: { cmd: 'resume.more', arg: String(offset + sessions.length) },
-    });
-  }
-  footer.push({ text: '取消', value: { cmd: 'resume.cancel', arg: '' } });
-  elements.push(
-    { tag: 'hr' },
-    {
-      tag: 'markdown',
-      content: `第 ${offset + 1}-${offset + pageSize} 条 / 共 ${total} 条`,
-      text_size: 'notation',
-    },
-    // Natural-width buttons in one wrapping row (see actions()).
-    ...actions(footer),
-  );
-  return {
-    schema: '2.0',
-    config: { summary: { content: '恢复会话' } },
-    body: { elements },
-  };
-}
-
-export function resumeCancelledCard(): object {
-  return {
-    schema: '2.0',
-    config: { summary: { content: '已取消' } },
-    body: { elements: [{ tag: 'markdown', content: '已取消,未做修改。' }] },
-  };
-}
 
 export function resumeSavedCard(
   sessionId: string,

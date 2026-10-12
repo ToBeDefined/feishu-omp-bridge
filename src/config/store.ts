@@ -4,13 +4,29 @@ import { dirname } from 'node:path';
 import { paths } from './paths';
 import type { AppConfig, AppPreferences, TenantBrand } from './schema';
 import { secretKeyForApp } from './schema';
+import { log } from '../core/logger';
 
 export async function loadConfig(path: string = paths.configFile): Promise<Partial<AppConfig>> {
   try {
     const text = await readFile(path, 'utf8');
-    return JSON.parse(text) as Partial<AppConfig>;
+    const parsed: unknown = JSON.parse(text);
+    // 合法 JSON 但不是对象（null / 数字 / 字符串 / 数组）按「没有配置」处理：
+    // 原样返回会让调用方 `cfg.accounts…` 直接抛，把启动流程带崩。
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      log.warn('config', 'load-shape-unexpected', { path });
+      return {};
+    }
+    return parsed as Partial<AppConfig>;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    // JSON 语法错误（半截写入、手动改坏）按「没有配置」处理：原样抛出去，
+    // runStart 不捕获，launchd KeepAlive+ThrottleInterval 会变成每 10s 一次
+    // 的静默崩溃循环。返回 {} 让上层 isComplete 给出清晰报错。其他 IO 错误
+    // （EACCES、EISDIR…）照旧抛。
+    if (err instanceof SyntaxError) {
+      log.warn('config', 'load-parse-failed', { path, message: (err as Error).message });
+      return {};
+    }
     throw err;
   }
 }
@@ -89,7 +105,8 @@ export async function ensureSecretsGetterWrapper(): Promise<string> {
     `exec ${sq(node)} ${sq(bridgeEntry)} secrets get "$@"\n`;
 
   await mkdir(dirname(wrapperPath), { recursive: true });
-  const tmp = `${wrapperPath}.tmp-${process.pid}`;
+  // 唯一临时名：`/account change` 与启动可能同时刷新 wrapper，撞名会写出半截脚本。
+  const tmp = `${wrapperPath}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
   await writeFile(tmp, content, 'utf8');
   await chmod(tmp, 0o700);
   await rename(tmp, wrapperPath);
@@ -101,8 +118,25 @@ export async function ensureSecretsGetterWrapper(): Promise<string> {
  * session/store.ts). */
 let saveChain: Promise<void> = Promise.resolve();
 
+/**
+ * 写入前的防呆：磁盘上的配置文件可能带着凭据（`accounts`），而 `saveConfig` 的调用方
+ * 有多个（`/config`、`/model`、`/thinking`、`/account`、启动迁移）。曾经有一次冒烟脚本
+ * 拿「只有 preferences 的假 cfg」走了保存路径，**把真配置覆盖成 97 字节的 preferences**
+ * —— 运行中的进程还在用内存里的配置，所以当场看不出问题，直到下次重启才会连不上飞书。
+ * 因此这里拒绝任何「丢掉 accounts.app.id」的写入：要么带来凭据，要么别写。
+ */
+function assertKeepsCredentials(cfg: AppConfig, path: string): void {
+  if (cfg.accounts?.app?.id) return;
+  throw new Error(
+    `saveConfig refused: refusing to write a config without accounts.app.id (target ${path})`,
+  );
+}
+
 export function saveConfig(cfg: AppConfig, path: string = paths.configFile): Promise<void> {
   const write = async (): Promise<void> => {
+    // 护栏放在写链里（而不是同步抛）：`saveConfig` 声明返回 Promise，调用方
+    // （`/config`、`/model`…）靠 `.catch`/`try await` 兜错，同步抛会漏出去。
+    assertKeepsCredentials(cfg, path);
     await mkdir(dirname(path), { recursive: true });
     // Unique per-call temp name: two writers in the same process must not
     // clobber each other's temp before its rename.

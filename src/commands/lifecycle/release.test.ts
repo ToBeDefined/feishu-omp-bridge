@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import type { CommandContext } from '../index';
-import { releaseHandlers } from './release';
+import { releaseHandlers, waitForRunsToDrain } from './release';
 import { runRelease, type ReleaseResult } from '../../release/run';
 import { markOnlineNotice } from '../../bot/online-notify';
 
@@ -34,7 +34,9 @@ vi.mock('../../card/managed', () => ({
   forgetManagedCard: async () => {},
 }));
 
-function makeCtx(): { ctx: CommandContext; sent: string[]; restartProcess: Mock } {
+function makeCtx(
+  busy = false,
+): { ctx: CommandContext; sent: string[]; restartProcess: Mock } {
   h.sent.length = 0;
   const restartProcess = vi.fn(async () => true);
   const ctx = {
@@ -49,7 +51,8 @@ function makeCtx(): { ctx: CommandContext; sent: string[]; restartProcess: Mock 
     sessions: {},
     workspaces: {},
     agent: {},
-    activeRuns: {},
+    // 发布前要等 run 排空：默认视为空闲（排空行为另有单测）；busy=true 模拟有 run 在跑。
+    activeRuns: { idle: () => !busy },
     controls: { restartProcess },
   } as unknown as CommandContext;
   return { ctx, sent: h.sent, restartProcess };
@@ -118,5 +121,75 @@ describe('/release', () => {
     resolveFirst({ ok: true });
     await first;
     expect(restartProcess).toHaveBeenCalledTimes(1);
+  });
+  it('force：有 run 在跑也不等排空，立即重启并在卡片上写明', async () => {
+    vi.mocked(runRelease).mockResolvedValue({ ok: true });
+    const { ctx, sent, restartProcess } = makeCtx(true);
+    await releaseHandlers['/release']!('force', ctx);
+    expect(sent.at(-1)).toContain('强制重启');
+    expect(restartProcess).toHaveBeenCalledTimes(1);
+    // 非强制路径由 waitForRunsToDrain 的单测覆盖（这里若没跳过排空会等满 5 分钟）。
+  });
+
+  it('force 也不能绕过「失败即止」：流水线失败就不重启', async () => {
+    vi.mocked(runRelease).mockResolvedValue({
+      ok: false,
+      step: 'test',
+      exitCode: 1,
+      output: 'boom',
+    });
+    const { ctx, sent, restartProcess } = makeCtx(true);
+    await releaseHandlers['/release']!('force', ctx);
+    expect(sent.at(-1)).toContain('发布失败于');
+    expect(restartProcess).not.toHaveBeenCalled();
+  });
+
+  it('force 的别名 --force / -f 等价', async () => {
+    vi.mocked(runRelease).mockResolvedValue({ ok: true });
+    for (const arg of ['--force', '-f', 'FORCE']) {
+      const { ctx, restartProcess } = makeCtx(true);
+      await releaseHandlers['/release']!(arg, ctx);
+      expect(restartProcess).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('无法识别的参数：只报用法，不发布也不重启', async () => {
+    const { ctx, sent, restartProcess } = makeCtx();
+    await releaseHandlers['/release']!('frce', ctx);
+    expect(sent.at(-1)).toContain('无法识别的参数');
+    expect(runRelease).not.toHaveBeenCalled();
+    expect(restartProcess).not.toHaveBeenCalled();
+  });
+});
+
+describe('waitForRunsToDrain', () => {
+  it('已经空闲时立即返回', async () => {
+    const drained = await waitForRunsToDrain({ idle: () => true }, 0);
+    expect(drained).toBe(true);
+  });
+
+  it('超时后返回 false（不无限等）', async () => {
+    vi.useFakeTimers();
+    try {
+      const drained = waitForRunsToDrain({ idle: () => false }, 1000);
+      await vi.advanceTimersByTimeAsync(1200);
+      expect(await drained).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('run 排空后返回 true', async () => {
+    vi.useFakeTimers();
+    try {
+      let running = true;
+      const drained = waitForRunsToDrain({ idle: () => !running }, 10_000);
+      await vi.advanceTimersByTimeAsync(600);
+      running = false;
+      await vi.advanceTimersByTimeAsync(600);
+      expect(await drained).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

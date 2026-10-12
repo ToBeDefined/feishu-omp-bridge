@@ -2,6 +2,42 @@ import { describe, expect, it } from 'vitest';
 import type { CommandContext } from './index';
 import { extractUserInput, renderContext } from './session';
 
+const ULID = '019f0000-0000-7000-0000-000000000000';
+
+/**
+ * 一个 scope 的 store 条目 stub（一个 OMP 会话 = 一个对话：只有会话 id + cwd +
+ * 时间）。
+ */
+interface EntryStub {
+  sessionId?: string;
+  cwd?: string;
+  updatedAt?: number;
+  createdAt?: number;
+}
+
+function sessionStub(over: { id?: string; title?: string; cwd?: string; createdAtMs?: number; updatedAtMs?: number } = {}) {
+  const id = over.id ?? ULID;
+  const cwd = over.cwd ?? '/home/proj';
+  const at = over.createdAtMs ?? 0;
+  return {
+    entry: { sessionId: id, cwd, createdAt: at, updatedAt: over.updatedAtMs ?? at } as EntryStub,
+    title: over.title,
+  };
+}
+
+/** 把 fixture 拼成 SessionStore 形状的 stub。 */
+function stubStore(stub: { entry: EntryStub; title?: string } | undefined): never {
+  return {
+    getRaw: () => stub?.entry,
+    sessionFor: () =>
+      stub?.entry.sessionId !== undefined && stub.entry.cwd !== undefined
+        ? { sessionId: stub.entry.sessionId, cwd: stub.entry.cwd }
+        : undefined,
+    titleFor: () => stub?.title,
+    getIdleTimeoutMinutes: () => undefined,
+  } as never;
+}
+
 function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
   return {
     channel: {} as never,
@@ -21,10 +57,7 @@ function makeCtx(overrides: Partial<CommandContext> = {}): CommandContext {
     },
     scope: 'oc_1',
     chatMode: 'p2p',
-    sessions: {
-      getRaw: () => ({ sessionId: '019f0000-0000-7000-0000-000000000000', cwd: '/x', updatedAt: 0 }),
-      getIdleTimeoutMinutes: () => undefined,
-    } as never,
+    sessions: stubStore(sessionStub()),
     workspaces: {
       cwdFor: () => '/home/proj',
       listNamed: () => ({ futu: '/home/futu' }),
@@ -87,36 +120,32 @@ describe('renderContext', () => {
     expect(matched).not.toContain('当前目录无快捷方式');
   });
 
-  it('shows the session title when set', () => {
+  it('shows the session title when set (and nothing when it is not)', () => {
     const titled = renderContext(
       makeCtx({
-        sessions: {
-          getRaw: () => ({ sessionId: 's1', cwd: '/x', updatedAt: 0, title: '修搜索' }),
-          getIdleTimeoutMinutes: () => undefined,
-        } as never,
+        sessions: stubStore(sessionStub({ title: '修搜索' })),
       }),
     );
-    expect(titled).toContain('修搜索');
+    expect(titled).toContain('**标题**: `修搜索`');
 
-    const untitled = renderContext(makeCtx());
-    expect(untitled).not.toContain('标题');
+    // 没有名字 → 没有标题行（旧的「未命名」占位会让人以为会话有名字）。
+    expect(renderContext(makeCtx())).not.toContain('标题');
   });
 
   it('shows last conversation time', () => {
     const recent = renderContext(makeCtx());
-    expect(recent).toContain('最后对话');
+    expect(recent).toContain('最后活动');
     const fresh = renderContext(
       makeCtx({
-        sessions: {
-          getRaw: () => ({ sessionId: '019f0000-0000-7000-0000-000000000000', cwd: '/x', updatedAt: Date.now() }),
-          getIdleTimeoutMinutes: () => undefined,
-        } as never,
+        sessions: stubStore(sessionStub({ updatedAtMs: Date.now() })),
       }),
     );
     expect(fresh).toContain('0 秒前');
-    // No session → new conversation
+    // No session → the next message starts a fresh conversation here
     const none = renderContext(
-      makeCtx({ sessions: { getRaw: () => undefined, getIdleTimeoutMinutes: () => undefined } as never }),
+      makeCtx({
+        sessions: stubStore(undefined),
+      }),
     );
     expect(none).toContain('（无，新会话）');
   });
@@ -124,13 +153,10 @@ describe('renderContext', () => {
   it('shows conversation start time', () => {
     const started = renderContext(
       makeCtx({
-        sessions: {
-          getRaw: () => ({ sessionId: '019f0000-0000-7000-0000-000000000000', cwd: '/x', updatedAt: Date.now(), createdAt: Date.now() }),
-          getIdleTimeoutMinutes: () => undefined,
-        } as never,
+        sessions: stubStore(sessionStub({ updatedAtMs: Date.now(), createdAtMs: Date.now() })),
       }),
     );
-    expect(started).toContain('开始对话');
+    expect(started).toContain('开始');
     expect(started).toContain('今天'); // same-day clock
   });
 
@@ -147,8 +173,47 @@ describe('renderContext', () => {
     expect(out).not.toContain('最后消息');
     expect(out).not.toContain('最后回复');
   });
-});
 
+  it('标题只认 /rename 起的名字：没有就不显示这一行', () => {
+    const named = renderContext(
+      makeCtx({
+        sessions: stubStore(sessionStub({ title: '修搜索' })),
+      }),
+      {},
+    );
+    expect(named).toContain('**标题**: `修搜索`');
+
+    // 无名会话：不能拿「最后一条用户消息」冒充标题（用户会以为那句就是会话名）。
+    const unnamed = renderContext(makeCtx(), {
+      lastMessage: '进行运行编译以及测试',
+      lastReply: '**编译 + 测试 + 运行……**',
+    });
+    expect(unnamed).not.toContain('标题');
+    expect(unnamed).not.toContain('未命名');
+    // 最后消息照旧单独一行（它本来就该在那一行）。
+    expect(unnamed).toContain('**最后消息**');
+    expect(unnamed).toContain('进行运行编译以及测试');
+  });
+
+  it('无活跃会话时不崩，会话行提示下一条消息新建', () => {
+    const out = renderContext(
+      makeCtx({
+        sessions: stubStore(undefined),
+      }),
+    );
+    expect(out).toContain('**会话**: （无，下一条消息新建）');
+    // 没有会话（自然也没有名字）→ 不渲染标题行。
+    expect(out).not.toContain('标题');
+    expect(out).toContain('**开始**: （无，新会话）');
+  });
+
+  it('身份 = 会话 id；无名会话不渲染标题行', () => {
+    const out = renderContext(makeCtx());
+    expect(out).toContain('🧠 **会话**');
+    // 别拿最后一条用户消息冒充标题。
+    expect(out).not.toContain('标题');
+  });
+});
 
 describe('extractUserInput', () => {
   it('extracts real user text after the last bridge context', () => {

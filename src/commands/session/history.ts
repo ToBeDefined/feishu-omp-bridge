@@ -1,10 +1,10 @@
-import { homedir } from 'node:os';
-import { HISTORY_PAGE_SIZE, historyCard, type HistoryRow } from '../../card/history-card';
+import { historyCard, type HistoryRow } from '../../card/history-card';
 import { recallMessage, reply } from '../shared';
 import { sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
 import { applyResume } from './resume';
-import { listSessions, type SessionRecord } from './sessions';
+import { conversationCwd } from '../../session/current-cwd';
+import { scanSessionFiles } from './sessions';
 
 export const historyHandlers: Record<string, Handler> = {
   '/history': handleHistory,
@@ -16,28 +16,37 @@ export const historyHandlers: Record<string, Handler> = {
  * `/history` (`/sessions`)          — past conversations in the CURRENT workspace
  * `/history all` (`/sessions all`)  — every past conversation, across workspaces
  *
- * Both are newest-activity-first, and every row carries a 继续对话 button.
+ * One row = one OMP session = one conversation. Newest-activity-first, and every
+ * row carries a 继续对话 button that restores exactly that conversation.
  *
  * Card buttons arrive through the dispatcher's `cmd` → `sub arg` mapping:
  * - `{cmd:'history.page',   arg:'<mode> <offset>'}` → `page <mode> <offset>`
- * - `{cmd:'history.resume', arg:'<sessionId>'}`    → `resume <sessionId>`
+ * - `{cmd:'history.resume', arg:'<sessionId>'}`     → `resume <sessionId>`
  */
 export async function handleHistory(args: string, ctx: CommandContext): Promise<void> {
   const tokens = args.trim().split(/\s+/).filter(Boolean);
 
-  // 继续对话 button: hand off to the SAME resume path /resume uses, so the
-  // cross-chat ownership guard and the "recorded cwd still exists" check
-  // apply identically (a card button can carry a stale session id).
+  // A resume button carries the id of the conversation it points at (the
+  // 继续对话 button). Hand it to applyResume, which owns the ownership / cwd
+  // guards.
   if (tokens[0] === 'resume') {
-    const sessionId = tokens.slice(1).join('');
-    const match = (await listSessions(ctx)).find((s) => s.sessionId === sessionId);
-    if (!match) {
-      await reply(ctx, `❌ 未找到会话 \`${sessionId}\`，可能已被删除。`);
+    const id = tokens.slice(1).join('');
+    // 载荷就是会话 id（一个 OMP 会话 = 一个对话）。cwd/时间从会话文件现取，
+    // 缺了就是文件已被删 —— 不假装能恢复。
+    const rec = (await scanSessionFiles(ctx)).find((s) => s.sessionId === id);
+    if (!rec) {
+      await reply(ctx, `❌ 未找到会话 \`${id}\`，可能已被删除。`);
       return;
     }
-    await applyResume(ctx, asResumeOption(match));
+    await applyResume(ctx, {
+      sessionId: rec.sessionId,
+      cwd: rec.cwd,
+      timestamp: rec.startedAt,
+      updatedAtMs: rec.updatedAtMs,
+    });
     return;
   }
+
   const unknown = tokens.filter((t) => t !== 'all' && t !== 'cwd' && t !== 'page' && !/^\d+$/.test(t));
   if (unknown.length > 0) {
     await reply(ctx, `❓ 用法：\`/history\`（当前工作目录）或 \`/history all\`（全部）。`);
@@ -47,8 +56,11 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
   const offsetToken = tokens.find((t) => /^\d+$/.test(t));
   const offset = offsetToken ? Number(offsetToken) : 0;
 
-  const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
-  const all = await listSessions(ctx);
+  // 默认视图 = 当前会话所在目录（会话优先；没有会话时才是聊天窗口的 cwd）。
+  const cwd = conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope);
+  const all = await scanSessionFiles(ctx);
+  // One row per OMP session (= one conversation); cwd mode filters on the
+  // session's own cwd.
   const scoped = mode === 'all' ? all : all.filter((s) => s.cwd === cwd);
   if (scoped.length === 0) {
     await reply(
@@ -62,6 +74,7 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
   // Paging past the end (a stale card button) should not render an empty page.
   const start = offset < scoped.length ? offset : 0;
   const rows: HistoryRow[] = scoped.map((s) => ({
+    // 一个 OMP 会话 = 一个对话：行的身份就是那个会话，也正好是「继续对话」的载荷。
     sessionId: s.sessionId,
     updatedAtMs: s.updatedAtMs,
     turns: s.turns,
@@ -70,7 +83,7 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
     ...(s.lastMessage ?? s.summary ? { topic: s.lastMessage ?? s.summary } : {}),
   }));
 
-  const currentSessionId = ctx.sessions.getRaw(ctx.scope)?.sessionId;
+  const currentSessionId = ctx.sessions.sessionFor(ctx.scope)?.sessionId;
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(
     ctx.channel,
@@ -83,25 +96,6 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
       ...(currentSessionId !== undefined ? { currentSessionId } : {}),
     }),
   );
-}
-
-/** A listed session in the shape `applyResume` consumes. */
-function asResumeOption(s: SessionRecord): {
-  sessionId: string;
-  cwd: string;
-  timestamp: string;
-  title?: string;
-  summary: string;
-  lastMessage?: string;
-} {
-  return {
-    sessionId: s.sessionId,
-    cwd: s.cwd,
-    timestamp: s.startedAt,
-    ...(s.title !== undefined ? { title: s.title } : {}),
-    summary: s.summary ?? '',
-    ...(s.lastMessage !== undefined ? { lastMessage: s.lastMessage } : {}),
-  };
 }
 
 /** Named workspace pointing at `cwd`, else the collapsed path. */

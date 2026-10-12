@@ -1,10 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CommentEvent, LarkChannel } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter, AgentRun } from '../agent/types';
 import type { AppConfig } from '../config/schema';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { handleCommentMention } from './comments';
+import { resetCommentDedup } from './comment-dedup';
 
 interface RecordedRequest {
   method?: string;
@@ -87,12 +88,16 @@ function makeDeps(channel: LarkChannel, agent: AgentAdapter) {
     channel,
     evt: makeEvt(),
     agent,
-    sessions: { resumeFor: () => undefined, set: () => {} } as unknown as SessionStore,
-    workspaces: { cwdFor: () => '/repo' } as unknown as WorkspaceStore,
+    sessions: {
+      sessionFor: () => undefined,
+      bind: () => {},
+    } as unknown as SessionStore,
+    workspaces: { cwdFor: () => '/repo', setCwd: () => {} } as unknown as WorkspaceStore,
     cfg: {} as AppConfig,
   };
 }
 
+beforeEach(() => resetCommentDedup());
 describe('handleCommentMention', () => {
   it('posts the agent answer back as a comment reply', async () => {
     const requests: RecordedRequest[] = [];
@@ -139,4 +144,71 @@ describe('handleCommentMention', () => {
     release();
     await first;
   });
-});
+
+  it('stops the agent run when the event stream throws', async () => {
+    const stop = vi.fn(async () => {});
+    const agent = {
+      ...makeAgent(''),
+      run: vi.fn((): AgentRun => ({
+        events: (async function* () {
+          throw new Error('stream failed');
+        })(),
+        stop,
+        waitForExit: async () => true,
+      })),
+    } as unknown as AgentAdapter;
+
+    await expect(handleCommentMention(makeDeps(makeChannel([]), agent))).rejects.toThrow('stream failed');
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('posts one in-flight notice for a second event in the same doc', async () => {
+    const requests: RecordedRequest[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const run = vi.fn(
+      (): AgentRun => ({
+        events: (async function* () {
+          await gate;
+          yield { type: 'done' } as const;
+        })(),
+        stop: async () => {},
+        waitForExit: async () => true,
+      }),
+    );
+    const agent = { ...makeAgent(''), run } as unknown as AgentAdapter;
+    const channel = makeChannel(requests);
+    const firstDeps = makeDeps(channel, agent);
+    const secondDeps = makeDeps(channel, agent);
+    secondDeps.evt = makeEvt({ commentId: 'cmt_2', replyId: 'r2' });
+
+    const first = handleCommentMention(firstDeps);
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1));
+    await handleCommentMention(secondDeps);
+    const notices = requests.filter((req) => JSON.stringify(req.data).includes('正在处理中'));
+    expect(notices).toHaveLength(1);
+    expect(run).toHaveBeenCalledTimes(1);
+
+    release();
+    await first;
+  });
+
+  it('does not rerun an identical event delivered sequentially', async () => {
+    const run = vi.fn(() => ({
+      events: (async function* () {
+        yield { type: 'done' } as const;
+      })(),
+      stop: async () => {},
+      waitForExit: async () => true,
+    }));
+    const agent = { ...makeAgent('答案'), run } as unknown as AgentAdapter;
+    const channel = makeChannel([]);
+    const deps = makeDeps(channel, agent);
+
+    await handleCommentMention(deps);
+    await handleCommentMention(deps);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+ });

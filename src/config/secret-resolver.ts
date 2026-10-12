@@ -195,6 +195,9 @@ async function spawnExecProvider(pc: ProviderConfig, ref: SecretRef): Promise<st
       reject(new Error(`exec provider timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
+    // 向 provider 进程写 stdin 时它可能已退出：EPIPE 是**异步** `'error'` 事件，
+    // 无监听会直接抛（与 agent/omp/adapter 同一类处理）。
+    child.stdin.on('error', () => {});
     child.stdout.on('data', (chunk: Buffer) => {
       if (truncated) return;
       if (stdout.length + chunk.length > maxOutput) {
@@ -250,6 +253,8 @@ async function spawnExecProvider(pc: ProviderConfig, ref: SecretRef): Promise<st
       provider: providerName,
       ids: [ref.id],
     });
-    child.stdin.end(request);
+    // 向 provider 进程写 stdin 时它可能已退出：EPIPE 是异步 'error' 事件，
+    // 无监听会抛出（同 agent/omp/adapter 的处理）。
+        child.stdin.end(request);
   });
 }

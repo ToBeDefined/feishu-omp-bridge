@@ -39,10 +39,81 @@ export async function reply(ctx: CommandContext, markdown: string): Promise<void
   }
 }
 
+/**
+ * 解析 `/release force` / `/restart force` 的布尔开关。
+ *
+ * 只认 `force` / `--force` / `-f`（大小写不敏感）。**别的 token 一律报用法**而不是
+ * 当作「没写 force」继续：否则打错一个字就会退化成等 5 分钟排空，用户只会觉得命令卡住。
+ */
+export function parseForceArg(
+  args: string,
+  usage: string,
+): { ok: true; force: boolean } | { ok: false; message: string } {
+  let force = false;
+  for (const token of args.trim().split(/\s+/).filter(Boolean)) {
+    if (/^(?:force|--force|-f)$/i.test(token)) force = true;
+    else return { ok: false, message: `⚠️ 无法识别的参数「${token}」。用法：${usage}` };
+  }
+  return { ok: true, force };
+}
+
 export function expandTilde(p: string): string {
   if (p === '~') return homedir();
   if (p.startsWith('~/')) return `${homedir()}${p.slice(1)}`;
   return p;
+}
+
+/**
+ * 把表单 / 选择器卡片原地收尾成终态（已取消 / 已过期）。
+ *
+ * 卡片可能**不在本进程的托管表里**：重启前发出的老卡片、或卡片是在 bridge 之外发的
+ * （手工调试）。此时原地更新必然失败 —— 不能静默，否则用户点了「取消」什么都不发生，
+ * 看起来就是坏了。退回一条简短回复。
+ */
+export async function settleManagedCard(
+  ctx: CommandContext,
+  card: object,
+  fallbackText: string,
+): Promise<void> {
+  await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
+  await updateOrFallback(ctx, card, fallbackText);
+}
+
+/**
+ * `settleManagedCard` 的核心（不含 FORM_SETTLE_MS 延迟）：调用方自己等过了
+ * （表单提交那几条路径要等「距提交已过 N 毫秒」而不是固定 N 毫秒）就用这个。
+ *
+ * ① 托管卡片 → CardKit 更新（带 sequence）
+ * ② 否则 → `im.message.patch` 整体替换消息内容（手工卡片 / 重启前老卡片也能变）
+ * ③ 都不行 → 回一句 `fallbackText`，绝不静默
+ */
+export async function updateOrFallback(
+  ctx: CommandContext,
+  card: object,
+  fallbackText: string,
+): Promise<void> {
+  const messageId = ctx.msg.messageId;
+  // 1) 首选：托管卡片走 CardKit 更新（带 sequence，能做流式 / 多次更新）。
+  try {
+    await updateManagedCard(ctx.channel, messageId, card);
+    forgetManagedCard(messageId);
+    return;
+  } catch (err) {
+    log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
+  }
+  // 2) 退而求其次：把消息内容整体 patch 成新卡片 —— 对「bridge 之外发的卡片」
+  //    （手工调试）与「重启前的老卡片」都有效，用户看到卡片真的变成「已取消」。
+  try {
+    await ctx.channel.rawClient.im.v1.message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(card) },
+    });
+    return;
+  } catch (err) {
+    log.warn('command', 'card-patch-failed', { messageId, err: String(err) });
+  }
+  // 3) 两条都不行：至少回一句，别让点击看起来没发生。
+  await reply(ctx, fallbackText);
 }
 
 export async function recallMessage(ctx: CommandContext, messageId: string): Promise<void> {

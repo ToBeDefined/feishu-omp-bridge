@@ -2,7 +2,7 @@ import type { Block, FooterStatus, RunState, SubagentEntry, ToolEntry, UiState }
 import { toolBodyMd, toolHeaderText } from './tool-render';
 import { createTableBudget, type TableBudget } from './tables';
 import { codeFence, collapsiblePanel } from './templates';
-import { escapeMd } from '../utils/text';
+import { codeSpan, escapeMd } from '../utils/text';
 
 /** Max chars per reasoning body — reasoning is auxiliary, truncation is fine. */
 const REASONING_MAX = 1500;
@@ -181,7 +181,9 @@ function hasReasoningSubstance(content: string): boolean {
 
 function subagentLines(entries: SubagentEntry[]): string[] {
   return entries.map((s) => {
-    const label = escapeMd(s.agent);
+    // code span 内必须用 codeSpan：反斜杠转义在 `...` 里不生效，
+    // `a_b` 这种名字会原样渲染成 `a\_b`。
+    const label = codeSpan(s.agent);
     const desc = s.description ? ` — ${escapeMd(truncate(s.description, 80))}` : '';
     switch (s.status) {
       case 'started':

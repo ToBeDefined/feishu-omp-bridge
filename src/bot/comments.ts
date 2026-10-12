@@ -1,12 +1,13 @@
-import { homedir } from 'node:os';
 import type { CommentEvent, LarkChannel } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter } from '../agent/types';
 import type { AppConfig } from '../config/schema';
 import { isUserAllowed } from '../config/schema';
+import { resolveConversationCwd } from '../session/current-cwd';
 import { log } from '../core/logger';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { addCommentReaction, removeCommentReaction } from './reaction';
+import { rememberCommentEvent } from './comment-dedup';
 
 export interface CommentDeps {
   channel: LarkChannel;
@@ -28,6 +29,7 @@ const SUPPORTED_FILE_TYPES = new Set(['doc', 'docx', 'sheet', 'file']);
  * concurrent writes corrupt the session file. Skip while one is running.
  */
 const commentInFlight = new Set<string>();
+const inFlightNoticeSent = new Map<string, boolean>();
 
 const REPLY_MAX_CHARS = 2000;
 
@@ -71,6 +73,10 @@ interface CommentContext {
  */
 export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   const { channel, evt, agent, sessions, workspaces } = deps;
+  if (!rememberCommentEvent(evt)) {
+    log.info('comment', 'duplicate-event', { commentId: evt.commentId, replyId: evt.replyId });
+    return;
+  }
   // Log every comment event we receive, regardless of whether we'll act on it.
   // `mentionedBot` and `replyId` here let us tell apart top-level comments
   // from thread replies (the latter requires SDK ≥ 1.65.0-alpha.0).
@@ -130,16 +136,27 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   const synthChatId = `doc:${evt.fileToken}`;
   if (commentInFlight.has(synthChatId)) {
     log.info('comment', 'skip', { reason: 'in-flight', synthChatId });
+    if (!inFlightNoticeSent.get(synthChatId)) {
+      inFlightNoticeSent.set(synthChatId, true);
+      await postCommentReply(channel, target, evt, '正在处理中，请稍候。').catch((err) => {
+        log.fail('comment', err, { step: 'post-in-flight-notice' });
+      });
+    }
     return;
   }
   // Take the per-doc lock synchronously with the check above: everything below
   // awaits (reaction API, agent spawn), so a later add() would let two
   // @-mentions in the same doc both pass and resume the same session jsonl.
   commentInFlight.add(synthChatId);
+  inFlightNoticeSent.set(synthChatId, false);
   let reactionAdded = false;
   try {
-    const cwd = workspaces.cwdFor(synthChatId) ?? homedir();
-    const resumeFrom = sessions.resumeFor(synthChatId, cwd);
+    // 会话优先：文档评论的合成 scope 也一样，续它自己的会话与目录。
+    const { cwd, sessionId: resumeFrom } = await resolveConversationCwd(
+      workspaces,
+      sessions,
+      synthChatId,
+    );
     log.info('comment', 'session', { synthChatId, resumeFrom: resumeFrom ?? null, cwd });
 
     // Cloud-doc comments have no streaming UI — the user just sees their
@@ -155,45 +172,42 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
       let answer = '';
       let errorMsg: string | undefined;
       let terminal = false;
-      for await (const e of run.events) {
-        switch (e.type) {
-          case 'text':
-            answer += e.delta;
-            break;
-          case 'system':
-            if (e.sessionId) {
-              const effectiveCwd = e.cwd ?? cwd;
-              sessions.set(synthChatId, e.sessionId, effectiveCwd);
-            }
-            break;
-          case 'error':
-            errorMsg = e.message;
-            terminal = true;
-            break;
-          case 'usage':
-            if (e.costUsd !== undefined) {
-              log.info('comment', 'usage', { costUsd: Number(e.costUsd.toFixed(4)) });
-            }
-            break;
-          case 'done':
-            terminal = true;
-            break;
+      try {
+        for await (const e of run.events) {
+          switch (e.type) {
+            case 'text':
+              answer += e.delta;
+              break;
+            case 'system':
+              if (e.sessionId) {
+                const effectiveCwd = e.cwd ?? cwd;
+                sessions.bind(synthChatId, e.sessionId, effectiveCwd);
+              }
+              break;
+            case 'error':
+              errorMsg = e.message;
+              terminal = true;
+              break;
+            case 'usage':
+              if (e.costUsd !== undefined) {
+                log.info('comment', 'usage', { costUsd: Number(e.costUsd.toFixed(4)) });
+              }
+              break;
+            case 'done':
+              terminal = true;
+              break;
+          }
+          if (terminal) break;
         }
-        // Don't wait for the subprocess to actually close stdout — break as soon
-        // as we have the final result. Some OMP runs may hang briefly post-
-        // result on telemetry, which would leave the for-await stuck forever.
-        if (terminal) break;
+      } finally {
+        await run.stop().catch(() => {});
       }
-      // Reap the subprocess if it didn't exit on its own. No-op if already gone.
-      await run.stop();
 
       let reply = stripMarkdown(answer.trim());
       if (errorMsg) reply = `⚠️ OMP 报错：${errorMsg}`;
       if (!reply) reply = '（无回复内容）';
       if (reply.length > REPLY_MAX_CHARS) reply = `${reply.slice(0, REPLY_MAX_CHARS - 1)}…`;
 
-      // The answer only reaches the user here — without this the run burns
-      // tokens and the @-mention sits unanswered forever.
       await postCommentReply(channel, target, evt, reply).catch((err) => {
         log.fail('comment', err, { step: 'postCommentReply' });
       });
@@ -209,6 +223,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
     }
   } finally {
     commentInFlight.delete(synthChatId);
+    inFlightNoticeSent.delete(synthChatId);
   }
 }
 
@@ -409,8 +424,11 @@ async function postCommentReply(
     log.warn('comment', 'reply-rejected-fallback-create', { code });
   }
 
+  if (target.fileType !== 'doc' && target.fileType !== 'docx') {
+    throw new Error(`Top-level comment fallback does not support file type: ${target.fileType}`);
+  }
   await channel.rawClient.drive.v1.fileComment.create({
-    params: { file_type: target.fileType as 'doc' | 'docx' },
+    params: { file_type: target.fileType },
     path: { file_token: target.fileToken },
     data: {
       reply_list: {

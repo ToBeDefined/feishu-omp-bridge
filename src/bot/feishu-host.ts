@@ -1,4 +1,5 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
+import { realpathSync } from 'node:fs';
 import { readFile, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, extname, resolve, sep } from 'node:path';
@@ -40,6 +41,36 @@ function sendableRoots(ctx: FeishuHostContext): string[] {
   return [ctx.cwd, paths.mediaDir, tmpdir(), '/tmp'];
 }
 
+/**
+ * 应用私有目录里**唯一**允许外发的地方是媒体缓存（用户发来的图片/文件就在那）。
+ * 其余（config.json、secrets.enc、.keystore.salt、sessions/workspaces、日志、
+ * omp-sessions）一律拒绝。
+ *
+ * 这一道是必须的：`sendableRoots` 含 `ctx.cwd`，而 scope 还没有当前会话/工作区时
+ * cwd 会回退成 `$HOME`（新建私聊的第一轮、`/cd ~` 都命中）—— 那时 `~/.feishu-omp-bridge`
+ * 与 `~/.ssh` 都落在“白名单”里，prompt injection 一句 `feishu_send_file
+ * {path:'~/.feishu-omp-bridge/secrets.enc'}` 就能把凭据/私钥发到群里。
+ */
+function isPrivateAppPath(real: string): boolean {
+  let appReal = paths.appDir;
+  try {
+    appReal = realpathSync(paths.appDir);
+  } catch {
+    /* 目录还不存在：用未解析路径也行，下面的包含性判断依然有效 */
+  }
+  const inApp = real === appReal || real.startsWith(appReal.endsWith(sep) ? appReal : `${appReal}${sep}`);
+  if (!inApp) return false;
+  let mediaReal = paths.mediaDir;
+  try {
+    mediaReal = realpathSync(paths.mediaDir);
+  } catch {
+    /* 同上 */
+  }
+  const inMedia =
+    real === mediaReal || real.startsWith(mediaReal.endsWith(sep) ? mediaReal : `${mediaReal}${sep}`);
+  return !inMedia;
+}
+
 /** Resolve + contain a model-supplied path (symlinks included). */
 async function resolveSendablePath(raw: string, ctx: FeishuHostContext): Promise<string> {
   const abs = resolve(raw);
@@ -55,7 +86,41 @@ async function resolveSendablePath(raw: string, ctx: FeishuHostContext): Promise
   if (!inside) {
     throw new Error(`拒绝访问工作目录之外的文件：${real}（仅允许 ${roots.join(' / ')}）`);
   }
+  if (isPrivateAppPath(real)) {
+    throw new Error(
+      `拒绝外发应用私有文件：${real}（只能发工作目录 / 媒体缓存 / 临时目录里的文件）`,
+    );
+  }
   return abs;
+}
+
+/**
+ * 按 `messageId` 操作的守卫：先问出那条消息属于哪个会话，再套 `allowedChats`。
+ *
+ * 没有这一步，`allowedChats` 只拦得住「显式 chatId」，拦不住「用 messageId 指向被排除
+ * 的会话」——`feishu_get_message` 会把那个会话的消息内容原样喂给模型，`feishu_reply_message`
+ * / `feishu_recall_message` / `feishu_add_reaction` 则会把写操作打到那里（reply 的落点
+ * 由 messageId 决定）。触发消息本身（`ctx.messageId`）免检：它就是本会话的消息。
+ */
+async function assertMessageChatAllowed(
+  channel: LarkChannel,
+  ctx: FeishuHostContext,
+  messageId: string,
+): Promise<void> {
+  if (!ctx.isChatAllowed || messageId === ctx.replyToMessageId) return;
+  let owner: string | undefined;
+  try {
+    const res = await channel.rawClient.im.v1.message.get({
+      path: { message_id: messageId },
+    });
+    owner = res.data?.items?.[0]?.chat_id;
+  } catch {
+    // 取不到（已撤回 / 无权限）：交给后续调用自己报错，这里不额外拦截。
+    return;
+  }
+  if (owner !== undefined && owner !== ctx.chatId && !ctx.isChatAllowed(owner)) {
+    throw new Error(`不允许操作该会话：${owner}（不在 access.allowedChats 内）`);
+  }
 }
 
 /** Resolve a model-supplied chat target, honouring the configured allowlist. */
@@ -82,13 +147,13 @@ export function createFeishuHostIntegration(
       currentContextTool(ctx),
       sendMessageTool(channel, ctx),
       replyMessageTool(channel, ctx),
-      getMessageTool(channel),
+      getMessageTool(channel, ctx),
       listMessagesTool(channel, ctx),
       sendFileTool(channel, ctx),
       sendCardTool(channel, ctx),
-      recallMessageTool(channel),
+      recallMessageTool(channel, ctx),
       addReactionTool(channel, ctx),
-      viewImageTool(channel, ctx),
+      viewImageTool(ctx),
     ],
     uriSchemes: [feishuUriScheme(channel, ctx)],
   };
@@ -143,6 +208,7 @@ function replyMessageTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHo
       const content = requiredString(args, 'content');
       const messageId = optionalString(args, 'messageId') ?? ctx.replyToMessageId;
       if (!messageId) throw new Error('messageId is required when no triggering message is available');
+      await assertMessageChatAllowed(channel, ctx, messageId);
       await channel.send(ctx.chatId, { markdown: content }, {
         replyTo: messageId,
         ...(ctx.threadId ? { replyInThread: true } : {}),
@@ -152,7 +218,7 @@ function replyMessageTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHo
   };
 }
 
-function getMessageTool(channel: LarkChannel): AgentHostTool {
+function getMessageTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTool {
   return {
     definition: {
       name: 'feishu_get_message',
@@ -164,6 +230,7 @@ function getMessageTool(channel: LarkChannel): AgentHostTool {
     },
     async execute(args) {
       const messageId = requiredString(args, 'messageId');
+      await assertMessageChatAllowed(channel, ctx, messageId);
       const message = await fetchQuotedContext(channel, messageId);
       if (!message) return { result: textResult(`message not found or inaccessible: ${messageId}`), isError: true };
       return { result: jsonResult(message) };
@@ -257,6 +324,7 @@ function addReactionTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHos
       const messageId = optionalString(args, 'messageId') ?? ctx.replyToMessageId;
       if (!messageId) throw new Error('messageId is required when no triggering message is available');
       const emoji = optionalString(args, 'emoji') ?? 'OK';
+      await assertMessageChatAllowed(channel, ctx, messageId);
       const reactionId = await addReaction(channel, messageId, emoji);
       if (!reactionId) {
         return { result: textResult(`failed to add reaction ${emoji} to ${messageId}`), isError: true };
@@ -339,7 +407,7 @@ function sendFileTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTo
   };
 }
 
-function recallMessageTool(channel: LarkChannel): AgentHostTool {
+function recallMessageTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTool {
   return {
     definition: {
       name: 'feishu_recall_message',
@@ -352,6 +420,7 @@ function recallMessageTool(channel: LarkChannel): AgentHostTool {
     },
     async execute(args) {
       const messageId = requiredString(args, 'messageId');
+      await assertMessageChatAllowed(channel, ctx, messageId);
       await channel.rawClient.im.v1.message.delete({
         path: { message_id: messageId },
       });
@@ -376,7 +445,7 @@ const IMAGE_MIME: Record<string, string> = {
  * run as a follow-up with the image attached (OMP turns the path into a
  * base64 image payload). Only works while a run is active for this chat.
  */
-function viewImageTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTool {
+function viewImageTool(ctx: FeishuHostContext): AgentHostTool {
   return {
     definition: {
       name: 'feishu_view_image',
@@ -440,6 +509,9 @@ function sendCardTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTo
       const title = requiredString(args, 'title');
       const text = requiredString(args, 'text');
       const replyTo = optionalString(args, 'replyTo') ?? ctx.replyToMessageId;
+      // 与 feishu_reply_message 同样的守卫：replyTo 决定落点会话，不能指向
+      // allowedChats 之外的群（触发消息本身免检，见 assertMessageChatAllowed）。
+      if (replyTo) await assertMessageChatAllowed(channel, ctx, replyTo);
       const card = buildAgentCard(title, text, args['buttons']);
       const { messageId } = await sendManagedCard(channel, ctx.chatId, card, replyTo);
       return { result: jsonResult({ messageId }) };
@@ -461,6 +533,7 @@ function feishuUriScheme(channel: LarkChannel, ctx: FeishuHostContext): AgentHos
       }
       const parsed = parseFeishuUri(req.url);
       if (parsed.kind === 'message') {
+        await assertMessageChatAllowed(channel, ctx, parsed.id);
         const message = await fetchQuotedContext(channel, parsed.id);
         if (!message) return { isError: true, error: `message not found or inaccessible: ${parsed.id}`, contentType: 'text/plain' };
         return { content: JSON.stringify(message, null, 2), contentType: 'application/json' };

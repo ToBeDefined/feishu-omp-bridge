@@ -28,16 +28,25 @@ import { addReaction } from './reaction';
 export const RESET_CONTEXT_COMMANDS: Record<string, true> = {
   '/new': true,
   '/reset': true,
-  '/cd': true,
-  '/ws': true,
-  // /resume (/session) interrupts the run and re-points the session at a
-  // historical one; without this the messages queued behind the run would be
-  // flushed into that resumed session. /s and /search are deliberately NOT
-  // here — they only list results, so dropping queued messages would lose
-  // them for a read-only command.
-  '/resume': true,
-  '/session': true,
+  // /cd、/ws、/resume 都按**参数**判断（见 resetsContext）：裸 /cd 只回用法提示、
+  // /ws list|save|remove 只是查看/管理命名工作空间，都不换上下文，丢掉排队消息就是
+  // 丢用户的消息。同理 /s、/search 也不在这里。
 };
+
+/**
+ * Whether a handled command discards the messages queued behind the run.
+ *
+ * `/resume`（`/session`）只有**带目标**时才算换上下文：不带参数时它转发给
+ * `/history`（只读清单），此时丢掉排队消息是纯粹的损失。
+ */
+export function resetsContext(cmd: string, args = ''): boolean {
+  const trimmed = args.trim();
+  // 只有**带目标**的 /resume、**带路径**的 /cd、**切目录的** /ws 子命令才算换上下文。
+  if (cmd === '/resume' || cmd === '/session') return trimmed !== '';
+  if (cmd === '/cd') return trimmed !== '';
+  if (cmd === '/ws') return /^(use|undo)\b/.test(trimmed);
+  return RESET_CONTEXT_COMMANDS[cmd] === true;
+}
 
 export interface IntakeDeps {
   channel: LarkChannel;
@@ -50,6 +59,32 @@ export interface IntakeDeps {
   msg: NormalizedMessage;
   controls: Controls;
   chatModeCache: ChatModeCache;
+}
+
+/**
+ * WS 抖动重推会把同一条消息送进来两次（同一 messageId），去重键就是 messageId。
+ * 有界 Map：超过 1000 条时按插入序淘汰最旧（Map 迭代序即插入序），防止无界增长。
+ */
+const SEEN_MESSAGE_ID_CAP = 1000;
+const seenMessageIds = new Map<string, number>();
+
+/** Whether this messageId has been seen since process start (bounded window). */
+export function messageIdSeen(messageId: string): boolean {
+  return seenMessageIds.has(messageId);
+}
+
+/** Record a messageId as seen; evicts the oldest entry past the cap. */
+export function rememberMessageId(messageId: string, now: number = Date.now()): void {
+  if (!messageIdSeen(messageId) && seenMessageIds.size >= SEEN_MESSAGE_ID_CAP) {
+    const oldest = seenMessageIds.keys().next().value;
+    if (oldest !== undefined) seenMessageIds.delete(oldest);
+  }
+  seenMessageIds.set(messageId, now);
+}
+
+/** 测试隔离用：清空去重表。 */
+export function resetSeenMessageIds(): void {
+  seenMessageIds.clear();
 }
 
 export async function intakeMessage(deps: IntakeDeps): Promise<void> {
@@ -65,6 +100,15 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
     controls,
     chatModeCache,
   } = deps;
+
+  // WS 抖动重推：同一 messageId 直接丢掉，避免重复入队/重复执行。这是最便宜的
+  // 检查，放在访问控制之前。
+  if (messageIdSeen(msg.messageId)) {
+    log.info('intake', 'skip-duplicate-message', { messageId: msg.messageId });
+    return;
+  }
+  rememberMessageId(msg.messageId);
+
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
   // downstream consumer keys off these.
@@ -138,8 +182,9 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
     controls,
   });
   if (handled) {
-    const cmd = msg.content.trim().split(/\s+/)[0] ?? '';
-    if (handled !== 'denied' && RESET_CONTEXT_COMMANDS[cmd] === true) {
+    const tokens = msg.content.trim().split(/\s+/);
+    const cmd = tokens[0] ?? '';
+    if (handled !== 'denied' && resetsContext(cmd, msg.content.trim().slice(cmd.length))) {
       const dropped = pending.cancel(scope);
       log.info('intake', 'command-reset', { scope, cmd, droppedPending: dropped.length });
     } else if (handled === 'denied') {

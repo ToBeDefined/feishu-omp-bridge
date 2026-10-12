@@ -90,6 +90,8 @@ export class OmpAdapter implements AgentAdapter {
       imageCount: opts.imagePaths?.length ?? 0,
     });
 
+    wireChildStdio(child);
+
     // Attach the stdout drain in the same tick as spawn(): the child can exit
     // (and close its stdout) long before the caller starts iterating events.
     const reader = startLineReader(child.stdout);
@@ -209,6 +211,7 @@ export class OmpAdapter implements AgentAdapter {
       detached: true,
     }) as OmpChild;
     child.unref();
+    wireChildStdio(child);
     const exit = createExitState(child);
 
     // Manual withResolvers: Promise.withResolvers requires Node 22+, this
@@ -476,14 +479,20 @@ async function* createEventStream(
         continue;
       }
       for (const event of translateOmpFrame(parsed)) {
+        // Close stdin BEFORE yielding the terminal event: consumers break out
+        // of their for-await on done/error, which return()s this generator at
+        // the yield and skips everything after it. OMP 18.10 no longer exits
+        // on its own after agent_end while stdin stays open (18.8.x self-exited),
+        // so skipping endInput would leave every run to the 2s SIGTERM net in
+        // the caller's reap path instead of a clean exit-0.
+        if (event.type === 'done' || event.type === 'error') {
+          terminal = true;
+          endInput(child);
+        }
         yield event;
-        if (event.type === 'done' || event.type === 'error') terminal = true;
       }
 
-      if (terminal) {
-        endInput(child);
-        break;
-      }
+      if (terminal) break;
     }
   } finally {
     reader.close();
@@ -515,6 +524,18 @@ async function* createEventStream(
   } else if (!terminal && !promptSent) {
     yield { type: 'error', message: 'omp exited before prompt was accepted' };
   }
+}
+
+/**
+ * 三个 stdio 流都挂 `'error'`：子进程可能在写之前/之中死掉，此时 EPIPE 是**异步**
+ * `'error'` 事件（`writeFrame` 的 try/catch 只兜得住同步抛）—— 没有监听时 EventEmitter
+ * 会直接抛，落到进程级 `uncaughtException`（进程不死，但每次都算未捕获异常：日志噪音 +
+ * 状态被视为不可靠）。stdin：写入后子进程死亡；stdout/stderr：读取中子进程死亡。
+ */
+function wireChildStdio(child: OmpChild): void {
+  child.stdin.on('error', () => {});
+  child.stdout.on('error', () => {});
+  child.stderr.on('error', () => {});
 }
 
 function writeFrameOrThrow(child: OmpChild, frame: Record<string, unknown>): void {

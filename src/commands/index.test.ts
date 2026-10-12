@@ -62,18 +62,21 @@ describe('command dispatch', () => {
   });
 
   it('routes slash-command aliases to the same handler', async () => {
-    // /sessions is /history's alias, /session is /resume's, /s is /search's.
+    // /sessions is /history's alias, /session is /resume's, /s is /search's,
+    // /ctx and /context are /status's (one card, three spellings).
     const aliases: Array<[string, string]> = [
       ['/sessions', '/history'],
       ['/session', '/resume'],
       ['/s', '/search'],
+      ['/ctx', '/status'],
+      ['/context', '/status'],
     ];
     for (const [alias, canonical] of aliases) {
       const sent: string[] = [];
       const ctx = makeCtx({
         msg: { ...makeCtx().msg, content: alias },
-        channel: { send: async (id: string, msg: { markdown: string }) => void sent.push(msg.markdown) } as never,
-        sessions: { chats: () => [], getRaw: () => undefined, titlesBySessionId: () => ({}) } as never,
+        channel: { send: async (_id: string, msg: { markdown: string }) => void sent.push(msg.markdown) } as never,
+        sessions: { chats: () => [] } as never,
         workspaces: { cwdFor: () => '/tmp', listNamed: () => ({}) } as never,
       });
       // Both spellings must be recognized (never "unknown command"), i.e. they

@@ -70,12 +70,13 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
   }
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, cwd);
-  ctx.sessions.clear(ctx.scope);
+  // 切/撤回工作区 = 换目录 = 新 OMP 会话 = 新对话。
+  ctx.sessions.startNew(ctx.scope);
   const undoHint =
     prevCwd && prevCwd !== cwd
       ? `\n\n想撤回？发 \`/ws undo\` 回到 \`${prevCwd}\``
       : '';
-  const confirm = `✅ 已切换到 \`${name}\` (${cwd})\n（session 已重置）${undoHint}`;
+  const confirm = `✅ 已切换到 \`${codeSpan(name)}\` (${cwd})\n（session 已重置）${undoHint}`;
   // When triggered from the panel button, send the confirmation as a
   // standalone message (not threaded under the panel), then dismiss the
   // panel. Threading under the panel and deleting the panel would take the
@@ -113,6 +114,7 @@ async function handleWsUndo(ctx: CommandContext): Promise<void> {
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, target);
   ctx.workspaces.clearUndo(ctx.scope);
-  ctx.sessions.clear(ctx.scope);
+  // 切/撤回工作区 = 换目录 = 新 OMP 会话 = 新对话。
+  ctx.sessions.startNew(ctx.scope);
   await reply(ctx, `↩️ 已撤回工作区切换，回到 \`${codeSpan(target)}\`\n（session 已重置）`);
 }

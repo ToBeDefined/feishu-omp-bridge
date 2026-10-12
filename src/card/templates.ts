@@ -6,21 +6,34 @@ import { escapeCode, escapeMd } from '../utils/text';
 /** Input for /context renders — gathered by commands/session/context.ts
  * (`collectContextInfo`) and consumed here, so the text renderer and the
  * card cannot drift apart. */
+/**
+ * 会话状态卡（`/status` · `/context` · `/ctx` 同一个）的全部输入。
+ *
+ * 两个命令合并后这仍是一张卡：会话 / 环境两面板 + 命名工作空间快捷方式 +
+ * 最近内容，再补上原来只在 `/status` 里的 agent 名与「会话目录已失效」告警。
+ */
 export interface ContextInfo {
   scope: string;
   chatMode: 'p2p' | 'group' | 'topic';
+  /** 当前工作目录（= 会话的 cwd，没有会话时退回 scope cwd）。 */
   cwd: string;
+  /** 当前会话 id（一个 OMP 会话 = 一个对话）；无会话时缺失。 */
   sessionId?: string;
-  sessionTitle?: string;
+  /** 显示名：/rename 的名字，回退到最后一条用户消息；都没有则缺失。 */
+  sessionName?: string;
   createdAt?: number;
   updatedAt?: number;
   running: boolean;
+  /** Agent 适配器显示名（OMP）。 */
+  agentName: string;
   model?: string;
   thinking?: string;
   idleLine: string;
   /** Named workspaces pointing at the current cwd. */
   wsNames: string[];
   summary: { lastMessage?: string; lastReply?: string };
+  /** 当前会话带着一个已经不可用的 cwd：下一条消息会新建会话。 */
+  sessionStale?: boolean;
 }
 
 export interface ButtonSpec {
@@ -45,39 +58,88 @@ export function md(content: string, size?: 'heading' | 'notation'): object {
     : { tag: 'markdown', content, text_size: size };
 }
 
+/** 动作行里的一列：元素 + 相对宽度（默认 1）。 */
+export interface RowItem {
+  element: object;
+  /** 相对宽度 —— 长标签（「↓ 下一页（剩 N）」）给 1.6，免得等宽把它挤到折行。 */
+  weight?: number;
+}
+
 /**
- * Quick-action buttons, one per row (full width).
+ * 卡片动作布局规则（全站统一）：
  *
- * `flex_mode: 'stretch'` turns each column into its own full-width row, so a
- * button row can never be laid out badly:
- * - `auto`/`weighted` column widths are only honoured by `flex_mode: 'none'`,
- *   which *compresses* the row on narrow screens — that is what squeezed the
- *   labels together on a phone;
- * - `flow` ignores `width` entirely and spreads the columns to both edges of a
- *   wide (desktop) card — the「继续对话 …… 完成」look.
- * Stretch is the only mode that behaves the same at every card width.
+ * 1. **同一层级的并列动作等宽并排一行** —— 确认 / 否、保存 / 取消、切换 / 删除、
+ *    继续对话 / 详情、上一页 / 下一页：一律 `inlineRow`（`inlineActions` 是它的按钮
+ *    spec 版）。**单个动作也走它** —— 一列就是整行宽。
+ *    **一行最多 `INLINE_ROW_MAX`（2）个**：手机卡片可用宽度约 300px，三列等宽时
+ *    每个按钮只剩 ~100px，中文标签（`📂 工作空间`）会被压到看不见文字 —— 超出的
+ *    自动折到下一行（最后一行可能只有一个按钮，那就铺满）。
+ * 2. **退路动作「取消」单独一行、铺满整宽，放在并列动作下方** —— 它语义不同
+ *    （放弃当前操作），挤在正向动作旁边既容易误点，也把正向动作拽到同一视觉层级：
+ *    用 `confirmActions(choices, cancel)` 一步到位。
+ * 3. **危险动作（删除 / 退出）排在同一行的最右**。
+ *
+ * 元素版 `inlineRow` 给表单里的按钮用 —— 表单按钮带 `name` /
+ * `form_action_type` / `behaviors`，不是 `ButtonSpec` 那套 value。
  */
-export function actions(buttons: ButtonSpec[]): object[] {
-  // Schema 2.0 has no `action` container — buttons ride in a column_set row.
-  return [
-    {
+/** 并排行最多几个按钮 —— 见上方规则：3 列等宽会把中文标签压到看不见。 */
+export const INLINE_ROW_MAX = 2;
+
+export function inlineRow(items: RowItem[]): object[] {
+  const rows: object[] = [];
+  for (let i = 0; i < items.length; i += INLINE_ROW_MAX) {
+    rows.push({
       tag: 'column_set',
-      flex_mode: 'stretch',
+      flex_mode: 'none',
       horizontal_spacing: 'small',
-      columns: buttons.map((spec) => ({
+      columns: items.slice(i, i + INLINE_ROW_MAX).map((item) => ({
         tag: 'column',
-        width: 'auto',
+        width: 'weighted',
+        weight: item.weight ?? 1,
         vertical_align: 'center',
-        elements: [button(spec)],
+        elements: [item.element],
       })),
-    },
+    });
+  }
+  return rows;
+}
+
+/** 并列动作并排 + 退路动作「取消」单独一行铺满（规则 1 + 2 的合成）。 */
+export function confirmActions(choices: InlineActionSpec[], cancel?: InlineActionSpec): object[] {
+  return [
+    ...(choices.length > 0 ? inlineActions(choices) : []),
+    ...(cancel !== undefined ? inlineActions([cancel]) : []),
   ];
 }
+
 
 /** 8-char session-id handle. Singular "this is your session" lines show the
  * id in full (26-36 chars); lists need only enough to tell rows apart. */
 export function shortSessionId(id: string): string {
   return id.length > 8 ? `${id.slice(0, 8)}…` : id;
+}
+
+/**
+ * Action buttons side by side in ONE row, equal width.
+ *
+ * Equal `weighted` columns under `flex_mode: 'none'` stay side by side at every
+ * card width, unlike `auto` columns, which compress on narrow screens.
+ */
+/** `inlineRow` 的按钮 spec 版：按上面的规则并排。 */
+export function inlineActions(buttons: InlineActionSpec[]): object[] {
+  return inlineRow(
+    buttons.map((spec) => ({
+      element: button(spec),
+      ...(spec.weight !== undefined ? { weight: spec.weight } : {}),
+    })),
+  );
+}
+
+/** A button in an {@link inlineActions} row. */
+export interface InlineActionSpec extends ButtonSpec {
+  /** Relative column width (default 1). A longer label needs a wider column,
+   * otherwise equal thirds make it wrap on a phone. */
+  weight?: number;
 }
 
 /**
@@ -181,88 +243,49 @@ export function workspacesCard(current: string | undefined, named: Record<string
     elements.push(HR);
     entries.forEach(([name, path], i) => {
       const isCurrent = path === current;
-      elements.push({
-        tag: 'column_set',
-        flex_mode: 'none',
-        horizontal_spacing: 'small',
-        columns: [
-          {
-            tag: 'column',
-            width: 'weighted',
-            weight: 1,
-            vertical_align: 'center',
-            elements: [
-              md(`**${escapeMd(name)}**${isCurrent ? ' ⭐' : ''}`),
-              md(`_${escapeCode(tildePath(path))}_`, 'notation'),
-            ],
-          },
-          {
-            tag: 'column',
-            width: 'auto',
-            vertical_align: 'center',
-            elements: [button({ text: '切换', value: { cmd: 'ws.use', name }, style: 'primary' })],
-          },
-          {
-            tag: 'column',
-            width: 'auto',
-            vertical_align: 'center',
-            elements: [button({ text: '删除', value: { cmd: 'ws.remove', name }, style: 'danger' })],
-          },
-        ],
-      });
+      // 一行一个工作空间：内容进灰底块，动作并排贴在块下面（与 /search 结果行同一套）。
+      elements.push(
+        ...stackedPanels([
+          panel([
+            md(`**${escapeMd(name)}**${isCurrent ? ' ⭐' : ''}`),
+            md(`_${escapeCode(tildePath(path))}_`, 'notation'),
+          ]),
+        ]),
+        ...inlineActions([
+          { text: '切换', value: { cmd: 'ws.use', name }, style: 'primary' },
+          { text: '删除', value: { cmd: 'ws.remove', name }, style: 'danger' },
+        ]),
+      );
       if (i < entries.length - 1) elements.push(HR);
     });
   }
 
   elements.push(HR);
-  elements.push(...actions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
+  elements.push(...inlineActions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
 
   return shell('📂 工作空间', elements);
 }
 
-export interface StatusInfo {
-  cwd: string;
-  sessionId?: string;
-  /** User-assigned session title (/rename), if any. */
-  sessionTitle?: string;
-  sessionStale: boolean;
-  agentName: string;
-  /** Session scope (= chatId or chatId:threadId in topic groups). */
-  scope: string;
-  /** Chat mode — used to label scope. */
-  chatMode: 'p2p' | 'group' | 'topic';
-  /** Active model selector; absent = following OMP default. */
-  model?: string;
-  /** Thinking level; absent = following OMP default. */
-  thinking?: string;
-  /** Rendered idle-timeout line (scope override vs global default). */
-  idleLine: string;
-  createdAt?: number;
-  lastActive?: number;
-  /** Whether a run is executing in this scope right now. */
-  running: boolean;
-}
-
-export function statusCard(info: StatusInfo): object {
+export function statusCard(info: ContextInfo): object {
   const scopeLine =
     info.chatMode === 'topic'
       ? `窗口 \`${escapeCode(info.scope)}\` _（话题独立会话）_`
       : `窗口 \`${escapeCode(info.scope)}\``;
-
+  const wsLine =
+    info.wsNames.length > 0
+      ? info.wsNames.map((n) => `\`${escapeCode(n)}\``).join(' ')
+      : '_（当前目录无快捷方式）_';
   const sessionPanel = [
     md('**🗂 会话**'),
-    md(
-      info.sessionTitle
-        ? `🏷 ${escapeMd(info.sessionTitle)}`
-        : '🏷 _未命名_',
-    ),
+    // 没有真名字就不渲染这一行：占位的「未命名」会让人以为会话有名字。
+    ...(info.sessionName ? [md(`🏷 ${escapeMd(info.sessionName)}`)] : []),
     md(
       info.sessionId
         ? `🔗 \`${escapeCode(info.sessionId)}\``
         : '🔗 _无，下条消息新建_',
     ),
     md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
-    md(`🕘 ${formatAgoOr(info.lastActive, '新会话')}`),
+    md(`🕘 ${formatAgoOr(info.updatedAt, '新会话')}`),
     md(info.running ? '🔄 任务执行中' : '✅ 空闲'),
   ];
   const envPanel = [
@@ -272,12 +295,27 @@ export function statusCard(info: StatusInfo): object {
     md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
     md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
     md(`⏱ ${escapeMd(info.idleLine)}`),
+    md(`📂 ${wsLine}`),
   ];
+  const hasRecent = Boolean(info.summary.lastMessage || info.summary.lastReply);
+  const recentPanel = hasRecent
+    ? [
+        panel([
+          md('**💬 最近内容**'),
+          ...(info.summary.lastMessage
+            ? [md(`💬 ${digest(info.summary.lastMessage, 80)}`)]
+            : []),
+          ...(info.summary.lastReply
+            ? [md(`📝 ${digest(info.summary.lastReply, 80)}`)]
+            : []),
+        ]),
+      ]
+    : [];
 
   return shell('📊 会话状态', [
     md('📊 **会话状态**', 'heading'),
     md(scopeLine, 'notation'),
-    ...stackedPanels([panel(sessionPanel), panel(envPanel)]),
+    ...stackedPanels([panel(sessionPanel), panel(envPanel), ...recentPanel]),
     ...(info.sessionStale
       ? [md('⚠️ _session 来自旧 cwd，下一条消息将新建会话_', 'notation')]
       : []),
@@ -293,66 +331,9 @@ export function cwdChangedCard(cwd: string, scopeNote?: string): object {
     md(`新的 cwd：\`${escapeCode(tildePath(cwd))}\``),
     md('_session 已重置，下一条消息在新目录开始。_', 'notation'),
     { tag: 'hr' },
-    ...actions([
+    ...inlineActions([
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
-      { text: '📊 状态', value: { cmd: 'status' } },
-    ]),
-  ]);
-}
-
-/** /context card — same data as the /status panels plus the recent
- * message/reply digest, from the shared ContextInfo gatherer
- * (commands/session/context.ts). Type-only import: no runtime cycle. */
-export function contextCard(
-  info: ContextInfo,
-): object {
-  const hasRecent = Boolean(info.summary.lastMessage || info.summary.lastReply);
-  const recentPanel = hasRecent
-    ? [
-        panel([
-          md('**💬 最近内容**'),
-          ...(info.summary.lastMessage
-            ? [md(`💬 ${digest(info.summary.lastMessage, 80)}`)]
-            : []),
-          ...(info.summary.lastReply
-            ? [md(`📝 ${digest(info.summary.lastReply, 80)}`)]
-            : []),
-        ]),
-      ]
-    : [];
-  const scopeLine =
-    info.chatMode === 'topic'
-      ? `窗口 \`${escapeCode(info.scope)}\` _（话题独立会话）_`
-      : `窗口 \`${escapeCode(info.scope)}\``;
-  const wsLine =
-    info.wsNames.length > 0
-      ? info.wsNames.map((n) => `\`${escapeCode(n)}\``).join(' ')
-      : '_（当前目录无快捷方式）_';
-  return shell('🧾 会话上下文', [
-    md('🧾 **会话上下文**', 'heading'),
-    md(scopeLine, 'notation'),
-    ...stackedPanels([
-      panel([
-        md('**🗂 会话**'),
-        md(info.sessionTitle ? `🏷 ${escapeMd(info.sessionTitle)}` : '🏷 _未命名_'),
-        md(
-          info.sessionId
-            ? `🔗 \`${escapeCode(info.sessionId)}\``
-            : '🔗 _无，下条消息新建_',
-        ),
-        md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
-        md(`🕘 ${formatAgoOr(info.updatedAt, '新会话')}`),
-        md(info.running ? '🔄 任务执行中' : '✅ 空闲'),
-      ]),
-      panel([
-        md('**🧩 环境**'),
-        md(`📁 \`${escapeCode(tildePath(info.cwd))}\``),
-        md(`🎛 ${info.model ? `\`${escapeCode(info.model)}\`` : '_跟随默认_'}`),
-        md(`💭 ${info.thinking ? `\`${escapeCode(info.thinking)}\`` : '_跟随默认_'}`),
-        md(`⏱ ${escapeMd(info.idleLine)}`),
-        md(`📂 ${wsLine}`),
-      ]),
-      ...recentPanel,
+      { text: '📊 会话状态', value: { cmd: 'status' } },
     ]),
   ]);
 }
@@ -435,33 +416,18 @@ export function psCard(rows: PsRow[]): object {
   const blocks: object[] = [md(`🖥 **Bot 进程** ×${rows.length}`, 'heading')];
   rows.forEach((row, i) => {
     const label = row.botName ?? row.appId;
-    blocks.push({
-      tag: 'column_set',
-      flex_mode: 'none',
-      horizontal_spacing: 'small',
-      columns: [
-        {
-          tag: 'column',
-          width: 'weighted',
-          weight: 1,
-          vertical_align: 'center',
-          elements: [
-            md(
-              `**#${i + 1}** ${escapeMd(label)}${row.isCurrent ? ' ⭐ 当前' : ''}`,
-            ),
-            md(`_\`${escapeCode(row.id)}\` · ${escapeMd(row.appId)} · ${escapeMd(row.startedAgo)}启动_`, 'notation'),
-          ],
-        },
-        {
-          tag: 'column',
-          width: 'auto',
-          vertical_align: 'center',
-          elements: [
-            button({ text: '退出', value: { cmd: 'exit', arg: row.id }, style: 'danger' }),
-          ],
-        },
-      ],
-    });
+    // 一个进程一个灰底块，行尾「退出」横排。
+    blocks.push(
+      ...stackedPanels([
+        panel([
+          md(`**#${i + 1}** ${escapeMd(label)}${row.isCurrent ? ' ⭐ 当前' : ''}`),
+          md(`_\`${escapeCode(row.id)}\` · ${escapeMd(row.appId)} · ${escapeMd(row.startedAgo)}启动_`, 'notation'),
+        ]),
+      ]),
+      ...inlineActions([
+        { text: '退出', value: { cmd: 'exit', arg: row.id }, style: 'danger' },
+      ]),
+    );
   });
   blocks.push(
     { tag: 'hr' },
@@ -519,16 +485,19 @@ export interface CompactInfo {
 
 export function compactCard(info: CompactInfo): object {
   if (info.phase === 'started') {
-    const sizeLine =
+    const sizeBlock =
       info.tokensK !== undefined
-        ? md(
-            `📏 会话 ≈${info.tokensK}k token / ${info.mb} MB\n⏳ 预计 ≈${info.eta}（上限 ${info.cap}）`,
-          )
-        : md('_（无法估算会话大小，耐心等待…）_', 'notation');
+        ? stackedPanels([
+            panel([
+              md(`📏 会话 ≈**${info.tokensK}k** token · **${info.mb}** MB`),
+              md(`⏳ 预计 ≈${info.eta}（上限 ${info.cap}）`),
+            ]),
+          ])
+        : [md('_（无法估算会话大小，耐心等待…）_', 'notation')];
     return shell('🫧 压缩会话', [
       md('🫧 **正在压缩会话上下文**', 'heading'),
       md('_完成后会在这里通知你。_', 'notation'),
-      sizeLine,
+      ...sizeBlock,
     ]);
   }
   if (info.phase === 'failed') {
@@ -557,6 +526,8 @@ export interface ReleaseProgress {
   /** `restarting` is the pre-boot state: build succeeded, process is being
    * bounced. The NEW process flips it to `success` once it is actually up. */
   phase: 'running' | 'restarting' | 'success' | 'failed';
+  /** `force`：用户显式跳过 run 排空，卡片上写明，免得把中断当成异常。 */
+  forced?: boolean;
   /** Failure details from the failing step. */
   failStep?: ReleaseStepName;
   failNote?: string;
@@ -613,9 +584,23 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
   } else if (progress.phase === 'success') {
     elements.push(md('_进程已发布并重启。_', 'notation'));
   } else if (progress.phase === 'restarting') {
-    elements.push(md('_新进程启动后会确认上线。_', 'notation'));
+    elements.push(
+      md(
+        progress.forced
+          ? '_强制重启：未等待在跑的 run 收尾（任务会被中断）。_'
+          : '_新进程启动后会确认上线。_',
+        'notation',
+      ),
+    );
   } else {
-    elements.push(md('_typecheck → test → build → 自动重启_', 'notation'));
+    elements.push(
+      md(
+        progress.forced
+          ? '_typecheck → test → build → 强制重启（不等在跑的 run）_'
+          : '_typecheck → test → build → 自动重启_',
+        'notation',
+      ),
+    );
   }
   return shell(`${icon} 发布`, elements);
 }
@@ -635,7 +620,11 @@ export function staleNoticeCard(): object {
 }
 /** /restart status card. A real launchd restart leaves the starting card in
  * place; the new process supplies the separate boot confirmation. */
-export function restartCard(phase: 'starting' | 'done' | 'failed', error?: string): object {
+export function restartCard(
+  phase: 'starting' | 'done' | 'failed',
+  error?: string,
+  options: { forced?: boolean } = {},
+): object {
   if (phase === 'done') {
     return shell('🚀 重启完成', [
       md('🚀 **重启完成**', 'heading'),
@@ -650,7 +639,12 @@ export function restartCard(phase: 'starting' | 'done' | 'failed', error?: strin
   }
   return shell('🔄 正在重启', [
     md('🔄 **正在重启**', 'heading'),
-    md('_服务即将重启；重新上线后会继续接收消息。_', 'notation'),
+    md(
+      options.forced
+        ? '_强制重启：未等待在跑的 run 收尾（任务会被中断），立即重启。_'
+        : '_服务即将重启；重新上线后会继续接收消息。_',
+      'notation',
+    ),
   ]);
 }
 
@@ -678,14 +672,16 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
   {
     title: '🗂 会话管理',
     items: [
-      ['/new · /reset', '清空当前会话，从零开始'],
+      ['/new · /reset', '重置上下文，开始新对话'],
       ['/new chat [名字]', '新建群 + 新会话，自动拉你进群'],
-      ['/resume', '历史会话列表，一键恢复'],
+      ['/resume <会话 id>', '按 id / id 前缀直接恢复某条会话'],
       ['/rename <标题>', '会话命名；`auto` LLM 生成，`clear` 清除'],
-      ['/status', '当前会话 / 环境状态卡片'],
-      ['/context · /ctx', '会话上下文详情'],
+      ['/status · /ctx · /context', '会话状态：会话 / 环境 / 最近内容'],
       ['/search <关键词> · /s', '跨会话历史检索'],
-      ['/history [all] · /sessions', '工作目录 / 全部的对话历史清单'],
+      [
+        '/history [all] · /sessions',
+        '历史会话清单，「继续对话」一键恢复；不带参数的 /resume 也走这里',
+      ],
     ],
   },
   {
@@ -710,7 +706,7 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
     items: [
       ['/stop', '终止当前任务（等同卡片 ⏹ 按钮）'],
       ['/reconnect', '强制重连 WebSocket'],
-      ['/restart', '重启当前 bot（launchd 拉起新实例）'],
+      ['/restart [force]', '重启当前 bot；force 跳过等待在跑的 run'],
     ],
   },
   {
@@ -720,7 +716,7 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
       ['/exit <id|#>', '关闭指定 bot'],
       ['/doctor [描述]', '日志 + 描述交给 OMP 自助诊断'],
       ['/exec <命令> · /run', '在当前 cwd 执行 shell（admin）'],
-      ['/release', '自发布：typecheck→test→build→重启'],
+      ['/release [force]', '自发布：typecheck→test→build→重启；force 跳过排空'],
     ],
   },
 ];
@@ -738,11 +734,11 @@ export interface NewSessionInfo {
 /** Compact /new confirmation — deliberately NOT the full /context dump:
  * a fresh session has nothing to show for 「开始/最后对话」 yet. */
 export function newSessionCard(info: NewSessionInfo): object {
-  return shell('✅ 新会话已开始', [
+  return shell('✅ 上下文已重置', [
     md(
       info.wasRunning
-        ? '✅ **已中断当前任务并开始新会话**'
-        : '✅ **已开始新会话**',
+        ? '✅ **已中断当前任务并重置上下文**'
+        : '✅ **已重置上下文**',
       'heading',
     ),
     ...(info.scopeNote ? [md(`_${escapeMd(info.scopeNote)}_`, 'notation')] : []),
@@ -779,10 +775,13 @@ export function helpCard(): object {
     );
   });
   elements.push(md('_发送 `/help` 随时查看；其他内容直接交给 OMP。_', 'notation'));
+  // 新建会话排在最前：速查卡里最常用的动作（等同 `/new`）。并排行每行最多 2 个，
+  // 4 个动作于是折成两行（见 inlineRow 的规则说明）。
   elements.push(
-    ...actions([
-      { text: '📊 状态', value: { cmd: 'status' }, style: 'primary' },
+    ...inlineActions([
+      { text: '🆕 新建会话', value: { cmd: 'new' }, style: 'primary' },
       { text: '🕘 恢复会话', value: { cmd: 'resume' } },
+      { text: '📊 会话状态', value: { cmd: 'status' } },
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
     ]),
   );

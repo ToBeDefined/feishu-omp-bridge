@@ -275,4 +275,32 @@ describe('ActiveRuns slot reservation', () => {
     expect(handle.pendingUiRequests.size).toBe(0);
     expect(settled).toBe(1);
   });
+
+  it('interrupt 能取消「已 claim、未 register」的批次（/new 之后旧批次不再跑）', () => {
+    const runs = new ActiveRuns();
+    const claim = runs.claim('oc_1');
+    expect(claim).toBeDefined();
+
+    // 出队途中（还没 register）用户发了 /new、/cd、/ws use 或 /stop。
+    expect(runs.interrupt('oc_1')).toBe(true);
+
+    // register 必须拒绝：调用方据此停掉子进程，批次消息不再跑进新上下文。
+    const run = { stop: async () => {} } as never;
+    expect(runs.register('oc_1', run, claim)).toBeUndefined();
+    // 拒绝后 scope 变回空闲，后续消息可以正常起新 run。
+    expect(runs.has('oc_1')).toBe(false);
+    expect(runs.claim('oc_1')).toBeDefined();
+  });
+});
+
+describe('idle（发布前排空判断）', () => {
+  it('有 claim 或 run 时非 idle，全部释放后回到 idle', () => {
+    const runs = new ActiveRuns();
+    expect(runs.idle()).toBe(true);
+    const claim = runs.claim('oc_a');
+    expect(claim).toBeDefined();
+    expect(runs.idle()).toBe(false);
+    runs.releaseClaim(claim!);
+    expect(runs.idle()).toBe(true);
+  });
 });

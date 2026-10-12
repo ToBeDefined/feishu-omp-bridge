@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, rm, stat, writeFile } from 'node:fs/promises';
 import { userInfo } from 'node:os';
 import { dirname } from 'node:path';
 import { ensureSupervisorApp, supervisorGrantMarkerPath } from './macos-supervisor';
@@ -36,6 +36,16 @@ export function buildPlist(inputs: PlistInputs): string {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  // FOB_SUPERVISED 只在**真的**由 supervisor app 拉起时设置：进程的孤儿自检
+  // （ppid===1 ⇒ supervisor 已死 ⇒ 退出）依赖这个标记。若 swiftc/签名不可用而
+  // 回退成 launchd 直拉 node，则父进程本来就是 launchd(1)，误标会让守护进程在
+  // 每次启动 5 秒后自杀。
+  const supervisedEnv = inputs.supervisorPath
+    ? `
+        <key>FOB_SUPERVISED</key>
+        <string>1</string>
+`
+    : '';
   const program = inputs.supervisorPath
     ? [
         escape(inputs.supervisorPath),
@@ -63,6 +73,8 @@ ${program.map((arg) => `        <string>${arg}</string>`).join('\n')}
     <true/>
     <key>ThrottleInterval</key>
     <integer>10</integer>
+    <key>ExitTimeOut</key>
+    <integer>8</integer>
     <key>StandardOutPath</key>
     <string>${escape(daemonStdoutPath())}</string>
     <key>StandardErrorPath</key>
@@ -70,14 +82,13 @@ ${program.map((arg) => `        <string>${arg}</string>`).join('\n')}
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>${escape(inputs.envPath)}</string>
-    </dict>
+        <string>${escape(inputs.envPath)}</string>${supervisedEnv}</dict>
 </dict>
 </plist>
 `;
 }
 
-export async function writePlist(): Promise<void> {
+async function writePlistFile(): Promise<void> {
   const bridgeEntryPath = process.argv[1];
   if (!bridgeEntryPath) {
     throw new Error('cannot determine bridge entry path (process.argv[1] is empty)');
@@ -92,6 +103,10 @@ export async function writePlist(): Promise<void> {
   await mkdir(dirname(plistPath), { recursive: true });
   await mkdir(daemonLogDir(), { recursive: true });
   await writeFile(plistPath, content, 'utf8');
+}
+
+export async function writePlist(): Promise<void> {
+  await writePlistFile();
 }
 
 export function plistExists(): boolean {
@@ -174,4 +189,68 @@ export function describeService(): string {
 
 export async function deletePlist(): Promise<void> {
   await rm(launchAgentPlistPath(), { force: true });
+}
+
+/** daemon-stdout.log 超过该字节数时轮转（copytruncate：launchd 持有同一
+ * inode 的 fd，只有原地把文件截断重写才不会让 launchd 继续写旧句柄）。 */
+export const DAEMON_STDOUT_MAX_BYTES = 20 * 1024 * 1024;
+/** 轮转时保留的尾部字节数 —— 最近的日志最值得排查。 */
+const ROTATE_TAIL_BYTES = 1024 * 1024;
+
+/**
+ * daemon-stdout.log 无轮转、会无限增长。boot 时调用一次：超过 maxBytes 时
+ * 原地 copytruncate —— 读取尾部 tailBytes 并重写文件（同一 inode，launchd
+ * 的 stdout fd 继续有效）。文件不存在时静默跳过。
+ */
+export async function rotateDaemonStdoutIfNeeded(
+  stdoutPath: string = daemonStdoutPath(),
+  maxBytes: number = DAEMON_STDOUT_MAX_BYTES,
+  tailBytes: number = ROTATE_TAIL_BYTES,
+): Promise<void> {
+  let size: number;
+  try {
+    size = (await stat(stdoutPath)).size;
+  } catch {
+    return; // 没有日志文件就没有可轮转的东西
+  }
+  if (size <= maxBytes) return;
+  const start = Math.max(0, size - tailBytes);
+  const length = size - start;
+  const handle = await open(stdoutPath, 'r');
+  try {
+    const tail = Buffer.alloc(length);
+    await handle.read(tail, 0, length, start);
+    await writeFile(stdoutPath, tail); // flag 'w'：截断后重写
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * stdout 与 stderr 两份日志都做 copytruncate 轮转（阈值、尾部与
+ * rotateDaemonStdoutIfNeeded 一致）。文件不存在时静默跳过。
+ *
+ * 参数可选，方便测试；生产调用不带参数即用默认阈值。
+ */
+export async function rotateDaemonLogsIfNeeded(
+  maxBytes: number = DAEMON_STDOUT_MAX_BYTES,
+  tailBytes: number = ROTATE_TAIL_BYTES,
+): Promise<void> {
+  await rotateDaemonStdoutIfNeeded(daemonStdoutPath(), maxBytes, tailBytes);
+  await rotateDaemonStdoutIfNeeded(daemonStderrPath(), maxBytes, tailBytes);
+}
+
+/**
+ * 桥内重启路径（`/restart`、`/release` 经 ctx.controls.restartProcess()）：
+ * kickstart 之前先把 plist 重写一遍，确保升级后新的 ProgramArguments /
+ * EnvironmentVariables 被 launchd 采纳。跑在 daemon 进程里，直接写文件，
+ * 不要再起 CLI 子进程。重写失败只告警、不阻断 —— 旧 plist 仍能 kickstart。
+ */
+export async function rewritePlistThenKickstart(): Promise<LaunchctlResult> {
+  try {
+    await writePlist();
+  } catch (err) {
+    console.warn('[restart] plist 重写失败（忽略，继续 kickstart）:', err);
+  }
+  return kickstart();
 }

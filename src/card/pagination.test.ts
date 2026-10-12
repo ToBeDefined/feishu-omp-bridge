@@ -12,9 +12,6 @@ import {
 import { initialState, type Block, type RunState } from './run-state';
 
 /** A 2-column GFM table tagged so tests can tell tables apart. */
-function tableMd(n: number): string {
-  return `| h${n} | v${n} |\n| --- | --- |\n| ${n} | ${n} |`;
-}
 
 const base: RunState = {
   ...initialState,

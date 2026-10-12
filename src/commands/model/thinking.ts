@@ -1,14 +1,14 @@
 import { getOmpThinking, isOmpThinkingLevel } from '../../config/schema';
 import type { AppPreferences } from '../../config/schema';
 import { saveConfig } from '../../config/store';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
+import { sendManagedCard } from '../../card/managed';
 import {
   thinkingCancelledCard,
   thinkingCard,
   thinkingSavedCard,
 } from '../../card/model-card';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { recallMessage, reply, settleManagedCard } from '../shared';
 import { log } from '../../core/logger';
 
 export const thinkingHandlers: Record<string, Handler> = {
@@ -26,9 +26,9 @@ async function handleThinking(args: string, ctx: CommandContext): Promise<void> 
     case '':
       return showThinkingPicker(ctx, current);
     case 'set':
-      return setThinking(rest.join(' '), ctx, current);
+      return setThinking(rest.join(' '), ctx);
     case 'submit':
-      return submitThinking(ctx, current);
+      return submitThinking(ctx);
     case 'cancel':
       return cancelThinking(ctx);
     case 'reset':
@@ -36,7 +36,7 @@ async function handleThinking(args: string, ctx: CommandContext): Promise<void> 
     default:
       if (trimmed === '') return showThinkingPicker(ctx, current);
       if (isOmpThinkingLevel(trimmed)) {
-        return setThinking(trimmed, ctx, current);
+        return setThinking(trimmed, ctx);
       }
       await reply(
         ctx,
@@ -66,12 +66,7 @@ async function persistThinkingPreferences(
     log.fail('command', err, { step: 'thinking.save' });
     await reply(ctx, '❌ 保存思考强度设置失败，配置未改动，请稍后重试。');
     if (ctx.fromCardAction) {
-      const formMsgId = ctx.msg.messageId;
-      void (async () => {
-        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-        await updateManagedCard(ctx.channel, formMsgId, thinkingCancelledCard()).catch(() => {});
-        forgetManagedCard(formMsgId);
-      })();
+      void settleManagedCard(ctx, thinkingCancelledCard(), '已取消，未做修改。');
     }
     return false;
   }
@@ -79,7 +74,7 @@ async function persistThinkingPreferences(
   return true;
 }
 
-async function setThinking(level: string, ctx: CommandContext, current: string | undefined): Promise<void> {
+async function setThinking(level: string, ctx: CommandContext): Promise<void> {
   if (!level || !isOmpThinkingLevel(level)) {
     await reply(ctx, '❌ 合法值:`off|minimal|low|medium|high|xhigh|max|auto`');
     return;
@@ -93,34 +88,24 @@ async function setThinking(level: string, ctx: CommandContext, current: string |
     via: ctx.fromCardAction ? 'card' : 'text',
   });
   if (ctx.fromCardAction) {
-    const formMsgId = ctx.msg.messageId;
-    void (async () => {
-      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, formMsgId, thinkingSavedCard(level)).catch(() => {});
-      forgetManagedCard(formMsgId);
-    })();
+    void settleManagedCard(ctx, thinkingSavedCard(level), `✅ 思考强度已设为 \`${level}\`。`);
   } else {
     await reply(ctx, `✅ 思考强度已设为 \`${level}\`。下一条消息生效。`);
   }
 }
 
-async function submitThinking(ctx: CommandContext, current: string | undefined): Promise<void> {
+async function submitThinking(ctx: CommandContext): Promise<void> {
   const level = String(ctx.formValue?.thinking_level ?? '').trim();
   if (!level) {
     await reply(ctx, '未选择思考强度,已取消。');
     return;
   }
-  await setThinking(level, ctx, current);
+  await setThinking(level, ctx);
 }
 
 async function cancelThinking(ctx: CommandContext): Promise<void> {
   if (!ctx.fromCardAction) return;
-  const formMsgId = ctx.msg.messageId;
-  void (async () => {
-    await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-    await updateManagedCard(ctx.channel, formMsgId, thinkingCancelledCard()).catch(() => {});
-    forgetManagedCard(formMsgId);
-  })();
+  void settleManagedCard(ctx, thinkingCancelledCard(), '已取消，未做修改。');
 }
 
 async function resetThinking(ctx: CommandContext, current: string | undefined): Promise<void> {

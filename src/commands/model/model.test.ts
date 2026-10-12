@@ -67,6 +67,21 @@ describe('/model submit', () => {
     expect(ctx.controls.cfg.preferences?.ompModel).toBe('p/a');
   });
 
+  it('卡片收尾失败时回一句确认（不再静默吞掉）', async () => {
+    // fromCardAction：保存成功后要原地把卡片改成「已保存」。卡片不在托管表里 +
+    // 没有 rawClient 可 patch ⇒ 必须回一句「✅ 模型已设为 …」，而不是什么都没发生。
+    const ctx = makeCtx({ formValue: { model_selector: 'p/a' } });
+    (ctx as unknown as { fromCardAction: boolean }).fromCardAction = true;
+    const send = ctx.channel.send as unknown as { mock: { calls: Array<[string, { markdown?: string }]> } };
+
+    await modelHandlers['/model']!('submit', ctx);
+    await new Promise((r) => setTimeout(r, 1300));   // 等 FORM_SETTLE_MS + 兜底
+
+    const texts = send.mock.calls.map((c) => c[1]?.markdown ?? '');
+    expect(texts.some((t) => t.includes('模型已设为') && t.includes('p/a'))).toBe(true);
+    expect(ctx.controls.cfg.preferences?.ompModel).toBe('p/a');
+  });
+
   it('leaves thinking unchanged when the form has no thinking field', async () => {
     const ctx = makeCtx({
       ompThinking: 'medium',

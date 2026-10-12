@@ -1,7 +1,7 @@
 import { getOmpModel, getOmpThinking, isOmpThinkingLevel } from '../../config/schema';
 import type { AppPreferences } from '../../config/schema';
 import { saveConfig } from '../../config/store';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
+import { sendManagedCard } from '../../card/managed';
 import {
   THINKING_FOLLOW_DEFAULT,
   modelCancelledCard,
@@ -11,7 +11,7 @@ import {
 } from '../../card/model-card';
 import { recentModels } from '../../session/model-history';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { recallMessage, reply, settleManagedCard } from '../shared';
 import { loadModelData } from './data';
 import { log } from '../../core/logger';
 
@@ -31,9 +31,9 @@ async function handleModel(args: string, ctx: CommandContext): Promise<void> {
     case 'provider':
       return showModelPicker(rest.join(' '), ctx, current);
     case 'use':
-      return setModel(rest.join(' '), ctx, current);
+      return setModel(rest.join(' '), ctx);
     case 'submit':
-      return submitModel(ctx, current);
+      return submitModel(ctx);
     case 'cancel':
       return cancelModel(ctx);
     case 'reset':
@@ -46,7 +46,7 @@ async function handleModel(args: string, ctx: CommandContext): Promise<void> {
         await reply(ctx, '❌ 用法:`/model` 打开选择卡片,或 `/model <id>` 直接设置(如 `futu/deepseek-v4-flash-0731`)。');
         return;
       }
-      return setModel(trimmed, ctx, current);
+      return setModel(trimmed, ctx);
   }
 }
 
@@ -90,7 +90,10 @@ async function showModelPicker(
   ctx: CommandContext,
   current: string | undefined,
 ): Promise<void> {
-  const data = await loadModelData(ctx.controls.cfg, false);
+  const [data, recents] = await Promise.all([
+    loadModelData(ctx.controls.cfg, false),
+    recentModels(),
+  ]);
   const pick = data.list.filter((m) => m.provider === provider);
   if (pick.length === 0) {
     await reply(ctx, `未找到提供方 \`${provider}\`。请用 \`/model\` 重选。`);
@@ -100,7 +103,7 @@ async function showModelPicker(
   await sendManagedCard(
     ctx.channel,
     ctx.msg.chatId,
-    modelSelectCard(provider, current, pick, getOmpThinking(ctx.controls.cfg)),
+    modelSelectCard(provider, current, pick, getOmpThinking(ctx.controls.cfg), recents),
   );
 }
 
@@ -133,12 +136,7 @@ async function persistModelPreferences(
     log.fail('command', err, { step: 'model.save' });
     await reply(ctx, '❌ 保存模型设置失败，配置未改动，请稍后重试。');
     if (ctx.fromCardAction) {
-      const formMsgId = ctx.msg.messageId;
-      void (async () => {
-        await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-        await updateManagedCard(ctx.channel, formMsgId, modelCancelledCard()).catch(() => {});
-        forgetManagedCard(formMsgId);
-      })();
+      void settleManagedCard(ctx, modelCancelledCard(), '已取消，未做修改。');
     }
     return false;
   }
@@ -146,7 +144,7 @@ async function persistModelPreferences(
   return true;
 }
 
-async function submitModel(ctx: CommandContext, current: string | undefined): Promise<void> {
+async function submitModel(ctx: CommandContext): Promise<void> {
   const selector = String(ctx.formValue?.model_selector ?? '').trim();
   if (!selector) {
     await reply(ctx, '未选择模型,已取消。');
@@ -164,12 +162,11 @@ async function submitModel(ctx: CommandContext, current: string | undefined): Pr
     via: 'card',
   });
   if (ctx.fromCardAction) {
-    const formMsgId = ctx.msg.messageId;
-    void (async () => {
-      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, formMsgId, modelSavedCard(selector, thinking)).catch(() => {});
-      forgetManagedCard(formMsgId);
-    })();
+    void settleManagedCard(
+      ctx,
+      modelSavedCard(selector, thinking),
+      `✅ 模型已设为 \`${selector}\`。`,
+    );
   } else {
     await reply(
       ctx,
@@ -182,12 +179,7 @@ async function submitModel(ctx: CommandContext, current: string | undefined): Pr
 
 async function cancelModel(ctx: CommandContext): Promise<void> {
   if (!ctx.fromCardAction) return;
-  const formMsgId = ctx.msg.messageId;
-  void (async () => {
-    await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-    await updateManagedCard(ctx.channel, formMsgId, modelCancelledCard()).catch(() => {});
-    forgetManagedCard(formMsgId);
-  })();
+  void settleManagedCard(ctx, modelCancelledCard(), '已取消，未做修改。');
 }
 
 async function resetModel(ctx: CommandContext, current: string | undefined): Promise<void> {
@@ -202,7 +194,7 @@ async function resetModel(ctx: CommandContext, current: string | undefined): Pro
   await reply(ctx, '✅ 已清除模型设置,回退 OMP 默认。下一条消息生效。');
 }
 
-async function setModel(model: string, ctx: CommandContext, current: string | undefined): Promise<void> {
+async function setModel(model: string, ctx: CommandContext): Promise<void> {
   if (!model) {
     await reply(ctx, '未指定模型。用 `/model` 打开选择卡片。');
     return;
@@ -212,12 +204,11 @@ async function setModel(model: string, ctx: CommandContext, current: string | un
   if (!(await persistModelPreferences(ctx, nextPreferences))) return;
   log.info('command', 'model-set', { scope: ctx.scope, model, via: ctx.fromCardAction ? 'card' : 'text' });
   if (ctx.fromCardAction) {
-    const formMsgId = ctx.msg.messageId;
-    void (async () => {
-      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, formMsgId, modelSavedCard(model, getOmpThinking(ctx.controls.cfg))).catch(() => {});
-      forgetManagedCard(formMsgId);
-    })();
+    void settleManagedCard(
+      ctx,
+      modelSavedCard(model, getOmpThinking(ctx.controls.cfg)),
+      `✅ 模型已设为 \`${model}\`。`,
+    );
   } else {
     await reply(
       ctx,

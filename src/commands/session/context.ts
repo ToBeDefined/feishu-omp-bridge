@@ -1,4 +1,3 @@
-import { homedir } from 'node:os';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
@@ -7,33 +6,47 @@ import {
   getOmpThinking,
   getRunIdleTimeoutMs,
 } from '../../config/schema';
-import type { CommandContext, Handler } from '../index';
+import type { CommandContext } from '../index';
 import { formatIdleLine } from '../shared';
-import { summarizeMd } from '../../utils/text';
-import { contextCard, type ContextInfo } from '../../card/templates';
+import { codeSpan, summarizeMd } from '../../utils/text';
+import type { ContextInfo } from '../../card/templates';
 import { formatAgoOr, formatClockOr } from '../../utils/time';
+import { conversationCwd } from '../../session/current-cwd';
 
-export const contextHandlers: Record<string, Handler> = {
-  '/context': handleContext,
-  '/ctx': handleContext,
-};
-
+/**
+ * 会话状态卡的输入（`/status` · `/context` · `/ctx` 共用）。
+ *
+ * `overrides` 由命令层传它才知道的两件事：
+ * - `cwd`：`/status` 用 `resolveConversationCwd` 的「下一条消息实际会跑在哪」（会修好
+ *   失效目录并回写窗口 cwd），而不是只读的会话目录；
+ * - `sessionStale`：当前会话带着一个已不存在的目录（下次会新建会话）—— 判定要 stat，
+ *   所以放在命令层做。
+ */
 export function collectContextInfo(
   ctx: CommandContext,
   summary: { lastMessage?: string; lastReply?: string } = {},
+  overrides: { cwd?: string; sessionStale?: boolean } = {},
 ): ContextInfo {
-  const cwd = ctx.workspaces.cwdFor(ctx.scope) ?? homedir();
-  const sess = ctx.sessions.getRaw(ctx.scope);
+  const entry = ctx.sessions.getRaw(ctx.scope);
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
+  // 身份 = 会话（一个 OMP 会话 = 一个对话）：cwd 取它自己的目录（会话优先，聊天
+  // 窗口的 cwd 只是它没有会话时的落点），名字取 /rename 的 title。
+  const cwd = overrides.cwd ?? conversationCwd(ctx.workspaces, ctx.sessions, ctx.scope);
+  const sessionId = entry?.sessionId;
+  // 名字 = 真标题（/rename 起的）。**不拿最后一条用户消息冒充标题**：那会让
+  // 「标题」这一行看起来像用户起的名，实际只是他上一句话。
+  const name = ctx.sessions.titleFor(sessionId);
   return {
     scope: ctx.scope,
     chatMode: ctx.chatMode,
     cwd,
-    sessionId: sess?.sessionId,
-    sessionTitle: sess?.title,
-    createdAt: sess?.createdAt,
-    updatedAt: sess?.updatedAt,
+    ...(sessionId !== undefined ? { sessionId } : {}),
+    ...(name !== undefined ? { sessionName: name } : {}),
+    createdAt: entry?.createdAt,
+    updatedAt: entry?.updatedAt,
     running: ctx.activeRuns.has(ctx.scope),
+    agentName: ctx.agent.displayName,
+    ...(overrides.sessionStale !== undefined ? { sessionStale: overrides.sessionStale } : {}),
     model: getOmpModel(ctx.controls.cfg),
     thinking: getOmpThinking(ctx.controls.cfg),
     idleLine: formatIdleLine(
@@ -53,11 +66,11 @@ export function renderContext(
 ): string {
   const info = collectContextInfo(ctx, summary);
   const cwd = info.cwd;
-  const sess = ctx.sessions.getRaw(ctx.scope);
   const running = info.running;
   const scopeLine =
     ctx.chatMode === 'topic' ? `\`${ctx.scope}\`（话题独立会话）` : `\`${ctx.scope}\``;
-  const sessionLine = sess?.sessionId ? `\`${sess.sessionId}\`` : '（无，下条消息新建）';
+  const sessionLine =
+    info.sessionId !== undefined ? `\`${info.sessionId}\`` : '（无，下一条消息新建）';
   const runningLine = running ? '有任务正在执行' : '空闲，等待指令';
   const modelLine = info.model ? `\`${info.model}\`` : '跟随 OMP 默认';
   const thinkingLine = info.thinking ? `\`${info.thinking}\`` : '跟随 OMP 默认';
@@ -66,8 +79,8 @@ export function renderContext(
   // current cwd; otherwise say none exists.
   const matchingNames = Object.entries(ctx.workspaces.listNamed())
     .filter(([, path]) => path === cwd)
-    .map(([name]) => `\`${name}\``);
-  const wsLine =
+    .map(([name]) => `\`${codeSpan(name)}\``);
+  const quickDirLine =
     matchingNames.length > 0 ? matchingNames.join(' ') : '（当前目录无快捷方式）';
   const lastMsgLine = summary.lastMessage
     ? `💬 **最后消息**: ${summarizeMd(summary.lastMessage)}`
@@ -78,17 +91,17 @@ export function renderContext(
   const lines = [
     `💬 **聊天窗口**: ${scopeLine}`,
     `📁 **工作目录**: \`${cwd}\``,
-    `🧠 **会话 ID**: ${sessionLine}`,
-    sess?.title ? `🏷 **标题**: \`${sess.title}\`` : '',
-    `🕒 **开始对话**: ${formatClockOr(sess?.createdAt, '（无，新会话）')}`,
-    `🕘 **最后对话**: ${formatAgoOr(sess?.updatedAt, '（无，新会话）')}`,
+    `🧠 **会话**: ${sessionLine}`,
+    info.sessionName ? `🏷 **标题**: \`${info.sessionName}\`` : '',
+    `🕒 **开始**: ${formatClockOr(info.createdAt, '（无，新会话）')}`,
+    `🕘 **最后活动**: ${formatAgoOr(info.updatedAt, '（无，新会话）')}`,
     lastMsgLine,
     lastReplyLine,
     `⚙️ **任务状态**: ${runningLine}`,
     `🤖 **当前模型**: ${modelLine}`,
     `💭 **思考强度**: ${thinkingLine}`,
     `⏱ **空闲超时**: ${idleLine}`,
-    `📂 **快捷目录**: ${wsLine}`,
+    `📂 **快捷目录**: ${quickDirLine}`,
   ];
   return lines.filter(Boolean).join('\n');
 }
@@ -187,14 +200,4 @@ export async function loadSessionSummary(
     /* fall through to empty */
   }
   return { lastMessage: '', lastReply: '' };
-}
-
-async function handleContext(_args: string, ctx: CommandContext): Promise<void> {
-  const sess = ctx.sessions.getRaw(ctx.scope);
-  let summary = { lastMessage: '', lastReply: '' };
-  if (sess?.sessionId) {
-    summary = await loadSessionSummary(ctx, sess.sessionId);
-  }
-  const card = contextCard(collectContextInfo(ctx, summary));
-  await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
 }

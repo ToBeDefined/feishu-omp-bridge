@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { clearBootFailures } from '../../daemon/boot-guard';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -11,7 +12,7 @@ import {
   type ServiceAdapter,
   type ServiceResultLike,
 } from '../../daemon/service-adapter';
-import { readAndPrune, sameAppOthers, type ProcessEntry } from '../../runtime/registry';
+import { readAndPrune, type ProcessEntry } from '../../runtime/registry';
 import { preFlightChecks } from '../preflight';
 
 export interface ServiceStartOptions {
@@ -51,12 +52,38 @@ function requireAdapter(cmdName: string): ServiceAdapter {
  */
 const execFileAsync = promisify(execFile);
 
-async function killStrayProcesses(): Promise<void> {
+/**
+ * 从 `pgrep -f 'feishu-omp-bridge.mjs run'` 的输出里选出「真正的野进程」。
+ * pgrep 只按命令行匹配，命中的一律是 bridge 进程，但分不清三种来源：
+ * 当前 CLI 自己、注册表里合法在跑的实例（任何 app）、以及真正的野进程。
+ * 前两类必须跳过 —— 无脑 SIGTERM 会误杀其他 app 的 bot。空行 / 非数字 /
+ * 非正数直接丢弃。纯函数，便于测试。
+ */
+export function selectStrayPids(
+  pgrepOutput: string,
+  protectedPids: ReadonlySet<number>,
+  selfPid: number = process.pid,
+): number[] {
+  const strays: number[] = [];
+  for (const line of pgrepOutput.split('\n')) {
+    const pid = Number.parseInt(line.trim(), 10);
+    if (!Number.isFinite(pid) || pid <= 0) continue;
+    if (pid === selfPid || protectedPids.has(pid)) continue;
+    strays.push(pid);
+  }
+  return strays;
+}
+
+/** 导出便于测试：注册表 pids 必须 100% 跳过 pgrep 清理。 */
+export async function killStrayProcesses(): Promise<void> {
   const cfg = await loadConfig();
   const appId = cfg.accounts?.app?.id;
-  // Kill via the process registry first.
+  // 注册表一次读出、两处使用：同 app 的注册残留要清理；而 pgrep 阶段里，
+  // 注册表中**任何** entry 的 pid（不分 app）都是合法实例，必须保护。
+  const registered = readAndPrune();
   if (appId) {
-    for (const entry of sameAppOthers(appId)) {
+    for (const entry of registered) {
+      if (entry.appId !== appId || entry.pid === process.pid) continue;
       console.log(`  清理残留进程 ${entry.id} (pid ${entry.pid})…`);
       try {
         process.kill(entry.pid, 'SIGTERM');
@@ -65,18 +92,16 @@ async function killStrayProcesses(): Promise<void> {
       }
     }
   }
-  // Fallback: also kill any bridge `run` process that isn't in the registry
-  // (e.g. it died before registering, or the registry was cleared). Matches
-  // the CLI entry script, excluding this CLI process itself.
+  // 兜底：清理「注册表里查无此 pid」的 bridge `run` 进程 —— 没来得及注册
+  // 就崩了、或注册表被清空后残留的。匹配 CLI 入口脚本，排除当前 CLI 进程。
   const bridgeEntry = process.argv[1] ?? '';
   if (bridgeEntry.includes('feishu-omp-bridge.mjs')) {
+    const protectedPids = new Set(registered.map((e) => e.pid));
     try {
       const out = await execFileAsync('pgrep', ['-f', 'feishu-omp-bridge.mjs run']);
-      for (const line of out.stdout.split('\n')) {
-        const pid = Number.parseInt(line.trim(), 10);
-        if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) continue;
+      for (const pid of selectStrayPids(out.stdout, protectedPids)) {
+        console.log(`  清理未注册的残留进程 (pid ${pid})…`);
         try {
-          console.log(`  清理未注册的残留进程 (pid ${pid})…`);
           process.kill(pid, 'SIGTERM');
         } catch {
           // already dead
@@ -259,6 +284,10 @@ export async function runServiceStart(opts: ServiceStartOptions = {}): Promise<v
   await preFlightChecks({ skipCheckLarkCli: opts.skipCheckLarkCli });
 
   await adapter.install();
+
+  // 人工 `start` 是熔断后的恢复入口：先清熔断计数，否则刚被熔断挡下的
+  // boot 会立刻再次拒绝启动（用户按告警提示操作却毫无效果）。
+  await clearBootFailures();
 
   // If already running, stop first so start operations don't race.
   if (adapter.isRunning()) {

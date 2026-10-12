@@ -35,7 +35,10 @@ export interface UnitInputs {
  * this in the user-facing success message.
  */
 export function buildUnit(inputs: UnitInputs): string {
-  const escape = (s: string): string => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  // systemd 会对 ExecStart / Environment 的值做 specifier 展开（unit_path_printf）：
+  // 字面 `%` 必须写成 `%%`，否则安装路径里出现 %h/%p 之类时会被静默替换或报错。
+  const escape = (s: string): string =>
+    s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%');
   // StandardOutput=/StandardError= are NOT parsed with quote support:
   // conf-parser passes the value through strstrip() only, and
   // config_parse_exec_output() takes the raw remainder after the `append:`

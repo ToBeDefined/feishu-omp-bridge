@@ -80,15 +80,25 @@ export class Scheduler {
     }
   }
 
+  /** 写盘串行链（与 session/store、config/store 同一套路）。 */
+  private saving: Promise<void> = Promise.resolve();
+
   private async persist(): Promise<void> {
-    try {
-      await mkdir(dirname(this.file), { recursive: true });
-      const tmp = `${this.file}.tmp-${process.pid}`;
-      await writeFile(tmp, `${JSON.stringify([...this.tasks.values()], null, 2)}\n`, 'utf8');
-      await rename(tmp, this.file);
-    } catch (err) {
-      log.fail('scheduler', err, { step: 'persist' });
-    }
+    // 串行化 + 每次唯一临时名：tick 的 persist 与 /every add|remove 的 persist 可能
+    // 重叠，共用 `.tmp-<pid>` 会互相覆盖，rename 出去的 tasks.json 就是坏的
+    // （下次启动按「corrupt → start empty」处理，定时任务静默全丢）。
+    const write = async (): Promise<void> => {
+      try {
+        await mkdir(dirname(this.file), { recursive: true });
+        const tmp = `${this.file}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`;
+        await writeFile(tmp, `${JSON.stringify([...this.tasks.values()], null, 2)}\n`, 'utf8');
+        await rename(tmp, this.file);
+      } catch (err) {
+        log.fail('scheduler', err, { step: 'persist' });
+      }
+    };
+    this.saving = this.saving.then(write, write);
+    await this.saving;
   }
 
   /** Add a task that first fires after `delayMs`, then every `intervalMs`. */

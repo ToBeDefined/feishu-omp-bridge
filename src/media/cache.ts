@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
 import { extname, join } from 'node:path';
 import type { LarkChannel, ResourceDescriptor } from '@larksuiteoapi/node-sdk';
@@ -111,7 +112,9 @@ export class MediaCache {
     // Write to a .part temp then rename: a mid-download network failure
     // used to leave a truncated file on disk that every later resolve
     // treated as a cache hit — corrupted images/audio served forever.
-    const tmpPath = `${path}.part-${process.pid}`;
+    // 名字必须每次唯一：同一个附件被两个 scope / 重试并发下载时，共用 pid 后缀的
+    // 临时文件会互相覆盖，rename 出来的正是 `.part` 机制本来要防的半截文件。
+    const tmpPath = `${path}.part-${process.pid}-${randomBytes(6).toString('hex')}`;
     try {
       await result.writeFile(tmpPath);
       await rename(tmpPath, path);

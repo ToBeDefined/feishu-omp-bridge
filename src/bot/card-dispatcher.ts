@@ -3,7 +3,7 @@ import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from './active-runs';
 import type { ChatModeCache } from './chat-mode-cache';
 import type { PendingQueue } from './pending-queue';
-import { RESET_CONTEXT_COMMANDS } from './intake';
+import { resetsContext } from './intake';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
 import { isChatAllowed, isUserAllowed } from '../config/schema';
 import { log } from '../core/logger';
@@ -107,9 +107,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     fromCardAction: true,
   };
 
-  const [name, ...rest] = cmd.split('.');
-  const sub = rest.join(' ');
-  const args = composeArgs(sub, payload);
+  const { name, args } = resolveCardCommand(cmd, payload);
 
   try {
     const ok = await runCommandHandler(name ?? '', args, ctx);
@@ -119,7 +117,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
       // Admin command silently denied — it did NOT run, so its side effects
       // (like resetting the pending queue) must not fire either.
       log.info('cardAction', 'denied-no-reset', { cmd, scope });
-    } else if (RESET_CONTEXT_COMMANDS[`/${name}`] === true) {
+    } else if (resetsContext(`/${name}`, args)) {
       // 与 intake 同语义：上下文切换类命令（卡片按钮 new / ws.use）成功后
       // 丢弃旧上下文的积压消息，防止其泄入新 session。
       const dropped = deps.pending.cancel(scope);
@@ -284,6 +282,20 @@ function composeArgs(sub: string, payload: Record<string, unknown>): string {
     (typeof payload.name === 'string' && payload.name) ||
     '';
   return arg ? `${sub} ${arg}` : sub;
+}
+
+/**
+ * Map a button `cmd` + payload to the text command it invokes:
+ * `{cmd:'history.page', arg:'all 8'}` → `('/history', 'page all 8')`,
+ * i.e. the same shape a user would type. Exported so the `.`-to-subcommand
+ * contract is unit-testable without a live channel.
+ */
+export function resolveCardCommand(
+  cmd: string,
+  payload: Record<string, unknown>,
+): { name: string; args: string } {
+  const [name, ...rest] = cmd.split('.');
+  return { name: name ?? '', args: composeArgs(rest.join(' '), payload) };
 }
 
 function makeFakeMsg(

@@ -1,4 +1,4 @@
-import { actions, button, shortPath } from './templates';
+import { inlineActions, panel, shortPath, stackedPanels } from './templates';
 import { escapeMd, summarizeMd } from '../utils/text';
 import { formatAgo, formatClock } from '../utils/time';
 
@@ -19,17 +19,19 @@ import { formatAgo, formatClock } from '../utils/time';
 export const HISTORY_PAGE_SIZE = 8;
 
 export interface HistoryRow {
+  /** OMP session id — one session = one conversation, so this is both the
+   * row's identity and the 继续对话 payload. */
   sessionId: string;
   /** Last activity (ms epoch) — the sort key and the displayed time. */
   updatedAtMs: number;
-  /** Real user turns in the session. */
+  /** Σ real user turns in the session. */
   turns: number;
   /** Workspace label (named workspace or collapsed path). Only rendered in
    * 'all' mode, where a page mixes directories. */
   workspace: string;
   /** User-assigned title (/rename). */
   title?: string;
-  /** What the conversation was about — the LAST user message. */
+  /** What the conversation was about — the last user message. */
   topic?: string;
 }
 
@@ -42,7 +44,7 @@ export interface HistoryPage {
   cwd?: string;
   offset: number;
   total: number;
-  /** Session id the calling scope is already on, if any. */
+  /** OMP session id the calling scope is already on, if any. */
   currentSessionId?: string;
 }
 
@@ -71,10 +73,11 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
         ? `**${summarizeMd(row.topic, 24)}**`
         : '_未命名会话_';
 
-    const isCurrent = opts.currentSessionId !== undefined && row.sessionId === opts.currentSessionId;
+    const isCurrent =
+      opts.currentSessionId !== undefined && row.sessionId === opts.currentSessionId;
     const meta = [
       `🕘 ${formatClock(row.updatedAtMs)} · ${formatAgo(Date.now() - row.updatedAtMs)}`,
-      `💬 ${row.turns} 轮`,
+      `🔁 ${row.turns} 轮`,
       // Every 'cwd'-mode row shares the header's directory — repeating it per
       // row would be noise.
       ...(opts.mode === 'all' ? [`📁 ${escapeMd(row.workspace)}`] : []),
@@ -99,35 +102,24 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
         text_size: 'notation',
       });
     }
-    // Row layout: content in a weighted column, the resume button in an auto
-    // column — `width` is only honoured under `flex_mode: 'none'`, and the
-    // weighted column absorbs the slack so nothing is stretched or squeezed.
-    elements.push({
-      tag: 'column_set',
-      flex_mode: 'none',
-      horizontal_spacing: 'small',
-      columns: [
-        { tag: 'column', width: 'weighted', weight: 1, vertical_align: 'center', elements: lines },
-        // Resuming the session you are already on is a no-op, so that row
-        // carries a marker instead of a button.
-        ...(isCurrent
-          ? []
-          : [
-              {
-                tag: 'column',
-                width: 'auto',
-                vertical_align: 'center',
-                elements: [
-                  button({
-                    text: '继续对话',
-                    value: { cmd: 'history.resume', arg: row.sessionId },
-                    style: 'primary',
-                  }),
-                ],
-              },
-            ]),
-      ],
-    });
+    // Row layout: the identity / meta / topic lines sit in a grey block, and
+    // the row's action goes side by side UNDER it — the same shape as a
+    // /search result row, so the two list cards read alike.
+    //
+    // The only row action is 继续对话 — and even that is dropped on the current
+    // row, where resuming would be a no-op (leaving just the block).
+    elements.push(...stackedPanels([panel(lines)]));
+    if (!isCurrent) {
+      elements.push(
+        ...inlineActions([
+          {
+            text: '继续对话',
+            value: { cmd: 'history.resume', arg: row.sessionId },
+            style: 'primary',
+          },
+        ]),
+      );
+    }
     if (i < page.length - 1) elements.push({ tag: 'hr' });
   });
 
@@ -147,8 +139,12 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
       value: { cmd: 'history.page', arg: `${opts.mode} ${opts.offset + HISTORY_PAGE_SIZE}` },
     });
   }
-  // Shared action-row layout (each button on its own full-width row).
-  if (pager.length > 0) elements.push(...actions(pager));
+  // 分页按钮并排（规则 1）；长标签多分宽度。
+  if (pager.length > 0) {
+    elements.push(
+      ...inlineActions(pager.map((b) => (b.text.includes('更早') ? { ...b, weight: 1.6 } : b))),
+    );
+  }
   elements.push({
     tag: 'markdown',
     content: '_点「继续对话」接着聊（等同 `/resume <id>`），检索内容用 `/search`。_',

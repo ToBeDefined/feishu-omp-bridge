@@ -1,5 +1,3 @@
-import { homedir } from 'node:os';
-import { stat } from 'node:fs/promises';
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter, AgentEvent, AgentUiRequest } from '../agent/types';
 import type { ActiveRuns, RunClaim, RunHandle } from './active-runs';
@@ -13,8 +11,8 @@ import {
   updateManagedCard,
 } from '../card/managed';
 import { renderOmpUiRequestCard, renderOmpUiResultCard } from '../card/omp-ui';
-import { renderCard, type RunCard } from '../card/run-renderer';
-import { createTableBudget, splitByTableBudget } from '../card/tables';
+import { renderCard } from '../card/run-renderer';
+import { splitByTableBudget } from '../card/tables';
 import {
   CARD_UPDATE_MIN_INTERVAL_MS,
   carryOverBlocks,
@@ -44,6 +42,7 @@ import {
   getShowToolCalls,
   isChatAllowed,
 } from '../config/schema';
+import { resolveConversationCwd } from '../session/current-cwd';
 import { log } from '../core/logger';
 import { attachTextExtracts, type MediaCache } from '../media/cache';
 import { attachTranscripts } from '../media/transcribe';
@@ -237,18 +236,18 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
   const prompt = buildPrompt(batch, attachments, quotes, unresolvedFileKeys);
   log.info('prompt', 'built', { promptChars: prompt.length, quotes: quotes.length });
 
-  const cwd = await resolveRunCwd(workspaces, scope);
-  const resumeFrom = sessions.resumeFor(scope, cwd);
+  // 会话优先：有当前会话就在**它自己的**目录里续它（cwd 由会话携带）。
+  const { cwd, sessionId: resumeFrom } = await resolveConversationCwd(workspaces, sessions, scope);
   if (resumeFrom) {
     log.info('session', 'resume', { sessionId: resumeFrom, cwd });
   } else {
-    const stale = sessions.getRaw(scope);
-    // Only a real session can be stale. An entry with no cwd (created by
-    // /timeout or /rename before the first run) must survive: `undefined !== cwd`
-    // used to match here and wipe the user's override/title on the next message.
-    if (stale?.sessionId !== undefined && stale.cwd !== cwd) {
-      log.info('session', 'stale-cleared', { staleCwd: stale.cwd, newCwd: cwd });
-      sessions.clearSessionId(scope);
+    const current = sessions.sessionFor(scope);
+    // 只有「有当前会话、但它的目录已经不可用」（被删/改名）才需要丢掉指针：
+    // `/new`、`/cd`、`/ws use` 之后本来就没有当前会话，不能顺手抹掉。
+    if (current !== undefined && current.cwd !== cwd) {
+      log.info('session', 'stale-cleared', { staleCwd: current.cwd, newCwd: cwd });
+      // 目录换了 → 这次跑的必然是新 OMP 会话 = 新对话。
+      sessions.startNew(scope);
     } else {
       log.info('session', 'fresh', { cwd });
     }
@@ -392,9 +391,9 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
   // dead id and replay the batch once.
   if (resumeFrom && !retriedStaleSession && run.staleSession) {
     log.warn('session', 'stale-cleared', { sessionId: resumeFrom, cwd });
-    // Drop only the dead id: title and idle-timeout override are user
-    // preferences that survive a session rollover (see SessionStore.set).
-    sessions.clearSessionId(scope);
+    // 这段会话已经续不上了（文件没落盘 / model 丢失）：重放会在新 OMP 会话里
+    // 跑，也就是开一段新对话；scope 的空闲超时等偏好不受影响。
+    sessions.startNew(scope);
     // The first attempt's claim was consumed by its register, and a /compact
     // deferred during the run may have taken the slot meanwhile. Reserve again
     // — if the slot is taken, the replay must not start a second agent on the
@@ -509,7 +508,7 @@ async function streamEvents(
     if (evt.type === 'system') {
       if (evt.sessionId) {
         const effectiveCwd = evt.cwd ?? cwd;
-        sessions.set(scope, evt.sessionId, effectiveCwd);
+        sessions.bind(scope, evt.sessionId, effectiveCwd);
         log.info('session', 'set', { sessionId: evt.sessionId });
       }
       continue;
@@ -545,18 +544,6 @@ async function streamEvents(
  * Falls back to $HOME and repairs the stored workspace. Shared by the
  * normal batch and scheduled-prompt paths.
  */
-async function resolveRunCwd(workspaces: WorkspaceStore, scope: string): Promise<string> {
-  let cwd = workspaces.cwdFor(scope) ?? homedir();
-  try {
-    const st = await stat(cwd);
-    if (!st.isDirectory()) throw new Error('not a directory');
-  } catch {
-    log.warn('session', 'cwd-missing', { staleCwd: cwd });
-    cwd = homedir();
-    workspaces.setCwd(scope, cwd);
-  }
-  return cwd;
-}
 
 /** Reap the OMP subprocess after the stream ends (shared by all modes). */
 async function reapRun(handle: RunHandle): Promise<void> {
@@ -655,6 +642,8 @@ export async function streamCardPages(
 ): Promise<void> {
   const session = createStreamSession(handle, idleTimeoutMs);
   let pageIndex = 0;
+  // 当前这一页的飞书消息 id：失败时用它把停摆的卡补成终态（见 catch）。
+  let inflightCardId: string | undefined;
   try {
     for (;;) {
       // Each page starts from a clean slate: text/tool blocks and reasoning
@@ -681,7 +670,9 @@ export async function streamCardPages(
       }
       const overflow = await runCardPage(
         channel, chatId, sendOpts, session, handle, sessions, scope, cwd,
-        idleTimeoutMs, hooks, filter, pageIndex,
+        idleTimeoutMs, hooks, filter, pageIndex, (messageId) => {
+          inflightCardId = messageId;
+        },
       );
       // Another page is needed while content is still owed to the user: either
       // the page cut at the table budget (carry) or the run is still streaming.
@@ -696,6 +687,12 @@ export async function streamCardPages(
     // first (near-impossible to reject); if even that fails, fall back to
     // plain text so the user's turn is never silently swallowed. Rethrow so
     // runAgentBatch still logs the failure.
+    //
+    // 先把**这张死掉的卡**补成终态：它停在“运行中”的画面上，用户会一直看到一个
+    // 不消失的 ⏹ 终止按钮（新发的兜底卡救不了它）。
+    if (inflightCardId !== undefined) {
+      await patchStrandedCard(channel, inflightCardId, session, handle, idleTimeoutMs, filter);
+    }
     const replyTo = sendOpts.replyTo;
     const sent = await sendManagedCard(channel, chatId, fallbackCard(session.state, filter), replyTo).catch(
       () => undefined,
@@ -720,6 +717,41 @@ export async function streamCardPages(
 }
 
 
+/**
+ * 把一张停在运行态的卡片补成终态（尽力而为）。
+ *
+ * 内容可能正是失败的原因（超 30KB / 表格超限），所以先按字节切一刀：能放下的
+ * 部分照旧呈现 + 一句提示；连切都切不出来时退回一张极小卡片。补上了就撤掉崩溃
+ * 恢复记录，补不上就留着 —— 别让用户永远看着一个 ⏹ 终止按钮。
+ */
+async function patchStrandedCard(
+  channel: LarkChannel,
+  messageId: string,
+  session: StreamSession,
+  handle: RunHandle,
+  idleTimeoutMs: number | undefined,
+  filter: (state: RunState) => RunState,
+): Promise<void> {
+  const final = finalizeSessionState(session, handle, idleTimeoutMs);
+  const split = splitByByteBudget(final, filter);
+  const card =
+    split.carry.length > 0
+      ? renderCard(filter({ ...split.page, terminal: 'done' }), {
+          bottomNote: '⚠️ 卡片更新失败，本条回复可能不完整',
+        })
+      : renderCard(filter(final));
+  try {
+    await channel.rawClient.im.v1.message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(card) },
+    });
+    forgetStreamingCard(messageId);
+    log.info('card', 'stranded-finalized', { messageId, terminal: final.terminal });
+  } catch (patchErr) {
+    log.warn('card', 'stranded-finalize-failed', { messageId, err: String(patchErr) });
+  }
+}
+
 /** Run one card page; returns true if it overflowed (another page follows). */
 async function runCardPage(
   channel: LarkChannel,
@@ -734,18 +766,22 @@ async function runCardPage(
   hooks: AgentStreamHooks | undefined,
   filter: (state: RunState) => RunState,
   pageIndex: number,
+  onCard?: (messageId: string) => void,
 ): Promise<boolean> {
   let overflow = false;
   // Whether any agent event was reduced into this page. A page that only
   // drains carry after the stream ended has already shown its content in
   // the initial card (rendered in terminal state) — a finalize push would
   // repeat that content verbatim on a second card.
-  let sawEvent = false;
-  // Whether the last pushed card already rendered the terminal state. The
+  // Whether the card currently on screen already renders a terminal state. The
   // finalize push exists to add terminal marks (idle/interrupt/done) to a
-  // still-running card; re-pushing an already-terminal card just duplicates
-  // the user-visible content.
-  let sawTerminalPush = false;
+  // still-running card; re-pushing an already-terminal card just duplicates the
+  // user-visible content.
+  //
+  // 初始卡也算：它若是终态（排空页），这一页就没有补的必要；它若是运行态而整页
+  // 一个事件都没来，**反而必须补** —— 否则那张卡永远停在运行态，用户会一直看着
+  // 一个不消失的 ⏹ 终止按钮（旧代码要求 `sawEvent` 才补，这条静默路径就漏了）。
+  let sawTerminalPush = filter(session.state).terminal !== 'running';
   const initialCard = renderCard(
     filter(session.state),
     pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
@@ -759,7 +795,10 @@ async function runCardPage(
           // Crash recovery: streaming cards don't go through the managed-card
           // system, so persist their messageId + snapshot for the boot-time
           // finalizer (Feishu can't return card content afterwards).
+          onCard?.(ctrl.messageId);
           void rememberStreamingCard(ctrl.messageId, chatId, initialCard);
+          // 失败标记：决定 finally 是否撤掉崩溃恢复记录（见下）。
+          let failed = false;
           try {
           const q = coalesceLatest((card: object) => {
             // Persist the snapshot BEFORE pushing: whatever reached Feishu is
@@ -770,7 +809,6 @@ async function runCardPage(
             minIntervalMs: CARD_UPDATE_MIN_INTERVAL_MS,
           });
           await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
-            sawEvent = true;
             // Tables first: Feishu rejects a card past five table components
             // (ErrCode 11310 "card table number over limit") no matter how
             // small it is, so a page must be cut at the table budget rather
@@ -816,7 +854,7 @@ async function runCardPage(
             if (state.terminal !== 'running') sawTerminalPush = true;
             return true;
           });
-          if (!overflow && sawEvent && !sawTerminalPush) {
+          if (!overflow && !sawTerminalPush) {
             // Natural end of the whole stream: finalize + reap on this page.
             // The finalize push goes through the same byte split as a
             // mid-stream overflow — the drained carry can still be past the
@@ -841,8 +879,15 @@ async function runCardPage(
             await q.flush();
             // (reap happens once in streamCardPages' finally, after all pages)
           }
+          } catch (err) {
+            // 抛错路径必须留记录：卡片停在运行态（⏹ 挂着），只能靠下次启动的
+            // 兜底补卡收尾。此前只声明了 failed 却从未置 true，等于无条件删除。
+            failed = true;
+            throw err;
           } finally {
-            void forgetStreamingCard(ctrl.messageId);
+            // 只在**正常收尾**时撤记录：那张卡此刻已是终态（⏹ 已随终态渲染消失）。
+            // 抛错的路径留着记录 —— 卡片停在运行态，要让下次启动的兜底补卡去收尾。
+            if (!failed) void forgetStreamingCard(ctrl.messageId);
           }
         },
       },
@@ -901,7 +946,7 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
   let release: (() => void) | undefined;
   try {
     release = await pool.acquire();
-    const cwd = await resolveRunCwd(workspaces, scope);
+    const { cwd } = await resolveConversationCwd(workspaces, sessions, scope);
     const replyMode = getMessageReplyMode(controls.cfg);
     const runModel = getOmpModel(controls.cfg);
     if (runModel) await recordModelUse(runModel).catch(() => {});
@@ -917,7 +962,7 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
 
     const run = agent.run({
       prompt,
-      sessionId: sessions.resumeFor(scope, cwd),
+      sessionId: sessions.sessionFor(scope)?.sessionId,
       cwd,
       model: runModel,
       thinking: getOmpThinking(controls.cfg),
@@ -928,6 +973,10 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
     const handle = activeRuns.register(scope, run, claim);
     if (!handle) {
       log.warn('runs', 'register-failed', { scope, via: 'scheduler' });
+      // 防御性：把 claim 还回去（这条路径不抛异常，调用方的 `.catch` 不会触发；
+      // 与交互路径 finally 里的 releaseClaim 对称）。当前 register 在「claim 存活且
+      // 无 handle」时必然成功，所以这条分支实际很难走到 —— 留着防止 contract 变化后泄漏。
+      activeRuns.releaseClaim(claim);
       await run.stop().catch(() => {});
       return;
     }

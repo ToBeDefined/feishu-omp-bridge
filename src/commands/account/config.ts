@@ -10,7 +10,7 @@ import { saveConfig } from '../../config/store';
 import { configCancelledCard, configFormCard, configSavedCard } from '../../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply } from '../shared';
+import { FORM_SETTLE_MS, recallMessage, reply, settleManagedCard, updateOrFallback } from '../shared';
 import { log } from '../../core/logger';
 
 export const configHandlers: Record<string, Handler> = {
@@ -43,6 +43,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     allowedUsers: (access.allowedUsers ?? []).join(', '),
     allowedChats: (access.allowedChats ?? []).join(', '),
     admins: (access.admins ?? []).join(', '),
+    ...(access.owner !== undefined ? { owner: access.owner } : {}),
   });
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
   await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
@@ -50,14 +51,8 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
 
 async function cancelConfig(ctx: CommandContext): Promise<void> {
   if (ctx.fromCardAction) {
-    const formMsgId = ctx.msg.messageId;
-    void (async () => {
-      await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
-      await updateManagedCard(ctx.channel, formMsgId, configCancelledCard()).catch((err) =>
-        log.warn('command', 'config-cancel-update-failed', { err: String(err) }),
-      );
-      forgetManagedCard(formMsgId);
-    })();
+    // 老卡片（重启前发出 / 非本进程托管）原地更新会失败 → 助手退回一条「已取消」。
+    void settleManagedCard(ctx, configCancelledCard(), '已取消，未做修改。');
   }
 }
 
@@ -71,7 +66,12 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       ? (rawReply as MessageReplyMode)
       : getMessageReplyMode(ctx.controls.cfg);
   const rawTools = String(fv.show_tool_calls ?? '').trim();
-  const showToolCalls = rawTools !== 'hide';
+  // 字段缺失同样回落当前值：此前 `rawTools !== 'hide'` 会把「隐藏」静默改回「显示」
+  // （CardKit 偶发丢字段，见上面 messageReply 的同款处理）。
+  const showToolCalls =
+    rawTools === 'show' || rawTools === 'hide'
+      ? rawTools === 'show'
+      : getShowToolCalls(ctx.controls.cfg);
   const rawMaxCC = String(fv.max_concurrent_runs ?? '').trim();
   const parsedMaxCC = Number(rawMaxCC);
   const maxConcurrentRuns =
@@ -175,6 +175,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       }
     };
 
+    // `access.owner` 不在表单里（按设计只能在机器上配置），提交时必须原样保留 ——
+    // 否则一次 /config 提交就会把 owner 从配置里抹掉（重启后高危命令对所有人拒绝）。
     const nextPreferences = {
       ...(ctx.controls.cfg.preferences ?? {}),
       messageReply,
@@ -183,7 +185,12 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
       requireMentionInGroup,
-      access: { allowedUsers, allowedChats, admins },
+      access: {
+        ...(ctx.controls.cfg.preferences?.access ?? {}),
+        allowedUsers,
+        allowedChats,
+        admins,
+      },
     };
     const nextCfg = { ...ctx.controls.cfg, preferences: nextPreferences };
 
@@ -212,9 +219,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       adminsCount: admins.length,
     });
     await waitForSettle();
-    await updateManagedCard(
-      channel,
-      formMsgId,
+    await updateOrFallback(
+      ctx,
       configSavedCard({
         messageReply,
         showToolCalls,
@@ -224,10 +230,12 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         allowedUsers: allowedUsers.join(', '),
         allowedChats: allowedChats.join(', '),
         admins: admins.join(', '),
+        // 归属者不在表单里：这里显示的是既有配置，不是本次提交的值。
+        ...(ctx.controls.cfg.preferences?.access?.owner !== undefined
+          ? { owner: ctx.controls.cfg.preferences.access.owner }
+          : {}),
       }),
-    ).catch((err) =>
-      log.warn('command', 'config-save-update-failed', { err: String(err) }),
+      '✅ 偏好已保存，立即生效。',
     );
-    forgetManagedCard(formMsgId);
   })();
 }

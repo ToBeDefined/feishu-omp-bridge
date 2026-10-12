@@ -1,4 +1,5 @@
 import type { TenantBrand } from '../config/schema';
+import { inlineRow, md, panel, stackedPanels } from './templates';
 
 function maskAppId(id: string): string {
   if (id.length < 12) return id;
@@ -17,16 +18,15 @@ export function accountCurrentCard(info: CurrentInfo): object {
     config: { summary: { content: '当前应用' } },
     body: {
       elements: [
-        {
-          tag: 'markdown',
-          content: [
-            '📋 **当前应用**',
-            '',
-            `**App ID**: \`${maskAppId(info.appId)}\``,
-            `**Bot 名**: ${info.botName ?? '(未知)'}`,
-            `**Tenant**: ${info.tenant}`,
-          ].join('\n'),
-        },
+        md('📋 **当前应用**'),
+        // 事实进灰底块（与 /context /status 同一套观感），动作留在块外。
+        ...stackedPanels([
+          panel([
+            md(`**App ID**: \`${maskAppId(info.appId)}\``),
+            md(`**Bot 名**: ${info.botName ?? '(未知)'}`),
+            md(`**Tenant**: ${info.tenant}`),
+          ]),
+        ]),
         { tag: 'hr' },
         {
           tag: 'button',
@@ -85,39 +85,8 @@ export function accountFormCard(opts: FormCardOpts = {}): object {
           { text: { tag: 'plain_text', content: 'Lark (海外)' }, value: 'lark' },
         ],
       },
-      {
-        tag: 'column_set',
-        flex_mode: 'flow',
-        horizontal_spacing: 'small',
-        columns: [
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [
-              {
-                tag: 'button',
-                name: 'submit_btn',
-                text: { tag: 'plain_text', content: '提交' },
-                type: 'primary',
-                form_action_type: 'submit',
-                behaviors: [{ type: 'callback', value: { cmd: 'account.submit' } }],
-              },
-            ],
-          },
-          {
-            tag: 'column',
-            width: 'auto',
-            elements: [
-              {
-                tag: 'button',
-                name: 'cancel_btn',
-                text: { tag: 'plain_text', content: '取消' },
-                behaviors: [{ type: 'callback', value: { cmd: 'account.cancel' } }],
-              },
-            ],
-          },
-        ],
-      },
+      ...inlineRow([{ element: { tag: 'button', name: 'submit_btn', text: { tag: 'plain_text', content: '提交' }, type: 'primary', form_action_type: 'submit', behaviors: [{ type: 'callback', value: { cmd: 'account.submit' } }], } }]),
+      ...inlineRow([{ element: { tag: 'button', name: 'cancel_btn', text: { tag: 'plain_text', content: '取消' }, behaviors: [{ type: 'callback', value: { cmd: 'account.cancel' } }], } }]),
     ],
   });
 

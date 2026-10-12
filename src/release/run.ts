@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export interface ReleaseExecOptions {
@@ -51,14 +51,37 @@ interface ExecError extends Error {
   stderr?: string;
 }
 
+/** SIGKILL 整个进程组（`-pid`），兜底清理 timeout 后残留的孙进程
+ *  （vitest worker 等）——只杀直接子进程会留下孤儿。进程组已不存在
+ *  （ESRCH）时静默忽略。 */
+export function killProcessGroup(pid: number, signal: NodeJS.Signals = 'SIGKILL'): void {
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // 进程组随最后一个成员退出而消失 —— 无需处理
+  }
+}
+
 /** execFile wrapped so captured stdout/stderr are surfaced on rejection. */
 const execFileAsync: ReleaseExec = (command, args, options) =>
   new Promise((resolvePromise, rejectPromise) => {
-    execFile(command, args, { ...options, maxBuffer: MAX_BUFFER }, (error, stdout, stderr) => {
+    // detached: 让 pnpm 成为新进程组的组长，超时后才能按 `-pid` 整组兜底
+    // SIGKILL，避免 vitest worker 等孙进程变成孤儿。
+    // （@types/node 未在 ExecFileOptions 上声明 detached —— 运行时透传给 spawn。）
+    const execOptions = {
+      ...options,
+      maxBuffer: MAX_BUFFER,
+      detached: true,
+    } as ExecFileOptionsWithStringEncoding;
+    const child = execFile(command, args, execOptions, (error, stdout, stderr) => {
       if (error) {
         const e = error as ExecError;
         e.stdout = stdout;
         e.stderr = stderr;
+        // timeout 时 execFile 只杀掉直接子进程；再对整组补一记 SIGKILL。
+        if (e.killed && child.pid !== undefined) {
+          killProcessGroup(child.pid);
+        }
         rejectPromise(e);
         return;
       }

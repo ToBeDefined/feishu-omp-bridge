@@ -15,13 +15,28 @@ import {
   type RollbackTargetDeps,
 } from './rollback';
 
+/**
+ * 本文件每个用例都要真跑 git（每个用例 10~20 次进程 spawn），而 `/release` 是在
+ * bridge 自己这台机器上跑的测试 —— 发布瞬间 CPU 可能已被别的重活占满（实测过一次
+ * load average 99：Xcode 的 clang/SWBBuildService 在编译）。vitest 默认 5s 在这种
+ * 负载下会让「真 git」用例假失败（git 单条命令从 30ms 涨到 2.4s，冷缓存下建一个
+ * 3 提交小仓库要 5~16s）。给到 60s：真挂了仍会失败，只是要多等一会儿。
+ */
+vi.setConfig({ testTimeout: 60_000 });
+
 // === 临时仓库工具（真实 git） ===
 
 const temps: string[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  await Promise.all(
+    temps.splice(0).map((dir) =>
+      // 超时/失败路径下 git 子进程可能仍在写 .git，直接 rm 会撞 ENOTEMPTY —— 重试
+      // 到位即可；清不掉也不能让清理本身变成第二个失败（临时目录由系统回收）。
+      rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {}),
+    ),
+  );
 });
 
 async function tempDir(prefix: string): Promise<string> {

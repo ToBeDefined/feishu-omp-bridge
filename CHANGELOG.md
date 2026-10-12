@@ -48,6 +48,12 @@
   1000 字符、禁交互、写审计日志。
 
 ### Fixed
+- **`rollback.test.ts` 在重负载下假失败**：这组用例真跑 git（每例 10~20 次 spawn），
+  vitest 默认 5s 超时在 `/release` 时刻（实测过一次 load average 99，Xcode
+  clang/SWBBuildService 在编译）会被击穿 —— git 单条命令从 30ms 涨到 2.4s、冷缓存下建
+  一个 3 提交小仓库要 5~16s，导致发布在「测试」步骤中止（并伴随 ENOTEMPTY 清理竞态）。
+  现为本文件设 `testTimeout: 60s`，清理改为可重试且不再把清理错误变成第二个失败。
+### Fixed
 - **适配 OMP 18.10.1（三处 RPC 行为变化，均已对真机验证）**：
   - **`agent_end` 带非终止标记**：OMP 现在会给「调度了后续动作就结束」的
     `agent_end` 打上 `isTerminal:false`（自动重试续跑、压缩续跑、排队的

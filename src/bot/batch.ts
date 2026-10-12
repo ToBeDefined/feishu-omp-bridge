@@ -1004,6 +1004,7 @@ async function runCardPage(
               q.push(
                 renderCard(filter({ ...split.page, terminal: 'done' }), {
                   now,
+                  midPage: true,
                   bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
                 }),
               );
@@ -1024,6 +1025,7 @@ async function runCardPage(
                 q.push(
                   renderCard(filter({ ...byteSplit.page, terminal: 'done' }), {
                     now,
+                    midPage: true,
                     bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
                   }),
                 );
@@ -1058,6 +1060,7 @@ async function runCardPage(
               q.push(
                 renderCard(filter(byteSplit.page), {
                   now,
+                  midPage: true,
                   bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
                 }),
               );

@@ -327,6 +327,31 @@ describe('renderCard', () => {
     expect(columns[0]?.vertical_align).toBe('center');
   });
 
+  it('续页（midPage）不显示底部控制区：耗时/token 只留在最新一页', () => {
+    const state = {
+      ...longRunState(1),
+      startedAt: 1_000_000,
+      endedAt: 1_012_400,
+      terminal: 'done' as const,
+      usage: { inputTokens: 2_000, outputTokens: 300, costUsd: 0.5 },
+    };
+    const mid = renderCard(state, {
+      midPage: true,
+      bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
+    });
+    const midJson = JSON.stringify(mid);
+    expect(midJson).not.toContain('⏱ 用时');
+    expect(midJson).not.toContain('🧮'); // 用量行（emoji 判定，`"token"` 是面板图标字段）
+    expect(midJson).not.toContain('💰');
+    expect(countByTag(cardElements(mid), 'hr')).toBe(0); // 那条分割线也不该出现
+    expect(midJson).toContain('已分页'); // 但「下一条消息继续」的提示要留
+    // 同一状态作为「最新一页」渲染时，脚注照旧。
+    const last = JSON.stringify(renderCard(state));
+    expect(last).toContain('⏱ 用时 12.4s');
+    expect(last).toContain('🧮 2.3k tok');
+    expect(last).toContain('💰 $0.5000');
+  });
+
   it('没有 usage 时底部控制区只留状态行（不留空占位）', () => {
     const state = { ...longRunState(1), startedAt: 1_000_000, endedAt: 1_012_400 };
     const lines = controlLines(renderCard(state));

@@ -28,6 +28,8 @@ type RenderOp = { kind: 'text'; content: string } | { kind: 'process'; items: Pr
 
 /** Per-page markers for the card pagination flow (see batch.ts streamCardPages). */
 export interface CardPageOptions {
+  /** 早先关掉的续页（后面还有一张卡）：不显示底部控制区（耗时/token/状态）。 */
+  midPage?: boolean;
   /** Note rendered at the top of the card ("continues previous message"). */
   topNote?: string;
   /** Note rendered at the bottom ("continues in the next message"). */
@@ -98,7 +100,11 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
 
   // 底部控制区（仅运行态）：一条分割线，下面是
   // `token/费用` 与 `状态 · 用时` 两行堆在左列，⏹ 终止 在右列与这两行垂直居中。
-  if (state.terminal === 'running') {
+  // 早先关掉的续页（`midPage`，后面还有一张卡）不渲染这块：耗时/token/状态只在
+  // **最新**那一页给出，旧页上的快照数字不该被当成终值。
+  if (opts?.midPage) {
+    // 续页只剩内容 + 「已分页，下一条消息继续」的 bottomNote。
+  } else if (state.terminal === 'running') {
     const usageText = usageLine(state);
     const left: object[] = [];
     if (usageText) left.push(noteMd(usageText));

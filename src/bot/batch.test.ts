@@ -444,3 +444,198 @@ describe('OMP 交互卡发送失败', () => {
     expect(recorded.responded).toHaveLength(1);
   });
 });
+
+describe('OMP 交互卡倒计时', () => {
+  /** 卡片所有 markdown 元素的正文（用于断言「剩余 N 秒」）。 */
+  const cardText = (card: object): string => {
+    const elements = (card as { body?: { elements?: unknown[] } }).body?.elements ?? [];
+    const parts: string[] = [];
+    for (const el of elements) {
+      if (typeof el === 'object' && el !== null && 'content' in el) {
+        const content: unknown = el.content;
+        if (typeof content === 'string') parts.push(content);
+      }
+    }
+    return parts.join('\n');
+  };
+
+  /** CardKit fake：create/reply 发一张卡，update 记录每次重渲染的卡。 */
+  function uiChannel(record: { cards: object[] }): LarkChannel {
+    let seq = 0;
+    return {
+      send: async () => {},
+      rawClient: {
+        cardkit: {
+          v1: {
+            card: {
+              create: async (req: { data: { data: string } }) => {
+                record.cards.push(JSON.parse(req.data.data) as object);
+                return { data: { card_id: `c_${++seq}` } };
+              },
+              update: async (req: { data: { card: { data: string } } }) => {
+                record.cards.push(JSON.parse(req.data.card.data) as object);
+              },
+            },
+          },
+        },
+        im: {
+          v1: {
+            message: {
+              create: async () => ({ data: { message_id: 'om_ui' } }),
+              reply: async () => ({ data: { message_id: 'om_ui' } }),
+            },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+  }
+
+  /**
+   * active-runs 的定时器语义复刻：倒计时续期、respondToUi 清定时器、dropUiRequest
+   * 清定时器 —— 倒计时链只经手这一个定时器，所以这里就是「唯一时钟」的替身。
+   */
+  function fakeActiveRuns(
+    pending: Set<string>,
+    responded: Array<{ id: string; response: unknown }>,
+  ): ActiveRuns {
+    const timers = new Map<string, NodeJS.Timeout>();
+    const clear = (id: string): void => {
+      const t = timers.get(id);
+      if (t) {
+        clearTimeout(t);
+        timers.delete(id);
+      }
+    };
+    return {
+      armUiTimeout: (_scope: string, id: string, ms: number, cb: () => void): boolean => {
+        clear(id);
+        timers.set(id, setTimeout(() => { timers.delete(id); cb(); }, ms));
+        return true;
+      },
+      respondToUi: (_scope: string, id: string, response: unknown): boolean => {
+        if (!pending.has(id)) return false;
+        clear(id);
+        pending.delete(id);
+        responded.push({ id, response });
+        return true;
+      },
+      dropUiRequest: (_scope: string, id: string): void => {
+        clear(id);
+        pending.delete(id);
+      },
+    } as unknown as ActiveRuns;
+  }
+
+  function hooksWith(
+    channel: LarkChannel,
+    activeRuns: ActiveRuns,
+    pending: Set<string>,
+  ): { hooks: AgentStreamHooks; cards: Map<string, { messageId: string; title: string; deadline?: number }> } {
+    const cards = new Map<string, { messageId: string; title: string; deadline?: number }>();
+    const hooks = createUiHooks({
+      channel,
+      chatId: 'oc_x',
+      scope: 'oc_x',
+      replyToMessageId: 'om_user',
+      activeRuns,
+      cards,
+      isPending: (id) => pending.has(id),
+    });
+    return { hooks, cards };
+  }
+
+  const confirmRequest: AgentUiRequest = {
+    id: 'ui-1',
+    method: 'confirm',
+    title: '确认继续',
+    message: '继续？',
+    timeout: 12_000,
+  };
+
+  it('推进假时钟后重渲染剩余秒数；到 0 走超时路径且不再有后续 patch', async () => {
+    vi.useFakeTimers();
+    try {
+      const record = { cards: [] as object[] };
+      const pending = new Set<string>(['ui-1']);
+      const responded: Array<{ id: string; response: unknown }> = [];
+      const activeRuns = fakeActiveRuns(pending, responded);
+      const { hooks, cards } = hooksWith(uiChannel(record), activeRuns, pending);
+
+      await hooks.onUiRequest(confirmRequest);
+      expect(cardText(record.cards.at(-1)!)).toContain('剩余 12 秒');
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(cardText(record.cards.at(-1)!)).toContain('剩余 7 秒');
+
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(cardText(record.cards.at(-1)!)).toContain('剩余 2 秒');
+
+      // 到点：回包 cancelled（沿用既有超时行为）+ 卡片终态。
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(responded).toEqual([{ id: 'ui-1', response: { cancelled: true, timedOut: true } }]);
+      expect(cardText(record.cards.at(-1)!)).toContain('已超时');
+      expect(cards.has('ui-1')).toBe(false);
+
+      // 之后再也没有 patch：定时器彻底清光。
+      const atEnd = record.cards.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(record.cards.length).toBe(atEnd);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('用户回包后倒计时彻底停掉（定时器被 respondToUi 清掉）', async () => {
+    vi.useFakeTimers();
+    try {
+      const record = { cards: [] as object[] };
+      const pending = new Set<string>(['ui-1']);
+      const responded: Array<{ id: string; response: unknown }> = [];
+      const activeRuns = fakeActiveRuns(pending, responded);
+      const { hooks } = hooksWith(uiChannel(record), activeRuns, pending);
+
+      await hooks.onUiRequest(confirmRequest);
+      await vi.advanceTimersByTimeAsync(5000);
+      const before = record.cards.length;
+
+      // 用户点了「确认」：active-runs 清掉倒计时定时器，请求不再 pending。
+      expect(activeRuns.respondToUi('oc_x', 'ui-1', { confirmed: true })).toBe(true);
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(record.cards.length).toBe(before);
+      expect(vi.getTimerCount()).toBe(0);
+      // 超时不再回一次包（请求早已 settle）。
+      expect(responded).toEqual([{ id: 'ui-1', response: { confirmed: true } }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('OMP 撤回（ui_cancel）后倒计时也停掉', async () => {
+    vi.useFakeTimers();
+    try {
+      const record = { cards: [] as object[] };
+      const pending = new Set<string>(['ui-1']);
+      const responded: Array<{ id: string; response: unknown }> = [];
+      const activeRuns = fakeActiveRuns(pending, responded);
+      const { hooks } = hooksWith(uiChannel(record), activeRuns, pending);
+
+      await hooks.onUiRequest(confirmRequest);
+      await vi.advanceTimersByTimeAsync(5000);
+      const before = record.cards.length;
+
+      // streamEvents 先删 pending，再调 onUiCancel —— 没人替它清定时器，onUiCancel 自己收。
+      pending.delete('ui-1');
+      await hooks.onUiCancel('ui-1');
+      expect(cardText(record.cards.at(-1)!)).toContain('已取消');
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(record.cards.length).toBe(before + 1); // 只有那张 cancelled 结果卡
+      expect(vi.getTimerCount()).toBe(0);
+      expect(responded).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

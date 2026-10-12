@@ -103,4 +103,16 @@ describe('OMP UI cards', () => {
     });
     expect(JSON.stringify(card)).toContain('超时后按取消处理');
   });
+
+  it('renders the caller-supplied remaining seconds (countdown stays pure)', () => {
+    const card = renderOmpUiRequestCard(
+      { id: 'ui-4', method: 'select', title: 'Pick', options: ['a'], timeout: 60_000 },
+      undefined,
+      { remainingSeconds: 42 },
+    );
+    expect(JSON.stringify(card)).toContain('剩余 42 秒');
+    expect(JSON.stringify(card)).toContain('超时后按取消处理');
+    // 不再回落到「此请求有超时限制」总时长文案。
+    expect(JSON.stringify(card)).not.toContain('此请求有超时限制');
+  });
 });

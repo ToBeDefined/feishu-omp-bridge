@@ -8,7 +8,7 @@ import {
 } from '../config/schema';
 import { log } from '../core/logger';
 import type { MediaCache } from '../media/cache';
-import { attachTranscripts } from '../media/transcribe';
+import { attachTranscripts, mediaFailureNotice } from '../media/transcribe';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import type { ActiveRuns } from './active-runs';
@@ -222,7 +222,15 @@ export async function submitToActiveRun(deps: {
   const resources = msg.resources.map((resource) => ({ messageId: msg.messageId, resource }));
   const attachments = await media.resolve(msg.chatId, resources);
   // Voice messages: transcribe to text so the agent can read the content.
-  await attachTranscripts(channel, attachments);
+  const transcriptFailures = await attachTranscripts(channel, attachments);
+  // 转写失败以前完全静默：用户以为语音发出去了，却只等到一个答非所问的回答。
+  // 给当前对话补一条轻量提示；提示自身失败不能拖垮 steer（catch 掉即可）。
+  const mediaNotice = mediaFailureNotice({ transcriptFailures });
+  if (mediaNotice) {
+    await channel
+      .send(msg.chatId, { markdown: mediaNotice }, { replyTo: msg.messageId })
+      .catch((err) => log.fail('media', err, { scope, step: 'steer-failure-notice' }));
+  }
   const imagePaths = attachments.filter((attachment) => attachment.kind === 'image').map((attachment) => attachment.path);
   const quotes: QuotedContext[] = [];
   if (msg.replyToMessageId) {

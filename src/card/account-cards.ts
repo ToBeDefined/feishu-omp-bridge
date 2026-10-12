@@ -1,5 +1,6 @@
 import type { TenantBrand } from '../config/schema';
-import { inlineRow, md, panel, stackedPanels } from './templates';
+import { escapeCode } from '../utils/text';
+import { inlineActions, inlineRow, md, panel, stackedPanels } from './templates';
 
 function maskAppId(id: string): string {
   if (id.length < 12) return id;
@@ -18,22 +19,20 @@ export function accountCurrentCard(info: CurrentInfo): object {
     config: { summary: { content: '当前应用' } },
     body: {
       elements: [
-        md('📋 **当前应用**'),
+        md('📋 **当前应用**', 'heading'),
+        md('_当前 bot 使用的应用凭据。_', 'notation'),
         // 事实进灰底块（与 /context /status 同一套观感），动作留在块外。
         ...stackedPanels([
           panel([
+            md('**📋 应用信息**'),
             md(`**App ID**: \`${maskAppId(info.appId)}\``),
             md(`**Bot 名**: ${info.botName ?? '(未知)'}`),
             md(`**Tenant**: ${info.tenant}`),
           ]),
         ]),
-        { tag: 'hr' },
-        {
-          tag: 'button',
-          text: { tag: 'plain_text', content: '更换凭据' },
-          type: 'primary',
-          behaviors: [{ type: 'callback', value: { cmd: 'account.change' } }],
-        },
+        ...inlineActions([
+          { text: '更换凭据', value: { cmd: 'account.change' }, style: 'primary' },
+        ]),
       ],
     },
   };
@@ -47,11 +46,14 @@ export interface FormCardOpts {
 
 export function accountFormCard(opts: FormCardOpts = {}): object {
   const { initialTenant = 'feishu', prefillAppId, errorMessage } = opts;
-  const bodyElements: object[] = [];
+  const bodyElements: object[] = [
+    md('🔑 **更换凭据**', 'heading'),
+    md('_粘贴新应用的 App ID / Secret，提交后会立即校验并重连。_', 'notation'),
+  ];
   if (errorMessage) {
     bodyElements.push({
       tag: 'markdown',
-      content: `❌ **校验失败**：${errorMessage}`,
+      content: `❌ **校验失败**：\`${escapeCode(errorMessage)}\``,
     });
   }
   bodyElements.push({
@@ -100,8 +102,8 @@ export function accountFormCard(opts: FormCardOpts = {}): object {
 export function accountValidatingCard(): object {
   return {
     schema: '2.0',
-    config: { summary: { content: '正在校验...' } },
-    body: { elements: [{ tag: 'markdown', content: '⏳ **正在校验凭据...**' }] },
+    config: { summary: { content: '正在校验' } },
+    body: { elements: [md('⏳ **正在校验凭据…**', 'heading')] },
   };
 }
 
@@ -111,21 +113,17 @@ export function accountSuccessCard(info: CurrentInfo): object {
     config: { summary: { content: '已保存' } },
     body: {
       elements: [
-        {
-          tag: 'markdown',
-          content: [
-            '✅ **凭据已保存**',
-            '',
-            `**App ID**: \`${maskAppId(info.appId)}\``,
-            info.botName ? `**Bot 名**: ${info.botName}` : '',
-            `**Tenant**: ${info.tenant}`,
-            '',
-            '正在用新凭据重连 WebSocket...',
-            '⚠️ 如果新 bot 不在此群，后续消息将由新 bot 接管，老 bot 不会再回复。',
-          ]
-            .filter(Boolean)
-            .join('\n'),
-        },
+        md('✅ **凭据已保存**', 'heading'),
+        md('_正在用新凭据重连 WebSocket…_', 'notation'),
+        ...stackedPanels([
+          panel([
+            md('**📋 应用信息**'),
+            md(`**App ID**: \`${maskAppId(info.appId)}\``),
+            ...(info.botName ? [md(`**Bot 名**: ${info.botName}`)] : []),
+            md(`**Tenant**: ${info.tenant}`),
+          ]),
+        ]),
+        md('⚠️ _如果新 bot 不在此群，后续消息将由新 bot 接管，老 bot 不会再回复。_', 'notation'),
       ],
     },
   };
@@ -137,10 +135,9 @@ export function accountFailureCard(reason: string): object {
     config: { summary: { content: '校验失败' } },
     body: {
       elements: [
-        {
-          tag: 'markdown',
-          content: `❌ **校验失败**\n\n\`${reason}\`\n\n请检查 App ID 和 Secret 是否正确，重发 \`/account change\` 重试。`,
-        },
+        md('❌ **校验失败**', 'heading'),
+        md(`\`${escapeCode(reason)}\``),
+        md('_请检查 App ID 和 Secret 是否正确，重发 `/account change` 重试。_', 'notation'),
       ],
     },
   };

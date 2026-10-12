@@ -77,8 +77,8 @@ describe('/timeout command', () => {
     expect(h.sends).toBe(1);
     expect(reply).not.toHaveBeenCalled();
     const out = h.cards.join('\n');
-    expect(out).toContain('当前 session 探活：30 分钟');
-    expect(out).toContain('全局默认：60 分钟');
+    expect(out).toContain('当前 session 探活: 30 分钟');
+    expect(out).toContain('全局默认: 60 分钟');
     // 四个动作按钮走现有 /timeout 语义，payload 明确。
     expect(out).toContain('"cmd":"timeout","arg":"15"');
     expect(out).toContain('"cmd":"timeout","arg":"30"');
@@ -133,7 +133,7 @@ describe('/timeout command', () => {
     expect(h.updates).toBe(1);
     expect(reply).not.toHaveBeenCalled();
     expect(h.cards.at(-1)).toContain('已设为 30 分钟');
-    expect(h.cards.at(-1)).toContain('当前 session 探活：30 分钟');
+    expect(h.cards.at(-1)).toContain('当前 session 探活: 30 分钟');
   });
 
   it('卡片点「取消」：终态卡不再渲染动作按钮', async () => {

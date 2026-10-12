@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   THINKING_FOLLOW_DEFAULT,
   modelProviderCard,
+  modelSavedCard,
   modelSelectCard,
   thinkingCard,
 } from './model-card';
@@ -208,8 +209,12 @@ describe('modelProviderCard', () => {
 
   it('shows the current model and thinking on the provider chooser', () => {
     const md = cardMarkdown(modelProviderCard('p/a', providers, [], [], 'medium'));
-    expect(md).toContain('当前 `p/a` · 思考 `medium`');
+    expect(md).toContain('当前 `p/a` · 💭 思考 `medium`');
     expect(md).toContain('切换模型');
+  });
+
+  it('summary carries the same emoji as the heading', () => {
+    expect(JSON.stringify(modelProviderCard('p/a', providers))).toContain('"content":"🎛 切换模型"');
   });
 
   it('leads with 最近使用, then 常用, then 提供方', () => {
@@ -365,9 +370,9 @@ describe('thinkingCard', () => {
     const card = thinkingCard(undefined);
     const sel = findSelect(card, 'thinking_level');
     expect(sel.initial_option).toBe(THINKING_FOLLOW_DEFAULT);
-    expect(cardMarkdown(card)).toContain('当前：_跟随 OMP 默认_');
+    expect(cardMarkdown(card)).toContain('当前: _跟随 OMP 默认_');
     // 旧行为：标题写「跟随 OMP 默认」，下拉却预选 `auto`。
-    expect(cardMarkdown(card)).not.toContain('当前：`auto`');
+    expect(cardMarkdown(card)).not.toContain('当前: `auto`');
   });
 
   it('filters the levels by the model capability (futu/deepseek-v4.1-flash: low|high|max)', () => {
@@ -400,12 +405,33 @@ describe('thinkingCard', () => {
     const card = thinkingCard('medium', ['low', 'high', 'max']);
     expect(optionValues(card)).toEqual([THINKING_FOLLOW_DEFAULT, 'medium', 'low', 'high', 'max']);
     expect(findSelect(card, 'thinking_level').initial_option).toBe('medium');
-    expect(cardMarkdown(card)).toContain('当前：`medium`');
+    expect(cardMarkdown(card)).toContain('当前: `medium`');
   });
 
   it('describes every level in the option text', () => {
     const texts = (findSelect(thinkingCard('high', ['low', 'high', 'max']), 'thinking_level').options ?? [])
       .map(optionText);
     expect(texts).toEqual(['跟随 OMP 默认', 'low（低）', 'high（高）', 'max（最高）']);
+  });
+
+  it('has no decorative hr and a 💭 heading', () => {
+    const json = JSON.stringify(thinkingCard(undefined));
+    expect(json).not.toContain('"tag":"hr"');
+    expect(json).toContain('"content":"💭 **思考强度**","text_size":"heading"');
+  });
+});
+
+describe('modelSavedCard', () => {
+  it('renders a heading, context notation and a grey info panel', () => {
+    const json = JSON.stringify(modelSavedCard('futu/x', 'high'));
+    expect(json).toContain('"content":"✅ **模型已设为** `futu/x`","text_size":"heading"');
+    expect(json).toContain('**🎛 模型信息**');
+    expect(json).toContain('**💭 思考强度**: `high`');
+  });
+
+  it('escapes an injected backtick in the model selector', () => {
+    const json = JSON.stringify(modelSavedCard('futu/`x`', undefined));
+    expect(json).toContain("futu/'x'");
+    expect(json).not.toContain('futu/`x`');
   });
 });

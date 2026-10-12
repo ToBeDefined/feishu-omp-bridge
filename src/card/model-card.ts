@@ -1,5 +1,14 @@
 import { isOmpThinkingLevel, OMP_THINKING_LEVELS } from '../config/schema';
-import { contextPanels, inlineActions, inlineRow, shortPath, type ContextInfo } from './templates';
+import {
+  contextPanels,
+  inlineActions,
+  inlineRow,
+  md,
+  panel,
+  shortPath,
+  stackedPanels,
+  type ContextInfo,
+} from './templates';
 import { escapeCode } from '../utils/text';
 
 /** Form value meaning "clear ompThinking / follow OMP default". */
@@ -144,20 +153,17 @@ export function modelProviderCard(
   );
   return {
     schema: '2.0',
-    config: { summary: { content: '切换模型' } },
+    config: { summary: { content: '🎛 切换模型' } },
     body: {
       elements: [
         { tag: 'markdown', content: '🎛 **切换模型**', text_size: 'heading' },
         {
           tag: 'markdown',
-          content: `当前 ${formatCurrent(current)} · 思考 ${formatCurrent(thinking)}`,
+          content: `当前 ${formatCurrent(current)} · 💭 思考 ${formatCurrent(thinking)}`,
           text_size: 'notation',
         },
-        ...(recentSection.length > 0 || commonSection.length > 0 ? [{ tag: 'hr' }] : []),
         ...recentSection,
-        ...(recentSection.length > 0 && commonSection.length > 0 ? [{ tag: 'markdown', content: '\n' }] : []),
         ...commonSection,
-        { tag: 'hr' },
         { tag: 'markdown', content: '**📦 提供方**' },
         ...providerButtons,
         // 全局动作各占一行铺满：回退默认（不是提供方，单列）与退路「取消」。
@@ -219,7 +225,7 @@ export function modelSelectCard(
         { tag: 'markdown', content: `🎛 **${provider} 模型**`, text_size: 'heading' },
         {
           tag: 'markdown',
-          content: `当前 ${formatCurrent(current)} · 思考 ${formatCurrent(thinking)}` +
+          content: `当前 ${formatCurrent(current)} · 💭 思考 ${formatCurrent(thinking)}` +
             (foreignCurrent ? ' · ⚠️ 当前模型不属于该提供方' : '') +
             (recentHits > 0 ? ' · _下拉里最近用过的排在前面_' : ''),
           text_size: 'notation',
@@ -252,11 +258,15 @@ export function modelSavedCard(model: string, thinking?: string): object {
     config: { summary: { content: '模型已切换' } },
     body: {
       elements: [
-        { tag: 'markdown', content: `✅ **模型已设为** \`${model}\``, text_size: 'heading' },
-        {
-          tag: 'markdown',
-          content: `🧠 **思考强度**：${thinking ? `\`${thinking}\`` : '_跟随 OMP 默认_'}\n\n_下一条消息生效。_`,
-        },
+        { tag: 'markdown', content: `✅ **模型已设为** \`${escapeCode(model)}\``, text_size: 'heading' },
+        { tag: 'markdown', content: '_下一条消息生效。_', text_size: 'notation' },
+        ...stackedPanels([
+          panel([
+            md('**🎛 模型信息**'),
+            md(`**模型**: \`${escapeCode(model)}\``),
+            md(`**💭 思考强度**: ${thinking ? `\`${escapeCode(thinking)}\`` : '_跟随 OMP 默认_'}`),
+          ]),
+        ]),
       ],
     },
   };
@@ -283,16 +293,15 @@ export function thinkingCard(current?: string, supported?: string[]): object {
     config: { summary: { content: '切换思考强度' } },
     body: {
       elements: [
+        { tag: 'markdown', content: '💭 **思考强度**', text_size: 'heading' },
         {
           tag: 'markdown',
-          text_size: 'heading',
           content:
-            `🧠 **思考强度**\n` +
-            `当前：` + (currentLevel ? `\`${currentLevel}\`` : '_跟随 OMP 默认_') +
-            (unsupported ? '（该模型不支持思考强度）' : '') +
-            `\n\n_只作用于当前模型，不影响模型切换_`,
+            `当前: ` + (currentLevel ? `\`${currentLevel}\`` : '_跟随 OMP 默认_') +
+            (unsupported ? '（该模型不支持思考强度）' : ''),
+          text_size: 'notation',
         },
-        { tag: 'hr' },
+        { tag: 'markdown', content: '_只作用于当前模型，不影响模型切换_', text_size: 'notation' },
         {
           tag: 'form',
           name: 'thinking_form',
@@ -337,7 +346,7 @@ export function thinkingCancelledCard(): object {
   return {
     schema: '2.0',
     config: { summary: { content: '已取消' } },
-    body: { elements: [{ tag: 'markdown', content: '已取消,未做修改。' }] },
+    body: { elements: [{ tag: 'markdown', content: '已取消，未做任何修改。' }] },
   };
 }
 
@@ -397,6 +406,6 @@ export function modelCancelledCard(): object {
   return {
     schema: '2.0',
     config: { summary: { content: '已取消' } },
-    body: { elements: [{ tag: 'markdown', content: '已取消,未做修改。' }] },
+    body: { elements: [{ tag: 'markdown', content: '已取消，未做任何修改。' }] },
   };
 }

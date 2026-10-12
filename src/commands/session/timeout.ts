@@ -17,14 +17,14 @@ async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {
   const trimmed = args.trim().toLowerCase();
   const globalMs = getRunIdleTimeoutMs(ctx.controls.cfg);
   const globalMinutes = globalMs ? Math.round(globalMs / 60_000) : 0;
-  const globalLabel = globalMinutes > 0 ? `全局默认：${globalMinutes} 分钟` : '全局默认：未启用';
+  const globalLabel = globalMinutes > 0 ? `全局默认: ${globalMinutes} 分钟` : '全局默认: 未启用';
   // 当前值口径属于命令层：卡片只收到拼好的两行，不持有配置逻辑。
   const currentLabel = (): string => {
     const scopeMinutes = ctx.sessions.getIdleTimeoutMinutes(ctx.scope);
     if (scopeMinutes === undefined) {
-      return `当前 session 探活：跟随全局（${globalMinutes > 0 ? `${globalMinutes} 分钟` : '未启用'}）`;
+      return `当前 session 探活: 跟随全局（${globalMinutes > 0 ? `${globalMinutes} 分钟` : '未启用'}）`;
     }
-    return scopeMinutes > 0 ? `当前 session 探活：${scopeMinutes} 分钟` : '当前 session 探活：已关闭';
+    return scopeMinutes > 0 ? `当前 session 探活: ${scopeMinutes} 分钟` : '当前 session 探活: 已关闭';
   };
   const card = (notice?: string, cancelled?: boolean): object =>
     timeoutCard({

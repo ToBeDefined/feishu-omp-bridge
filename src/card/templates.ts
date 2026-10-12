@@ -245,7 +245,8 @@ export function workspacesCard(
   const elements: object[] = [];
 
   elements.push(md(`📂 **工作空间**`, 'heading'));
-  elements.push(md(`当前 cwd：\`${escapeCode(tildePath(current ?? '(未设置，使用 $HOME)'))}\``));
+  elements.push(md('_命名工作空间：一行一个，可切换 / 删除。_', 'notation'));
+  elements.push(md(`当前 cwd: \`${escapeCode(tildePath(current ?? '(未设置，使用 $HOME)'))}\``));
 
   if (entries.length === 0) {
     elements.push(HR);
@@ -267,7 +268,7 @@ export function workspacesCard(
     );
   } else {
     elements.push(HR);
-    entries.forEach(([name, path], i) => {
+    entries.forEach(([name, path]) => {
       const isCurrent = path === current;
       // 一行一个工作空间：内容进灰底块，动作并排贴在块下面（与 /search 结果行同一套）。
       elements.push(
@@ -295,10 +296,11 @@ export function workspacesCard(
           ]),
         );
       }
-      if (i < entries.length - 1) elements.push(HR);
     });
-    elements.push(HR);
-    elements.push(...inlineActions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
+    // confirm 态时该条目自带退路「取消」，不再挂全局取消（避免一屏两个「取消」）。
+    if (confirmRemove === undefined) {
+      elements.push(...inlineActions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
+    }
   }
 
   return shell('📂 工作空间', elements);
@@ -363,9 +365,8 @@ export function cwdChangedCard(cwd: string, scopeNote?: string): object {
   return shell('📁 已切换工作目录', [
     md('📁 **已切换工作目录**', 'heading'),
     ...(scopeNote ? [md(`_${escapeMd(scopeNote)}_`, 'notation')] : []),
-    md(`新的 cwd：\`${escapeCode(tildePath(cwd))}\``),
+    md(`新的 cwd: \`${escapeCode(tildePath(cwd))}\``),
     md('_session 已重置，下一条消息在新目录开始。_', 'notation'),
-    { tag: 'hr' },
     ...inlineActions([
       { text: '📂 工作空间', value: { cmd: 'ws.list' } },
       { text: '📊 会话状态', value: { cmd: 'status' } },
@@ -443,7 +444,16 @@ export function execResultCard(info: ExecResultInfo): object {
   } else {
     elements.push(md('_（无输出）_', 'notation'));
   }
-  return shell('🖥 命令执行', elements);
+  return shell(
+    info.timedOut
+      ? '命令执行超时'
+      : info.exitCode === null
+        ? '命令无法执行'
+        : ok
+          ? '命令执行完成'
+          : '命令失败',
+    elements,
+  );
 }
 
 /** /ps card: one row per running bot, current one starred. 退出 is a two-step
@@ -468,7 +478,14 @@ export interface PsCardOpts {
 export function psCard(rows: PsRow[], opts: PsCardOpts = {}): object {
   const { confirmId, exitingSelf } = opts;
   const blocks: object[] = [
-    md(exitingSelf ? '👋 **本 bot 即将退出**' : `🖥 **Bot 进程** ×${rows.length}`, 'heading'),
+    md(
+      exitingSelf
+        ? '👋 **本 bot 即将退出**'
+        : rows.length > 0
+          ? `🖥 **Bot 进程** ×${rows.length}`
+          : '🖥 **Bot 进程**',
+      'heading',
+    ),
   ];
   if (exitingSelf) {
     blocks.push(md('_正在关闭本进程，此卡片将不再响应点击。_', 'notation'));
@@ -539,12 +556,16 @@ export function everyCard(rows: EveryRow[]): object {
   if (rows.length === 0) {
     return shell('📅 定时任务', [
       md('📅 **定时任务**', 'heading'),
+      md('_按固定间隔定期执行一条指令。_', 'notation'),
       md('暂无定时任务。'),
       md('_发 `/every <间隔> <指令>` 添加，间隔如 `30m`/`2h`/`1d`。_', 'notation'),
     ]);
   }
-  const elements: object[] = [md(`📅 **定时任务** ×${rows.length}`, 'heading')];
-  rows.forEach((row, i) => {
+  const elements: object[] = [
+    md(`📅 **定时任务** ×${rows.length}`, 'heading'),
+    md('_按固定间隔定期执行；展开可查看完整指令。_', 'notation'),
+  ];
+  rows.forEach((row) => {
     const promptTitle =
       row.prompt.length > PROMPT_TITLE_MAX
         ? `${row.prompt.slice(0, PROMPT_TITLE_MAX - 1)}…`
@@ -556,11 +577,12 @@ export function everyCard(rows: EveryRow[]): object {
         border: 'grey',
         elements: [
           md(codeFence(row.prompt)),
-          button({ text: '🗑 删除', value: { cmd: 'every.rm', arg: row.id }, style: 'danger' }),
+          ...inlineActions([
+            { text: '🗑 删除', value: { cmd: 'every.rm', arg: row.id }, style: 'danger' },
+          ]),
         ],
       }),
     );
-    if (i < rows.length - 1) elements.push({ tag: 'hr' });
   });
   elements.push(md('_发 `/every rm <id>` 也可以删除任务。_', 'notation'));
   return shell('📅 定时任务', elements);
@@ -583,7 +605,8 @@ export function compactCard(info: CompactInfo): object {
       info.tokensK !== undefined
         ? stackedPanels([
             panel([
-              md(`📏 会话 ≈**${info.tokensK}k** token · **${info.mb}** MB`),
+              md('**📏 会话大小**'),
+              md(`会话 ≈**${info.tokensK}k** token · **${info.mb}** MB`),
               md(`⏳ 预计 ≈${info.eta}（上限 ${info.cap}）`),
             ]),
           ])
@@ -601,6 +624,7 @@ export function compactCard(info: CompactInfo): object {
     return shell('❌ 压缩失败', [
       md('❌ **压缩失败**', 'heading'),
       ...(info.error ? [md(codeFence(info.error))] : []),
+      md('_可重发 `/compact` 重试，或先 `/status` 看会话大小。_', 'notation'),
     ]);
   }
   return shell('✅ 压缩完成', [
@@ -712,7 +736,7 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
   }
   const elements: object[] = [
     md(`${icon} ${title}`, 'heading'),
-    { tag: 'hr' },
+    md('_按顺序跑自检流水线；任一步失败会停下并保留日志。_', 'notation'),
     // column 必须包在 column_set 里（cardkit 11310 "unsupported type of
     // block: column"）——与 statusCard 的双面板同构。空 steps 时整个面板
     // 省略：空 column 会渲染成一个空的灰框。
@@ -721,15 +745,15 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
           {
             tag: 'column_set',
             flex_mode: 'none',
-            columns: [panel(steps)],
+            columns: [panel([md('**🛠 发布步骤**'), ...steps])],
           } as object,
         ]
       : []),
-    { tag: 'hr' },
   ];
   if (progress.phase === 'failed') {
     if (progress.failNote) elements.push(md(escapeMd(progress.failNote)));
     if (progress.output) elements.push(md(codeFence(progress.output)));
+    elements.push(md('_修好后重发 `/release`。_', 'notation'));
   } else if (progress.phase === 'success') {
     elements.push(md('_进程已发布并重启。_', 'notation'));
   } else if (progress.phase === 'restarting') {
@@ -804,7 +828,7 @@ export function restartCard(
         md(drainTimeoutNote(running, options.timeoutMs), 'notation'),
       ]);
     }
-    return shell('⏳ 等待在跑的会话收尾', [
+    return shell('等待收尾', [
       md(`⏳ **正在等待 ${running} 个在跑的会话收尾**`, 'heading'),
       md(
         `_${options.timeoutMs === undefined ? '' : `${drainEtaLabel(options.timeoutMs)}；`}收尾结束后立即重启服务。_`,
@@ -871,7 +895,7 @@ export interface TimeoutCardInfo {
 export function timeoutCard(info: TimeoutCardInfo): object {
   const elements: object[] = [
     md('⏱ **探活超时设置**', 'heading'),
-    { tag: 'hr' },
+    md('_当前会话的探活超时；不设则跟随全局。_', 'notation'),
     ...(info.notice ? [md(escapeMd(info.notice))] : []),
     md(info.current),
     md(info.global, 'notation'),
@@ -885,8 +909,8 @@ export function timeoutCard(info: TimeoutCardInfo): object {
         { text: '30 分钟', value: { cmd: 'timeout', arg: '30' } },
       ]),
       ...inlineActions([
-        { text: '关闭探活', value: { cmd: 'timeout', arg: 'off' }, style: 'danger' },
         { text: '回退全局', value: { cmd: 'timeout', arg: 'default' } },
+        { text: '关闭探活', value: { cmd: 'timeout', arg: 'off' }, style: 'danger' },
       ]),
       ...inlineActions([{ text: '取消', value: { cmd: 'timeout', arg: 'cancel' } }]),
     );
@@ -974,7 +998,9 @@ export function newSessionCard(info: NewSessionInfo): object {
         : '✅ **已重置上下文**',
       'heading',
     ),
-    ...(info.scopeNote ? [md(`_${escapeMd(info.scopeNote)}_`, 'notation')] : []),
+    ...(info.scopeNote
+      ? [md(`_${escapeMd(info.scopeNote)}_`, 'notation')]
+      : [md('_已开启新会话。_', 'notation')]),
     ...stackedPanels([
       panel([
         md('**🧩 环境**'),

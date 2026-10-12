@@ -250,7 +250,7 @@ describe('everyCard', () => {
     const card = everyCard([
       { id: 't1', interval: '30 分钟', nextRun: '14:00', prompt: long },
     ]) as EveryPanelCard;
-    const title = card.body.elements[1]?.header?.title.content ?? '';
+    const title = card.body.elements[2]?.header?.title.content ?? '';
     expect(title.endsWith('…')).toBe(true);
     const shown = title.slice(title.indexOf('— ') + 2);
     expect(shown).toBe(`${long.slice(0, 39)}…`);
@@ -264,7 +264,7 @@ describe('everyCard', () => {
     const card = everyCard([
       { id: 't1', interval: '1 天', nextRun: '09:00', prompt: exact },
     ]) as EveryPanelCard;
-    const title = card.body.elements[1]?.header?.title.content ?? '';
+    const title = card.body.elements[2]?.header?.title.content ?? '';
     expect(title).toContain(exact);
     expect(title.endsWith('…')).toBe(false);
   });
@@ -1056,5 +1056,91 @@ describe('releaseCard empty steps', () => {
     );
     expect(json).toContain('column_set');
     expect(json).toContain('✅ 构建');
+  });
+});
+
+describe('style pass — hr removal, summaries, notation', () => {
+  const hrCount = (card: object): number =>
+    (JSON.stringify(card).match(/"tag":"hr"/g) ?? []).length;
+
+  it('/release drops both decorative hrs and labels the step panel', () => {
+    const card = releaseCard({ steps: [{ name: 'build', status: 'ok' }], phase: 'running' });
+    expect(hrCount(card)).toBe(0);
+    expect(JSON.stringify(card)).toContain('**🛠 发布步骤**');
+  });
+
+  it('/release failed adds the retry next-step', () => {
+    const out = JSON.stringify(releaseCard({ steps: [], phase: 'failed', failNote: 'boom' }));
+    expect(out).toContain('修好后重发 `/release`');
+  });
+
+  it('/timeout drops the hr and puts the danger action last on its row', () => {
+    const card = timeoutCard({ current: '当前 session 探活: 15 分钟', global: '全局默认: 未启用' });
+    expect(hrCount(card)).toBe(0);
+    const json = JSON.stringify(card);
+    expect(json.indexOf('回退全局')).toBeLessThan(json.indexOf('关闭探活'));
+    expect(json).toContain('"type":"danger"');
+  });
+
+  it('/ws drops entry/trailing hrs but keeps a single boundary', () => {
+    expect(hrCount(workspacesCard('/repo', { a: '/repo', b: '/other' }))).toBe(1);
+  });
+
+  it('/ws confirm state hides the duplicate global cancel', () => {
+    const out = JSON.stringify(workspacesCard('/repo', { a: '/repo' }, 'a'));
+    expect(out.split('取消').length - 1).toBe(1);
+  });
+
+  it('/cd drops the hr before the actions', () => {
+    expect(hrCount(cwdChangedCard('/repo'))).toBe(0);
+  });
+
+  it('/every drops the between-entry hrs', () => {
+    const card = everyCard([
+      { id: 't1', interval: '1d', nextRun: '09:00', prompt: 'a' },
+      { id: 't2', interval: '2d', nextRun: '10:00', prompt: 'b' },
+    ]);
+    expect(hrCount(card)).toBe(0);
+  });
+
+  it('/ps keeps its single trailing boundary hr', () => {
+    const card = psCard([{ id: 'x', appId: 'cli_x', startedAgo: '1m', isCurrent: true }]);
+    expect(hrCount(card)).toBe(1);
+  });
+
+  it('/ps empty state drops the ×0 count', () => {
+    expect(JSON.stringify(psCard([]))).not.toContain('×0');
+  });
+
+  it('/new has a context notation when no scope note is given', () => {
+    const card = newSessionCard({ cwd: '/repo', idleLine: '未启用', wasRunning: false });
+    expect(JSON.stringify(card)).toContain('_已开启新会话。_');
+  });
+
+  it('/restart draining summary is a short phrase', () => {
+    const out = JSON.stringify(restartCard('draining', undefined, { runningCount: 2, timeoutMs: 60_000 }));
+    expect(out).toContain('"content":"等待收尾"');
+  });
+
+  it('/compact(started) labels the size panel and /compact(failed) adds a retry hint', () => {
+    const started = JSON.stringify(
+      compactCard({ phase: 'started', tokensK: '10', mb: '1.2', eta: '3s', cap: '100k' }),
+    );
+    expect(started).toContain('**📏 会话大小**');
+    expect(JSON.stringify(compactCard({ phase: 'failed', error: 'boom' }))).toContain(
+      '可重发 `/compact` 重试',
+    );
+  });
+
+  it('/exec summary matches the outcome instead of reusing 🖥', () => {
+    const card = execResultCard({
+      cmd: 'ls',
+      cwd: '/repo',
+      exitCode: 0,
+      output: 'x',
+      timedOut: false,
+      timeoutSeconds: 30,
+    });
+    expect(JSON.stringify(card)).not.toContain('🖥');
   });
 });

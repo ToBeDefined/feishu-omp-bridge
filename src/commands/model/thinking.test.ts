@@ -94,7 +94,7 @@ describe('/thinking 卡片', () => {
     // 「跟随默认」在，且预选/标题都是当前档位。
     expect(card).toContain(`"value":"${THINKING_FOLLOW_DEFAULT}"`);
     expect(card).toContain('"initial_option":"high"');
-    expect(card).toContain('当前：`high`');
+    expect(card).toContain('当前: `high`');
   });
 
   it('says the model has no thinking support when the cache entry has an empty thinking list', async () => {

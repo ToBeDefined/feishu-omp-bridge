@@ -142,7 +142,7 @@ describe('/config submit 与 access.owner', () => {
     );
     expect(card).toContain('归属者');
     expect(card).toContain('ou_3a4845d7ce8becd003e2728ab7774666');
-    expect(card).toContain('**归属者**(只读):`ou_3a4845d7ce8becd003e2728ab7774666`');
+    expect(card).toContain('**归属者**（只读）:`ou_3a4845d7ce8becd003e2728ab7774666`');
     // 只要这一行：不再带「为什么只读 / 怎么回落」的解释。
     expect(card).not.toContain('防远端提权');
     expect(card).not.toContain('admins 第一个');

@@ -79,12 +79,18 @@ describe('configFormCard', () => {
   });
 
   it('keeps 归属者 read-only (displayed, never a form field)', () => {
-    expect(markdown(configFormCard(OPTS))).toContain('**归属者**(只读):`ou_owner`');
+    expect(markdown(configFormCard(OPTS))).toContain('**归属者**（只读）:`ou_owner`');
     expect(fieldNames(configFormCard(OPTS))).not.toContain('owner');
   });
 
   it('uses no legacy action elements (buttons live in column_set rows)', () => {
     expect(JSON.stringify(configFormCard(OPTS))).not.toContain('"tag":"action"');
+  });
+
+  it('leads with a heading + context notation and no decorative hr', () => {
+    const json = JSON.stringify(configFormCard(OPTS));
+    expect(json).toContain('"content":"⚙️ **偏好设置**","text_size":"heading"');
+    expect(json).not.toContain('"tag":"hr"');
   });
 });
 
@@ -92,11 +98,19 @@ describe('configSavedCard', () => {
   it('summarizes every saved preference', () => {
     const md = markdown(configSavedCard({ ...OPTS, runIdleTimeoutMinutes: 15 }));
     expect(md).toContain('✅ **偏好已保存**');
-    expect(md).toContain('**消息回复方式**:交互卡片');
-    expect(md).toContain('**并发上限**:`10`');
-    expect(md).toContain('**run 探活**:`15 分钟`');
-    expect(md).toContain('**用户白名单**:2 项');
-    expect(md).toContain('**群白名单**:_(不限制)_');
+    expect(md).toContain('**消息回复方式**: 交互卡片');
+    expect(md).toContain('**并发上限**: `10`');
+    expect(md).toContain('**run 探活**: `15 分钟`');
+    expect(md).toContain('**用户白名单**: 2 项');
+    expect(md).toContain('**群白名单**: _(不限制)_');
+  });
+
+  it('uses a heading and grey panels', () => {
+    const json = JSON.stringify(configSavedCard(OPTS));
+    expect(json).toContain('"content":"✅ **偏好已保存**","text_size":"heading"');
+    expect(json).toContain('**⚙️ 偏好**');
+    expect(json).toContain('**🔒 访问控制**');
+    expect(json).toContain('"background_style":"grey"');
   });
 });
 

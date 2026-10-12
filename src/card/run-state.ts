@@ -207,6 +207,7 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
       };
 
     case 'ui_notice':
+      if (isSuppressedNotice(evt)) return state;
       return {
         ...state,
         blocks: [...closeStreamingText(state.blocks), { kind: 'text', content: noticeText(evt), streaming: false }],
@@ -275,6 +276,19 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
 function noticeText(evt: Extract<AgentEvent, { type: 'ui_notice' }>): string {
   const icon = evt.level === 'error' ? '⚠️' : evt.level === 'warning' ? '⚠️' : 'ℹ️';
   return `${icon} ${evt.message}`;
+}
+
+/**
+ * OMP announces host-tool mounting with a startup info notice
+ * (`ℹ️ xd://: mounted feishu_current_context, …`). It fires on every session
+ * start, carries nothing actionable, and ends up as the first line of the
+ * card after each `/release` or `/restart` — drop it. Warning/error notices
+ * with the same text are still shown.
+ */
+const MOUNT_NOTICE_RE = /^xd:\/\/: mounted\b/;
+
+function isSuppressedNotice(evt: Extract<AgentEvent, { type: 'ui_notice' }>): boolean {
+  return (evt.level ?? 'info') === 'info' && MOUNT_NOTICE_RE.test(evt.message.trim());
 }
 
 function updateStatus(statuses: Record<string, string>, key: string, text: string | undefined): Record<string, string> {

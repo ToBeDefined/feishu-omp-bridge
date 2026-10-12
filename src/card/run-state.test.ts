@@ -45,3 +45,38 @@ describe('thinking blocks interleave chronologically', () => {
     expect(last).toMatchObject({ kind: 'thinking', active: false, content: '推理中' });
   });
 });
+
+describe('mount notices are not rendered into the card', () => {
+  const MOUNT =
+    'xd://: mounted feishu_current_context, feishu_send_message, feishu_reply_message, feishu_get_message';
+  const notice = (message: string, level?: 'info' | 'warning' | 'error') =>
+    ({ type: 'ui_notice', message, level }) as Extract<AgentEvent, { type: 'ui_notice' }>;
+
+  it('drops the info mount notice and leaves streaming text untouched', () => {
+    const state = reduce(initialState, { type: 'text', delta: '回答中' });
+    const after = reduce(state, notice(MOUNT, 'info'));
+    expect(after.blocks).toHaveLength(1);
+    expect(after.blocks[0]).toMatchObject({ kind: 'text', content: '回答中', streaming: true });
+  });
+
+  it('drops it when OMP omits the level', () => {
+    const after = reduce(initialState, notice(MOUNT));
+    expect(after.blocks).toHaveLength(0);
+  });
+
+  it('keeps other info notices', () => {
+    const after = reduce(initialState, notice('model switched to futu/deepseek-v4.1-flash', 'info'));
+    expect(after.blocks).toHaveLength(1);
+    expect(after.blocks[0]).toMatchObject({ kind: 'text', content: 'ℹ️ model switched to futu/deepseek-v4.1-flash' });
+  });
+
+  it('keeps a warning/error with the same text, and text that merely mentions xd://', () => {
+    const warned = reduce(initialState, notice(MOUNT, 'warning'));
+    expect(warned.blocks).toHaveLength(1);
+    expect(warned.blocks[0]).toMatchObject({ kind: 'text', content: `⚠️ ${MOUNT}` });
+
+    const later = reduce(initialState, notice(`failed: ${MOUNT}`, 'info'));
+    expect(later.blocks).toHaveLength(1);
+    expect(later.blocks[0]).toMatchObject({ kind: 'text', content: `ℹ️ failed: ${MOUNT}` });
+  });
+});

@@ -349,6 +349,10 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Changed
+- **卡片不再显示 OMP 的工具挂载通告**（`ℹ️ xd://: mounted …`）：每次会话/重启都会打一次且无
+  可操作信息，之前会成为卡片首行。仅屏蔽 info 级且以该前缀开头的通告；warning/error 与
+  其它 info 通告照常显示（`src/card/run-state.ts` 的 `isSuppressedNotice`）。
+
 - **`kickstart-ambiguous` 日志降级为 info**：实测每次 kickstart 都会走这条（launchd 组杀
   连带把 launchctl 自己带走），属正常路径 —— 新 boot 注册即证明重启发生；保留
   `kickstart-ambiguous-survived` 的 warn（那才是真异常）。

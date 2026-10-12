@@ -5,6 +5,12 @@ import type { ChatModeCache } from './chat-mode-cache';
 import type { PendingQueue } from './pending-queue';
 import { resetsContext } from './intake';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
+import {
+  EXPIRED_INTERACTION_TEXT,
+  reply,
+  updateOrFallback,
+  withExpiryNotice,
+} from '../commands/shared';
 import { isChatAllowed, isUserAllowed } from '../config/schema';
 import { log } from '../core/logger';
 import type { SessionStore } from '../session/store';
@@ -75,24 +81,8 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     return;
   }
 
-  if (isOmpUiPayload(payload)) {
-    await respondToOmpUi(deps, payload, formValue, scope);
-    return;
-  }
-
-  // Agent-driven callback: the button was rendered by OMP via
-  // lark-cli, with `__codex_cb` set on the value. Forward the click back
-  // into the scope's pending queue so OMP resumes its session and sees
-  // the click as a follow-up message, with full context of what it sent.
-  if (AGENT_CALLBACK_MARKER in payload) {
-    await forwardToAgent(deps, payload, formValue, scope, threadId, mode);
-    return;
-  }
-
-  const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
-  if (!cmd) return;
-  log.info('cardAction', 'cmd', { cmd, scope });
-
+  // 三条路径（omp-ui / agent 回调 / 命令按钮）都要走同一个「合成上下文」：
+  // 用它可以发文本回执、做卡片兜底。放在分支前统一构造。
   const ctx: CommandContext = {
     channel: deps.channel,
     msg: makeFakeMsg(deps.evt, threadId, mode),
@@ -107,6 +97,24 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     fromCardAction: true,
   };
 
+  if (isOmpUiPayload(payload)) {
+    await respondToOmpUi(ctx, payload, formValue);
+    return;
+  }
+
+  // Agent-driven callback: the button was rendered by OMP via
+  // lark-cli, with `__codex_cb` set on the value. Forward the click back
+  // into the scope's pending queue so OMP resumes its session and sees
+  // the click as a follow-up message, with full context of what it sent.
+  if (AGENT_CALLBACK_MARKER in payload) {
+    await forwardToAgent(deps, ctx, payload, formValue);
+    return;
+  }
+
+  const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
+  if (!cmd) return;
+  log.info('cardAction', 'cmd', { cmd, scope });
+
   const { name, args } = resolveCardCommand(cmd, payload);
 
   try {
@@ -114,9 +122,13 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     if (ok === false) {
       log.warn('cardAction', 'unknown', { cmd });
     } else if (ok === 'denied') {
-      // Admin command silently denied — it did NOT run, so its side effects
-      // (like resetting the pending queue) must not fire either.
+      // Admin/owner command denied — it did NOT run, so its side effects
+      // (like resetting the pending queue) must not fire either. But the card
+      // keeps its buttons: without a receipt, tapping /ps「退出」or /every's
+      // 「🗑 删除」looks like the bot is dead. `denyIfUnauthorized` hands back
+      // a bare 'denied' for both gates, so the wording covers both.
       log.info('cardAction', 'denied-no-reset', { cmd, scope });
+      await reply(ctx, DENIED_CLICK_NOTICE);
     } else if (resetsContext(`/${name}`, args)) {
       // 与 intake 同语义：上下文切换类命令（卡片按钮 new / ws.use）成功后
       // 丢弃旧上下文的积压消息，防止其泄入新 session。
@@ -179,18 +191,42 @@ function rememberForwardedClick(messageId: string): boolean {
   return true;
 }
 
+/** 点到了管理员专属按钮、但操作者没有权限 —— 命令没跑，卡片不动，只回一句。 */
+const DENIED_CLICK_NOTICE = '⚠️ 该命令仅管理员可用，本次点击未执行。';
+/** 去重命中后的一次性回执（同一张卡只提示一次）。 */
+const DUPLICATE_CLICK_NOTICE = '⚠️ 该交互已提交过，本次重复点击已忽略。';
+
+/** 已经提示过「重复点击」的卡片：连点 / 双指双击会连发事件，只提示一次。 */
+const duplicateClickNotices = new Set<string>();
+
+function rememberDuplicateNotice(messageId: string): boolean {
+  if (duplicateClickNotices.has(messageId)) return false;
+  if (duplicateClickNotices.size >= FORWARDED_CLICK_CAP) {
+    const oldest = duplicateClickNotices.keys().next().value;
+    if (oldest) duplicateClickNotices.delete(oldest);
+  }
+  duplicateClickNotices.add(messageId);
+  return true;
+}
+
+/** 去重命中：给一次轻量可见信号（同一 messageId 只给一次，不刷屏）。 */
+async function noticeDuplicateClick(ctx: CommandContext): Promise<void> {
+  if (!rememberDuplicateNotice(ctx.msg.messageId)) return;
+  await reply(ctx, DUPLICATE_CLICK_NOTICE);
+}
+
 async function forwardToAgent(
   deps: CardDispatchDeps,
+  ctx: CommandContext,
   payload: Record<string, unknown>,
   formValue: Record<string, unknown> | undefined,
-  scope: string,
-  threadId: string | undefined,
-  mode: 'p2p' | 'group' | 'topic',
 ): Promise<void> {
   // One click per card: a second tap (double-tap, or an un-updated card)
-  // must not forward the same choice twice.
-  if (!rememberForwardedClick(deps.evt.messageId)) {
-    log.info('cardAction', 'duplicate-click', { messageId: deps.evt.messageId });
+  // must not forward the same choice twice — but say so once, or the tap
+  // looks like it did nothing at all.
+  if (!rememberForwardedClick(ctx.msg.messageId)) {
+    log.info('cardAction', 'duplicate-click', { messageId: ctx.msg.messageId });
+    await noticeDuplicateClick(ctx);
     return;
   }
 
@@ -198,13 +234,14 @@ async function forwardToAgent(
   const { [AGENT_CALLBACK_MARKER]: _marker, ...agentPayload } = payload;
   const merged = formValue ? { ...agentPayload, form_value: formValue } : agentPayload;
   log.info('cardAction', 'forward-agent', {
-    scope,
+    scope: ctx.scope,
     payload: JSON.stringify(merged).slice(0, 200),
   });
 
   // Reflect the choice on the card so the buttons stop being re-clickable.
   // Bridge-managed cards (feishu_send_card) update in place; externally
-  // sent cards (lark-cli) aren't managed, so the update silently no-ops.
+  // sent cards (lark-cli) aren't managed, so the update silently no-ops —
+  // those cards belong to whoever sent them, so no fallback patch here.
   const label = typeof deps.evt.action.name === 'string' && deps.evt.action.name.trim()
     ? deps.evt.action.name.trim()
     : undefined;
@@ -216,12 +253,12 @@ async function forwardToAgent(
   }
 
   const synthetic: NormalizedMessage = {
-    messageId: deps.evt.messageId,
-    chatId: deps.evt.chatId,
-    chatType: mode === 'p2p' ? 'p2p' : 'group',
-    threadId,
-    senderId: deps.evt.operator.openId,
-    senderName: deps.evt.operator.name,
+    messageId: ctx.msg.messageId,
+    chatId: ctx.msg.chatId,
+    chatType: ctx.msg.chatType,
+    threadId: ctx.msg.threadId,
+    senderId: ctx.msg.senderId,
+    senderName: ctx.msg.senderName,
     content: `[card-click] ${JSON.stringify(merged)}`,
     rawContentType: 'card_action',
     resources: [],
@@ -230,19 +267,19 @@ async function forwardToAgent(
     mentionedBot: false,
     createTime: Date.now(),
   };
-  deps.pending.push(scope, synthetic);
+  deps.pending.push(ctx.scope, synthetic);
 }
 
 async function respondToOmpUi(
-  deps: CardDispatchDeps,
+  ctx: CommandContext,
   payload: Record<string, unknown>,
   formValue: Record<string, unknown> | undefined,
-  scope: string,
 ): Promise<void> {
   // One click per card, same as the agent-callback path: a double-tap (or an
   // un-updated card) must not deliver two UI responses to OMP.
-  if (!rememberForwardedClick(deps.evt.messageId)) {
-    log.info('cardAction', 'duplicate-click', { messageId: deps.evt.messageId, path: 'omp-ui' });
+  if (!rememberForwardedClick(ctx.msg.messageId)) {
+    log.info('cardAction', 'duplicate-click', { messageId: ctx.msg.messageId, path: 'omp-ui' });
+    await noticeDuplicateClick(ctx);
     return;
   }
 
@@ -252,10 +289,10 @@ async function respondToOmpUi(
   // Only trust a payload-supplied scope when it provably belongs to the
   // clicked chat — the plain chatId, or a topic scope `chatId:threadId`.
   // A forged value could otherwise answer another chat's pending UI request.
-  const chatId = deps.evt.chatId;
+  const chatId = ctx.msg.chatId;
   const claimed = typeof payload.scope === 'string' ? payload.scope : '';
-  const targetScope = claimed === chatId || claimed.startsWith(`${chatId}:`) ? claimed : scope;
-  const submitted = Boolean(requestId && response && deps.activeRuns.respondToUi(targetScope, requestId, response));
+  const targetScope = claimed === chatId || claimed.startsWith(`${chatId}:`) ? claimed : ctx.scope;
+  const submitted = Boolean(requestId && response && ctx.activeRuns.respondToUi(targetScope, requestId, response));
   const status = submitted
     ? response && 'cancelled' in response
       ? 'cancelled'
@@ -263,12 +300,18 @@ async function respondToOmpUi(
     : 'unavailable';
 
   log.info('cardAction', 'omp-ui', { scope: targetScope, requestId, submitted, status });
+  const resultCard = renderOmpUiResultCard(title, status);
   try {
-    await updateManagedCard(deps.channel, deps.evt.messageId, renderOmpUiResultCard(title, status));
+    await updateManagedCard(ctx.channel, ctx.msg.messageId, resultCard);
   } catch (err) {
+    // 卡片不在托管表里（重启前发出的老卡片、bridge 之外发的卡片）→ CardKit
+    // 更新必然失败。此时只记日志的话，用户看到的就是「点了没反应」，而且这张
+    // 卡再点还会被去重吞掉。兜底：patch 成终态卡（按钮消失 + 已过期说明），
+    // patch 也失败就回一句 —— 但绝不再动 OMP 那边，回答已经送出去了。
     log.fail('cardAction', err, { step: 'omp-ui-update', requestId });
+    await updateOrFallback(ctx, withExpiryNotice(resultCard), EXPIRED_INTERACTION_TEXT);
   } finally {
-    forgetManagedCard(deps.evt.messageId);
+    forgetManagedCard(ctx.msg.messageId);
   }
 }
 

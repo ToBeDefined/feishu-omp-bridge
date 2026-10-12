@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { formatIdleLine } from './shared';
+import { EXPIRED_INTERACTION_TEXT, formatIdleLine, withExpiryNotice } from './shared';
 import { codeSpan, summarize, summarizeMd } from '../utils/text';
+import type { RunCard } from '../card/run-renderer';
 
 describe('summarize', () => {
   it('returns empty for empty input', () => {
@@ -52,6 +53,31 @@ describe('codeSpan', () => {
 
   it('passes through clean values unchanged', () => {
     expect(codeSpan('hello world')).toBe('hello world');
+  });
+});
+
+describe('withExpiryNotice', () => {
+  it('appends one expiry line and keeps every element of the original card', () => {
+    const card: RunCard = {
+      schema: '2.0',
+      config: { summary: { content: 'OMP 交互已处理' } },
+      body: { elements: [{ tag: 'markdown', content: '✅ 已提交给 OMP。' }] },
+    };
+    expect(withExpiryNotice(card)).toEqual({
+      schema: '2.0',
+      config: { summary: { content: 'OMP 交互已处理' } },
+      body: {
+        elements: [
+          { tag: 'markdown', content: '✅ 已提交给 OMP。' },
+          { tag: 'markdown', content: `_${EXPIRED_INTERACTION_TEXT}_` },
+        ],
+      },
+    });
+  });
+
+  it('leaves a shape it cannot extend untouched', () => {
+    const notACard = { schema: '2.0', body: {} };
+    expect(withExpiryNotice(notACard)).toBe(notACard);
   });
 });
 

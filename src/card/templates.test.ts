@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { resumeSavedCard } from './model-card';
 import type { RunCard } from './run-renderer';
 import {
+  agentSelectedCard,
   compactCard,
   cwdChangedCard,
   everyCard,
@@ -19,6 +20,7 @@ import {
   releaseCard,
   restartCard,
   shell,
+  staleNoticeCard,
   statusCard,
   type ContextInfo,
   workspacesCard,
@@ -130,6 +132,11 @@ describe('compactCard', () => {
   });
 });
 
+/** every 卡的元素 0 是标题，之后每个任务一个 collapsible_panel。 */
+interface EveryPanelCard {
+  body: { elements: Array<{ tag: string; header?: { title: { content: string } } }> };
+}
+
 describe('everyCard', () => {
   it('lists tasks with delete buttons and the full prompt', () => {
     const out = JSON.stringify(
@@ -150,6 +157,30 @@ describe('everyCard', () => {
     const out = JSON.stringify(everyCard([]));
     expect(out).not.toContain('×');
     expect(out).toContain('暂无定时任务');
+  });
+
+  it('截断过长的 prompt：补省略号，含省略号共 40 字', () => {
+    const long = '一二三四五六七八九十'.repeat(6);
+    const card = everyCard([
+      { id: 't1', interval: '30 分钟', nextRun: '14:00', prompt: long },
+    ]) as EveryPanelCard;
+    const title = card.body.elements[1]?.header?.title.content ?? '';
+    expect(title.endsWith('…')).toBe(true);
+    const shown = title.slice(title.indexOf('— ') + 2);
+    expect(shown).toBe(`${long.slice(0, 39)}…`);
+    expect(shown).toHaveLength(40);
+    // 完整指令仍留在面板里的代码块（标题只是摘要）。
+    expect(JSON.stringify(card)).toContain(long);
+  });
+
+  it('不截断刚好 40 字的 prompt（也就不会多出省略号）', () => {
+    const exact = '甲'.repeat(40);
+    const card = everyCard([
+      { id: 't1', interval: '1 天', nextRun: '09:00', prompt: exact },
+    ]) as EveryPanelCard;
+    const title = card.body.elements[1]?.header?.title.content ?? '';
+    expect(title).toContain(exact);
+    expect(title.endsWith('…')).toBe(false);
   });
 });
 
@@ -180,26 +211,67 @@ describe('psCard', () => {
 describe('execResultCard', () => {
   it('renders success with collapsed output and the command line', () => {
     const out = JSON.stringify(
-      execResultCard({ cmd: 'pnpm test', exitCode: 0, output: 'all green', timedOut: false, timeoutSeconds: 30 }),
+      execResultCard({ cmd: 'pnpm test', cwd: '/repo/app', exitCode: 0, output: 'all green', timedOut: false, timeoutSeconds: 30 }),
     );
     expect(out).toContain('命令执行完成');
     expect(out).toContain('$ pnpm test');
+    // 执行目录单独一行：命令在哪跑的，是失败排查的第一现场。
+    expect(out).toContain('📁 `/repo/app`');
     expect(out).toContain('"expanded":false');
     expect(out).toContain('all green');
   });
 
+  it('shortens a deep cwd in the exec card', () => {
+    const out = JSON.stringify(
+      execResultCard({
+        cmd: 'pwd',
+        cwd: '/Users/somebody/very/deep/nested/project/dir',
+        exitCode: 0,
+        output: '/x',
+        timedOut: false,
+        timeoutSeconds: 30,
+      }),
+    );
+    expect(out).toContain('📁 `…');
+    expect(out).not.toContain('/Users/somebody/very/deep');
+  });
+
   it('expands output and marks failure on non-zero exit', () => {
     const out = JSON.stringify(
-      execResultCard({ cmd: 'boom', exitCode: 2, output: 'err', timedOut: false, timeoutSeconds: 30 }),
+      execResultCard({ cmd: 'boom', cwd: '/repo', exitCode: 2, output: 'err', timedOut: false, timeoutSeconds: 30 }),
     );
     expect(out).toContain('命令失败**（退出码 2）');
     expect(out).toContain('"expanded":true');
     expect(out).toContain('"color":"red"');
   });
 
+  it('names the reason it could not run, not just 无法执行', () => {
+    const out = JSON.stringify(
+      execResultCard({
+        cmd: 'ls',
+        cwd: '/gone',
+        exitCode: null,
+        output: '',
+        timedOut: false,
+        timeoutSeconds: 30,
+        reason: '执行目录不存在',
+      }),
+    );
+    expect(out).toContain('无法执行**：执行目录不存在');
+    expect(out).toContain('📁 `/gone`');
+    expect(out).not.toContain('原因未知');
+  });
+
+  it('falls back to 原因未知 when the caller has none', () => {
+    const out = JSON.stringify(
+      execResultCard({ cmd: 'ls', cwd: '/repo', exitCode: null, output: '', timedOut: false, timeoutSeconds: 30 }),
+    );
+    expect(out).toContain('无法执行**：原因未知');
+  });
+
   it('marks timeouts and empty output', () => {
     const out = JSON.stringify(
-      execResultCard({ cmd: 'sleep 100', exitCode: null, output: '', timedOut: true, timeoutSeconds: 30 }),
+      execResultCard({ cmd: 'sleep 100', cwd: '/repo', exitCode: null, output: '', timedOut: true, timeoutSeconds: 30 }),
     );
     expect(out).toContain('执行超时**（30s）');
     expect(out).toContain('无输出');
@@ -218,6 +290,28 @@ describe('shared card kit', () => {
       tag: 'column_set',
     });
     expect(inlineRow([{ element: md('go') }])[0]).toMatchObject({ tag: 'column_set' });
+  });
+
+  it('staleNoticeCard 带 summary：通知/会话列表预览不是空灰块', () => {
+    const card = staleNoticeCard();
+    expect(card).toMatchObject({
+      schema: '2.0',
+      config: { update_multi: true, summary: { content: '⚠️ 卡片已过期' } },
+    });
+    expect(JSON.stringify(card)).toContain('此卡片已过期');
+    // 过期卡不残留任何可点的按钮。
+    expect(JSON.stringify(card)).not.toContain('"button"');
+  });
+
+  it('agentSelectedCard 的 summary 与正文同样转义', () => {
+    const card = agentSelectedCard('a*b_c') as {
+      config: { summary: { content: string } };
+      body: { elements: Array<{ content: string }> };
+    };
+    const safe = 'a\\*b\\_c';
+    expect(card.config.summary.content).toBe(`✅ 已选择 ${safe}`);
+    expect(card.config.summary.content).not.toContain('a*b');
+    expect(card.body.elements[0]?.content).toBe(`✅ 已选择：**${safe}**`);
   });
 
   it('lays parallel actions side by side, cancel full width underneath', () => {
@@ -427,6 +521,18 @@ describe('session id rendering', () => {
   });
 });
 
+/** help 卡：元素 0 是标题，之后每个分组一个 collapsible_panel。 */
+interface HelpPanelCard {
+  body: {
+    elements: Array<{
+      tag: string;
+      expanded?: boolean;
+      header: { title: { content: string } };
+      elements?: Array<{ content?: string }>;
+    }>;
+  };
+}
+
 describe('helpCard', () => {
   it('groups commands into collapsible category panels', () => {
     const card = helpCard();
@@ -445,6 +551,7 @@ describe('helpCard', () => {
       '/timeout',
       '/model',
       '/thinking',
+      '/think',
       '/account',
       '/cd',
       '/ws',
@@ -459,12 +566,57 @@ describe('helpCard', () => {
       '/search',
       '/context',
       '/status',
+      '/session',
+      '/diff',
+      '/every',
     ]) {
       expect(out).toContain(cmd);
     }
-    // One collapsible panel per category, all collapsed by default.
+    // One collapsible panel per category.
     expect(out.match(/"tag":"collapsible_panel"/g)).toHaveLength(5);
-    expect(out.match(/"expanded":false/g)?.length).toBeGreaterThanOrEqual(5);
+    expect(out.match(/"expanded":(true|false)/g)).toHaveLength(5);
+  });
+
+  it('默认展开「会话管理」与「运行控制」，其余分组保持折叠', () => {
+    const card = helpCard();
+    const out = JSON.stringify(card);
+    // 全折叠时 /help 只剩 5 行标题，用户看不到任何命令 —— 至少这两组要摊开。
+    expect(out.match(/"expanded":true/g)).toHaveLength(2);
+    expect(out.match(/"expanded":false/g)).toHaveLength(3);
+
+    const card2 = helpCard() as HelpPanelCard;
+    const panels = card2.body.elements.filter((el) => el.tag === 'collapsible_panel');
+    const expandedTitles = panels
+      .filter((el) => el.expanded === true)
+      .map((el) => el.header.title.content);
+    expect(expandedTitles).toHaveLength(2);
+    expect(expandedTitles.some((t) => t.includes('会话管理'))).toBe(true);
+    expect(expandedTitles.some((t) => t.includes('运行控制'))).toBe(true);
+    // 默认展开的分组里必须真的看得到命令，否则展开没意义。
+    const session = panels.find((el) => el.header.title.content.includes('会话管理'));
+    expect(JSON.stringify(session)).toContain('/session');
+    const run = panels.find((el) => el.header.title.content.includes('运行控制'));
+    expect(JSON.stringify(run)).toContain('/stop');
+  });
+
+  it('把 /session /diff /every /think 补进对应分组', () => {
+    const card = helpCard() as HelpPanelCard;
+    const panels = card.body.elements.filter((el) => el.tag === 'collapsible_panel');
+    const groupsOf = (cmd: string) =>
+      panels
+        .filter((el) => JSON.stringify(el).includes(cmd))
+        .map((el) => el.header.title.content);
+    expect(groupsOf('/session')).toEqual([expect.stringContaining('会话管理')]);
+    expect(groupsOf('/diff')).toEqual([expect.stringContaining('会话管理')]);
+    expect(groupsOf('/every')).toEqual([expect.stringContaining('进程与诊断')]);
+
+    const pref = panels.find((el) => el.header.title.content.includes('偏好设置'));
+    // `/think` 与 `/thinking` 是同一个 handler：必须落在**同一行**，用户才知道是别名。
+    const lines = (pref?.elements?.[0]?.content ?? '').split('\n');
+    expect(lines.some((l) => l.includes('/thinking') && l.includes('/think'))).toBe(true);
+    expect(
+      panels.filter((el) => el.header.title.content.includes('偏好设置')),
+    ).toHaveLength(1);
   });
 });
 

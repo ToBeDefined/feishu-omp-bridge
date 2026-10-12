@@ -367,11 +367,23 @@ function noteCard(content: string): object {
 export function stripRunningState(card: object): object {
   const elements = (card as { body?: { elements?: unknown[] } }).body?.elements;
   const list = Array.isArray(elements) ? elements : [];
-  const kept = list.filter((el) => !isRunningStateElement(el));
+  const dropped = new Set<number>();
+  list.forEach((el, i) => {
+    if (!isRunningStateElement(el)) return;
+    dropped.add(i);
+    // 控制区（状态 + ⏹）上方那条 `hr` 是**它自己的**分隔线（见 run-renderer 的
+    // 运行态拼装）。控制行被剥掉后它就成了悬空线，和下面补的中断注记 `---` 叠成
+    // 双线 —— 一并去掉。只认紧邻上方那一条：正文自己的 hr 不动。
+    const above = i > 0 ? list[i - 1] : undefined;
+    if (typeof above === 'object' && above !== null && 'tag' in above && above.tag === 'hr') {
+      dropped.add(i - 1);
+    }
+  });
+  const kept = list.filter((_el, i) => !dropped.has(i));
   // 卡片已经处于**终态**（有内容，且没有任何运行态元素被剥掉）时不要再贴
   // 「进程中断」：run 已经跑完、只是崩溃恢复记录没来得及删的卡片，贴上去就是
   // 误报（用户看到一条完整的回复被标成"中断"）。
-  const finished = list.length > 0 && kept.length === list.length;
+  const finished = list.length > 0 && dropped.size === 0;
   if (finished) {
     return { schema: '2.0', config: { update_multi: true }, body: { elements: kept } };
   }

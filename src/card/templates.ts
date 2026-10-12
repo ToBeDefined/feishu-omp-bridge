@@ -366,26 +366,35 @@ export function diffCard(cwd: string, stat: string, diff: string): object {
 
 export interface ExecResultInfo {
   cmd: string;
+  /** 执行目录（命令就在这里跑）：卡上单独一行，失败时也是排查的第一现场。 */
+  cwd: string;
   exitCode: number | null;
   output: string;
   timedOut: boolean;
   /** For the timeout title, e.g. 30. */
   timeoutSeconds: number;
+  /** 没有退出码时的原因（目录不存在 / spawn 失败 / 被信号终止）；缺失时才
+   *  退回笼统的「未知原因」。 */
+  reason?: string;
 }
 
 /** /exec result: outcome heading + the command + collapsed output panel. */
 export function execResultCard(info: ExecResultInfo): object {
   const ok = !info.timedOut && info.exitCode === 0;
+  // 失败时只写「无法执行」等于把排查线索丢掉：把原因（目录不存在 / spawn 失败 /
+  // 被信号终止）明写进标题。`reason` 是调用方拼好的中文短语，仍按不可信文本转义。
+  const failReason = escapeMd(info.reason?.trim() || '原因未知');
   const title = info.timedOut
     ? `⏱ **执行超时**（${info.timeoutSeconds}s），已终止`
     : info.exitCode === null
-      ? '❌ **无法执行**'
+      ? `❌ **无法执行**：${failReason}`
       : ok
         ? '✅ **命令执行完成**'
         : `❌ **命令失败**（退出码 ${info.exitCode}）`;
   const elements: object[] = [
     md(title, 'heading'),
     md(`\`$ ${escapeCode(info.cmd)}\``, 'notation'),
+    md(`📁 \`${escapeCode(shortPath(info.cwd))}\``, 'notation'),
   ];
   if (info.output.trim()) {
     elements.push(
@@ -445,6 +454,10 @@ export interface EveryRow {
   prompt: string;
 }
 
+/** 标题里的 prompt 只是一行摘要：**含省略号**总长 40 字符（中文按字符计）。完整
+ *  指令在面板里的代码块，所以这里宁可截断也不要糊掉截断点。 */
+const PROMPT_TITLE_MAX = 40;
+
 export function everyCard(rows: EveryRow[]): object {
   if (rows.length === 0) {
     return shell('📅 定时任务', [
@@ -455,9 +468,13 @@ export function everyCard(rows: EveryRow[]): object {
   }
   const elements: object[] = [md(`📅 **定时任务** ×${rows.length}`, 'heading')];
   rows.forEach((row, i) => {
+    const promptTitle =
+      row.prompt.length > PROMPT_TITLE_MAX
+        ? `${row.prompt.slice(0, PROMPT_TITLE_MAX - 1)}…`
+        : row.prompt;
     elements.push(
       collapsiblePanel({
-        title: `⏱ **每 ${escapeMd(row.interval)}** · ${escapeMd(row.nextRun)} — ${escapeMd(row.prompt.slice(0, 40))}`,
+        title: `⏱ **每 ${escapeMd(row.interval)}** · ${escapeMd(row.nextRun)} — ${escapeMd(promptTitle)}`,
         expanded: false,
         border: 'grey',
         elements: [
@@ -610,7 +627,8 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
 export function staleNoticeCard(): object {
   return {
     schema: '2.0',
-    config: { update_multi: true },
+    // 没有 summary 时通知栏/会话列表预览是空灰块，看不出这张卡说了什么。
+    config: { update_multi: true, summary: { content: '⚠️ 卡片已过期' } },
     body: {
       elements: [
         { tag: 'markdown', content: '_⚠️ 此卡片已过期，请使用最新发出的卡片。_' },
@@ -651,10 +669,12 @@ export function restartCard(
 /** Response card after an agent-authored choice button click: the choice,
  * frozen, no buttons. */
 export function agentSelectedCard(label: string): object {
+  // 两处渲染的是同一段不可信文本（agent 自己写的选项名），转义方式必须一致。
+  const safe = escapeMd(label);
   return {
     schema: '2.0',
-    config: { summary: { content: `✅ 已选择 ${label}` } },
-    body: { elements: [{ tag: 'markdown', content: `✅ 已选择：**${escapeMd(label)}**` }] },
+    config: { summary: { content: `✅ 已选择 ${safe}` } },
+    body: { elements: [{ tag: 'markdown', content: `✅ 已选择：**${safe}**` }] },
   };
 }
 
@@ -682,6 +702,8 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
         '/history [all] · /sessions',
         '历史会话清单，「继续对话」一键恢复；不带参数的 /resume 也走这里',
       ],
+      ['/session [会话 id]', '会话清单；带 id / id 前缀直接恢复某条会话'],
+      ['/diff', '查看当前会话目录未提交的改动（git diff）'],
     ],
   },
   {
@@ -690,7 +712,7 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
       ['/config', '回复方式、工具调用显示等偏好'],
       ['/timeout [N|off|default]', '当前会话探活分钟数'],
       ['/model [id|reset]', '查看 / 切换模型'],
-      ['/thinking [level|reset]', '思考强度（off~max）'],
+      ['/thinking · /think [level|reset]', '思考强度（off~max）'],
       ['/account', '查看 / 更换应用凭据并重连'],
     ],
   },
@@ -716,10 +738,15 @@ const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [
       ['/exit <id|#>', '关闭指定 bot'],
       ['/doctor [描述]', '日志 + 描述交给 OMP 自助诊断'],
       ['/exec <命令> · /run', '在当前 cwd 执行 shell（admin）'],
+      ['/every <间隔> <指令>', '定时任务：定期执行；`list` 查看，`rm <id>` 删除'],
       ['/release [force]', '自发布：typecheck→test→build→重启；force 跳过排空'],
     ],
   },
 ];
+
+/** 默认展开的分组：最常用的两组。全折叠时 `/help` 只剩 5 行标题，用户看不到
+ *  任何命令，等于没有速查。 */
+const HELP_EXPANDED_GROUPS: readonly string[] = ['🗂 会话管理', '⏯ 运行控制'];
 
 export interface NewSessionInfo {
   cwd: string;
@@ -761,12 +788,12 @@ export function newSessionCard(info: NewSessionInfo): object {
 export function helpCard(): object {
   const elements: object[] = [md('💡 **命令速查**', 'heading')];
   // Each category collapses to one row — the card stays short; open a group
-  // to read its commands.
+  // to read its commands. 会话管理 / 运行控制 默认展开：其余分组折叠，卡片仍然短。
   HELP_GROUPS.forEach((group) => {
     elements.push(
       collapsiblePanel({
         title: `**${group.title}**`,
-        expanded: false,
+        expanded: HELP_EXPANDED_GROUPS.includes(group.title),
         border: 'grey',
         elements: [
           md(group.items.map(([cmd, desc]) => `\`${cmd}\` — ${desc}`).join('\n')),

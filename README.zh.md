@@ -510,6 +510,9 @@ feishu://message/<message_id>
 
 - `feishu-omp-bridge release`：`typecheck → test → build` 全过才重启；任一步失败**不重启**，
   旧进程继续服务（不存在"带病上线"）。
+- **排空差异**：聊天里的 `/release`、`/restart` 会先等在跑的 run 收尾（上限 5 分钟），
+  不会把正在回答的提问切断；而 CLI 的 `feishu-omp-bridge release` / `restart` 看不到
+  那些内存中的 run（独立进程），会立即重启 —— 有 run 在跑时优先用聊天里的 `/release`。
 - `feishu-omp-bridge rollback [sha]`：**发布后运行时才发现坏掉**时用（故意做成 CLI 命令，
   因为此时 bot 可能已经无法接收聊天命令）。默认目标是自愈状态里的 `lastGoodSha`，没有则
   `HEAD~1`；执行顺序：脏工作区直接拒绝 → `git revert --no-commit <target>..HEAD` + 一条

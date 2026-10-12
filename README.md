@@ -240,6 +240,11 @@ feishu-omp-bridge rollback          # target = lastGoodSha from the self-heal st
 feishu-omp-bridge rollback <sha>    # or an explicit commit/ref
 ```
 
+> **Drain difference:** the in-chat `/release` and `/restart` first wait for in-flight runs to
+> finish (up to 5 minutes) so an active request is not cut off mid-answer. The CLI
+> `feishu-omp-bridge release` / `restart` cannot see those in-memory runs (separate process), so
+> they bounce the daemon immediately — prefer `/release` in chat when a run is active.
+
 What it does, in order: refuses to run on a dirty worktree → `git revert --no-commit
 <target>..HEAD` + one revert commit (**history is never rewritten**) → runs the same
 typecheck/test/build gate as `release` → clears the boot circuit breaker → restarts the daemon.

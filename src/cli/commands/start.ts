@@ -419,7 +419,10 @@ export async function runStart(opts: StartOptions): Promise<void> {
           // followed by a healthy relaunch 2s later). The pending SIGTERM
           // will stop this process; only reconnect in-process if it never
           // arrives.
-          log.warn('restart', 'kickstart-ambiguous', { signal: result.signal });
+          // 每次 kickstart 都走这里（launchd 的组杀会连带把 launchctl 自己带走），
+          // 属**正常**路径：下一条日志/新 boot 注册即证明重启确实发生。用 info，
+          // 免得 warn 级别的常规噪声掩盖真正的异常。
+          log.info('restart', 'kickstart-ambiguous', { signal: result.signal });
           const fallback = setTimeout(() => {
             if (stopping) return; // SIGTERM landed; graceful stop is in flight
             log.warn('restart', 'kickstart-ambiguous-survived');

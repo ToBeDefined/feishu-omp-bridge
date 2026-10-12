@@ -329,6 +329,13 @@
     stderr 尾部做截断（保留末尾 2000 字符，具体错误行在最后），
     避免 Bun 源码帧噪音把卡片撑爆。
 
+### Changed
+- **`kickstart-ambiguous` 日志降级为 info**：实测每次 kickstart 都会走这条（launchd 组杀
+  连带把 launchctl 自己带走），属正常路径 —— 新 boot 注册即证明重启发生；保留
+  `kickstart-ambiguous-survived` 的 warn（那才是真异常）。
+- README（中英）补「排空差异」说明：聊天 `/release`、`/restart` 会等在跑的 run 收尾，
+  CLI `release`/`restart` 看不到内存中的 run，会立即重启，有 run 在跑时优先用聊天命令。
+
 ### Added
 - **`feishu-omp-bridge rollback [sha]`**：发布后运行时才发现坏掉时的救回通道（故意做成
   CLI 命令 —— 此时 bot 可能已无法接收聊天命令）。默认目标取自自愈状态里的 `lastGoodSha`，

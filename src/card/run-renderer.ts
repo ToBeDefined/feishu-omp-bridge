@@ -318,10 +318,10 @@ function resultRow(state: RunState): object | undefined {
   return undefined;
 }
 
-/** 运行态状态行：agent 在干什么 + 已用时长（示例：`🧠 正在思考 · ⏱1 分 32 秒`）。 */
+/** 运行态状态行：agent 在干什么 + 已用时长（示例：`🧠 正在思考 · ⏱ 1 分 32 秒`）。 */
 function statusLine(state: RunState, now: number): string {
   return (
-    [footerLabel(state.footer), elapsedText(state, now)].filter(Boolean).join(' · ') || '⏱运行中'
+    [footerLabel(state.footer), elapsedText(state, now)].filter(Boolean).join(' · ') || '⏱ 运行中'
   );
 }
 
@@ -347,11 +347,11 @@ function footerLabel(status: FooterStatus): string | undefined {
   }
 }
 
-/** `⏱12.4s`（或 `⏱1 分 31 秒`）—— run 的墙钟。状态没带起跑时刻时返回 undefined
+/** `⏱ 12.4s`（或 `⏱ 1 分 31 秒`）—— run 的墙钟。状态没带起跑时刻时返回 undefined
  *  （`/doctor` 这类合成 run 复用 `initialState`），脚注就不写时长，而不是假的 0s。 */
 function elapsedText(state: RunState, now: number): string | undefined {
   if (state.startedAt === undefined) return undefined;
-  return `⏱${formatDuration(Math.max(0, (state.endedAt ?? now) - state.startedAt))}`;
+  return `⏱ ${formatDuration(Math.max(0, (state.endedAt ?? now) - state.startedAt))}`;
 }
 
 /** 12.4s under a minute; 1 分 5 秒 past it. Exported so callers that build

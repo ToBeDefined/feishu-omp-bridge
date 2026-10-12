@@ -567,6 +567,30 @@ describe('renderCard', () => {
     expect(longMarkdown(elements, 'B 的结论')).toBeDefined();
   });
 
+  it('只有思考时：一个「🧠 思考过程」面板、不带计数，也不出现「工具 ×0」', () => {
+    // 曾经多段思考会走合并行，渲染成「🧠 思考 ×2 · 🛠 工具 ×0」—— 缺的那一侧
+    // 凭空出现一个 0，用户明确要求只有思考时不要 ×N。
+    const state = { ...longRunState(0), terminal: 'done' as const, footer: null };
+    state.blocks.push({ kind: 'thinking', content: '第一段', active: false });
+    state.blocks.push({ kind: 'thinking', content: '第二段', active: false });
+    const card = renderCard(state);
+    const titles = cardElements(card)
+      .filter(
+        (e): e is Record<string, unknown> =>
+          typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'collapsible_panel',
+      )
+      .map((p) => (p.header as { title: { content: string } }).title.content);
+    expect(titles[0]).toBe('🧠 **思考过程**'); // 外层分组，无计数
+    const json = JSON.stringify(card);
+    expect(json).not.toContain('思考** ×');
+    expect(json).not.toContain('工具'); // 没有工具就不该提「工具」
+
+    // 只在工具时相反：保留全称与计数。
+    const toolsOnly = { ...longRunState(0), terminal: 'done' as const, footer: null };
+    toolsOnly.blocks.push({ kind: 'tool', tool: tool(1) }, { kind: 'tool', tool: tool(2) });
+    expect(JSON.stringify(renderCard(toolsOnly))).toContain('🛠 **工具调用** ×2');
+  });
+
   it('renders subagent lifecycle lines', () => {
     const state = longRunState(0);
     state.subagents = [

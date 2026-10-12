@@ -201,9 +201,18 @@ function collectOps(blocks: Block[]): RenderOp[] {
  * of stacking three separate rows).
  */
 function renderProcessRun(items: ProcessItem[], tables: TableBudget): object {
-  const only = items.length === 1 ? items[0] : undefined;
-  if (only?.kind === 'tools') return toolGroupPanel(only.tools);
-  if (only?.kind === 'thinking') return reasoningPanel(only.content, only.active, tables);
+  const tools = items.flatMap((it) => (it.kind === 'tools' ? it.tools : []));
+  const thoughts = items.filter((it) => it.kind === 'thinking');
+  // 只有工具 / 只有思考都**不能**走下面的合并行：缺的那一侧会渲染成「×0」
+  // （只有思考时曾出现「🧠 思考 ×2 · 🛠 工具 ×0」）。只有思考时也不带计数
+  // —— 用户明确要求「只有思考时不存在 ×N」。
+  if (tools.length === 0) {
+    const only = thoughts[0];
+    return thoughts.length === 1 && only
+      ? reasoningPanel(only.content, only.active, tables)
+      : thinkingGroupPanel(thoughts, tables);
+  }
+  if (thoughts.length === 0) return toolGroupPanel(tools);
 
   const toolCount = items.reduce((n, it) => (it.kind === 'tools' ? n + it.tools.length : n), 0);
   const thinkingCount = items.reduce((n, it) => (it.kind === 'thinking' ? n + 1 : n), 0);
@@ -250,6 +259,21 @@ function subagentLines(entries: SubagentEntry[]): string[] {
       case 'aborted':
         return `⏹ 子代理 \`${label}\`${desc} _已中止_`;
     }
+  });
+}
+
+/** Outer「🧠 思考过程」group: several consecutive thinking segments collapsed
+ *  into one row. **不带 ×N** —— 只有思考时用户要求不出现计数（`active` 时段落
+ *  仍在生成，标题沿用「思考中…」）。 */
+function thinkingGroupPanel(
+  thoughts: Array<{ content: string; active: boolean }>,
+  tables: TableBudget,
+): object {
+  return collapsiblePanel({
+    title: thoughts.some((t) => t.active) ? '🧠 **思考中…**' : '🧠 **思考过程**',
+    expanded: false,
+    border: 'grey',
+    elements: thoughts.map((t) => reasoningPanel(t.content, t.active, tables)),
   });
 }
 

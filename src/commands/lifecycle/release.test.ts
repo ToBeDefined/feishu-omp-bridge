@@ -5,6 +5,10 @@ import { releaseHandlers, waitForRunsToDrain, RELEASE_DRAIN_MAX_MS, type DrainPr
 import { runRelease, type ReleaseResult } from '../../release/run';
 import { markOnlineNotice } from '../../bot/online-notify';
 
+// 排空超时用例要把假时钟推 5 分钟（500ms 轮询 × 600 次 + 每次的阅卡），满负载
+// 跑全量（80 个文件并行）时会超过默认 5s —— 与 rollback.test.ts 同样给足余量。
+vi.setConfig({ testTimeout: 60_000 });
+
 vi.mock('../../release/run', () => ({
   runRelease: vi.fn(),
   repoRoot: vi.fn(() => '/repo'),

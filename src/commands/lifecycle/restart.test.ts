@@ -10,6 +10,10 @@ vi.mock('../../core/logger', () => ({
   log: { info: vi.fn(), fail: vi.fn(), warn: vi.fn() },
 }));
 
+// 排空超时用例要把假时钟推 5 分钟（500ms 轮询 × 600 次 + 每次的阅卡），满负载
+// 跑全量（80 个文件并行）时会超过默认 5s —— 与 rollback.test.ts 同样给足余量。
+vi.setConfig({ testTimeout: 60_000 });
+
 // 卡片路径（sendManagedCard / updateManagedCard）记进同一个数组：断言不区分
 // 「首发卡」与「原地更新的卡」，只看屏幕上最后是什么。文本回复单独记，用来覆盖
 // 卡片发不出去时的兜底回执。

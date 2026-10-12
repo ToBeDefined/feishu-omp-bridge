@@ -329,6 +329,12 @@
     stderr 尾部做截断（保留末尾 2000 字符，具体错误行在最后），
     避免 Bun 源码帧噪音把卡片撑爆。
 
+### Changed
+- **测试 worker 池限流**：`/release` 在 bridge 本机跑测试，vitest 默认 worker = 核数-1
+  （16 核 → 15 个 worker + 测试内 spawn 的子进程，发布瞬间峰值 17 个 node 进程、
+  1.5GB RSS）。`vitest.config.ts` 限为 `maxWorkers: 6`：峰值降到 7 个进程 / 0.7GB，
+  全量耗时不变（套件是 I/O 密集型，6.1s vs 6.7s），仍远低于发布步骤 120s 超时。
+
 ### Fixed
 - **孤儿测试 worker 清扫**：`/release` 的测试步骤后紧接 `kickstart -k` 会 SIGTERM 整个
   守护进程树，vitest 的 worker 池若未走完 teardown 就以孤儿（ppid=1）身份残留——

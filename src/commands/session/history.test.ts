@@ -237,7 +237,7 @@ describe('/history', () => {
     expect(card).toContain('NEW 问题 1');
     expect(card).not.toContain('OLD 问题 0');
     // 行的身份就是会话 id（= 「继续对话」的载荷）。
-    expect(card).toContain('🆔 here-ws');
+    expect(card).toContain('🔗 here-ws');
     expect(card).not.toContain('there-ws');
   });
 
@@ -332,7 +332,7 @@ describe('/history', () => {
     store.bind('oc_1', 's3', tmp);
     const { ctx } = makeCtx({ sessions: store });
     await handleHistory('all', ctx);
-    expect(cardJson()).toContain('✅ 当前');
+    expect(cardJson()).toContain('⭐ 当前');
     // Rows for other sessions still carry the resume button.
     expect(cardJson()).toContain('history.resume');
     expect(cardJson()).not.toContain('history.resume","arg":"s3"');

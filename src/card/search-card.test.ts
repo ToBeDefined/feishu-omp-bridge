@@ -206,9 +206,9 @@ describe('searchResultsCard', () => {
     expect(lines[1]).toContain('找到 1 个对话');
     expect(lines[1]).toContain('1 处匹配');
     // Row identity is an ordinary-size line, with the meta below it.
-    expect(lines[2]).toBe('**#1** · 🏷 **标题**');
+    expect(lines[2]).toBe('**#1** 🏷 **标题**');
     expect(lines[3]).toContain('📁 ~/repo');
-    expect(lines[3]).toContain('🆔 sess-1');
+    expect(lines[3]).toContain('🔗 sess-1');
     expect(lines[3]).not.toContain('🏷');
   });
 
@@ -217,7 +217,7 @@ describe('searchResultsCard', () => {
     const card = searchResultsCard('kw', [sampleContext({ sessionId: UUID })], 'q1');
     const lines = markdowns(card);
     expect(lines[2]).not.toContain(UUID);
-    expect(lines[3]).toContain('🆔 019f9432…');
+    expect(lines[3]).toContain('🔗 019f9432…');
     // The full id is only in the detail view.
     expect(searchDetailText({ sessionId: UUID, groups: [] })).toContain(UUID);
   });
@@ -232,8 +232,8 @@ describe('searchResultsCard', () => {
     );
     // 标记紧跟行号（埋在 meta 里就没人看得见），另一行不受影响。
     expect(lines.filter((l) => l.startsWith('**#'))).toEqual([
-      '**#1** ✅ 当前 · 🏷 **当前这条**',
-      '**#2** · 🏷 **另一条**',
+      '**#1** ⭐ 当前 · 🏷 **当前这条**',
+      '**#2** 🏷 **另一条**',
     ]);
     // 当前对话不给「继续对话」（恢复它等于原地重启），只留「详情」。
     const json = JSON.stringify(
@@ -243,7 +243,7 @@ describe('searchResultsCard', () => {
     expect(json.match(/详情/g)).toHaveLength(2);
     // 没传 currentSessionId 时一行都不标。
     const plain = JSON.stringify(searchResultsCard('foo', contexts, 'q1'));
-    expect(plain).not.toContain('✅ 当前');
+    expect(plain).not.toContain('⭐ 当前');
     expect(plain.match(/继续对话/g)).toHaveLength(2);
   });
 
@@ -261,7 +261,7 @@ describe('searchResultsCard', () => {
     // 表头(md×2) → hr → 身份 → meta → 灰块 → 本行按钮（单页没有分页行）
     expect(kinds).toEqual(['md', 'md', 'hr', 'md', 'md', 'grey-block', 'button-row']);
     // 按钮在整行最底下：身份与 meta 都是普通 markdown，不在按钮列里。
-    expect(card.body.elements[3]).toMatchObject({ tag: 'markdown', content: '**#1** · 🏷 **标题**' });
+    expect(card.body.elements[3]).toMatchObject({ tag: 'markdown', content: '**#1** 🏷 **标题**' });
 
     const row = card.body.elements.filter((e) => e.tag === 'column_set').at(-1) as {
       flex_mode: string;
@@ -435,7 +435,7 @@ describe('searchResultsCard', () => {
     const card = JSON.stringify(
       searchResultsCard('foo', [sampleContext({ title: undefined, topic: '看下 FC1 在做什么' })], 'q1'),
     );
-    expect(card).toContain('**#1** · **看下 FC1 在做什么**');
+    expect(card).toContain('**#1** **看下 FC1 在做什么**');
     expect(card).not.toContain('🏷');
     expect(card).not.toContain('_未命名会话_');
   });
@@ -444,13 +444,16 @@ describe('searchResultsCard', () => {
     const card = JSON.stringify(
       searchResultsCard('foo', [sampleContext({ title: undefined, topic: undefined })], 'q1'),
     );
-    expect(card).toContain('**#1** · _未命名会话_');
+    expect(card).toContain('**#1** _未命名会话_');
   });
 
   it('renders the empty-hit card', () => {
     const out = JSON.stringify(searchEmptyCard('foo'));
     expect(out).toContain('没有找到包含');
     expect(out).toContain('foo');
+    // 与结果列表同族：首元素是 heading（此前是默认字号正文）。
+    expect(out.match(/"text_size":"heading"/g) ?? []).toHaveLength(1);
+    expect(out).toContain('🔍 **搜索**');
   });
 
   it('gives the empty card a real, executable next step (no dead end)', () => {
@@ -459,6 +462,24 @@ describe('searchResultsCard', () => {
     expect(card).toContain('重新搜索');
     expect(card).toContain('"cmd":"search.do"');
     expect(card).toContain('"arg":"foo"');
+  });
+
+  it('says there are no more results when the offset is past the end', () => {
+    // Stale page button (results evicted / cache rotated): the card used to be
+    // just the heading + a 上一页 button.
+    const contexts = Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
+    const card = JSON.stringify(searchResultsCard('kw', contexts, 'q9', 99));
+    expect(card).toContain('没有更多结果了');
+    expect(card).not.toContain('第 100-');
+    // 上一页仍在，翻回去就是出路。
+    expect(card).toContain('↑ 上一页');
+  });
+
+  it('never emits the retired 🆔 session marker (🔗 is the house glyph)', () => {
+    expect(JSON.stringify(searchResultsCard('kw', [sampleContext()], 'q1'))).not.toContain('🆔');
+    expect(JSON.stringify(searchDetailCard({ sessionId: 'sess-9', groups: [] }))).not.toContain('🆔');
+    expect(searchDetailText({ sessionId: 'sess-9', groups: [] })).not.toContain('🆔');
+    expect(JSON.stringify(searchEmptyCard('kw'))).not.toContain('🆔');
   });
 });
 
@@ -475,7 +496,7 @@ describe('searchDetailCard', () => {
     expect(json).toContain('📄 **搜索结果 #3**');
     expect(json).toContain('📁 ~/ws');
     expect(json).toContain('🔎 2 处匹配');
-    expect(json).toContain('🆔 sess-9');
+    expect(json).toContain('🔗 sess-9');
     expect(json).toContain('内容');
     // 页脚只有「继续对话」。
     expect(json).toContain('继续对话');
@@ -535,6 +556,21 @@ describe('searchDetailCard', () => {
     ]);
   });
 
+  it('puts the primary action first and 返回结果 second', () => {
+    const json = JSON.stringify(
+      searchDetailCard({
+        sessionId: 'sess-9',
+        index: 3,
+        groups: [{ messages: [{ role: 'user', content: '内容' }], hitIndex: 0, matchCount: 1 }],
+        queryId: 'q1',
+      }),
+    );
+    // 主操作在左、次要（返回）在右 —— 与 /history、/search 行的按钮次序一致。
+    expect(json.indexOf('继续对话')).toBeLessThan(json.indexOf('返回结果'));
+    expect(json).toContain('"type":"primary"');
+    expect(json).toContain('"arg":"q1 0"');
+  });
+
   it('highlights and centres on the keyword in the detail body', () => {
     const card = JSON.stringify(
       searchDetailCard({
@@ -585,7 +621,7 @@ describe('searchDetailCard', () => {
       current: true,
     });
     const json = JSON.stringify(current);
-    expect(json).toContain('✅ 当前对话');
+    expect(json).toContain('⭐ 当前对话');
     // 当前对话没有任何可执行动作 → 整个页脚（连同它的 hr）都不渲染。
     expect(json).not.toContain('继续对话');
     expect(json).not.toContain('完成');
@@ -596,7 +632,7 @@ describe('searchDetailCard', () => {
     ).toBe('grey');
     // 纯文本详情同样带标记。
     expect(searchDetailText({ sessionId: 'sess-current', current: true, groups })).toContain(
-      '✅ 当前对话',
+      '⭐ 当前对话',
     );
     // 非当前对话不变。
     const other = JSON.stringify(searchDetailCard({ sessionId: 'sess-9', index: 2, groups, queryRef: 'q1 2' }));
@@ -614,7 +650,7 @@ describe('searchDetailCard', () => {
       ],
     });
     expect(text).toContain('📁 ~/ws');
-    expect(text).toContain('🆔 会话: `sess-9`');
+    expect(text).toContain('🔗 会话: `sess-9`');
     expect(text).toContain('**第 1 处**');
     expect(text).toContain('**第 2 处**');
   });

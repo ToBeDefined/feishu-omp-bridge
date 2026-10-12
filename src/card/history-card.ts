@@ -51,8 +51,13 @@ export interface HistoryPage {
 export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
   const page = rows.slice(opts.offset, opts.offset + HISTORY_PAGE_SIZE);
   const remaining = opts.total - (opts.offset + page.length);
+  // A stale page button can point past the end; only print a span when a row is
+  // actually on screen and the listing spans more than one page, otherwise an
+  // out-of-range offset would render a REVERSED range ("第 9-8 个").
   const range =
-    opts.total > page.length ? ` · 第 ${opts.offset + 1}-${opts.offset + page.length} 个` : '';
+    page.length > 0 && (opts.offset > 0 || remaining > 0)
+      ? ` · 第 ${opts.offset + 1}-${opts.offset + page.length} 个`
+      : '';
   const head =
     opts.mode === 'all'
       ? `全部工作区 · ${opts.total} 个会话${range} · 每页 ${HISTORY_PAGE_SIZE} 条`
@@ -61,8 +66,19 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
   const elements: object[] = [
     { tag: 'markdown', content: '🕘 **对话历史**', text_size: 'heading' },
     { tag: 'markdown', content: head, text_size: 'notation' },
-    { tag: 'hr' },
   ];
+  // S10: a zero-row page (no sessions yet, or a stale page button) used to be a
+  // dead end — a dangling hr + a mode button and nothing to act on. Give it a
+  // real next step and skip the hr entirely.
+  if (page.length === 0) {
+    elements.push({
+      tag: 'markdown',
+      content: opts.total === 0 ? '_暂无历史会话。发条消息就开始一段新的。_' : '_没有更多了。_',
+      text_size: 'notation',
+    });
+  } else {
+    elements.push({ tag: 'hr' });
+  }
 
   page.forEach((row, i) => {
     // Identity: the name you gave it, else what the conversation was about —
@@ -81,7 +97,7 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
       // Every 'cwd'-mode row shares the header's directory — repeating it per
       // row would be noise.
       ...(opts.mode === 'all' ? [`📁 ${escapeMd(row.workspace)}`] : []),
-      `🆔 ${row.sessionId.slice(0, 8)}…`,
+      `🔗 ${row.sessionId.slice(0, 8)}…`,
     ];
 
     // The current-session marker rides on the identity line — right behind the
@@ -89,7 +105,7 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
     const lines: object[] = [
       {
         tag: 'markdown',
-        content: `**#${opts.offset + i + 1}**${isCurrent ? ' ✅ 当前 ·' : ''} ${identity}`,
+        content: `**#${opts.offset + i + 1}**${isCurrent ? ' ⭐ 当前 ·' : ''} ${identity}`,
       },
       { tag: 'markdown', content: meta.join(' · '), text_size: 'notation' },
     ];
@@ -152,11 +168,15 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
   elements.push(
     ...inlineActions(actions.map((b) => (b.text.includes('下一页') ? { ...b, weight: 1.6 } : b))),
   );
-  elements.push({
-    tag: 'markdown',
-    content: '_点「继续对话」接着聊（等同 `/resume <id>`），检索内容用 `/search`；跨工作区看用「全部工作区」。_',
-    text_size: 'notation',
-  });
+  // The legend references the per-row 继续对话 button, which does not exist on
+  // an empty page — printing it there would point at nothing.
+  if (page.length > 0) {
+    elements.push({
+      tag: 'markdown',
+      content: '_点「继续对话」接着聊（等同 `/resume <id>`），检索内容用 `/search`；跨工作区看用「全部工作区」。_',
+      text_size: 'notation',
+    });
+  }
 
   return {
     schema: '2.0',

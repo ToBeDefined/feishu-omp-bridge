@@ -399,8 +399,8 @@ describe('searchSession', () => {
     expect(hits[0]!.topic).toBeUndefined();
     // Heading is just the row number — no invented identity.
     const card = JSON.stringify(searchResultsCard('codegraph', hits, 'q1'));
-    // 行身份是普通字号（`**#1** · _未命名会话_`），只有卡片标题是 heading。
-    expect(card).toContain('"content":"**#1** · _未命名会话_"');
+    // 行身份是普通字号（`**#1** _未命名会话_`），只有卡片标题是 heading。
+    expect(card).toContain('"content":"**#1** _未命名会话_"');
     await store.flush();
   });
 
@@ -434,8 +434,8 @@ describe('searchSession', () => {
     const card = JSON.stringify(searchResultsCard('codegraph', hits, 'q1'));
     expect(card.match(/"text_size":"heading"/g)).toHaveLength(1);
     // 按最后活动倒序：较新的 segB 是 #1。
-    expect(card).toContain('"content":"**#1** · **第二段 codegraph**"');
-    expect(card).toContain('"content":"**#2** · **第一段 codegraph**"');
+    expect(card).toContain('"content":"**#1** **第二段 codegraph**"');
+    expect(card).toContain('"content":"**#2** **第一段 codegraph**"');
     expect(card).not.toContain('🧵');
     await store.flush();
   });
@@ -601,7 +601,7 @@ describe('/search 卡片按钮链路', () => {
     expect(cards[0]).toContain('每页 6 条');
   });
 
-  it('show 命中当前会话时带「✅ 当前对话」且不给继续对话', async () => {
+  it('show 命中当前会话时带「⭐ 当前对话」且不给继续对话', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
     paths.ompSessionsDir = tmp;
     await seed(tmp);
@@ -617,7 +617,7 @@ describe('/search 卡片按钮链路', () => {
       fromCardAction: true,
       sessions: { sessionFor: () => ({ sessionId: newest, cwd: '/repo/7' }), titleFor: () => undefined },
     } as unknown as CommandContext);
-    expect(cards[0]).toContain('✅ 当前对话');
+    expect(cards[0]).toContain('⭐ 当前对话');
     expect(cards[0]).not.toContain('继续对话');
   });
 });

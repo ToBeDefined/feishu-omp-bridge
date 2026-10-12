@@ -1,6 +1,8 @@
 // Card builder for agent-authored Feishu interactive cards.
 
 import { OMP_UI_MARKER } from './omp-ui';
+import { inlineRow } from './templates';
+import { escapeMd } from '../utils/text';
 
 /**
  * Marker key on a button's `value` object that flags the cardAction as a
@@ -104,25 +106,26 @@ export function buildAgentCard(
     config: { summary: { content: title } },
     body: {
       elements: [
+        // Same S1 shape as every other card: a heading line first. `title` is
+        // model-supplied, so it is markdown-escaped (it still feeds `summary`).
+        { tag: 'markdown', content: `🤖 **${escapeMd(title)}**`, text_size: 'heading' },
         { tag: 'markdown', content: text },
-        {
-          tag: 'column_set',
-          flex_mode: 'flow',
-          horizontal_spacing: 'small',
-          columns: normalized.map(({ label, value }, i) => ({
-            tag: 'column',
-            width: 'auto',
-            elements: [
-              {
-                tag: 'button',
-                text: { tag: 'plain_text', content: label },
-                name: label,
-                type: i === 0 ? 'primary' : 'default',
-                behaviors: [{ type: 'callback', value: { ...value, ...markValue, [AGENT_CALLBACK_MARKER]: true } }],
-              },
-            ],
+        // Buttons go through `inlineRow` like the rest of the site: `weighted`
+        // columns under `flex_mode: 'none'`, at most 2 per row (the old
+        // `flex_mode: 'flow'` + `width: 'auto'` let widths drift per label).
+        ...inlineRow(
+          normalized.map(({ label, value }, i) => ({
+            element: {
+              tag: 'button',
+              text: { tag: 'plain_text', content: label },
+              name: label,
+              type: i === 0 ? 'primary' : 'default',
+              behaviors: [
+                { type: 'callback', value: { ...value, ...markValue, [AGENT_CALLBACK_MARKER]: true } },
+              ],
+            },
           })),
-        },
+        ),
       ],
     },
   };

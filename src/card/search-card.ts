@@ -270,7 +270,7 @@ export const SEARCH_PAGE_SIZE = 6;
 
 export interface SearchResultsOpts {
   /** OMP session id the calling scope is already on: that row is marked
-   * 「✅ 当前」 and drops its 继续对话 button (resuming it is a no-op) —
+   * 「⭐ 当前」 and drops its 继续对话 button (resuming it is a no-op) —
    * the same rule /history applies to its current row. */
   currentSessionId?: string;
 }
@@ -296,6 +296,12 @@ export function searchResultsCard(
     md(`找到 ${contexts.length} 个对话 · ${totalMatches} 处匹配${range} · 每页 ${SEARCH_PAGE_SIZE} 条`, 'notation'),
     { tag: 'hr' },
   ];
+  // Stale page button pointing past the end (results evicted / cache rotated):
+  // say so instead of leaving only the heading and a 上一页 button — the button
+  // below is still the way out.
+  if (shown.length === 0 && contexts.length > 0) {
+    elements.push(md('_没有更多结果了。_', 'notation'));
+  }
   // Pager buttons, built before the rows so the last row knows whether a
   // divider is needed below it.
   const pageButtons: Array<{ text: string; value: Record<string, unknown>; weight?: number }> = [];
@@ -320,15 +326,16 @@ export function searchResultsCard(
     const isCurrent =
       opts.currentSessionId !== undefined && c.sessionId === opts.currentSessionId;
     const lines: object[] = [
-      // 当前对话的标记紧跟在行号后面 —— 埋在 meta 行里就没人看得见。
-      md(`**#${globalIdx + 1}**${isCurrent ? ' ✅ 当前 ·' : ' ·'} ${rowIdentity(c)}`),
+      // 当前对话的标记紧跟在行号后面 —— 埋在 meta 行里就没人看得见。序号后不
+      // 再插一个 ` · `：与 /history、psCard 的 `**#N** 标签` 同形。
+      md(`**#${globalIdx + 1}**${isCurrent ? ' ⭐ 当前 ·' : ''} ${rowIdentity(c)}`),
       md(
         [
           c.workspace ? `📁 ${escapeMd(c.workspace)}` : '',
           ago ? `🕘 ${ago}` : '',
           c.matchCount > 1 ? `🔎 ${c.matchCount} 处匹配` : '',
           // Identity handle: enough to tell rows apart. The full id is in 详情.
-          `🆔 ${shortSessionId(c.sessionId)}`,
+          `🔗 ${shortSessionId(c.sessionId)}`,
         ]
           .filter(Boolean)
           .join(' · '),
@@ -397,6 +404,9 @@ export function searchEmptyCard(keyword: string): object {
     config: { summary: { content: '未找到匹配消息' } },
     body: {
       elements: [
+        // Same shape as the results card (S1/S8): a heading line first, like
+        // every other card in the family — this one used to start at body size.
+        md('🔍 **搜索**', 'heading'),
         md(`🔍 没有找到包含 \`${codeSpan(keyword)}\` 的消息。`),
         md('_换个关键词，或缩短关键词再试。历史里的每条消息（含助手回答）都会被检索。_', 'notation'),
         // 死胡同没有出路：给一个真能点的动作 —— 重跑同一次检索（刚写下的会话可能
@@ -439,14 +449,14 @@ export function searchDetailCard(info: SearchDetailInfo): object {
   const label = info.index !== undefined ? `搜索结果 #${info.index}` : '搜索详情';
   const elements: object[] = [md(`📄 **${label}**`, 'heading')];
   const metaLine = [
-    info.current ? '✅ 当前对话' : '',
+    info.current ? '⭐ 当前对话' : '',
     info.workspace ? `📁 ${escapeMd(info.workspace)}` : '',
     info.matchCount !== undefined && info.matchCount > 1
       ? `🔎 ${info.matchCount} 处匹配`
       : '',
     // Full id here: this is the one place the session can be identified exactly
     // (the list only carries an 8-char handle).
-    info.sessionId ? `🆔 ${escapeMd(info.sessionId)}` : '',
+    info.sessionId ? `🔗 ${escapeMd(info.sessionId)}` : '',
   ]
     .filter(Boolean)
     .join(' · ');
@@ -467,17 +477,21 @@ export function searchDetailCard(info: SearchDetailInfo): object {
     value: Record<string, unknown>;
     style?: 'primary' | 'danger' | 'default';
   }> = [];
-  if (info.queryId !== undefined) {
-    footer.push({
-      text: '← 返回结果',
-      value: { cmd: 'search.page', arg: `${info.queryId} ${backOffset}` },
-    });
-  }
+  // 页脚动作：主操作「继续对话」（primary）在左、次要「返回结果」在右 —— 与
+  // /history、/search 行、/ps 的按钮次序一致（此前是「返回」在左，整站反着来）。
+  // 返回结果只在从结果列表钻进详情时给（queryId 存在）；继续对话只在非当前会话时
+  // 给（当前会话继续它等于原地重启）。
   if (!info.current) {
     footer.push({
       text: '继续对话',
       value: { cmd: 'search.resume', arg: info.sessionId },
       style: 'primary',
+    });
+  }
+  if (info.queryId !== undefined) {
+    footer.push({
+      text: '← 返回结果',
+      value: { cmd: 'search.page', arg: `${info.queryId} ${backOffset}` },
     });
   }
   if (footer.length > 0) {
@@ -495,9 +509,9 @@ export function searchDetailCard(info: SearchDetailInfo): object {
 export function searchDetailText(info: SearchDetailInfo): string {
   const head = [
     info.workspace ? `📁 ${info.workspace}` : '',
-    info.current ? '✅ 当前对话' : '',
+    info.current ? '⭐ 当前对话' : '',
   ]
     .filter(Boolean)
     .join(' · ');
-  return `${head ? `${head}\n` : ''}🆔 会话: \`${codeSpan(info.sessionId)}\`\n\n${renderSearchGroups(info, 'detail', info.keyword)}`;
+  return `${head ? `${head}\n` : ''}🔗 会话: \`${codeSpan(info.sessionId)}\`\n\n${renderSearchGroups(info, 'detail', info.keyword)}`;
 }

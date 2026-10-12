@@ -59,7 +59,7 @@ describe('historyCard', () => {
     );
     expect(card).toContain('🏷 **会话 UI 优化**');
     expect(card).toContain('🔁 12 轮');
-    expect(card).toContain('🆔 019f9432…');
+    expect(card).toContain('🔗 019f9432…');
     // A named session still shows what the conversation contained.
     expect(card).toContain('按钮在电脑上很奇怪');
     // Header carries the workspace, so rows do not repeat it.
@@ -189,12 +189,12 @@ describe('historyCard', () => {
       'other-session-id-0000',
     ]);
     // The marker sits right behind the row number, not in the small meta line.
-    expect(JSON.stringify(card)).toContain('**#1** ✅ 当前 · 🏷 **bridge UI 调整**');
+    expect(JSON.stringify(card)).toContain('**#1** ⭐ 当前 · 🏷 **bridge UI 调整**');
     const markdown = [...JSON.stringify(card).matchAll(/"tag":"markdown","content":"((?:[^"\\]|\\.)*)"/g)].map(
       (m) => m[1]!,
     );
-    expect(markdown.some((c) => c.includes('✅ 当前'))).toBe(true);
-    expect(markdown.some((c) => c.includes('🆔') && c.includes('✅ 当前'))).toBe(false);
+    expect(markdown.some((c) => c.includes('⭐ 当前'))).toBe(true);
+    expect(markdown.some((c) => c.includes('🔗') && c.includes('⭐ 当前'))).toBe(false);
     // The current row keeps its grey block but has no action row at all.
     const parsed = card as { body: { elements: Array<Record<string, unknown>> } };
     expect(greyBlocks(parsed)).toHaveLength(2);
@@ -209,5 +209,33 @@ describe('historyCard', () => {
     const buttons = allButtons(JSON.parse(card) as object);
     // 每行一个 继续对话，页脚再挂一个工作区范围切换键。
     expect(buttons.map((b) => b.label)).toEqual(['继续对话', '继续对话', '🌐 全部工作区']);
+  });
+
+  it('renders a real empty state instead of a dead end', () => {
+    const card = JSON.stringify(historyCard([], { mode: 'cwd', cwd: '/repo/x', offset: 0, total: 0 }));
+    // 空态给出下一步文案，不再引用一个根本不存在的「继续对话」按钮。
+    expect(card).toContain('暂无历史会话');
+    expect(card).not.toContain('继续对话');
+    // 没有悬空的分隔线：空态卡里一条 hr 都没有。
+    expect(card).not.toContain('"tag":"hr"');
+  });
+
+  it('never prints a reversed span when the offset is past the end', () => {
+    // Stale card button: offset 8 but only 2 sessions exist.
+    const card = JSON.stringify(historyCard([row(), row({ sessionId: 's2' })], {
+      mode: 'cwd',
+      cwd: '/repo/x',
+      offset: 8,
+      total: 2,
+    }));
+    expect(card).not.toContain('第 9-8');
+    expect(card).not.toContain('第 9-');
+    expect(card).toContain('没有更多了');
+  });
+
+  it('never emits the retired 🆔 session marker (🔗 is the house glyph)', () => {
+    const card = JSON.stringify(historyCard([row()], { mode: 'cwd', offset: 0, total: 1 }));
+    expect(card).not.toContain('🆔');
+    expect(card).toContain('🔗');
   });
 });

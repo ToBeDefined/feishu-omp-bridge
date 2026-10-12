@@ -15,8 +15,13 @@ type Card = {
 };
 
 function buttonsOf(card: Card): Button[] {
-  const set = card.body.elements[1] as { columns: Array<{ elements: Array<Record<string, unknown>> }> };
-  return set.columns.map((c) => c.elements[0] as unknown as Button);
+  const out: Button[] = [];
+  for (const el of card.body.elements) {
+    if (el.tag !== 'column_set') continue;
+    const set = el as { columns: Array<{ elements: Array<Record<string, unknown>> }> };
+    for (const c of set.columns) out.push(c.elements[0] as unknown as Button);
+  }
+  return out;
 }
 
 describe('buildAgentCard', () => {
@@ -30,11 +35,20 @@ describe('buildAgentCard', () => {
     expect(card.config.summary.content).toBe('确认发布');
 
     const elements = card.body.elements;
-    expect(elements[0]).toEqual({ tag: 'markdown', content: '要发布到生产吗？' });
-    expect(elements[1]).toMatchObject({ tag: 'column_set', flex_mode: 'flow' });
+    // Heading first (S1), then the body, then the button rows.
+    expect(elements[0]).toMatchObject({
+      tag: 'markdown',
+      content: '🤖 **确认发布**',
+      text_size: 'heading',
+    });
+    expect(elements[1]).toEqual({ tag: 'markdown', content: '要发布到生产吗？' });
+    expect(elements[2]).toMatchObject({ tag: 'column_set', flex_mode: 'none' });
 
     const buttons = buttonsOf(card);
     expect(buttons).toHaveLength(2);
+    // At most 2 buttons per row: they share one `weighted` row (never `auto`).
+    expect(JSON.stringify(elements[2])).toContain('"width":"weighted"');
+    expect(JSON.stringify(elements[2])).not.toContain('"width":"auto"');
     expect(buttons[0]?.name).toBe('发布');
     expect(buttons[0]?.text.content).toBe('发布');
     expect(buttons[0]?.type).toBe('primary');
@@ -114,6 +128,27 @@ describe('buildAgentCard', () => {
     const buttons = Array.from({ length: 10 }, (_, i) => ({ label: `b${i}`, value: { i } }));
     const card = buildAgentCard('t', 'x'.repeat(4000), buttons) as unknown as Card;
     expect(buttonsOf(card)).toHaveLength(10);
+    // 10 buttons wrap at most 2 per row → 5 column_set rows, every column
+    // `weighted` (never `auto`), so the row stays stable at any card width.
+    const json = JSON.stringify(card);
+    expect(json.match(/"flex_mode":"none"/g) ?? []).toHaveLength(5);
+    expect(json.match(/"width":"weighted"/g) ?? []).toHaveLength(10);
+    expect(json).not.toContain('"width":"auto"');
+    expect(json).not.toContain('"flex_mode":"flow"');
+  });
+
+  it('escapes a model-supplied title in the heading', () => {
+    const card = buildAgentCard('*重要*', 'text', [{ label: 'go', value: {} }]) as unknown as Card;
+    // Escaped so the title cannot break out of the bold heading; still the
+    // heading line. (`escapeMd` covers `* _ ` \ [ ] ( ) !`, not `#`/`>`, which
+    // are harmless mid-line.)
+    expect(card.body.elements[0]).toMatchObject({
+      tag: 'markdown',
+      content: '🤖 **\\*重要\\***',
+      text_size: 'heading',
+    });
+    // The unescaped title still feeds the notification summary.
+    expect(card.config.summary.content).toBe('*重要*');
   });
 
   it('exports the callback marker shared with the dispatcher', () => {

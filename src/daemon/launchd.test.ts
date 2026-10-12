@@ -6,6 +6,8 @@ import { buildPlist, rotateDaemonLogsIfNeeded, rotateDaemonStdoutIfNeeded } from
 import { supervisorGrantMarkerPath } from './macos-supervisor';
 import { daemonStderrPath, daemonStdoutPath } from './paths';
 
+const SUPERVISOR_PATH = '/Applications/FeishuOmpBridge.app/Contents/MacOS/FeishuOmpBridgeSupervisor';
+
 const base = {
   nodePath: '/usr/local/bin/node',
   bridgeEntryPath: '/opt/bridge/bin/feishu-omp-bridge.mjs',
@@ -49,12 +51,24 @@ describe('launchd plist', () => {
     expect(plist).toContain('<key>KeepAlive</key>');
   });
 
-  it('sets ExitTimeOut and keeps FOB_SUPERVISED so launchd waits then reaps the daemon', () => {
-    const plist = buildPlist(base);
-    expect(plist).toContain('<key>ExitTimeOut</key>');
+  it('sets ExitTimeOut (launchd 等 8s 再 SIGKILL) 且 supervisor 形态下带 FOB_SUPERVISED', () => {
+    const plist = buildPlist({ ...base, supervisorPath: SUPERVISOR_PATH });
     expect(plist).toMatch(/<key>ExitTimeOut<\/key>\s*<integer>8<\/integer>/);
-    expect(plist).toContain('<key>FOB_SUPERVISED</key>');
     expect(plist).toMatch(/<key>FOB_SUPERVISED<\/key>\s*<string>1<\/string>/);
+    expect(plist).toContain(SUPERVISOR_PATH);
+  });
+});
+
+describe('FOB_SUPERVISED 标记的准确性', () => {
+  it('走 supervisor 时设置 FOB_SUPERVISED', () => {
+    const plist = buildPlist({ ...base, supervisorPath: SUPERVISOR_PATH });
+    expect(plist).toContain('FOB_SUPERVISED');
+    expect(plist).toContain(SUPERVISOR_PATH);
+  });
+
+  it('回退直拉 node 时**不设置**（否则父进程是 launchd(1) → 守护进程会自杀）', () => {
+    const plist = buildPlist(base);
+    expect(plist).not.toContain('FOB_SUPERVISED');
   });
 });
 

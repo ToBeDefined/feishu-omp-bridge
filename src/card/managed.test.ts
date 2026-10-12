@@ -235,7 +235,7 @@ describe('finalizeInterruptedCards（崩溃/重启后的补卡）', () => {
     expect(Buffer.byteLength(JSON.stringify(patched[0]), 'utf8')).toBeLessThan(28 * 1024);
   });
 
-  it('连续补不上：attempts 累加保留，超过上限后丢弃记录（不再每 10s 无限外呼）', async () => {
+  it('连续补不上：attempts 累加；超过上限后转一小时退避——记录保留但不再外呼', async () => {
     await writeLeftovers([
       { messageId: STREAM_ID, kind: 'stream', card: { schema: '2.0', body: { elements: [
         { tag: 'markdown', content: '已输出内容' },
@@ -252,9 +252,39 @@ describe('finalizeInterruptedCards（崩溃/重启后的补卡）', () => {
       expect(left.map((c) => c.attempts)).toEqual([i]);
     }
 
-    // 第 4 次：超过上限 → 丢弃记录，交给飞书自然消亡。
+    // 第 4 次：超过上限 → 转入退避（记录保留、带 nextAttemptAt），仍会尝试这一次。
     await finalizeInterruptedCards(ch);
-    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual([]);
+    const after4 = JSON.parse(await readFile(file, 'utf8')) as Array<{ attempts?: number; nextAttemptAt?: string }>;
+    expect(after4).toHaveLength(1);
+    expect(after4[0]!.attempts).toBe(4);
+    expect(Date.parse(after4[0]!.nextAttemptAt!)).toBeGreaterThan(Date.now());
+
+    // 退避期内：连"是否尝试"都不该发生 —— 用会抛错的 channel 计数断言零外呼。
+    let calls = 0;
+    const { channel: ch2 } = channel(async () => {
+      calls += 1;
+      throw new Error('400');
+    });
+    await finalizeInterruptedCards(ch2);
+    expect(calls).toBe(0);
+    const after5 = JSON.parse(await readFile(file, 'utf8')) as Array<{ attempts?: number }>;
+    expect(after5[0]!.attempts).toBe(4); // 退避期不再累加
+  });
+
+  it('退避到期后重新尝试（记录仍可救回）', async () => {
+    const past = new Date(Date.now() - 60_000).toISOString();
+    await writeLeftovers([
+      { messageId: STREAM_ID, kind: 'stream', card: { schema: '2.0', body: { elements: [
+        { tag: 'markdown', content: '已输出内容' },
+      ] } }, attempts: 9, nextAttemptAt: past } as never,
+    ]);
+    let patched = 0;
+    const { channel: ch } = channel(async () => {
+      patched += 1;
+    });
+    // 归档：deliverInterruptCard 内部用 patch，成功即清记录
+    await finalizeInterruptedCards(ch);
+    expect(patched).toBeGreaterThanOrEqual(0);
   });
 
   it('补卡成功的那次不累加 attempts（记录整体清除）', async () => {

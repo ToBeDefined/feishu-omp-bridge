@@ -36,6 +36,16 @@ export function buildPlist(inputs: PlistInputs): string {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  // FOB_SUPERVISED 只在**真的**由 supervisor app 拉起时设置：进程的孤儿自检
+  // （ppid===1 ⇒ supervisor 已死 ⇒ 退出）依赖这个标记。若 swiftc/签名不可用而
+  // 回退成 launchd 直拉 node，则父进程本来就是 launchd(1)，误标会让守护进程在
+  // 每次启动 5 秒后自杀。
+  const supervisedEnv = inputs.supervisorPath
+    ? `
+        <key>FOB_SUPERVISED</key>
+        <string>1</string>
+`
+    : '';
   const program = inputs.supervisorPath
     ? [
         escape(inputs.supervisorPath),
@@ -72,10 +82,7 @@ ${program.map((arg) => `        <string>${arg}</string>`).join('\n')}
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>${escape(inputs.envPath)}</string>
-        <key>FOB_SUPERVISED</key>
-        <string>1</string>
-    </dict>
+        <string>${escape(inputs.envPath)}</string>${supervisedEnv}</dict>
 </dict>
 </plist>
 `;

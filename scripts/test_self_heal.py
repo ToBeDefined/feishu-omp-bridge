@@ -777,3 +777,19 @@ def test_main_loop_survives_round_exception(heal, tmp_path, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         heal.main()
     assert rounds["n"] == 3          # 前两轮异常未中断循环
+
+
+class TestEscalationDisabled:
+    """两个危险动作都关时：不消耗 ompAttempts、不写退避状态。"""
+
+    def test_both_disabled_skips_ladder_without_consuming_attempts(self, heal):
+        # fixture 默认已开 HEAL_ALLOW_OMP=1，这里显式两个都关
+        os.environ.pop("HEAL_ALLOW_OMP", None)
+        os.environ.pop("HEAL_ALLOW_ROLLBACK", None)
+        try:
+            assert heal.repair_with_omp_guarded() is False
+            # 关键：状态没被污染（否则多轮之后会误判「已达上限，停止自愈」）
+            assert heal.state_get("ompAttempts") == 0
+            assert heal.state_get("nextOmpAt") == 0
+        finally:
+            os.environ["HEAL_ALLOW_OMP"] = "1"

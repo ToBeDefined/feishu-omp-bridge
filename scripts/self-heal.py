@@ -678,6 +678,15 @@ def repair_rollback() -> bool:
         return False
 
 def repair_with_omp_guarded() -> bool:
+    # 两个危险动作都关时，整条升级阶梯（回退 → omp）都不会做任何事。
+    # 此时**不要**消耗 ompAttempts / 写退避状态：否则每轮探针都会把次数推高，
+    # 最终打印「已达上限，停止自愈」，等于把「只关危险动作」变成「永久关掉自愈」。
+    if os.environ.get(ALLOW_ROLLBACK_ENV) != "1" and os.environ.get(ALLOW_OMP_ENV) != "1":
+        log(
+            f"→ 升级阶梯已禁用（{ALLOW_ROLLBACK_ENV} / {ALLOW_OMP_ENV} 均未设）："
+            "只保留 bridge restart 修复，不做回退/omp"
+        )
+        return False
     now = int(time.time())
     attempts = state_get("ompAttempts")
     if attempts >= MAX_ATTEMPTS:

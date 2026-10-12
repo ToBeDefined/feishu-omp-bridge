@@ -24,6 +24,8 @@ export interface BootFailure {
   /** ISO timestamp of the failed attempt. */
   at: string;
   reason: string;
+  /** 写这条记录的进程 pid：用来锚定「本轮 boot 的那条记录」。 */
+  pid?: number;
 }
 
 export interface BootAttemptsState {
@@ -78,6 +80,7 @@ async function readState(file: string): Promise<BootAttemptsState> {
           (f): f is BootFailure =>
             !!f &&
             typeof (f as BootFailure).at === 'string' &&
+            ((f as BootFailure).pid === undefined || typeof (f as BootFailure).pid === 'number') &&
             typeof (f as BootFailure).reason === 'string',
         )
       : [];
@@ -97,11 +100,58 @@ async function writeState(state: BootAttemptsState, file: string): Promise<void>
 }
 
 /** Record one failed boot attempt. Prunes out-of-window failures first. */
+/** 本进程是否已经为本轮 boot 记过一次（每进程至多一条记录）。 */
+let recordedThisBoot = false;
+
+/** 重置「本进程已记账」标记。仅供测试与模拟多轮 boot 使用。 */
+export function resetBootGuardProcessState(): void {
+  recordedThisBoot = false;
+}
+
+/**
+ * 记一次「boot 尝试」。**每轮 boot 只要没走到 noteBootSuccess 就是失败**，
+ * 因此这条记录由进程自己在启动时写下：崩溃、超时、未捕获异常等没有显式
+ * exit(1) 的失败也会被统计（只埋显式退出点会漏掉最常见的崩溃型失败）。
+ * 走到 noteBootSuccess 时整份状态被清空，所以正常运行不会留下记录。
+ */
+export async function noteBootStarted(): Promise<void> {
+  const now = Date.now();
+  const state = await readState(BOOT_ATTEMPTS_FILE);
+  const failures = prune(state.failures, now, DEFAULT_BOOT_WINDOW_MS);
+  const last = failures[failures.length - 1];
+  // 以 pid 锚定：本进程已有本轮记录就不重复写。用 pid 而不是纯内存标记，
+  // 是因为 `clearBootFailures()`（人工恢复路径）会把文件清空，此时内存标记
+  // 仍为真 —— 若只看标记，恢复中的这轮 boot 就不会被登记（它再崩就漏计）。
+  if (last && last.pid === process.pid) {
+    recordedThisBoot = true;
+    return;
+  }
+  recordedThisBoot = true;
+  failures.push({ at: new Date(now).toISOString(), reason: 'start', pid: process.pid });
+  await writeState({ ...state, failures }, BOOT_ATTEMPTS_FILE);
+}
+
+/**
+ * 给本轮的记录补一个具体原因（`start` → `duplicate-instance` 等）。同进程
+ * 首次调用会就地升级原因，不额外增加计数；若本轮没走过 noteBootStarted
+ * （例如测试直接调用）则补记一条。
+ */
 export async function noteBootFailure(reason: string): Promise<void> {
   const now = Date.now();
   const state = await readState(BOOT_ATTEMPTS_FILE);
   const failures = prune(state.failures, now, DEFAULT_BOOT_WINDOW_MS);
-  failures.push({ at: new Date(now).toISOString(), reason });
+  const last = failures[failures.length - 1];
+  // 以 pid 锚定本轮记录：同进程重复调用只升级原因，不重复计数；若本轮记录
+  // 不在（本轮没走过 noteBootStarted，或状态被外部清过），就补记一条。
+  if (last && last.pid === process.pid && last.reason === 'start') {
+    failures[failures.length - 1] = { ...last, reason };
+    await writeState({ ...state, failures }, BOOT_ATTEMPTS_FILE);
+    recordedThisBoot = true;
+    return;
+  }
+  if (recordedThisBoot) return; // 本轮已有记录且原因已具体：不再重复计数
+  recordedThisBoot = true;
+  failures.push({ at: new Date(now).toISOString(), reason, pid: process.pid });
   await writeState({ ...state, failures }, BOOT_ATTEMPTS_FILE);
 }
 

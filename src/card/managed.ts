@@ -31,6 +31,8 @@ interface PersistedRunningCard {
   card?: object;
   /** How many times a boot has already failed to finalize this leftover. */
   attempts?: number;
+  /** 退避到期时间（ISO）：到期前不再尝试补卡。 */
+  nextAttemptAt?: string;
 }
 
 // Module-local because state is per-process. Lost on restart, which is fine —
@@ -261,18 +263,26 @@ export async function finalizeInterruptedCards(
     // instead (the new process confirms /release and /restart themselves).
     if (messageId === excludeMessageId) continue;
     if (!messageId || messageId === 'om_sent' || !messageId.startsWith('om_')) continue;
+    // 退避未到期：保留记录但不外呼（崩溃循环里每 10s 一次 patch 会拖垮机器）。
+    if (entry.nextAttemptAt && Date.parse(entry.nextAttemptAt) > Date.now()) {
+      retry.push(entry);
+      continue;
+    }
     if (await deliverInterruptCard(channel, messageId, kind, card)) {
       if (kind === 'restart') finalizedRestart = true;
       continue;
     }
     // 补不上就**留着**：这张卡还停在运行态（带 ⏹ 终止按钮），记录的寿命必须跟着
     // 它 —— 从前这里无论成败都清空记录，于是补卡被飞书拒一次，那个终止按钮就永
-    // 远挂在那里了。但也**不能无限留**：launchd 每 10s 拉起一次，若补卡永远被拒
-    // （消息被撤回/删除、token 失效），每 10s 一次外呼会把机器拖垮。累加 attempts，
-    // 超过上限就丢弃记录并告警，让这个 ⏹ 交还给飞书自然消亡。
+    // 远挂在那里了。但也**不能无限外呼**：launchd 每 10s 拉起一次，若补卡永远被拒
+    // （消息被撤回/删除、token 失效），每 10s 一次 patch 会把机器拖垮。所以失败
+    // 累加 attempts，超过上限后转入**一小时退避**：记录保留（⏹ 仍有救回的希望），
+    // 但期间不再外呼。真正不可救（消息已删）时这一步不会更差。
     const attempts = (entry.attempts ?? 0) + 1;
     if (attempts > INTERRUPT_FINALIZE_MAX_ATTEMPTS) {
-      log.warn('card', 'interrupted-finalize-giving-up', { messageId, kind, attempts });
+      const nextAttemptAt = new Date(Date.now() + INTERRUPT_FINALIZE_BACKOFF_MS).toISOString();
+      log.warn('card', 'interrupted-finalize-backoff', { messageId, kind, attempts, nextAttemptAt });
+      retry.push({ ...entry, attempts, nextAttemptAt });
       continue;
     }
     retry.push({ ...entry, attempts });
@@ -285,6 +295,8 @@ export async function finalizeInterruptedCards(
  *  Bounds外呼: a card we can never patch (recalled message, dead token) must
  *  not trigger one failed patch per launchd retry forever. */
 const INTERRUPT_FINALIZE_MAX_ATTEMPTS = 3;
+/** 超过补卡重试上限后的退避时长：保留记录但停止频繁外呼。 */
+const INTERRUPT_FINALIZE_BACKOFF_MS = 60 * 60 * 1000;
 
 /** Feishu rejects a card patch past ~30KB (ErrCode 200800 / HTTP 400). */
 const CARD_PATCH_MAX_BYTES = 28 * 1024;

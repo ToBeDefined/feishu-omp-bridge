@@ -6,6 +6,8 @@ import {
   bootFailureCount,
   clearBootFailures,
   noteBootFailure,
+  noteBootStarted,
+  resetBootGuardProcessState,
   noteBootSuccess,
   shouldTrip,
   type BootFailure,
@@ -22,6 +24,8 @@ const at = (offsetMs: number): BootFailure => ({
 beforeEach(async () => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date(T0));
+  // 生产语义是「每进程每轮 boot 只记一条」，测试里要模拟多轮 boot。
+  resetBootGuardProcessState();
   await rm(BOOT_ATTEMPTS_FILE, { force: true });
 });
 
@@ -53,18 +57,25 @@ describe('shouldTrip（纯函数）', () => {
 
 describe('boot-guard 持久化', () => {
   it('noteBootFailure 累积失败，达到阈值后熔断', async () => {
-    for (let i = 0; i < 5; i++) await noteBootFailure('boom');
+    for (let i = 0; i < 5; i++) {
+      resetBootGuardProcessState(); // 模拟新一轮 boot（每轮进程只记一条）
+      await noteBootFailure('boom');
+    }
     expect(await bootFailureCount()).toBe(5);
     expect(await autoRestartExhausted()).toBe(true); // 默认阈值 5 / 窗口 10 分钟
   });
 
   it('失败次数未达阈值不熔断', async () => {
-    for (let i = 0; i < 4; i++) await noteBootFailure('boom');
+    for (let i = 0; i < 4; i++) {
+      resetBootGuardProcessState();
+      await noteBootFailure('boom');
+    }
     expect(await autoRestartExhausted()).toBe(false);
   });
 
   it('窗口外的旧失败在写入时被剪掉', async () => {
     await noteBootFailure('old');
+    resetBootGuardProcessState();
     vi.setSystemTime(new Date(T0 + 11 * 60 * 1000)); // 超过默认 10 分钟窗口
     await noteBootFailure('new');
     expect(await bootFailureCount()).toBe(1);
@@ -73,6 +84,7 @@ describe('boot-guard 持久化', () => {
 
   it('noteBootSuccess 清零失败计数但保留 lastSuccessAt', async () => {
     await noteBootFailure('a');
+    resetBootGuardProcessState();
     await noteBootFailure('b');
     await noteBootSuccess();
     expect(await bootFailureCount()).toBe(0);
@@ -106,5 +118,31 @@ describe('boot-guard 持久化', () => {
     );
     expect(await bootFailureCount()).toBe(0);
     expect(await autoRestartExhausted()).toBe(false);
+  });
+});
+
+describe('noteBootStarted（崩溃型失败也要计数）', () => {
+  it('记一次 start；未走到 success 即算一次失败', async () => {
+    await noteBootStarted();
+    expect(await bootFailureCount()).toBe(1);
+    // 同进程重复调用不重复计数
+    await noteBootStarted();
+    expect(await bootFailureCount()).toBe(1);
+  });
+
+  it('noteBootFailure 就地升级原因，不额外计数', async () => {
+    await noteBootStarted();
+    await noteBootFailure('duplicate-instance');
+    const state = JSON.parse(await readFile(BOOT_ATTEMPTS_FILE, 'utf8')) as {
+      failures: Array<{ reason: string }>;
+    };
+    expect(state.failures).toHaveLength(1);
+    expect(state.failures[0]!.reason).toBe('duplicate-instance');
+  });
+
+  it('noteBootSuccess 清空本轮记录', async () => {
+    await noteBootStarted();
+    await noteBootSuccess();
+    expect(await bootFailureCount()).toBe(0);
   });
 });

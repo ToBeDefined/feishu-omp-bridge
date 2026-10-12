@@ -33,6 +33,7 @@ import {
   bootFailureCount,
   clearBootFailures,
   noteBootFailure,
+  noteBootStarted,
   noteBootSuccess,
 } from '../../daemon/boot-guard';
 import { resolveAppSecret } from '../../config/secret-resolver';
@@ -222,6 +223,11 @@ export async function runStart(opts: StartOptions): Promise<void> {
     log.warn('boot', 'circuit-open-manual-recovery', { failures });
     await clearBootFailures().catch(() => {});
   }
+
+  // 通过闸门后记一次 boot 尝试：只要没走到 noteBootSuccess 就算失败（覆盖崩溃、
+  // 超时、未捕获异常等没有显式 exit(1) 的失败）。闸门命中自身不计入，否则冻结
+  // 期间计数会一直增长。
+  await noteBootStarted().catch(() => {});
 
   // daemon-stdout/stderr 由 launchd 追加、不会滚动；启动时超阈值就 copytruncate，
   // 防止数月运行后无限膨胀。**不能 await**（会拖慢启动）；stop() 会用

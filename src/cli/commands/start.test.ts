@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { rmSync, writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BridgeChannel } from '../../bot/channel';
 
@@ -57,7 +57,12 @@ import { paths } from '../../config/paths';
 import { readAndPrune, type ProcessEntry } from '../../runtime/registry';
 import { startChannel } from '../../bot/channel';
 import { bootout } from '../../daemon/launchd';
-import { BOOT_ATTEMPTS_FILE, bootFailureCount, noteBootFailure } from '../../daemon/boot-guard';
+import {
+  BOOT_ATTEMPTS_FILE,
+  bootFailureCount,
+  noteBootFailure,
+  resetBootGuardProcessState,
+} from '../../daemon/boot-guard';
 import { preFlightChecks } from '../preflight';
 import {
   isOrphaned,
@@ -101,6 +106,7 @@ function captureExit(): number[] {
 let pending: Promise<void> | undefined;
 
 beforeEach(() => {
+  resetBootGuardProcessState();
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -238,11 +244,21 @@ describe('runStart 失败路径最短化 + 熔断', () => {
   });
 
   it('熔断已触发且非 supervised：清零失败计数后继续启动', async () => {
-    for (let i = 0; i < 5; i++) await noteBootFailure('boom');
+    // 每轮 boot 只记一条（同进程用 reset 模拟 5 轮）→ 触发熔断
+    for (let i = 0; i < 5; i++) {
+      resetBootGuardProcessState();
+      await noteBootFailure('boom');
+    }
+    expect(await bootFailureCount()).toBe(5);
+
     pending = runStart({});
     // 熔断被放行 → 走到 loadConfig 挂闸门（说明继续了、没退）。
     await vi.waitFor(() => expect(h.releaseConfig).toBeTypeOf('function'));
-    expect(await bootFailureCount()).toBe(0);
+    // 旧的 5 条被清零；本轮 boot 重新登记了一条 in-flight 记录（成功启动时会清掉）。
+    const state = JSON.parse(readFileSync(BOOT_ATTEMPTS_FILE, 'utf8')) as {
+      failures: Array<{ reason: string }>;
+    };
+    expect(state.failures.map((f) => f.reason)).toEqual(['start']);
   });
 
   it('熔断已触发且 supervised：bootout + exit(0)，不做任何重活', async () => {
@@ -252,7 +268,10 @@ describe('runStart 失败路径最短化 + 熔断', () => {
       accounts: { app: { id: 'cli_x', tenant: 'feishu', secret: '${FOB_TEST_SECRET}' } },
       preferences: {},
     };
-    for (let i = 0; i < 5; i++) await noteBootFailure('boom');
+    for (let i = 0; i < 5; i++) {
+      resetBootGuardProcessState();
+      await noteBootFailure('boom');
+    }
     const codes = captureExit();
     await runStart({});
     expect(codes).toEqual([0]);

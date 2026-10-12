@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { basename } from 'node:path';
 import type { RunCard } from './run-renderer';
 import { formatAgoOr, formatClockOr } from '../utils/time';
 import { escapeCode, escapeMd } from '../utils/text';
@@ -228,7 +229,17 @@ export function shortPath(p: string): string {
   return rel.length > 24 ? `…${rel.slice(-24)}` : rel;
 }
 
-export function workspacesCard(current: string | undefined, named: Record<string, string>): object {
+/**
+ * /ws 面板。
+ *
+ * `confirmRemove` 命中某个工作空间时，该行换成确认行（删除是破坏性动作，单击即删
+ * 误点代价太大）——首次点击只带 `ws.removeAsk`，确认按钮才带真正的 `ws.remove`。
+ */
+export function workspacesCard(
+  current: string | undefined,
+  named: Record<string, string>,
+  confirmRemove?: string,
+): object {
   const entries = Object.entries(named);
   const elements: object[] = [];
 
@@ -238,7 +249,21 @@ export function workspacesCard(current: string | undefined, named: Record<string
   if (entries.length === 0) {
     elements.push(HR);
     elements.push(md('暂无命名工作空间。'));
-    elements.push(md('_💡 发送 `/ws save <name>` 把当前 cwd 存为命名工作空间_', 'notation'));
+    elements.push(md('_💡 也可发送 `/ws save <name>` 自定义名字。_', 'notation'));
+    // 空态不能只留一个语义空洞的「取消」：给出一键把当前 cwd 存为工作空间的入口。
+    // 有 cwd 时名字取目录名（省去手敲）；没有 cwd 时按钮仍给出下一步引导，不留死路。
+    const suggested = current ? basename(current) : '';
+    elements.push(
+      ...inlineActions([
+        suggested
+          ? {
+              text: `📌 存为「${suggested}」`,
+              value: { cmd: 'ws.save', name: suggested },
+              style: 'primary',
+            }
+          : { text: '📌 存为工作空间', value: { cmd: 'ws.save' }, style: 'primary' },
+      ]),
+    );
   } else {
     elements.push(HR);
     entries.forEach(([name, path], i) => {
@@ -251,17 +276,29 @@ export function workspacesCard(current: string | undefined, named: Record<string
             md(`_${escapeCode(tildePath(path))}_`, 'notation'),
           ]),
         ]),
-        ...inlineActions([
-          { text: '切换', value: { cmd: 'ws.use', name }, style: 'primary' },
-          { text: '删除', value: { cmd: 'ws.remove', name }, style: 'danger' },
-        ]),
       );
+      if (confirmRemove === name) {
+        // 确认行：危险动作 + 退路「取消」各占一行（`confirmActions` 的既有排版）。
+        elements.push(
+          md(`_⚠️ 确认删除工作空间 \`${escapeCode(name)}\`？只移除快捷方式，不动目录。_`, 'notation'),
+          ...confirmActions(
+            [{ text: '确认删除', value: { cmd: 'ws.remove', name }, style: 'danger' }],
+            { text: '取消', value: { cmd: 'ws.list' } },
+          ),
+        );
+      } else {
+        elements.push(
+          ...inlineActions([
+            { text: '切换', value: { cmd: 'ws.use', name }, style: 'primary' },
+            { text: '删除', value: { cmd: 'ws.removeAsk', name }, style: 'danger' },
+          ]),
+        );
+      }
       if (i < entries.length - 1) elements.push(HR);
     });
+    elements.push(HR);
+    elements.push(...inlineActions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
   }
-
-  elements.push(HR);
-  elements.push(...inlineActions([{ text: '取消', value: { cmd: 'ws.cancel' } }]));
 
   return shell('📂 工作空间', elements);
 }
@@ -411,8 +448,10 @@ export function execResultCard(info: ExecResultInfo): object {
   return shell('🖥 命令执行', elements);
 }
 
-/** /ps card: one row per running bot, current one starred, each with an
- * inline 退出 button (admin gate enforced by the dispatcher). */
+/** /ps card: one row per running bot, current one starred. 退出 is a two-step
+ * confirm: the first click only swaps that row for a confirm row (no process
+ * is touched), the confirm button carries the real `exit`. Admin gate enforced
+ * by the dispatcher. */
 export interface PsRow {
   id: string;
   appId: string;
@@ -421,8 +460,24 @@ export interface PsRow {
   isCurrent: boolean;
 }
 
-export function psCard(rows: PsRow[]): object {
-  const blocks: object[] = [md(`🖥 **Bot 进程** ×${rows.length}`, 'heading')];
+export interface PsCardOpts {
+  /** 该进程的「退出」已进入二次确认态：这一行换成确认行。 */
+  confirmId?: string;
+  /** 本进程即将退出：标题改成告别态，且不渲染任何退出按钮（点了也无人应答）。 */
+  exitingSelf?: boolean;
+}
+
+export function psCard(rows: PsRow[], opts: PsCardOpts = {}): object {
+  const { confirmId, exitingSelf } = opts;
+  const blocks: object[] = [
+    md(exitingSelf ? '👋 **本 bot 即将退出**' : `🖥 **Bot 进程** ×${rows.length}`, 'heading'),
+  ];
+  if (exitingSelf) {
+    blocks.push(md('_正在关闭本进程，此卡片将不再响应点击。_', 'notation'));
+  }
+  if (rows.length === 0) {
+    blocks.push(md('_当前没有其它 bot 在运行。_', 'notation'));
+  }
   rows.forEach((row, i) => {
     const label = row.botName ?? row.appId;
     // 一个进程一个灰底块，行尾「退出」横排。
@@ -433,16 +488,40 @@ export function psCard(rows: PsRow[]): object {
           md(`_\`${escapeCode(row.id)}\` · ${escapeMd(row.appId)} · ${escapeMd(row.startedAgo)}启动_`, 'notation'),
         ]),
       ]),
-      ...inlineActions([
-        { text: '退出', value: { cmd: 'exit', arg: row.id }, style: 'danger' },
-      ]),
     );
+    if (exitingSelf) {
+      // 本进程正在关闭：退出按钮此刻已无处投递，不渲染（点了只会像坏掉）。
+      return;
+    }
+    if (confirmId === row.id) {
+      blocks.push(
+        md(
+          row.isCurrent
+            ? '_⚠️ 这是**正在回复你的进程**，确认后会立即断开，需要人工重新拉起。_'
+            : '_⚠️ 确认关闭该 bot？_',
+          'notation',
+        ),
+        ...confirmActions(
+          [{ text: '确认退出', value: { cmd: 'exit', arg: row.id }, style: 'danger' }],
+          { text: '取消', value: { cmd: 'exit.cancel', arg: row.id } },
+        ),
+      );
+    } else {
+      // 首态只用 `exit.ask`：真正执行的 `exit` 只在确认行出现。
+      blocks.push(
+        ...inlineActions([
+          { text: '退出', value: { cmd: 'exit.ask', arg: row.id }, style: 'danger' },
+        ]),
+      );
+    }
   });
-  blocks.push(
-    { tag: 'hr' },
-    md('_用 /exit <id|#> 关掉某一个；⭐ 为当前正在回复你的进程。_', 'notation'),
-  );
-  return shell('🖥 Bot 进程', blocks);
+  if (!exitingSelf) {
+    blocks.push(
+      { tag: 'hr' },
+      md('_用 /exit <id|#> 关掉某一个；⭐ 为当前正在回复你的进程。退出需二次确认。_', 'notation'),
+    );
+  }
+  return shell(exitingSelf ? '👋 即将退出' : '🖥 Bot 进程', blocks);
 }
 
 /** /every list card: one collapsible per scheduled task with an inline

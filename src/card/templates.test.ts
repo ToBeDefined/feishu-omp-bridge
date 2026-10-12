@@ -200,6 +200,43 @@ describe('psCard', () => {
     expect(out).toContain('3 小时前');
   });
 
+  it('首态不直接执行退出：只有 exit.ask，真正的 exit 只在确认态', () => {
+    const out = JSON.stringify(
+      psCard([{ id: 'p1', appId: 'cli_a', startedAgo: '刚刚', isCurrent: false }]),
+    );
+    expect(out).toContain('"cmd":"exit.ask","arg":"p1"');
+    // 没有首击即杀的按钮。
+    expect(out).not.toContain('"cmd":"exit","arg":"p1"');
+  });
+
+  it('确认态：确认按钮的执行 arg 仍是被点的进程 id，并带当前进程额外警示', () => {
+    const sel = JSON.stringify(
+      psCard([{ id: 'p1', appId: 'cli_a', startedAgo: '刚刚', isCurrent: false }], {
+        confirmId: 'p1',
+      }),
+    );
+    expect(sel).toContain('"cmd":"exit","arg":"p1"');
+    expect(sel).not.toContain('"cmd":"exit.ask","arg":"p1"');
+    expect(sel).toContain('"cmd":"exit.cancel","arg":"p1"');
+
+    const self = JSON.stringify(
+      psCard([{ id: 'p1', appId: 'cli_a', startedAgo: '刚刚', isCurrent: true }], {
+        confirmId: 'p1',
+      }),
+    );
+    expect(self).toContain('正在回复你的进程');
+  });
+
+  it('exitingSelf：告别态，不再渲染任何退出按钮', () => {
+    const out = JSON.stringify(
+      psCard([{ id: 'p1', appId: 'cli_a', startedAgo: '刚刚', isCurrent: true }], {
+        exitingSelf: true,
+      }),
+    );
+    expect(out).toContain('即将退出');
+    expect(out).not.toContain('"cmd":"exit');
+  });
+
   it('renders a single process without the count noise', () => {
     const out = JSON.stringify(
       psCard([{ id: 'p1', appId: 'cli_a', startedAgo: '刚刚', isCurrent: true }]),
@@ -621,20 +658,48 @@ describe('helpCard', () => {
 });
 
 describe('workspacesCard', () => {
-  it('marks the current workspace and keeps switch/remove actions per row', () => {
+  it('首态每行是「切换 / 删除」，删除只进入确认态而非直接删', () => {
     const out = JSON.stringify(
       workspacesCard('/repo', { 'proj-a': '/repo', 'proj-b': '/other' }),
     );
     expect(out).toContain('proj-a');
     expect(out).toContain('⭐');
     expect(out).toContain('"cmd":"ws.use","name":"proj-b"');
+    // 首次点击只带 removeAsk；真正执行的 ws.remove 只在确认态出现。
+    expect(out).toContain('"cmd":"ws.removeAsk","name":"proj-b"');
+    expect(out).not.toContain('"cmd":"ws.remove"');
+  });
+
+  it('删除确认态给出确认行：确认按钮的 value 与首次点击不同', () => {
+    const out = JSON.stringify(
+      workspacesCard('/repo', { 'proj-a': '/repo', 'proj-b': '/other' }, 'proj-b'),
+    );
+    // 确认按钮带真正的执行 cmd，且指向同一个工作空间。
     expect(out).toContain('"cmd":"ws.remove","name":"proj-b"');
+    // 该行不再渲染首态的 removeAsk（换成了确认行）。
+    expect(out).not.toContain('"cmd":"ws.removeAsk","name":"proj-b"');
+    // 未确认的另一行仍是首态。
+    expect(out).toContain('"cmd":"ws.removeAsk","name":"proj-a"');
+    // 退路「取消」把卡换回普通列表。
+    expect(out).toContain('"cmd":"ws.list"');
+    expect(out).toContain('确认删除工作空间');
   });
 
   it('shows the empty-state hint', () => {
     const out = JSON.stringify(workspacesCard(undefined, {}));
     expect(out).toContain('暂无命名工作空间');
     expect(out).toContain('/ws save');
+  });
+
+  it('空态给出一键保存的推进动作，不再只有 ws.cancel', () => {
+    // 有 cwd：按钮直接用目录名保存。
+    const withCwd = JSON.stringify(workspacesCard('/home/me/proj', {}));
+    expect(withCwd).toContain('"cmd":"ws.save","name":"proj"');
+    expect(withCwd).not.toContain('"cmd":"ws.cancel"');
+    // 没有 cwd：仍有一个推进按钮（引导下一步），不留死路。
+    const noCwd = JSON.stringify(workspacesCard(undefined, {}));
+    expect(noCwd).toContain('"cmd":"ws.save"');
+    expect(noCwd).not.toContain('"cmd":"ws.cancel"');
   });
 });
 

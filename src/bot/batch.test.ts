@@ -263,8 +263,10 @@ describe('心跳：事件流静默期间卡片继续走动', () => {
   /** 控制行（标题之后的第一个元素）的 JSON —— 「用时」就写在里面。 */
   const controlRow = (card: object): string => {
     // 这里的 card 都是 renderCard 的产物（fakeChannel 只记录被推出去的卡）。
+    // 运行态的「状态 + ⏹」在卡片**末尾**的底部控制区里。
     const rendered = card as RunCard;
-    return JSON.stringify(rendered.body.elements[1]);
+    const blocks = rendered.body.elements.filter((e) => JSON.stringify(e).includes('"cmd":"stop"'));
+    return JSON.stringify(blocks.at(-1) ?? {});
   };
 
   it('没有新事件也会按时 patch，run 终结后定时器彻底停掉', async () => {

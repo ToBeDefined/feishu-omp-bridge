@@ -47,6 +47,33 @@ function cardBody(card: object): unknown[] {
   return cardElements(card).slice(1);
 }
 
+/** 运行态底部控制区（右列带 ⏹ 终止的那个 column_set）。 */
+function controlBlock(card: object): Record<string, unknown> {
+  const found = cardElements(card).filter((e) => JSON.stringify(e).includes('"cmd":"stop"'));
+  if (found.length !== 1 || typeof found[0] !== 'object' || found[0] === null) {
+    throw new Error(`expected exactly one control block, got ${found.length}`);
+  }
+  return found[0] as Record<string, unknown>;
+}
+
+interface ControlColumns {
+  columns: Array<{ width?: string; vertical_align?: string; elements: Array<{ content?: string }> }>;
+}
+
+/** 控制区左列的文本行（先用量行，后状态行）。 */
+function controlLines(card: object): string[] {
+  const col = (controlBlock(card) as unknown as ControlColumns).columns[0];
+  if (!col) throw new Error('control block has no left column');
+  return col.elements.map((e) => String(e.content ?? ''));
+}
+
+/** 控制区右列（⏹ 所在列）。 */
+function controlRight(card: object): ControlColumns['columns'][number] {
+  const col = (controlBlock(card) as unknown as ControlColumns).columns[1];
+  if (!col) throw new Error('control block has no right column');
+  return col;
+}
+
 
 
 /** Longest markdown content starting with the given prefix, if any. */
@@ -268,21 +295,45 @@ describe('renderCard', () => {
     );
   });
 
-  it('把「状态 + ⏹ 终止」行放在标题之下、正文之前', () => {
-    const state = { ...longRunState(3), startedAt: 1_000_000, endedAt: 1_012_400 };
-    const elements = cardBody(renderCard(state));
-    // 第一个元素（标题之后）就是控制行：长回复下手机一屏也够得到 ⏹。
-    const json = JSON.stringify(elements[0]);
-    expect(elements[0]).toMatchObject({ tag: 'column_set' });
-    expect(json).toContain('⏹ 终止');
-    expect(json).toContain('"cmd":"stop"');
-    expect(json).toContain('正在输出');
-    expect(json).toContain('⏱ 用时 12.4s');
-    // 正文第一段排在其后 —— 控制行不是文末元素。
+  it('运行态底部控制区：分割线 + 用量/状态两行，⏹ 终止 与两行垂直居中', () => {
+    const state = {
+      ...longRunState(3),
+      startedAt: 1_000_000,
+      endedAt: 1_012_400,
+      usage: { inputTokens: 11_100, outputTokens: 1_200, costUsd: 0.01234 },
+    };
+    const elements = cardElements(renderCard(state));
+    const blockIndex = elements.findIndex((e) => JSON.stringify(e).includes('"cmd":"stop"'));
+    // 控制区是最后一个元素（用量行、状态行、⏹ 都在这里）。
+    expect(blockIndex).toBe(elements.length - 1);
+    // 紧挨着一条分割线，正文整段在它上面。
+    expect((elements[blockIndex - 1] as { tag: string }).tag).toBe('hr');
     const firstBody = elements.findIndex((e) => JSON.stringify(e).includes('text block 0'));
     expect(firstBody).toBeGreaterThan(0);
-    // 控制区上移后不再需要尾部那条分割线。
-    expect(countByTag(elements, 'hr')).toBe(0);
+    expect(firstBody).toBeLessThan(blockIndex);
+    // 左列两行：token/费用在上，`状态 · 用时` 独立成行在下。
+    const lines = controlLines(renderCard(state));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain('tok');
+    expect(lines[0]).toContain('💰');
+    expect(lines[1]).toContain('正在输出');
+    expect(lines[1]).toContain('⏱ 用时 12.4s');
+    expect(lines[1]).not.toContain('tok');
+    // 右列是 ⏹，两列都垂直居中 —— 按钮对齐这两行的高度中线。
+    const right = controlRight(renderCard(state));
+    expect(right.width).toBe('auto');
+    expect(right.vertical_align).toBe('center');
+    expect(JSON.stringify(right)).toContain('⏹ 终止');
+    const { columns } = controlBlock(renderCard(state)) as unknown as ControlColumns;
+    expect(columns[0]?.width).toBe('weighted');
+    expect(columns[0]?.vertical_align).toBe('center');
+  });
+
+  it('没有 usage 时底部控制区只留状态行（不留空占位）', () => {
+    const state = { ...longRunState(1), startedAt: 1_000_000, endedAt: 1_012_400 };
+    const lines = controlLines(renderCard(state));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('⏱ 用时 12.4s');
   });
 
   it('运行卡顶层标题恒定：第一个元素是 heading，且不随状态/心跳变化', () => {
@@ -294,7 +345,7 @@ describe('renderCard', () => {
       content: '🤖 **OMP**',
       text_size: 'heading',
     });
-    expect(running[1]).toMatchObject({ tag: 'column_set' }); // 控制行紧随其后
+    expect(JSON.stringify(running.at(-1))).toContain('"cmd":"stop"'); // 控制区在卡片末尾
     const done = cardElements(renderCard({ ...longRunState(2), terminal: 'done', footer: null }));
     expect(done[0]).toMatchObject({ content: '🤖 **OMP**' });
     const errored = cardElements(
@@ -307,7 +358,7 @@ describe('renderCard', () => {
   it('运行中的已用时长随时长递增（同一状态不同时刻渲染）', () => {
     const startedAt = 1_000_000;
     const head = (elapsedMs: number): string =>
-      JSON.stringify(cardBody(renderCard({ ...longRunState(1), startedAt, endedAt: startedAt + elapsedMs }))[0]);
+      controlLines(renderCard({ ...longRunState(1), startedAt, endedAt: startedAt + elapsedMs })).at(-1) ?? '';
     expect(head(0)).toContain('⏱ 用时 0.0s');
     expect(head(12_400)).toContain('⏱ 用时 12.4s');
     expect(head(65_000)).toContain('⏱ 用时 1 分 5 秒');
@@ -317,7 +368,7 @@ describe('renderCard', () => {
     // 心跳定时器就是这么刷新的：状态一个字节没变，只把「现在」喂进去。
     const state: RunState = { ...longRunState(1), startedAt: 1_000_000 };
     const head = (now: number): string =>
-      JSON.stringify(cardBody(renderCard(state, { now }))[0]);
+      controlLines(renderCard(state, { now })).at(-1) ?? '';
     expect(head(1_000_400)).toContain('⏱ 用时 0.4s');
     expect(head(1_005_400)).toContain('⏱ 用时 5.4s');
     expect(head(1_065_000)).toContain('⏱ 用时 1 分 5 秒');
@@ -418,18 +469,19 @@ describe('renderCard', () => {
     expect(JSON.stringify(elements)).not.toContain('💰');
   });
 
-  it('运行中脚注不重复时长（控制行已经在走表）', () => {
+  it('运行中脚注不重复时长（时长只在状态行上）', () => {
     const state = {
       ...longRunState(1),
       startedAt: 1_000_000,
       endedAt: 1_012_400,
       usage: { inputTokens: 2_000, outputTokens: 300, costUsd: 0.5 },
     };
-    const elements = cardBody(renderCard(state));
-    expect(JSON.stringify(elements[0])).toContain('⏱ 用时 12.4s');
-    const notes = notationMarkdown(elements);
-    expect(notes).toContain('🧮 2.3k tok（入 2k / 出 300） · 💰 $0.5000');
-    expect(notes.filter((line) => line.includes('用时'))).toEqual([]);
+    const lines = controlLines(renderCard(state));
+    expect(lines).toHaveLength(2);
+    // 用量行只有 token 与费用，用时留给下面那行状态。
+    expect(lines[0]).toBe('🧮 2.3k tok（入 2k / 出 300） · 💰 $0.5000');
+    expect(lines[0]).not.toContain('用时');
+    expect(lines[1]).toContain('⏱ 用时 12.4s');
   });
 
   it('usage 事件经 reduce 进状态后，脚注就带上 token 与费用', () => {

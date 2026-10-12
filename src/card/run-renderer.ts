@@ -82,13 +82,9 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
     );
   }
 
-  // Control/result line goes FIRST, ahead of every body element: a long
-  // answer used to bury ⏹ 终止 (and the failure mark) below the fold, out of
-  // thumb reach on a phone. Pagination only ever trims `blocks`, so the row
-  // cannot be split away onto another page. It sits below the title so the
-  // whole control area (title + status + ⏹) stays in one thumb-reachable
-  // block.
-  const head = headerRow(state, now);
+  // Terminal headline (what happened) still goes first, ahead of the body: a
+  // long answer used to bury the failure mark below the fold.
+  const head = resultRow(state);
   if (head) elements.push(head);
 
   if (opts?.topNote) elements.push(noteMd(opts.topNote));
@@ -107,8 +103,41 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
     elements.push(noteMd('_（未返回内容）_'));
   }
 
-  const usage = usageNote(state, now);
-  if (usage) elements.push(usage);
+  // 底部控制区（仅运行态）：一条分割线，下面是
+  // `token/费用` 与 `状态 · 用时` 两行堆在左列，⏹ 终止 在右列与这两行垂直居中。
+  if (state.terminal === 'running') {
+    const usageText = usageLine(state);
+    const left: object[] = [];
+    if (usageText) left.push(noteMd(usageText));
+    left.push(noteMd(statusLine(state, now)));
+    elements.push({ tag: 'hr' });
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: 'small',
+      columns: [
+        {
+          tag: 'column',
+          width: 'weighted',
+          weight: 1,
+          vertical_align: 'center',
+          elements: left,
+        },
+        {
+          tag: 'column',
+          width: 'auto',
+          vertical_align: 'center',
+          elements: [stopButton()],
+        },
+      ],
+    });
+  } else {
+    const usage = usageNote(state, now);
+    if (usage) {
+      elements.push({ tag: 'hr' });
+      elements.push(usage);
+    }
+  }
 
   if (opts?.bottomNote) elements.push(noteMd(opts.bottomNote));
 
@@ -276,45 +305,36 @@ function stopButton(): object {
   };
 }
 
-/** The card's first element: while running the control row (status + elapsed
- *  + ⏹ on the right), once the run ended badly the terminal result headline.
- *  Both live above the body — the stop button stays in thumb reach and a
- *  failure is a heading instead of a line of small grey notation at the very
- *  bottom. A `done` run gets no banner: a successful answer needs no stamp,
- *  and the pagination flow renders intermediate pages as `done`, where a
- *  「已完成」 headline would be a lie. */
-function headerRow(state: RunState, now: number): object | undefined {
+/** 终态结果行（卡片第一个元素）：失败 / 探活超时 / 被中断用一个 heading 说明，
+ *  而不是文末一行小灰字。运行态没有这一行 —— 状态与 ⏹ 都在卡片底部的控制区里
+ *  （见 `renderCard` 的运行态拼装）。成功的 `done` 不加横幅：答案本身不需要盖章，
+ *  且分页中间页也是以 `done` 渲染的，加「已完成」就是撒谎。 */
+function resultRow(state: RunState): object | undefined {
   if (state.terminal === 'interrupted') return md('⏹ **已被中断**', 'heading');
   if (state.terminal === 'idle_timeout') {
     const mins = state.idleTimeoutMinutes ?? 0;
     return md(`⏱ **${mins} 分钟无响应，已自动终止**`, 'heading');
   }
   if (state.terminal === 'error') return md('❌ **运行失败**', 'heading');
-  if (state.terminal !== 'running') return undefined;
+  return undefined;
+}
 
-  // 状态文案 + 已用时长挤在一行，右边留给 ⏹。
-  const text =
-    [footerLabel(state.footer), elapsedText(state, now)].filter(Boolean).join(' · ') || '⏱ 运行中';
-  return {
-    tag: 'column_set',
-    flex_mode: 'none',
-    horizontal_spacing: 'small',
-    columns: [
-      {
-        tag: 'column',
-        width: 'weighted',
-        weight: 1,
-        vertical_align: 'center',
-        elements: [noteMd(text)],
-      },
-      {
-        tag: 'column',
-        width: 'auto',
-        vertical_align: 'center',
-        elements: [stopButton()],
-      },
-    ],
-  };
+/** 运行态状态行：agent 在干什么 + 已用时长（示例：`🧠 正在思考 · ⏱ 用时 1 分 32 秒`）。 */
+function statusLine(state: RunState, now: number): string {
+  return (
+    [footerLabel(state.footer), elapsedText(state, now)].filter(Boolean).join(' · ') || '⏱ 运行中'
+  );
+}
+
+/** 用量行（只有 token 与费用）：已用时长归下面的状态行，别重复。 */
+function usageLine(state: RunState): string | undefined {
+  const usage = state.usage;
+  if (!usage) return undefined;
+  const parts: string[] = [];
+  const tokens = tokensText(usage);
+  if (tokens) parts.push(tokens);
+  if (usage.costUsd !== undefined) parts.push(`💰 ${formatCost(usage.costUsd)}`);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
 }
 
 function footerLabel(status: FooterStatus): string | undefined {

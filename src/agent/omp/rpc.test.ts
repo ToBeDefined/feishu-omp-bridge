@@ -87,6 +87,27 @@ describe('translateOmpFrame', () => {
     ]);
 
     expect(events({ type: 'agent_end' })).toEqual([{ type: 'done' }]);
+    // isTerminal:false = a scheduled continuation (auto-retry, compaction
+    // continuation, queued steer/follow-up drain) precedes the final settle.
+    expect(events({ type: 'agent_end', isTerminal: false })).toEqual([]);
+    expect(events({ type: 'agent_end', isTerminal: true })).toEqual([{ type: 'done' }]);
+  });
+
+  it('maps notice frames to non-terminal card notices', () => {
+    expect(events({
+      type: 'notice',
+      level: 'error',
+      message: 'session save failed',
+      source: 'session-persistence',
+    })).toEqual([{ type: 'ui_notice', message: 'session save failed', level: 'error' }]);
+
+    expect(events({ type: 'notice', level: 'warning', message: 'slow flush' })).toEqual([
+      { type: 'ui_notice', message: 'slow flush', level: 'warning' },
+    ]);
+    // Unknown level and non-string message are dropped rather than mis-leveled.
+    expect(events({ type: 'notice', level: 'boom', message: 'x' })).toEqual([
+      { type: 'ui_notice', message: 'x', level: undefined },
+    ]);
   });
 
   it('maps failed command responses to errors', () => {

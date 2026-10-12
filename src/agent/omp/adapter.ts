@@ -479,14 +479,20 @@ async function* createEventStream(
         continue;
       }
       for (const event of translateOmpFrame(parsed)) {
+        // Close stdin BEFORE yielding the terminal event: consumers break out
+        // of their for-await on done/error, which return()s this generator at
+        // the yield and skips everything after it. OMP 18.10 no longer exits
+        // on its own after agent_end while stdin stays open (18.8.x self-exited),
+        // so skipping endInput would leave every run to the 2s SIGTERM net in
+        // the caller's reap path instead of a clean exit-0.
+        if (event.type === 'done' || event.type === 'error') {
+          terminal = true;
+          endInput(child);
+        }
         yield event;
-        if (event.type === 'done' || event.type === 'error') terminal = true;
       }
 
-      if (terminal) {
-        endInput(child);
-        break;
-      }
+      if (terminal) break;
     }
   } finally {
     reader.close();

@@ -48,6 +48,25 @@
   1000 字符、禁交互、写审计日志。
 
 ### Fixed
+- **适配 OMP 18.10.1（三处 RPC 行为变化，均已对真机验证）**：
+  - **`agent_end` 带非终止标记**：OMP 现在会给「调度了后续动作就结束」的
+    `agent_end` 打上 `isTerminal:false`（自动重试续跑、压缩续跑、排队的
+    steer/follow_up 排空、IRC 唤醒），真正收尾时再发一帧 `isTerminal:true`。
+    bridge 原来把**每一帧** `agent_end` 都当运行结束，会在续跑刚排上时杀掉
+    进程 —— 续跑的回合既不渲染也写丢。现在只有 `isTerminal !== false` 才算
+    终止（旧版 OMP 不带该字段，行为不变）。
+  - **OMP 不再在 stdin 打开时自行退出**：18.8 及以前回合结束就自行退出；
+    18.10 要等 stdin 关闭。而 bridge 的事件消费方（batch/comments）都在
+    `done` 事件上直接 `break`，`for await` 的 break 会把生成器在 `yield`
+    处 `return()` 掉 —— 适配器里 yield **之后**的 `endInput`（关 stdin）
+    从未执行。结果每条自然结束的消息都走到 reap 的 2s 兜底：warn +
+    `SIGTERM` 杀进程组，而非干净的 exit 0。现在适配器在 yield 终止事件
+    **之前**先 `endInput`，实测 `done` 后 28ms 干净退出。
+  - **`notice` 帧形状对不上（死代码）**：线上形状是
+    `{type, level, message, source?}`（wire schema 与 18.10.1 源码确认），
+    bridge 却在读 `frame.error`，永不命中 —— session 持久化失败等错误级
+    通知被静默丢弃。现在映射为卡片内非终止的 `ui_notice`（ℹ️/⚠️ 图标），
+    不结束 run。
 - **「标题」只认 `/rename` 起的名字**：`/ctx`、`/status` 与 `/rename` 的无参查询
   从前会拿**最后一条用户消息**当标题显示（还标上 🏷），看起来像是用户给会话起的
   名字；没有名字时还渲染「未命名」占位。现在没有真名就**不渲染标题行**，也不再有

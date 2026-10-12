@@ -45,6 +45,10 @@ interface OmpFrame {
   result?: unknown;
   isError?: boolean;
   message?: OmpMessage | string;
+  /** agent_end only: false when a scheduled continuation follows before the final settle. */
+  isTerminal?: boolean;
+  /** notice only: severity, matching the ui_notify levels. */
+  level?: string;
   partialResult?: unknown;
   method?: string;
   title?: string;
@@ -144,10 +148,21 @@ export function* translateOmpFrame(raw: unknown): Generator<AgentEvent> {
       }
       return;
     case 'agent_end':
-      yield { type: 'done' };
+      // OMP 18.9+/18.10 tags scheduled continuations (auto-retry, compaction
+      // continuation, queued steer/follow-up drain) with isTerminal:false —
+      // a later, truly final agent_end follows. Tearing down on those kills
+      // the continuation mid-flight. Older OMP omits the field, so `!== false`
+      // keeps the historical terminate-on-first-agent_end behavior there.
+      if (frame.isTerminal !== false) yield { type: 'done' };
       return;
     case 'notice':
-      if (typeof frame.error === 'string') yield { type: 'error', message: frame.error };
+      // Wire shape is {type, level, message, source?} (verified against omp
+      // 18.10.1); the old `frame.error` read never matched, so persistence
+      // failures were silently dropped. Notices are session diagnostics from
+      // a living run — surface them in the card without ending the run.
+      if (typeof frame.message === 'string') {
+        yield { type: 'ui_notice', message: frame.message, level: noticeType(frame.level) };
+      }
       return;
     case 'subagent_lifecycle':
       if (isRecord(frame.payload)) {

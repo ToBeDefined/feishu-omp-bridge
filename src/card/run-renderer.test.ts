@@ -206,9 +206,9 @@ describe('renderCard', () => {
     expect(groupJson).toContain('**Error**');
   });
 
-  it('工具术语全卡统一为「工具」：合并行与单类行用同一个短标签', () => {
-    // 曾经合并行是「🛠 工具」、单类行是「🛠 工具调用」；统一成「工具调用」后用户
-    // 又要求用更短的「工具」，所以现在的约束是：全卡只有一个词，且它很短。
+  it('工具标签：合并行用短词「工具」，只有工具的单类行保留「工具调用」', () => {
+    // 用户先要求统一，再要求合并行用更短的「工具」，随后明确：只有工具时仍要写全
+    // 「工具调用」。这两个标签是刻意区分的，别再顺手统一回去。
     const state = longRunState(0);
     state.blocks.push({ kind: 'thinking', content: '先看调用链', active: false });
     state.blocks.push({ kind: 'tool', tool: tool(1) });
@@ -217,8 +217,8 @@ describe('renderCard', () => {
     const json = JSON.stringify(renderCard({ ...state, terminal: 'done', footer: null }));
     expect(json).toContain('🧠 **思考** ×1 · 🛠 **工具** ×1');
     expect(json).toContain('🛠 **工具** ×1');
-    // 长词「工具调用」在任何面板标题里都不该再出现。
-    expect(json).not.toContain('工具调用** ×');
+    // 合并行不带长词（长词只应出现在只有工具的那类行里）。
+    expect(json).not.toContain('🧠 **思考** ×1 · 🛠 **工具调用** ×1');
     // 巡检：工具箱 emoji 全仓未使用，卡片也不引入。
     expect(json).not.toContain('🧰');
   });
@@ -239,13 +239,13 @@ describe('renderCard', () => {
       { kind: 'tool', tool: tool(2) },
     ]);
     expect(toolsOnly).toHaveLength(1);
-    expect(toolsOnly[0]).toContain('工具** ×2');
+    expect(toolsOnly[0]).toContain('工具调用** ×2');
     expect(toolsOnly[0]).not.toContain('思考过程');
 
     const thinkingOnly = panelsOf([{ kind: 'thinking', content: '只有一个思考段', active: false }]);
     expect(thinkingOnly).toHaveLength(1);
     expect(thinkingOnly[0]).toContain('思考过程');
-    expect(thinkingOnly[0]).not.toContain('工具');
+    expect(thinkingOnly[0]).not.toContain('工具调用');
   });
 
   it('renders a long text block in full (no silent truncation — reduce splits it first)', () => {

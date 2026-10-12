@@ -340,7 +340,15 @@ function noteCard(content: string): object {
  */
 export function stripRunningState(card: object): object {
   const elements = (card as { body?: { elements?: unknown[] } }).body?.elements;
-  const kept = (Array.isArray(elements) ? elements : []).filter((el) => !isRunningStateElement(el));
+  const list = Array.isArray(elements) ? elements : [];
+  const kept = list.filter((el) => !isRunningStateElement(el));
+  // 卡片已经处于**终态**（有内容，且没有任何运行态元素被剥掉）时不要再贴
+  // 「进程中断」：run 已经跑完、只是崩溃恢复记录没来得及删的卡片，贴上去就是
+  // 误报（用户看到一条完整的回复被标成"中断"）。
+  const finished = list.length > 0 && kept.length === list.length;
+  if (finished) {
+    return { schema: '2.0', config: { update_multi: true }, body: { elements: kept } };
+  }
   kept.push({ tag: 'markdown', content: '---', text_size: 'notation' });
   kept.push({
     tag: 'markdown',

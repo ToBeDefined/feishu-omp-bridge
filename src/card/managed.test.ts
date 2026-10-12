@@ -43,6 +43,23 @@ describe('stripRunningState', () => {
     expect(json).toContain('进程中断');
   });
 
+  it('已完工的卡片（没有运行态元素）不贴「进程中断」——崩溃记录没删干净也不该误报', () => {
+    const finished = {
+      schema: '2.0',
+      body: {
+        elements: [
+          { tag: 'markdown', content: '已经输出的完整正文' },
+          { tag: 'markdown', content: '---', text_size: 'notation' },
+        ],
+      },
+    };
+    const out = stripRunningState(finished);
+    const json = JSON.stringify(out);
+    expect(json).toContain('已经输出的完整正文');
+    expect(json).not.toContain('进程中断');
+    expect(json).not.toContain('以上为已输出的部分内容');
+  });
+
   it('survives a card with no body', () => {
     const out = JSON.stringify(stripRunningState({}));
     expect(out).toContain('以上为已输出的部分内容');
@@ -88,7 +105,7 @@ describe('finalizeByKind', () => {
     expect(out).not.toContain('正在压缩');
   });
 
-  it('preserves a streaming card snapshot with the interruption note', () => {
+  it('已完工的快照（无运行态元素）收尾时不贴中断注解', () => {
     const out = JSON.stringify(
       finalizeByKind('stream', {
         schema: '2.0',
@@ -96,7 +113,33 @@ describe('finalizeByKind', () => {
       }),
     );
     expect(out).toContain('已输出内容');
+    expect(out).not.toContain('以上为已输出的部分内容');
+  });
+
+  it('仍在运行态的快照收尾时剥掉 ⏹ 并贴中断注解', () => {
+    const out = JSON.stringify(
+      finalizeByKind('stream', {
+        schema: '2.0',
+        body: {
+          elements: [
+            { tag: 'markdown', content: '已输出内容' },
+            {
+              tag: 'column_set',
+              elements: [
+                {
+                  tag: 'button',
+                  text: { tag: 'plain_text', content: '⏹ 终止' },
+                  value: { cmd: 'stop' },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    expect(out).toContain('已输出内容');
     expect(out).toContain('以上为已输出的部分内容');
+    expect(out).not.toContain('⏹');
   });
 });
 

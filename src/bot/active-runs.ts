@@ -109,6 +109,11 @@ export class ActiveRuns {
     return this.handles.has(chatId) || this.claims.has(chatId);
   }
 
+  /** 进程内是否没有任何在跑/占位的 run（发布/重启前的排空判断）。 */
+  idle(): boolean {
+    return this.handles.size === 0 && this.claims.size === 0;
+  }
+
   /**
    * Whether any run is active for this chat across scopes: the bare chat
    * id (p2p / plain group) or any topic scope `${chatId}:${threadId}`.

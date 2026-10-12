@@ -292,3 +292,15 @@ describe('ActiveRuns slot reservation', () => {
     expect(runs.claim('oc_1')).toBeDefined();
   });
 });
+
+describe('idle（发布前排空判断）', () => {
+  it('有 claim 或 run 时非 idle，全部释放后回到 idle', () => {
+    const runs = new ActiveRuns();
+    expect(runs.idle()).toBe(true);
+    const claim = runs.claim('oc_a');
+    expect(claim).toBeDefined();
+    expect(runs.idle()).toBe(false);
+    runs.releaseClaim(claim!);
+    expect(runs.idle()).toBe(true);
+  });
+});

@@ -1,5 +1,6 @@
 import type { CommandContext, Handler } from '../index';
 import { RESTART_FLUSH_GRACE_MS, reply } from '../shared';
+import { waitForRunsToDrain } from './release';
 import { log } from '../../core/logger';
 import { clearOnlineNotice, markOnlineNotice } from '../../bot/online-notify';
 import { restartCard } from '../../card/templates';
@@ -26,6 +27,9 @@ async function handleRestart(_args: string, ctx: CommandContext): Promise<void> 
     await reply(ctx, '🔄 正在重启…');
   }
   try {
+    // 先等在跑的 run 收尾：kickstart 会连带杀掉它们，队列只在内存里，重启后
+    // 那条消息就彻底丢了。与 /release 同一处理。
+    await waitForRunsToDrain(ctx.activeRuns);
     // The new process sends the boot confirmation for a real launchd restart.
     await markOnlineNotice(ctx.msg.chatId, 'notify', undefined, messageId);
     await new Promise((resolve) => setTimeout(resolve, RESTART_FLUSH_GRACE_MS));

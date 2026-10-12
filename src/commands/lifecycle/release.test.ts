@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import type { CommandContext } from '../index';
-import { releaseHandlers } from './release';
+import { releaseHandlers, waitForRunsToDrain } from './release';
 import { runRelease, type ReleaseResult } from '../../release/run';
 import { markOnlineNotice } from '../../bot/online-notify';
 
@@ -49,7 +49,8 @@ function makeCtx(): { ctx: CommandContext; sent: string[]; restartProcess: Mock 
     sessions: {},
     workspaces: {},
     agent: {},
-    activeRuns: {},
+    // 发布前要等 run 排空：这里视为空闲（排空行为另有单测）。
+    activeRuns: { idle: () => true },
     controls: { restartProcess },
   } as unknown as CommandContext;
   return { ctx, sent: h.sent, restartProcess };
@@ -118,5 +119,37 @@ describe('/release', () => {
     resolveFirst({ ok: true });
     await first;
     expect(restartProcess).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('waitForRunsToDrain', () => {
+  it('已经空闲时立即返回', async () => {
+    const drained = await waitForRunsToDrain({ idle: () => true }, 0);
+    expect(drained).toBe(true);
+  });
+
+  it('超时后返回 false（不无限等）', async () => {
+    vi.useFakeTimers();
+    try {
+      const drained = waitForRunsToDrain({ idle: () => false }, 1000);
+      await vi.advanceTimersByTimeAsync(1200);
+      expect(await drained).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('run 排空后返回 true', async () => {
+    vi.useFakeTimers();
+    try {
+      let running = true;
+      const drained = waitForRunsToDrain({ idle: () => !running }, 10_000);
+      await vi.advanceTimersByTimeAsync(600);
+      running = false;
+      await vi.advanceTimersByTimeAsync(600);
+      expect(await drained).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

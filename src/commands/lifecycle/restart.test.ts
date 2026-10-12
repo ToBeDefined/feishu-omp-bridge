@@ -16,6 +16,8 @@ function makeCtx(realRestart: boolean): CommandContext {
     controls: { restartProcess: async () => realRestart },
     scope: 'oc_1',
     chatMode: 'p2p',
+    // 重启前要等 run 排空：这里视为空闲（排空行为另有单测）。
+    activeRuns: { idle: () => true },
   } as unknown as CommandContext;
 }
 

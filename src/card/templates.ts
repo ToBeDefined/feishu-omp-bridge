@@ -577,9 +577,15 @@ export function everyCard(rows: EveryRow[]): object {
         border: 'grey',
         elements: [
           md(codeFence(row.prompt)),
-          ...inlineActions([
-            { text: '🗑 删除', value: { cmd: 'every.rm', arg: row.id }, style: 'danger' },
-          ]),
+          // 裸 button 直接放进面板：**不要**在这里套 inlineActions（column_set 嵌在
+          // collapsible_panel 里在本仓没有先例，cardkit 可能整卡拒收，而 /every 是
+          // 常用命令，不值得拿它赌）。这在 S6 上是有意保留的例外。
+          {
+            tag: 'button',
+            text: { tag: 'plain_text', content: '🗑 删除' },
+            type: 'danger',
+            behaviors: [{ type: 'callback', value: { cmd: 'every.rm', arg: row.id } }],
+          },
         ],
       }),
     );

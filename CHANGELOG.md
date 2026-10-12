@@ -14,6 +14,24 @@
 ## [Unreleased]
 
 ### Changed
+- **UI 风格统一（三批，按 S1–S10 规范）**：先定规范再逐卡比对渲染形状。
+  - **列表 / 搜索 / agent 卡**：`/history` 空态与页越界不再死胡同（并修掉「引用了不存在的
+    『继续对话』按钮」与「第 9-8 个」反向区间两个 bug）；`/search` 越界给「没有更多结果了」、
+    空态补 heading；`🆔`→`🔗`、`✅ 当前`→`⭐ 当前`、行首 `**#1** · `→`**#1** `；
+    `searchDetailCard` 按钮顺序改为主操作在左；agent 卡补 `🤖 **<标题>**` heading，按钮从
+    `flow/auto` 改走 `inlineRow`（每行 ≤2）。
+  - **核心会话 / 配置 / 账户 / 模型卡**：删掉卡片内部所有装饰性 `hr`；补齐 heading 与上下文
+    notation；裸 markdown 键值块改**灰底色块**（`configSavedCard` / `accountSuccessCard` /
+    `modelSavedCard`）；标点统一中文全角、**标签:值统一半角冒号**；三处 `escapeCode/escapeMd`
+    补齐（`reason` / `errorMessage` / `model` selector）；`/timeout` 危险动作移到最右、`/ws`
+    确认态去掉重复「取消」；失败态补下一步（`/compact`、`/release`）；`/ps` 空态去掉 `×0`；
+    summary 收敛为短标题短语（`等待收尾` / `正在校验` / `🎛 切换模型`）；思考强度统一用 `💭`
+    （🧠 只留给思考面板）。
+  - **规范中的两条例外**（写死在实现注释里）：**E1** 镜像工具/API 字段名的标签保留英文原文
+    （`**Command**` / `**File**: \`path\`` 等，块状无冒号、行内半角冒号）；**E2** 空值/缺省类
+    状态文案仍用中文斜体（`_未设置_` / `_跟随默认_`）。另：`/every` 的「🗑 删除」有意保留**裸
+    button**（不套 `inlineActions`）——`column_set` 嵌在 `collapsible_panel` 里在本仓无先例，
+    cardkit 可能整卡拒收，而 `/every` 是常用命令，不拿它冒险。
 - **UI 反馈与可达性补完（第二批次）**
   - **运行卡风格统一（对照 S1–S10 规范）**：OMP 状态面板改回**折叠灰底**（曾是全仓唯一
     `expanded:true` + `blue` 的面板，2500 字展开会把答案顶到折叠线以下）；**分页续页不再挂

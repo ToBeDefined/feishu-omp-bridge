@@ -4,7 +4,8 @@ import type { CommandContext } from '../index';
 import { modelHandlers } from './model';
 import { saveConfig } from '../../config/store';
 import { sendManagedCard, updateManagedCard } from '../../card/managed';
-import { recentModels } from '../../session/model-history';
+import { MAX_HISTORY_ENTRIES, recentModelEntries } from '../../session/model-history';
+import type * as HistoryModule from '../../session/model-history';
 import { loadModelData } from './data';
 import type * as DataModule from './data';
 
@@ -24,9 +25,11 @@ vi.mock('./data', async (importOriginal) => {
   return { ...actual, loadModelData: vi.fn() };
 });
 
-vi.mock('../../session/model-history', () => ({
-  recentModels: vi.fn(async () => []),
-}));
+// 保留真实实现（上限常量），只把取数换成 mock —— 断言里用得上 MAX_HISTORY_ENTRIES。
+vi.mock('../../session/model-history', async (importOriginal) => {
+  const actual = await importOriginal<typeof HistoryModule>();
+  return { ...actual, recentModelEntries: vi.fn(async () => []) };
+});
 
 function makeCtx(overrides: {
   formValue?: Record<string, unknown>;
@@ -73,8 +76,8 @@ function sentMarkdown(ctx: CommandContext): string[] {
 afterEach(() => {
   vi.mocked(saveConfig).mockClear();
   vi.mocked(sendManagedCard).mockClear();
-  vi.mocked(recentModels).mockClear();
-  vi.mocked(recentModels).mockResolvedValue([]);
+  vi.mocked(recentModelEntries).mockClear();
+  vi.mocked(recentModelEntries).mockResolvedValue([]);
 });
 
 describe('/model submit', () => {
@@ -170,7 +173,10 @@ describe('/model 提供方卡', () => {
       commons: [],
     });
     // 直接 /model <selector> 指定过非对话模型 → 它躺在历史里。
-    vi.mocked(recentModels).mockResolvedValue(['futu/text-embedding-3-large', 'futu/chat']);
+    vi.mocked(recentModelEntries).mockResolvedValue([
+      { selector: 'futu/text-embedding-3-large', count: 1 },
+      { selector: 'futu/chat', count: 1 },
+    ]);
 
     const ctx = makeCtx({ ompModel: 'cursor/other' });
     await modelHandlers['/model']!('', ctx);
@@ -178,5 +184,26 @@ describe('/model 提供方卡', () => {
     const card = JSON.stringify(vi.mocked(sendManagedCard).mock.calls[0]![2]);
     expect(card).not.toContain('text-embedding');
     expect(card).toContain('"arg":"futu/chat"');
+  });
+
+  it('passes each recent model’s relative time and count to the card (card stays clock-free)', async () => {
+    vi.mocked(loadModelData).mockResolvedValue({
+      fetchedAt: 1,
+      list: [{ provider: 'futu', selector: 'futu/chat' }],
+      commons: [],
+    });
+    // 命令层是唯一读时钟的地方：把 at 算成「…前」交给卡片。
+    vi.mocked(recentModelEntries).mockResolvedValue([
+      { selector: 'futu/chat', at: Date.now() - 3 * 60_000, count: 5 },
+      { selector: 'futu/embedding', at: Date.now() - 2 * 3_600_000, count: 1 },
+    ]);
+
+    const ctx = makeCtx({});
+    await modelHandlers['/model']!('', ctx);
+
+    // 历史整份取来再过滤（非对话模型会占掉名额，只取 5 条会剩不满 4 个按钮）。
+    expect(vi.mocked(recentModelEntries)).toHaveBeenCalledWith(MAX_HISTORY_ENTRIES);
+    const card = JSON.stringify(vi.mocked(sendManagedCard).mock.calls[0]![2]);
+    expect(card).toContain('chat · 3 分钟前 · 5 次');
   });
 });

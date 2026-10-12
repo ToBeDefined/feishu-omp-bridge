@@ -8,12 +8,14 @@ import {
   modelProviderCard,
   modelSavedCard,
   modelSelectCard,
+  type RecentModel,
 } from '../../card/model-card';
-import { recentModels } from '../../session/model-history';
+import { MAX_HISTORY_ENTRIES, recentModelEntries } from '../../session/model-history';
 import type { CommandContext, Handler } from '../index';
 import { recallMessage, reply, settleManagedCard } from '../shared';
 import { isChatModel, loadModelData } from './data';
 import { log } from '../../core/logger';
+import { formatAgoOr } from '../../utils/time';
 
 export const modelHandlers: Record<string, Handler> = {
   '/model': handleModel,
@@ -23,9 +25,19 @@ export const modelHandlers: Record<string, Handler> = {
  * 「最近使用」里可能躺着非对话模型（此前被用户直接 `/model <selector>` 指定过，
  * 或者过滤规则上线前用过）—— 卡片只放对话模型，否则点一下就会把会话指向一个
  * 答不了话的模型。
+ *
+ * 取满历史上限（20）再过滤：卡片每区最多 4 个按钮，滤掉几条后仍要填得满。
+ * 相对时间在这里算好（`formatAgoOr`）后交给卡片 —— 卡片层不读时钟。
  */
-async function recentChatModels(): Promise<string[]> {
-  return (await recentModels()).filter((selector) => isChatModel(selector));
+async function recentChatModels(): Promise<RecentModel[]> {
+  const entries = await recentModelEntries(MAX_HISTORY_ENTRIES);
+  return entries
+    .filter((entry) => isChatModel(entry.selector))
+    .map((entry) => {
+      const ago = formatAgoOr(entry.at, '');
+      // 旧 `string[]` 迁移来的记录没有时间戳 → 不写「…前」，也不编一个时间。
+      return { selector: entry.selector, count: entry.count, ...(ago === '' ? {} : { ago }) };
+    });
 }
 
 async function handleModel(args: string, ctx: CommandContext): Promise<void> {

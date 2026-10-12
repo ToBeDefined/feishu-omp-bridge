@@ -82,6 +82,30 @@ function cardMarkdown(card: object): string {
     .join('\n');
 }
 
+/** 卡片里所有按钮的标签，按渲染顺序（快捷区、提供方、动作行都走 column_set）。 */
+function buttonLabels(card: object): string[] {
+  if (!('body' in card)) return [];
+  const body = card.body;
+  if (typeof body !== 'object' || body === null) return [];
+  const labels: string[] = [];
+  for (const row of readElements(body)) {
+    if (typeof row !== 'object' || row === null || !('columns' in row)) continue;
+    const { columns } = row as { columns?: unknown };
+    if (!Array.isArray(columns)) continue;
+    for (const column of columns) {
+      if (typeof column !== 'object' || column === null || !('elements' in column)) continue;
+      for (const el of readElements(column as object)) {
+        if (typeof el !== 'object' || el === null || !('tag' in el) || el.tag !== 'button') continue;
+        const { text } = el as { text?: unknown };
+        if (typeof text !== 'object' || text === null) continue;
+        const { content } = text as { content?: unknown };
+        if (typeof content === 'string') labels.push(content);
+      }
+    }
+  }
+  return labels;
+}
+
 describe('modelSelectCard', () => {
   it('keeps the options array on select_static (regression: a fix once dropped it and /model became an empty dropdown)', () => {
     const sel = findSelect(modelSelectCard('zhipu-coding-plan', undefined, MODELS), 'model_selector');
@@ -121,14 +145,37 @@ describe('modelSelectCard', () => {
     ];
     // 全局 recents 非空但本提供方一个都没命中 → 不提「最近用过的排在前面」。
     const noHit = cardMarkdown(
-      modelSelectCard('cursor', 'futu/x', cursor, undefined, ['futu/deepseek-v4.1-flash']),
+      modelSelectCard('cursor', 'futu/x', cursor, undefined, [
+        { selector: 'futu/deepseek-v4.1-flash' },
+      ]),
     );
     expect(noHit).not.toContain('下拉里最近用过的排在前面');
     // 命中一个 → 提，并且把它排到下拉最前面。
-    const card = modelSelectCard('cursor', undefined, cursor, undefined, ['cursor/gpt-5']);
+    const card = modelSelectCard('cursor', undefined, cursor, undefined, [
+      { selector: 'cursor/gpt-5' },
+    ]);
     expect(cardMarkdown(card)).toContain('下拉里最近用过的排在前面');
     const json = JSON.stringify(findSelect(card, 'model_selector'));
     expect(json.indexOf('cursor/gpt-5')).toBeLessThan(json.indexOf('cursor/claude-4-sonnet'));
+  });
+
+  it('annotates the recent options with recency / use count (strings come from the command layer)', () => {
+    // 「🕘 最近使用」在选卡上就是下拉最前面那几条 —— 名字后缀上命令层算好的时间、
+    // 次数。卡片层不读时钟：这里传入的就是唯一的时间来源。
+    const cursor = [
+      { provider: 'cursor', selector: 'cursor/claude-4-sonnet' },
+      { provider: 'cursor', selector: 'cursor/gpt-5' },
+    ];
+    const sel = findSelect(
+      modelSelectCard('cursor', undefined, cursor, undefined, [
+        { selector: 'cursor/gpt-5', ago: '3 分钟前', count: 5 },
+      ]),
+      'model_selector',
+    );
+    expect((sel.options ?? []).map(optionText)).toEqual([
+      'gpt-5 · 3 分钟前 · 5 次',
+      'claude-4-sonnet',
+    ]);
   });
 
   it('includes a thinking-level select next to the model picker', () => {
@@ -167,21 +214,73 @@ describe('modelProviderCard', () => {
 
   it('leads with 最近使用, then 常用, then 提供方', () => {
     const md = cardMarkdown(
-      modelProviderCard('p/cur', providers, ['p/one', 'p/two'], ['p/three'], 'medium'),
+      modelProviderCard(
+        'p/cur',
+        providers,
+        [{ selector: 'p/one' }, { selector: 'p/two' }],
+        ['p/three'],
+        'medium',
+      ),
     );
     const order = ['🕘 最近使用', '⭐ 常用', '📦 提供方'].map((t) => md.indexOf(t));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
     // 最近使用的两条按 recency 排（新在前），且当前模型不出现在快捷区。
     const json = JSON.stringify(
-      modelProviderCard('p/cur', providers, ['p/one', 'p/two'], ['p/three'], 'medium'),
+      modelProviderCard(
+        'p/cur',
+        providers,
+        [{ selector: 'p/one' }, { selector: 'p/two' }],
+        ['p/three'],
+        'medium',
+      ),
     );
     expect(json.indexOf('"arg":"p/one"')).toBeLessThan(json.indexOf('"arg":"p/two"'));
     expect(json).not.toContain('"arg":"p/cur"');
   });
 
+  it('puts each recent model’s recency and use count on its button (precomputed strings)', () => {
+    // 时间 / 次数是命令层算好传进来的字符串 —— 卡片层不读时钟，也不该有别的来源。
+    const card = modelProviderCard(
+      'p/cur',
+      providers,
+      [
+        { selector: 'p/one', ago: '3 分钟前', count: 5 },
+        { selector: 'p/two', ago: '2 小时前' }, // 只用过 1 次 → 不写次数
+        { selector: 'p/three' }, // 旧记录没有时间戳 → 只有名字
+      ],
+      [],
+      'medium',
+    );
+    expect(buttonLabels(card)).toEqual([
+      'one · 3 分钟前 · 5 次',
+      'two · 2 小时前',
+      'three',
+      'openai (30)',
+      'futu (12)',
+      '回退默认',
+      '取消',
+    ]);
+    // 同一份输入渲染两次逐字相同（纯函数，没有藏起来的时钟）。
+    expect(JSON.stringify(card)).toBe(
+      JSON.stringify(
+        modelProviderCard(
+          'p/cur',
+          providers,
+          [
+            { selector: 'p/one', ago: '3 分钟前', count: 5 },
+            { selector: 'p/two', ago: '2 小时前' },
+            { selector: 'p/three' },
+          ],
+          [],
+          'medium',
+        ),
+      ),
+    );
+  });
+
   it('caps 最近使用 and 常用 at 4 buttons each', () => {
-    const recents = Array.from({ length: 8 }, (_, i) => `p/r${i}`);
+    const recents = Array.from({ length: 8 }, (_, i) => ({ selector: `p/r${i}` }));
     const commons = Array.from({ length: 6 }, (_, i) => `p/c${i}`);
     const json = JSON.stringify(modelProviderCard('p/cur', providers, recents, commons, 'high'));
     // 每区 4 个：r0-r3（r4+ 不出现）、c0-c3。
@@ -200,7 +299,13 @@ describe('modelProviderCard', () => {
   });
 
   it('lays quick-set buttons side by side instead of one full-width row each', () => {
-    const card = modelProviderCard('p/cur', providers, ['p/one', 'p/two', 'p/three'], [], undefined) as {
+    const card = modelProviderCard(
+      'p/cur',
+      providers,
+      [{ selector: 'p/one' }, { selector: 'p/two' }, { selector: 'p/three' }],
+      [],
+      undefined,
+    ) as {
       body: { elements: Array<Record<string, unknown>> };
     };
     const rows = card.body.elements.filter((e) => e.tag === 'column_set');

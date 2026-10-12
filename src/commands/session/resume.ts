@@ -4,7 +4,7 @@ import { forgetManagedCard, updateManagedCard } from '../../card/managed';
 import { resumeSavedCard, type ResumeOption } from '../../card/model-card';
 import type { CommandContext, Handler } from '../index';
 import { FORM_SETTLE_MS, reply } from '../shared';
-import { renderContext, loadSessionSummary } from './context';
+import { renderContext, collectContextInfo, loadSessionSummary } from './context';
 import { scanSessionFiles } from './sessions';
 import { log } from '../../core/logger';
 
@@ -131,7 +131,7 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
         await updateManagedCard(
           ctx.channel,
           msgId,
-          resumeSavedCard(target, cwd, renderContext(ctx, summary)),
+          resumeSavedCard(collectContextInfo(ctx, summary)),
         ).catch(() => {});
         forgetManagedCard(msgId);
       })();
@@ -158,7 +158,7 @@ export async function applyResume(ctx: CommandContext, match: ResumeOption): Pro
       await updateManagedCard(
         ctx.channel,
         msgId,
-        resumeSavedCard(target, cwd, renderContext(ctx, summary)),
+        resumeSavedCard(collectContextInfo(ctx, summary)),
       ).catch(() => {});
       forgetManagedCard(msgId);
     })();

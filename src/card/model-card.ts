@@ -1,5 +1,5 @@
 import { isOmpThinkingLevel, OMP_THINKING_LEVELS } from '../config/schema';
-import { inlineActions, inlineRow, shortPath } from './templates';
+import { contextPanels, inlineActions, inlineRow, shortPath, type ContextInfo } from './templates';
 import { escapeCode } from '../utils/text';
 
 /** Form value meaning "clear ompThinking / follow OMP default". */
@@ -361,26 +361,34 @@ export interface ResumeOption {
 }
 
 
-export function resumeSavedCard(
-  sessionId: string,
-  cwd: string,
-  context?: string,
-): object {
-  const elements: object[] = [
-    { tag: 'markdown', content: '✅ **会话已恢复**', text_size: 'heading' },
-    {
-      tag: 'markdown',
-      content: `🔗 \`${escapeCode(sessionId)}\` · 📁 \`${escapeCode(shortPath(cwd))}\``,
-    },
-    { tag: 'markdown', content: '_下一条消息从该会话继续。_', text_size: 'notation' },
-  ];
-  if (context) {
-    elements.push({ tag: 'hr' }, { tag: 'markdown', content: context });
-  }
+export function resumeSavedCard(info: ContextInfo): object {
+  // 与 /status 同一套灰底面板（contextPanels），不再把 renderContext 的纯文本
+  // 整段塞进来 —— 用户要求切换会话后的状态展示与其它卡片统一风格。
   return {
     schema: '2.0',
     config: { summary: { content: '会话已恢复' } },
-    body: { elements },
+    body: {
+      elements: [
+        { tag: 'markdown', content: '✅ **会话已恢复**', text_size: 'heading' },
+        // 只留 cwd：会话 id 就在下面「🗂 会话」面板里，别在同一张卡上写两遍。
+        {
+          tag: 'markdown',
+          content: `📁 \`${escapeCode(shortPath(info.cwd))}\``,
+          text_size: 'notation',
+        },
+        { tag: 'markdown', content: '_下一条消息从该会话继续。_', text_size: 'notation' },
+        ...contextPanels(info),
+        ...(info.sessionStale
+          ? [
+              {
+                tag: 'markdown',
+                content: '⚠️ _session 来自旧 cwd，下一条消息将新建会话_',
+                text_size: 'notation',
+              },
+            ]
+          : []),
+      ],
+    },
   };
 }
 

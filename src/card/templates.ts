@@ -304,11 +304,9 @@ export function workspacesCard(
   return shell('📂 工作空间', elements);
 }
 
-export function statusCard(info: ContextInfo): object {
-  const scopeLine =
-    info.chatMode === 'topic'
-      ? `窗口 \`${escapeCode(info.scope)}\` _（话题独立会话）_`
-      : `窗口 \`${escapeCode(info.scope)}\``;
+/** 三块灰底面板（会话 / 环境 / 最近内容）：`/status` 与「会话已恢复」共用同一版式，
+ *  两个入口的观感必须一致 —— 内容由 `collectContextInfo` 在命令层取好。 */
+export function contextPanels(info: ContextInfo): object[] {
   const wsLine =
     info.wsNames.length > 0
       ? info.wsNames.map((n) => `\`${escapeCode(n)}\``).join(' ')
@@ -317,11 +315,7 @@ export function statusCard(info: ContextInfo): object {
     md('**🗂 会话**'),
     // 没有真名字就不渲染这一行：占位的「未命名」会让人以为会话有名字。
     ...(info.sessionName ? [md(`🏷 ${escapeMd(info.sessionName)}`)] : []),
-    md(
-      info.sessionId
-        ? `🔗 \`${escapeCode(info.sessionId)}\``
-        : '🔗 _无，下条消息新建_',
-    ),
+    md(info.sessionId ? `🔗 \`${escapeCode(info.sessionId)}\`` : '🔗 _无，下条消息新建_'),
     md(`🕒 ${formatClockOr(info.createdAt, '—')}`),
     md(`🕘 ${formatAgoOr(info.updatedAt, '新会话')}`),
     md(info.running ? '🔄 任务执行中' : '✅ 空闲'),
@@ -340,20 +334,23 @@ export function statusCard(info: ContextInfo): object {
     ? [
         panel([
           md('**💬 最近内容**'),
-          ...(info.summary.lastMessage
-            ? [md(`💬 ${digest(info.summary.lastMessage, 80)}`)]
-            : []),
-          ...(info.summary.lastReply
-            ? [md(`📝 ${digest(info.summary.lastReply, 80)}`)]
-            : []),
+          ...(info.summary.lastMessage ? [md(`💬 ${digest(info.summary.lastMessage, 80)}`)] : []),
+          ...(info.summary.lastReply ? [md(`📝 ${digest(info.summary.lastReply, 80)}`)] : []),
         ]),
       ]
     : [];
+  return stackedPanels([panel(sessionPanel), panel(envPanel), ...recentPanel]);
+}
 
+export function statusCard(info: ContextInfo): object {
+  const scopeLine =
+    info.chatMode === 'topic'
+      ? `窗口 \`${escapeCode(info.scope)}\` _（话题独立会话）_`
+      : `窗口 \`${escapeCode(info.scope)}\``;
   return shell('📊 会话状态', [
     md('📊 **会话状态**', 'heading'),
     md(scopeLine, 'notation'),
-    ...stackedPanels([panel(sessionPanel), panel(envPanel), ...recentPanel]),
+    ...contextPanels(info),
     ...(info.sessionStale
       ? [md('⚠️ _session 来自旧 cwd，下一条消息将新建会话_', 'notation')]
       : []),

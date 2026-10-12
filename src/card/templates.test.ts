@@ -636,11 +636,28 @@ describe('session id rendering', () => {
   });
 
   it('shows the full id on the singular /resume confirmation card', () => {
-    const saved = resumeSavedCard(ULID, '/repo/sub');
+    const saved = resumeSavedCard(statusFixture({ sessionId: ULID, cwd: '/repo/sub' }));
     const out = JSON.stringify(saved);
     expect(out).toContain(ULID);
     // 恢复确认卡里的 id 是完整可复制的（列表行才用 8 字符句柄）。
     expect(out).not.toContain('01J8Z9K2…');
+  });
+
+  it('恢复卡与 /status 同一套灰底面板（不再是一整段文本）', () => {
+    const card = resumeSavedCard(
+      statusFixture({ sessionId: ULID, cwd: '/repo/sub', sessionName: '修搜索', model: 'futu/x', thinking: 'high' }),
+    );
+    const out = JSON.stringify(card);
+    // 标题 + 一行 id/cwd + 「下一条消息继续」，然后是灰底面板。
+    expect(out).toContain('✅ **会话已恢复**');
+    expect(out).toContain('下一条消息从该会话继续');
+    expect(out).toContain('🗂 会话');
+    expect(out).toContain('🧩 环境');
+    expect(out).toContain('修搜索');
+    // 旧的「hr + 整段 renderContext 文本」结构必须消失：会话 id 全卡只出现一次。
+    const occurrences = out.split(ULID).length - 1;
+    expect(occurrences).toBe(1);
+    expect(out).not.toContain('**最后回复**');
   });
 });
 

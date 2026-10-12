@@ -29,6 +29,8 @@ interface PersistedRunningCard {
   chatId: string;
   kind: RunningCardKind;
   card?: object;
+  /** How many times a boot has already failed to finalize this leftover. */
+  attempts?: number;
 }
 
 // Module-local because state is per-process. Lost on restart, which is fine —
@@ -261,16 +263,28 @@ export async function finalizeInterruptedCards(
     if (!messageId || messageId === 'om_sent' || !messageId.startsWith('om_')) continue;
     if (await deliverInterruptCard(channel, messageId, kind, card)) {
       if (kind === 'restart') finalizedRestart = true;
-    } else {
-      // 补不上就**留着**：这张卡还停在运行态（带 ⏹ 终止按钮），记录的寿命必须
-      // 跟着它 —— 从前这里无论成败都清空记录，于是补卡被飞书拒一次，那个终止
-      // 按钮就永远挂在那里了。
-      retry.push(entry);
+      continue;
     }
+    // 补不上就**留着**：这张卡还停在运行态（带 ⏹ 终止按钮），记录的寿命必须跟着
+    // 它 —— 从前这里无论成败都清空记录，于是补卡被飞书拒一次，那个终止按钮就永
+    // 远挂在那里了。但也**不能无限留**：launchd 每 10s 拉起一次，若补卡永远被拒
+    // （消息被撤回/删除、token 失效），每 10s 一次外呼会把机器拖垮。累加 attempts，
+    // 超过上限就丢弃记录并告警，让这个 ⏹ 交还给飞书自然消亡。
+    const attempts = (entry.attempts ?? 0) + 1;
+    if (attempts > INTERRUPT_FINALIZE_MAX_ATTEMPTS) {
+      log.warn('card', 'interrupted-finalize-giving-up', { messageId, kind, attempts });
+      continue;
+    }
+    retry.push({ ...entry, attempts });
   }
   await mutateRunningCards(() => writeRunningCards(retry));
   return finalizedRestart;
 }
+
+/** Boots that may try to patch one leftover card before we give up on it.
+ *  Bounds外呼: a card we can never patch (recalled message, dead token) must
+ *  not trigger one failed patch per launchd retry forever. */
+const INTERRUPT_FINALIZE_MAX_ATTEMPTS = 3;
 
 /** Feishu rejects a card patch past ~30KB (ErrCode 200800 / HTTP 400). */
 const CARD_PATCH_MAX_BYTES = 28 * 1024;

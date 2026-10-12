@@ -3,6 +3,7 @@ import {
   closeSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   statSync,
@@ -10,8 +11,8 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
-import { mkdir, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { mkdir, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { paths } from '../config/paths';
 import type { TenantBrand } from '../config/schema';
 
@@ -341,10 +342,78 @@ export function unregisterSync(id: string, file: string = paths.processesFile): 
   }
 }
 
-/** Best-effort: try to unlink any leftover tmp file we wrote. */
-export function cleanupTmpFiles(): void {
+// ---------------------------------------------------------------------------
+// Temp-file hygiene
+//
+// Our atomic writers (registry, config, keystore, running-cards, scheduler)
+// all `writeFile(<target>.tmp-…); rename(…)`. A crash between the two leaves
+// the temp behind, and because names embed pid + random hex it is never
+// reused — so the leak is monotonic (the real "tmp 垃圾累积" incident).
+//
+// Two shapes exist:
+//   <target>.tmp-<pid>[-<hex>]   registry/config/keystore/scheduler async writes
+//   <target>.<pid>.tmp           card/managed running-cards
+// ---------------------------------------------------------------------------
+
+/** Matches both temp-file shapes above (and their bare `.tmp` prefix form). */
+const TMP_NAME_RE = /\.tmp(-.*)?$/;
+
+/**
+ * Delete `*.tmp` / `*.tmp-*` files in `dir` whose mtime is older than
+ * `maxAgeMs`, returning how many were removed. Best-effort: a missing dir or
+ * an un-stattable/un-unlinkable file is skipped, never thrown — this runs on
+ * the boot path where a failure must not cascade into the 10s launchd retry
+ * loop. The age gate keeps us from trashing a live writer's in-flight temp.
+ */
+export async function sweepStaleTmpFiles(dir: string, maxAgeMs: number): Promise<number> {
+  let names: string[];
   try {
-    unlinkSync(`${paths.processesFile}.tmp-${process.pid}`);
+    names = await readdir(dir);
+  } catch {
+    return 0;
+  }
+  const cutoff = Date.now() - maxAgeMs;
+  let removed = 0;
+  for (const name of names) {
+    if (!TMP_NAME_RE.test(name)) continue;
+    const full = join(dir, name);
+    try {
+      const info = await stat(full);
+      if (info.mtimeMs > cutoff) continue;
+      await unlink(full);
+      removed += 1;
+    } catch {
+      /* vanished under us (another sweeper / the writer finished) — fine */
+    }
+  }
+  return removed;
+}
+
+/**
+ * Best-effort: unlink the temp files **this process** wrote. Called from
+ * `process.on('exit')`, so it stays synchronous.
+ *
+ * The old version unlinked exactly `<processesFile>.tmp-<pid>` — a name no
+ * writer ever produced once pid+hex suffixes were added — so it matched
+ * nothing and every unclean exit leaked its temp. Sweep the app dir by
+ * pattern instead, but only our own pid: another live process may be
+ * mid-rename on its own temp.
+ */
+export function cleanupTmpFiles(dir: string = paths.appDir): void {
+  const pid = process.pid;
+  try {
+    for (const name of readdirSync(dir)) {
+      // Only our own pid's temps: `.tmp-<pid>-…`, `.tmp-<pid>`, `.<pid>.tmp`.
+      const ours =
+        TMP_NAME_RE.test(name) &&
+        (name.includes(`.tmp-${pid}-`) || name.endsWith(`.tmp-${pid}`) || name.endsWith(`.${pid}.tmp`));
+      if (!ours) continue;
+      try {
+        unlinkSync(join(dir, name));
+      } catch {
+        /* ignore */
+      }
+    }
   } catch {
     /* ignore */
   }

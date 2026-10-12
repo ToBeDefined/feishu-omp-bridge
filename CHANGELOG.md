@@ -330,6 +330,31 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Fixed
+- **机器被拖垮的根因治理（launchd 全生命周期）**——今天的卡死是多主体重启风暴叠加：
+  KeepAlive(10s) 无限重拉 + 失败 boot 每轮白付重活 + 发布留下孤儿 worker +
+  常驻看门狗会自动 `git 回退+build+起 agent`，全程无熔断、无共享状态、失败不可见。
+  - **崩溃熔断**（新 `src/daemon/boot-guard.ts`）：`~/.feishu-omp-bridge/boot-attempts.json`
+    记录失败窗；连续 5 次（10 分钟窗）失败即停止自动重启（bootout + exit 0）、尝试向
+    首个会话 chat 发告警卡；人工 `feishu-omp-bridge start` 时清计数放行。
+  - **失败路径最短化**：配置完整性校验 + 单实例守卫移到 preflight/`ps -A`/目录 GC/omp
+    探测**之前**；非 TTY 且配置不完整直接 exit 1 给修复指令（不再进扫码向导挂死）；
+    失败路径不再做孤儿 worker 全表扫描。
+  - **进程生命周期兜底**：`stop()` 15s 硬看门狗、第二次信号直接 exit(1)、等日志轮转
+    落定；`FOB_SUPERVISED=1` 下检测 `ppid===1`（supervisor 已死）自动优雅退出；plist
+    加 `ExitTimeOut=8`；桥内 `/restart`、`/release` 重启前先重写 plist（此后
+    `FOB_SUPERVISED`/`ExitTimeOut` 才真正生效）。
+  - **日志与临时文件**：stderr 一并轮转（`rotateDaemonLogsIfNeeded`）；启动清扫
+    `*.tmp-*` 陈旧临时文件，并修掉 `cleanupTmpFiles` 与 `writeAtomic` 随机后缀命名
+    不匹配（旧实现永远清不掉）。
+  - **通知幂等**：崩溃恢复补卡最多重试 3 次即丢弃（不再每 10s 无限外呼）；普通 boot
+    上线卡加入 10 分钟窗口节流（崩溃循环不再刷屏）。
+  - **看门狗降级**（`scripts/self-heal.py`）：尊重熔断（命中则本轮不动手）；自动
+    `git 回退 + build` 与 `omp` 升级改为默认关闭、需 `HEAL_ALLOW_ROLLBACK=1` /
+    `HEAL_ALLOW_OMP=1`；与 self-update 共享锁；循环单轮异常不再中断、顶层异常兜底
+    避免自身崩溃循环。
+  - **release 超时杀进程组**：步骤超时改为整组 SIGKILL，不再留 vitest worker 孤儿。
+
+### Fixed
 - **发布/重启不再静默吞掉在跑的 run**：`/release` 与 `/restart` 的 kickstart 会连带
   杀掉正在执行的 OMP run，而那条消息已经 ack、待处理队列只在内存里 —— 重启后
   彻底丢失（实测一次发布吞掉一个提问并留下「进程中断」残卡）。现在两者在重启前

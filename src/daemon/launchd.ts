@@ -63,6 +63,8 @@ ${program.map((arg) => `        <string>${arg}</string>`).join('\n')}
     <true/>
     <key>ThrottleInterval</key>
     <integer>10</integer>
+    <key>ExitTimeOut</key>
+    <integer>8</integer>
     <key>StandardOutPath</key>
     <string>${escape(daemonStdoutPath())}</string>
     <key>StandardErrorPath</key>
@@ -215,4 +217,33 @@ export async function rotateDaemonStdoutIfNeeded(
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * stdout 与 stderr 两份日志都做 copytruncate 轮转（阈值、尾部与
+ * rotateDaemonStdoutIfNeeded 一致）。文件不存在时静默跳过。
+ *
+ * 参数可选，方便测试；生产调用不带参数即用默认阈值。
+ */
+export async function rotateDaemonLogsIfNeeded(
+  maxBytes: number = DAEMON_STDOUT_MAX_BYTES,
+  tailBytes: number = ROTATE_TAIL_BYTES,
+): Promise<void> {
+  await rotateDaemonStdoutIfNeeded(daemonStdoutPath(), maxBytes, tailBytes);
+  await rotateDaemonStdoutIfNeeded(daemonStderrPath(), maxBytes, tailBytes);
+}
+
+/**
+ * 桥内重启路径（`/restart`、`/release` 经 ctx.controls.restartProcess()）：
+ * kickstart 之前先把 plist 重写一遍，确保升级后新的 ProgramArguments /
+ * EnvironmentVariables 被 launchd 采纳。跑在 daemon 进程里，直接写文件，
+ * 不要再起 CLI 子进程。重写失败只告警、不阻断 —— 旧 plist 仍能 kickstart。
+ */
+export async function rewritePlistThenKickstart(): Promise<LaunchctlResult> {
+  try {
+    await writePlist();
+  } catch (err) {
+    console.warn('[restart] plist 重写失败（忽略，继续 kickstart）:', err);
+  }
+  return kickstart();
 }

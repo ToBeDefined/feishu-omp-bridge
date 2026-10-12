@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BridgeChannel } from '../../bot/channel';
 
@@ -9,6 +9,10 @@ type ConfigStoreModule = typeof import('../../config/store');
 // loadConfig 挂在闸门上，手动放行以精确控制 runStart 走到哪一步。
 const h = vi.hoisted(() => ({
   releaseConfig: undefined as ((value: unknown) => void) | undefined,
+  /** When true, loadConfig resolves immediately with `configValue` (used by
+   *  tests that must run past boot without hanging on the gate). */
+  autoResolve: false,
+  configValue: undefined as unknown,
 }));
 vi.mock('../../bot/channel', () => ({
   startChannel: vi.fn((): Promise<BridgeChannel> => new Promise(() => {})),
@@ -20,6 +24,11 @@ vi.mock('../../agent', () => ({
     id = 'omp';
   },
 }));
+vi.mock('../../daemon/launchd', () => ({
+  bootout: vi.fn(() => ({ ok: true, stdout: '', stderr: '' })),
+  kickstart: vi.fn(() => ({ ok: true, stdout: '', stderr: '' })),
+  rotateDaemonLogsIfNeeded: vi.fn(async () => {}),
+}));
 vi.mock('../preflight', () => ({ preFlightChecks: vi.fn(async () => {}) }));
 vi.mock('../../config/store', async (importOriginal) => {
   const actual = (await importOriginal()) as ConfigStoreModule;
@@ -27,12 +36,12 @@ vi.mock('../../config/store', async (importOriginal) => {
     ...actual,
     // Executor 形式：闸门 resolve 需要在 runStart 之外手动触发
     //（Promise.withResolvers 需要 Node 22+，本包支持 Node >= 20）。
-    loadConfig: vi.fn(
-      () =>
-        new Promise((resolve) => {
-          h.releaseConfig = resolve as (value: unknown) => void;
-        }),
-    ),
+    loadConfig: vi.fn(() => {
+      if (h.autoResolve) return Promise.resolve(h.configValue);
+      return new Promise((resolve) => {
+        h.releaseConfig = resolve as (value: unknown) => void;
+      });
+    }),
   };
 });
 vi.mock('../../core/logger', () => ({
@@ -47,7 +56,15 @@ vi.mock('../../media/cache', () => ({
 import { paths } from '../../config/paths';
 import { readAndPrune, type ProcessEntry } from '../../runtime/registry';
 import { startChannel } from '../../bot/channel';
-import { isReplaceableConflict, replaceSupersededConflicts, runStart } from './start';
+import { bootout } from '../../daemon/launchd';
+import { BOOT_ATTEMPTS_FILE, bootFailureCount, noteBootFailure } from '../../daemon/boot-guard';
+import { preFlightChecks } from '../preflight';
+import {
+  isOrphaned,
+  isReplaceableConflict,
+  replaceSupersededConflicts,
+  runStart,
+} from './start';
 
 const SENTINEL_ID = 'zz99';
 
@@ -87,6 +104,14 @@ beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
+  h.autoResolve = false;
+  h.configValue = undefined;
+  h.releaseConfig = undefined;
+  delete process.env.FOB_SUPERVISED;
+  vi.mocked(preFlightChecks).mockClear();
+  vi.mocked(bootout).mockClear();
+  // 熔断状态文件在 worker 级临时目录里被所有用例共享，先清干净。
+  rmSync(BOOT_ATTEMPTS_FILE, { force: true });
 });
 
 afterEach(() => {
@@ -116,6 +141,8 @@ describe('runStart 信号处理时序', () => {
     const codes = captureExit();
 
     pending = runStart({});
+    // runStart 现在先 await 熔断闸门，故 loadConfig 的闸门句柄稍后才就位。
+    await vi.waitFor(() => expect(h.releaseConfig).toBeTypeOf('function'));
     // 放行 config 读取，让 runStart 走完注册、停在建连上。
     h.releaseConfig?.({
       accounts: { app: { id: 'cli_self', tenant: 'feishu', secret: '${FOB_TEST_SECRET}' } },
@@ -179,5 +206,57 @@ describe('replaceSupersededConflicts（孤儿/前任顶替）', () => {
     expect(isReplaceableConflict(base(100), ppidOf, false)).toBe(true); // ppid=1 孤儿
     expect(isReplaceableConflict(base(200), ppidOf, false)).toBe(false); // 活终端
     expect(isReplaceableConflict(base(300), ppidOf, false)).toBe(true); // 已消失
+  });
+});
+
+describe('isOrphaned', () => {
+  it('仅 FOB_SUPERVISED 且 ppid=1 才算孤儿', () => {
+    expect(isOrphaned(1, true)).toBe(true);
+    expect(isOrphaned(1, false)).toBe(false); // 非 supervised：ppid=1 是正常的终端退出
+    expect(isOrphaned(4242, true)).toBe(false); // supervisor 还活着
+  });
+});
+
+describe('runStart 失败路径最短化 + 熔断', () => {
+  it('第二次信号直接 exit(1)，不再被 stopping 静默吞掉', async () => {
+    const codes = captureExit();
+    pending = runStart({});
+    // 首轮 stop() 同步进入 stopping=true 后就 await，第二次信号应强杀。
+    process.emit('SIGINT');
+    process.emit('SIGINT');
+    await vi.waitFor(() => expect(codes).toContain(1));
+  });
+
+  it('非 TTY 且配置不完整：exit(1) + 记录失败，且不做 preflight', async () => {
+    const codes = captureExit();
+    pending = runStart({});
+    await vi.waitFor(() => expect(h.releaseConfig).toBeTypeOf('function'));
+    h.releaseConfig?.({ accounts: { app: { id: 'cli_x' } } }); // 缺 tenant/secret
+    await vi.waitFor(() => expect(codes).toEqual([1]));
+    expect(vi.mocked(preFlightChecks)).not.toHaveBeenCalled();
+    expect(await bootFailureCount()).toBe(1);
+  });
+
+  it('熔断已触发且非 supervised：清零失败计数后继续启动', async () => {
+    for (let i = 0; i < 5; i++) await noteBootFailure('boom');
+    pending = runStart({});
+    // 熔断被放行 → 走到 loadConfig 挂闸门（说明继续了、没退）。
+    await vi.waitFor(() => expect(h.releaseConfig).toBeTypeOf('function'));
+    expect(await bootFailureCount()).toBe(0);
+  });
+
+  it('熔断已触发且 supervised：bootout + exit(0)，不做任何重活', async () => {
+    process.env.FOB_SUPERVISED = '1';
+    h.autoResolve = true;
+    h.configValue = {
+      accounts: { app: { id: 'cli_x', tenant: 'feishu', secret: '${FOB_TEST_SECRET}' } },
+      preferences: {},
+    };
+    for (let i = 0; i < 5; i++) await noteBootFailure('boom');
+    const codes = captureExit();
+    await runStart({});
+    expect(codes).toEqual([0]);
+    expect(vi.mocked(bootout)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(preFlightChecks)).not.toHaveBeenCalled();
   });
 });

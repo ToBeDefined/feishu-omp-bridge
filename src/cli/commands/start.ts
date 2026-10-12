@@ -1,6 +1,7 @@
 import dns from 'node:dns';
 import { sweepOrphanedTestWorkers } from '../../core/strays';
 import { spawnSync } from 'node:child_process';
+import { Client, Domain } from '@larksuiteoapi/node-sdk';
 import pkg from '../../../package.json';
 import { OmpAdapter } from '../../agent';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
@@ -26,10 +27,22 @@ import {
   saveConfig,
 } from '../../config/store';
 import { gcOldLogs, log } from '../../core/logger';
-import { kickstart, rotateDaemonStdoutIfNeeded } from '../../daemon/launchd';
+import { bootout, rewritePlistThenKickstart, rotateDaemonLogsIfNeeded } from '../../daemon/launchd';
+import {
+  autoRestartExhausted,
+  bootFailureCount,
+  clearBootFailures,
+  noteBootFailure,
+  noteBootSuccess,
+} from '../../daemon/boot-guard';
+import { resolveAppSecret } from '../../config/secret-resolver';
 import { finalizeInterruptedCards } from '../../card/managed';
-import { clearOnlineNotice, takeOnlineNotice } from '../../bot/online-notify';
-import { onlineCard, releaseCard, restartCard } from '../../card/templates';
+import {
+  clearOnlineNotice,
+  shouldAnnounceOrdinaryBoot,
+  takeOnlineNotice,
+} from '../../bot/online-notify';
+import { md, onlineCard, releaseCard, restartCard, shell } from '../../card/templates';
 import { RELEASE_STEPS } from '../../release/run';
 import { gcMediaCache, MEDIA_GC_MAX_AGE_MS } from '../../media/cache';
 import { preFlightChecks } from '../preflight';
@@ -37,6 +50,7 @@ import {
   cleanupTmpFiles,
   register,
   sameAppOthers,
+  sweepStaleTmpFiles,
   unregister,
   unregisterSync,
   updateEntry,
@@ -63,6 +77,39 @@ process.on('uncaughtException', (err) => {
   log.fail('process', err, { kind: 'uncaughtException' });
 });
 
+/** 进入 stop() 后超过这么久仍未退出就强制 exit(1)（硬看门狗）。 */
+const STOP_WATCHDOG_MS = 15_000;
+/** stop() 里最多等日志轮转这么久，别让一次 copytruncate 拖住关闭。 */
+const SHUTDOWN_LOG_FLUSH_MS = 2_000;
+/** 孤儿自检周期。 */
+const ORPHAN_CHECK_MS = 5_000;
+/** 熔断告警最多等多久 —— 通知绝不能把 boot 挂住。 */
+const CIRCUIT_ALERT_TIMEOUT_MS = 5_000;
+
+/**
+ * FOB_SUPERVISED=1（launchd/systemd 注入）且 ppid 变成 1：supervisor 已经死了，
+ * 没有 KeepAlive 会再拉起我们，也没人会回收 —— 孤儿进程，应优雅退出。
+ * 纯函数，便于测试。
+ */
+export function isOrphaned(ppid: number, supervised: boolean): boolean {
+  return supervised && ppid === 1;
+}
+
+/** Await `p`, but never longer than `ms`; the timer is always cleared. */
+async function settleWithin(p: Promise<void>, ms: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([
+      p.catch(() => {}),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export interface StartOptions {
   config?: string;
   skipCheckLarkCli?: boolean;
@@ -76,46 +123,118 @@ export async function runStart(opts: StartOptions): Promise<void> {
   let stopping = false;
   let entry: ProcessEntry | undefined;
   let bridge: BridgeChannel | undefined;
+  // 日志轮转在下面启动；stop() 需要等它落定，先占位成已完成的 promise。
+  let logRotation: Promise<void> = Promise.resolve();
   const stop = async (sig: string): Promise<void> => {
-    if (stopping) return;
+    if (stopping) {
+      // 第二次 SIGINT/SIGTERM：用户/launchd 明确要求立刻退出，不能再被
+      // stopping 静默吞掉（首轮 teardown 若卡住，第二次信号就该强杀）。
+      log.warn('shutdown', 'second-signal', { signal: sig });
+      dropSignalHandlers();
+      process.exit(1);
+      return;
+    }
     stopping = true;
     console.log(`\n收到 ${sig}，正在关闭...`);
+    // 硬看门狗：stop 内任一 await（disconnect / 注册锁等待）卡住时，
+    // 15s 后强制退出，绝不让进程挂着不走。
+    const watchdog = setTimeout(() => {
+      log.fail('shutdown', 'stop-watchdog-timeout', { signal: sig });
+      process.exit(1);
+    }, STOP_WATCHDOG_MS);
+    watchdog.unref();
     try {
-      // SIGTERM (launchd shutdown / external restart): don't kill OMP runs —
-      // the agent may be mid-`restart` and needs to survive to re-bootstrap
-      // us. OMP exits on its own when the channel (stdin pipe) closes.
-      // Explicit user exit command: kill runs fast for a clean shutdown.
-      await bridge?.disconnect(sig === 'exit-command');
-    } catch (err) {
-      console.error('[disconnect-failed]', err);
-    }
-    if (entry) {
-      // 注册的写盘和锁释放之间有窗口：SIGTERM 若正好落在窗口里，
-      // unregisterSync 会抢锁失败而静默放弃（自己的条目残留）。这里走
-      // 带锁等待的异步路径；极端情况（锁忙超时）再退同步兜底。
+      // 等进行中的日志轮转落定（最多 2s），否则 copytruncate 写一半就被掐断。
+      await settleWithin(logRotation, SHUTDOWN_LOG_FLUSH_MS);
       try {
-        await unregister(entry.id);
-      } catch {
-        unregisterSync(entry.id);
+        // SIGTERM (launchd shutdown / external restart): don't kill OMP runs —
+        // the agent may be mid-`restart` and needs to survive to re-bootstrap
+        // us. OMP exits on its own when the channel (stdin pipe) closes.
+        // Explicit user exit command: kill runs fast for a clean shutdown.
+        await bridge?.disconnect(sig === 'exit-command');
+      } catch (err) {
+        console.error('[disconnect-failed]', err);
       }
+      if (entry) {
+        // 注册的写盘和锁释放之间有窗口：SIGTERM 若正好落在窗口里，
+        // unregisterSync 会抢锁失败而静默放弃（自己的条目残留）。这里走
+        // 带锁等待的异步路径；极端情况（锁忙超时）再退同步兜底。
+        try {
+          await unregister(entry.id);
+        } catch {
+          unregisterSync(entry.id);
+        }
+      }
+    } finally {
+      clearTimeout(watchdog);
     }
+    dropSignalHandlers();
     process.exit(0);
   };
-  process.on('SIGINT', () => void stop('SIGINT'));
-  process.on('SIGTERM', () => void stop('SIGTERM'));
+  // 关掉自己挂的信号处理器，避免同进程内二次 runStart（测试）或多个 stop
+  // 交错时，旧实例的处理器把新实例的第二次信号当成「第二次信号」强杀。
+  const onSigint = (): void => void stop('SIGINT');
+  const onSigterm = (): void => void stop('SIGTERM');
+  const dropSignalHandlers = (): void => {
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
+  };
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
 
-  // daemon-stdout.log 由 launchd 追加、不会滚动；启动时超阈值就 copytruncate，
-  // 防止数月运行后无限膨胀。**不能 await**：runStart 必须同步走到 loadConfig
-  // 挂闸门，否则外部测试/调用方在第一个 await 前拿到的闸门句柄会张冠李戴。
-  void rotateDaemonStdoutIfNeeded().catch((err) =>
-    log.warn('daemon', 'stdout-rotate-failed', { err: String(err) }),
-  );
+  const supervised = process.env.FOB_SUPERVISED === '1';
 
-  // 上一轮 /release 的测试 worker 若在 kickstart 打断 teardown 后残留，会是
-  // ppid=1 的孤儿并各占数 GB 内存；boot 时清掉。
-  sweepOrphanedTestWorkers();
+  // supervisor（launchd）若先于我们死掉，ppid 会变成 1：没有 KeepAlive 会再
+  // 拉起我们，也没人会回收。定期自检；unref 的定时器不阻止正常退出。
+  setInterval(() => {
+    if (isOrphaned(process.ppid, supervised)) {
+      log.warn('boot', 'orphaned-supervisor-gone', { ppid: process.ppid });
+      void stop('orphan');
+    }
+  }, ORPHAN_CHECK_MS).unref();
 
   const configPath = opts.config ?? paths.configFile;
+
+  // 熔断闸门：boot 最开头、任何重活之前。命中后不做任何重活，告警 + bootout
+  // 让 launchd 不再每 10s 重拉，然后干净退出。
+  if (await autoRestartExhausted()) {
+    const failures = await bootFailureCount();
+    if (supervised) {
+      log.fail('boot', 'circuit-open', { failures });
+      console.error(
+        `✗ 连续 ${failures} 次启动失败，已停止自动重启（避免 KeepAlive 反复重拉拖垮机器）。`,
+      );
+      console.error('  修复后运行：feishu-omp-bridge run   （前台启动一次即恢复并清零计数）');
+      console.error('  或：        feishu-omp-bridge start  （重新装入 launchd）');
+      // 告警从简且绝不挂起：任一 await 卡住也只等 5s，失败只记日志。
+      await settleWithin(
+        alertCircuitOpen(configPath, failures).catch((err) =>
+          log.warn('boot', 'circuit-alert-failed', { err: String(err) }),
+        ),
+        CIRCUIT_ALERT_TIMEOUT_MS,
+      );
+      const r = bootout();
+      log.warn('boot', 'circuit-bootout', { ok: r.ok, stderr: r.stderr.slice(0, 200) });
+      process.exit(0);
+      return;
+    }
+    // 前台手动 run：用户正在主动恢复，放行并清零失败计数。
+    log.warn('boot', 'circuit-open-manual-recovery', { failures });
+    await clearBootFailures().catch(() => {});
+  }
+
+  // daemon-stdout/stderr 由 launchd 追加、不会滚动；启动时超阈值就 copytruncate，
+  // 防止数月运行后无限膨胀。**不能 await**（会拖慢启动）；stop() 会用
+  // settleWithin 等它落定（见上）。
+  logRotation = rotateDaemonLogsIfNeeded().catch((err) =>
+    log.warn('daemon', 'log-rotate-failed', { err: String(err) }),
+  );
+
+  // 清掉上轮崩溃/被打断留下的 *.tmp（best-effort，不 await）。
+  void sweepStaleTmpFiles(paths.appDir, 3600_000).catch((err) =>
+    log.warn('boot', 'tmp-sweep-failed', { err: String(err) }),
+  );
+
   const existing = await loadConfig(configPath);
 
   let cfg: AppConfig;
@@ -127,11 +246,42 @@ export async function runStart(opts: StartOptions): Promise<void> {
     // Idempotent — already-encrypted configs (SecretRef) pass through.
     cfg = await maybeMigratePlaintextSecret(cfg, configPath);
   } else {
+    // 配置完整性校验放在 preflight / ps 全表 / GC / omp 探测之前：不完整时
+    // 这些重活白付一次，KeepAlive 每 10s 重头再来会把机器拖垮。
+    if (!process.stdin.isTTY) {
+      // 非 TTY（launchd/systemd）无法进扫码向导：给出明确修复指令后退出。
+      console.error('✗ 配置不完整，且当前不是交互终端，无法进入扫码向导。');
+      console.error('  请先在终端完成一次配置：');
+      console.error('    feishu-omp-bridge run');
+      console.error(`  （配置文件：${configPath}）`);
+      await noteBootFailure('config-incomplete').catch(() => {});
+      process.exit(1);
+      return;
+    }
     const fresh = await runRegistrationWizard();
     // Fresh credentials from the wizard arrive as a plaintext secret;
     // immediately encrypt before persisting so disk never holds the raw value.
     cfg = await persistEncrypted(fresh, configPath);
     console.log(`配置已保存到 ${configPath}\n`);
+  }
+
+  // 单实例守卫：只需要 cfg.accounts.app.id，放在重活之前 —— 被拒时不再 ps 全表。
+  // Open-platform routes events to one of the long-connections at random, so two
+  // connections for the same app makes "who answered me" unpredictable (and a
+  // foreground run on top of a launchd-managed daemon would double-connect).
+  // Enforce a single process: refuse to start rather than offering a "kill the
+  // old one" path, since the proper way to replace a running instance is
+  // `restart`/`stop` (which already clean up old processes first).
+  const conflicts = sameAppOthers(cfg.accounts.app.id);
+  if (conflicts.length > 0) {
+    // 同 job 的孤儿/前任（kickstart 杀了 supervisor 但 node 存活）若只是拒绝，
+    // KeepAlive 会在每次重启时撞上它 → 无限崩溃循环、release 卡永远停在
+    // 「重启中」。这里把可顶替的冲突实例 SIGTERM 掉再继续。
+    const remaining = await replaceSupersededConflicts(conflicts);
+    if (remaining.length > 0) {
+      await noteBootFailure('duplicate-instance').catch(() => {});
+      rejectDuplicates(cfg, remaining);
+    }
   }
 
   await preFlightChecks({ skipCheckLarkCli: opts.skipCheckLarkCli });
@@ -145,7 +295,9 @@ export async function runStart(opts: StartOptions): Promise<void> {
   if (!(await agent.isAvailable())) {
     console.error('✗ 未找到 omp CLI。请先安装并完成 Oh My Pi 配置：');
     console.error('  omp');
+    await noteBootFailure('omp-missing').catch(() => {});
     process.exit(1);
+    return;
   }
 
   const sessions = new SessionStore();
@@ -156,21 +308,9 @@ export async function runStart(opts: StartOptions): Promise<void> {
   await gcMediaCache(MEDIA_GC_MAX_AGE_MS);
   await gcOldLogs();
 
-  // Same-app conflict detection. Open-platform routes events to one of the
-  // long-connections at random, so two connections for the same app makes
-  // "who answered me" unpredictable (and a foreground run on top of a
-  // launchd-managed daemon would double-connect). Enforce a single process:
-  // refuse to start rather than offering a "kill the old one" path, since
-  // the proper way to replace a running instance is `restart`/`stop` (which
-  // already clean up old processes first).
-  const conflicts = sameAppOthers(cfg.accounts.app.id);
-  if (conflicts.length > 0) {
-    // 同 job 的孤儿/前任（kickstart 杀了 supervisor 但 node 存活）若只是拒绝，
-    // KeepAlive 会在每次重启时撞上它 → 无限崩溃循环、release 卡永远停在
-    // 「重启中」。这里把可顶替的冲突实例 SIGTERM 掉再继续。
-    const remaining = await replaceSupersededConflicts(conflicts);
-    if (remaining.length > 0) rejectDuplicates(cfg, remaining);
-  }
+  // 到这里所有守门都过了、确定要接管，再清上轮 /release 残留的孤儿测试
+  // worker（ppid=1 且各占数 GB —— 走 ps -A 全表；失败路径绝不能走到这里）。
+  sweepOrphanedTestWorkers();
 
   // Register self in the process registry. Cleanup is wired via stop() and
   // 'exit' below — both paths run unregisterSync so stale entries don't
@@ -262,7 +402,9 @@ export async function runStart(opts: StartOptions): Promise<void> {
       // code. launchctl kickstart -k kills this process; KeepAlive starts
       // the fresh binary. Only meaningful under launchd — elsewhere fall
       // back to the in-process reconnect so /restart still does something.
-      const result = kickstart();
+            // 先重写 plist 再 kickstart：plist 里的 FOB_SUPERVISED/ExitTimeOut 等
+      // 新参数只有重写后才生效（写失败只告警，不阻断 kickstart）。
+      const result = await rewritePlistThenKickstart();
       if (!result.ok) {
         if (result.signal) {
           // launchctl died mid-report — almost certainly launchd's kickstart
@@ -299,6 +441,11 @@ export async function runStart(opts: StartOptions): Promise<void> {
   };
 
   bridge = await startChannel({ cfg, agent, sessions, workspaces, controls, scheduler });
+
+  // 真正接管成功：清零失败计数（成功前的失败不再计进熔断）。
+  await noteBootSuccess().catch((err) =>
+    log.warn('boot', 'note-success-failed', { err: String(err) }),
+  );
 
   // Backfill the bot's display name into the registry once the WS handshake
   // is done — future starts conflicting on this app can show it in the prompt
@@ -362,15 +509,21 @@ export async function runStart(opts: StartOptions): Promise<void> {
     // requested the bounce, so announce the bot is back to every chat with a
     // persisted session. `/release` (skip) and `/restart` (notify) cover
     // themselves with their own command cards.
-    // Only real chat ids are valid receive_ids: session keys are scopes, and
-    // cloud-doc comments (`doc:…`) / topic chats (`chatId:threadId`) would
-    // fail every boot.
-    const targets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
-    for (const chatId of targets) {
-      await bridge.channel
-        .send(chatId, { card: onlineCard() }, {})
-        .then(() => log.info('notify', 'online', { chatId }))
-        .catch((err) => log.warn('notify', 'online-failed', { chatId, err: String(err) }));
+    // Throttle: a crash loop would otherwise re-announce to every chat on each
+    // boot. Stay silent if we announced within the window.
+    if (await shouldAnnounceOrdinaryBoot()) {
+      // Only real chat ids are valid receive_ids: session keys are scopes, and
+      // cloud-doc comments (`doc:…`) / topic chats (`chatId:threadId`) would
+      // fail every boot.
+      const targets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
+      for (const chatId of targets) {
+        await bridge.channel
+          .send(chatId, { card: onlineCard() }, {})
+          .then(() => log.info('notify', 'online', { chatId }))
+          .catch((err) => log.warn('notify', 'online-failed', { chatId, err: String(err) }));
+      }
+    } else {
+      log.info('notify', 'online-throttled', { reason: 'ordinary-boot-window' });
     }
   }
   // SIGINT/SIGTERM 在 runStart 顶部就已注册（启动窗口也要能优雅退出），
@@ -493,6 +646,42 @@ function rejectDuplicates(cfg: AppConfig, conflicts: ProcessEntry[]): never {
   process.exit(1);
 }
 
+/**
+ * 熔断命中时尽力告诉用户一次。从简：能读到 config + sessions 里某个真实 chat
+ * 就用 SDK 直发一张说明卡；任何一步失败只记日志（由调用方 catch），绝不因此
+ * 挂起 boot。
+ */
+async function alertCircuitOpen(configPath: string, failures: number): Promise<void> {
+  const cfg = await loadConfig(configPath);
+  if (!isComplete(cfg)) return;
+  const sessions = new SessionStore();
+  await sessions.load();
+  const chatId = sessions
+    .chats()
+    .find((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
+  if (!chatId) return;
+  const appSecret = await resolveAppSecret(cfg);
+  const client = new Client({
+    appId: cfg.accounts.app.id,
+    appSecret,
+    domain: cfg.accounts.app.tenant === 'lark' ? Domain.Lark : Domain.Feishu,
+    source: 'feishu-omp-bridge',
+  });
+  await client.im.v1.message.create({
+    params: { receive_id_type: 'chat_id' },
+    data: {
+      receive_id: chatId,
+      msg_type: 'interactive',
+      content: JSON.stringify(
+        shell('⚠️ 启动熔断', [
+          md('⚠️ **启动熔断：已停止自动重启**', 'heading'),
+          md(`连续 **${failures}** 次启动失败。为避免反复重启拖垮机器，已从 launchd 卸载。`),
+          md('修复后请运行 `feishu-omp-bridge run`（前台启动一次即可恢复）。'),
+        ]),
+      ),
+    },
+  });
+}
 
 /**
  * If `cfg.accounts.app.secret` is a literal plaintext string (not a

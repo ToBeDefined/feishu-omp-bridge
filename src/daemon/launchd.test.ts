@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildPlist, rotateDaemonStdoutIfNeeded } from './launchd';
+import { buildPlist, rotateDaemonLogsIfNeeded, rotateDaemonStdoutIfNeeded } from './launchd';
 import { supervisorGrantMarkerPath } from './macos-supervisor';
+import { daemonStderrPath, daemonStdoutPath } from './paths';
 
 const base = {
   nodePath: '/usr/local/bin/node',
@@ -47,6 +48,14 @@ describe('launchd plist', () => {
     expect(plist).toContain('daemon-stderr.log');
     expect(plist).toContain('<key>KeepAlive</key>');
   });
+
+  it('sets ExitTimeOut and keeps FOB_SUPERVISED so launchd waits then reaps the daemon', () => {
+    const plist = buildPlist(base);
+    expect(plist).toContain('<key>ExitTimeOut</key>');
+    expect(plist).toMatch(/<key>ExitTimeOut<\/key>\s*<integer>8<\/integer>/);
+    expect(plist).toContain('<key>FOB_SUPERVISED</key>');
+    expect(plist).toMatch(/<key>FOB_SUPERVISED<\/key>\s*<string>1<\/string>/);
+  });
 });
 
 describe('rotateDaemonStdoutIfNeeded', () => {
@@ -70,5 +79,29 @@ describe('rotateDaemonStdoutIfNeeded', () => {
   it('silently skips a missing log file', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'fob-rotate-'));
     await expect(rotateDaemonStdoutIfNeeded(join(dir, 'nope.log'), 1, 1)).resolves.toBeUndefined();
+  });
+});
+
+describe('rotateDaemonLogsIfNeeded', () => {
+  it('copytruncates both stdout and stderr past the threshold', async () => {
+    await mkdir(dirname(daemonStdoutPath()), { recursive: true });
+    await writeFile(daemonStdoutPath(), 'x'.repeat(96) + 'OUT', 'utf8');
+    await writeFile(daemonStderrPath(), 'y'.repeat(96) + 'ERR', 'utf8');
+    await rotateDaemonLogsIfNeeded(16, 3);
+    expect(await readFile(daemonStdoutPath(), 'utf8')).toBe('OUT');
+    expect(await readFile(daemonStderrPath(), 'utf8')).toBe('ERR');
+  });
+
+  it('rotates stderr even when stdout is under the threshold', async () => {
+    await mkdir(dirname(daemonStderrPath()), { recursive: true });
+    await writeFile(daemonStdoutPath(), 'small\n', 'utf8');
+    await writeFile(daemonStderrPath(), 'y'.repeat(96) + 'ERR', 'utf8');
+    await rotateDaemonLogsIfNeeded(16, 3);
+    expect(await readFile(daemonStdoutPath(), 'utf8')).toBe('small\n');
+    expect(await readFile(daemonStderrPath(), 'utf8')).toBe('ERR');
+  });
+
+  it('silently skips when neither log file exists', async () => {
+    await expect(rotateDaemonLogsIfNeeded(1, 1)).resolves.toBeUndefined();
   });
 });

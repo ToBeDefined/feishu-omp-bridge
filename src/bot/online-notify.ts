@@ -1,4 +1,5 @@
 import { readFile, unlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { paths } from '../config/paths';
 
 /**
@@ -68,4 +69,61 @@ export async function takeOnlineNotice(
     }
   }
   return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Ordinary-boot announce throttle
+//
+// The generic 「🚀 已上线」 fan-out is the one notification a crash loop can
+// turn into a storm: launchd `KeepAlive` + `ThrottleInterval=10` boots us every
+// 10s, and each boot that gets far enough would re-announce to every chat. We
+// therefore record when we last announced and stay silent within the window.
+// ---------------------------------------------------------------------------
+
+/** Default throttle window for the ordinary restart announcement. */
+export const ORDINARY_BOOT_WINDOW_MS = 10 * 60 * 1000;
+
+/** Where the last-announce timestamp lives. Kept under `appDir` — it is
+ *  transient throttle state, not configuration. */
+export const ORDINARY_BOOT_FILE = join(paths.appDir, 'ordinary-boot-announce.json');
+
+/** Pure decision: is `now` still inside the silence window opened at `lastAt`?
+ *  A missing/invalid `lastAt` (never announced, corrupt marker) is outside. */
+export function withinAnnounceWindow(
+  lastAt: number | undefined,
+  now: number,
+  windowMs: number,
+): boolean {
+  if (typeof lastAt !== 'number' || !Number.isFinite(lastAt)) return false;
+  return now - lastAt < windowMs;
+}
+
+/**
+ * May this boot announce the ordinary 「已上线」 fan-out? False when we
+ * announced less than `windowMs` ago. When it returns true the timestamp is
+ * persisted first, so a crash-loop cannot announce twice inside the window.
+ *
+ * Never throws: throttle state is droppable, but boot must not fail over it.
+ * On a read failure we fail **open** (announce) — silence after a real restart
+ * is the worse bug.
+ */
+export async function shouldAnnounceOrdinaryBoot(
+  windowMs: number = ORDINARY_BOOT_WINDOW_MS,
+  path: string = ORDINARY_BOOT_FILE,
+  now: number = Date.now(),
+): Promise<boolean> {
+  let lastAt: number | undefined;
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as { at?: unknown };
+    if (typeof parsed.at === 'number') lastAt = parsed.at;
+  } catch {
+    /* absent or corrupt → treated as "never announced" */
+  }
+  if (withinAnnounceWindow(lastAt, now, windowMs)) return false;
+  try {
+    await writeFile(path, `${JSON.stringify({ at: now })}\n`, 'utf8');
+  } catch {
+    /* keep the (safe) announce even if the marker can't be written */
+  }
+  return true;
 }

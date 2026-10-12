@@ -3,11 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  cleanupTmpFiles,
   isAlive,
   readAndPrune,
   register,
   resolveTarget,
   sameAppOthers,
+  sweepStaleTmpFiles,
   unregister,
   unregisterSync,
   updateEntry,
@@ -260,5 +262,52 @@ describe('注册表写路径走跨进程锁', () => {
     unregisterSync('aa', f);
     expect(readAndPrune(f)).toEqual([]);
     expect(existsSync(`${f}.lock`)).toBe(false);
+  });
+});
+
+describe('sweepStaleTmpFiles / cleanupTmpFiles（tmp 垃圾清扫）', () => {
+  it('sweepStaleTmpFiles 删掉超龄的两种命名 tmp，保留新鲜与无关文件', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sweep-'));
+    // 两种命名：`.tmp-<pid>-<hex>`（registry/config/keystore）与 `.<pid>.tmp`（running-cards）
+    const stale1 = join(dir, 'processes.json.tmp-1234-deadbeef');
+    const stale2 = join(dir, 'running-cards.json.1234.tmp');
+    const fresh = join(dir, 'config.json.tmp-1-ffff');
+    const keep = join(dir, 'processes.json');
+    const lock = join(dir, 'processes.json.lock');
+    for (const p of [stale1, stale2, fresh, keep, lock]) writeFileSync(p, 'x');
+    const past = new Date(Date.now() - 60_000);
+    utimesSync(stale1, past, past);
+    utimesSync(stale2, past, past);
+
+    expect(await sweepStaleTmpFiles(dir, 30_000)).toBe(2);
+    expect(existsSync(stale1)).toBe(false);
+    expect(existsSync(stale2)).toBe(false);
+    expect(existsSync(fresh)).toBe(true); // 窗口内：可能是活进程在途的 tmp
+    expect(existsSync(keep)).toBe(true);
+    expect(existsSync(lock)).toBe(true);
+  });
+
+  it('sweepStaleTmpFiles 对不存在的目录返回 0，不抛', async () => {
+    expect(await sweepStaleTmpFiles(join(tmpdir(), 'no-such-sweep-dir'), 1_000)).toBe(0);
+  });
+
+  it('cleanupTmpFiles 按模式清本进程的随机后缀 tmp（旧的定名 unlink 匹配不到 → 每崩一次漏一个）', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cleanup-'));
+    const mine1 = join(dir, `processes.json.tmp-${process.pid}-deadbeef`);
+    const mine2 = join(dir, `running-cards.json.${process.pid}.tmp`);
+    const mine3 = join(dir, `workspaces.json.tmp-${process.pid}`);
+    const other = join(dir, 'processes.json.tmp-99999-aaaa'); // 别的进程，不得误删
+    for (const p of [mine1, mine2, mine3, other]) writeFileSync(p, 'x');
+
+    cleanupTmpFiles(dir);
+
+    expect(existsSync(mine1)).toBe(false);
+    expect(existsSync(mine2)).toBe(false);
+    expect(existsSync(mine3)).toBe(false);
+    expect(existsSync(other)).toBe(true);
+  });
+
+  it('cleanupTmpFiles 对不存在的目录不抛（exit 路径）', () => {
+    expect(() => cleanupTmpFiles(join(tmpdir(), 'no-such-cleanup-dir'))).not.toThrow();
   });
 });

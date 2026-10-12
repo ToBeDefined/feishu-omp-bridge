@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { runRelease, type ReleaseExec } from './run';
+import { execFile } from 'node:child_process';
+import { describe, expect, it, vi } from 'vitest';
+import { killProcessGroup, runRelease, type ReleaseExec } from './run';
+
+// The default exec runner is the only path that spawns a real process; stub it
+// so the timeout→SIGKILL-group behaviour can be asserted without side effects.
+vi.mock('node:child_process', () => ({ execFile: vi.fn() }));
 
 function recordingExec(): { exec: ReleaseExec; calls: string[] } {
   const calls: string[] = [];
@@ -114,5 +119,53 @@ describe('runRelease', () => {
     };
     await runRelease(exec, '/repo/root');
     expect(seen.every((cwd) => cwd === '/repo/root')).toBe(true);
+  });
+});
+
+describe('killProcessGroup', () => {
+  it('SIGKILLs the whole group via -pid', () => {
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    killProcessGroup(4242);
+    expect(kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
+    kill.mockRestore();
+  });
+
+  it('swallows ESRCH when the group is already gone', () => {
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' });
+    });
+    expect(() => killProcessGroup(1)).not.toThrow();
+    kill.mockRestore();
+  });
+});
+
+describe('runRelease process-group cleanup', () => {
+  it('kills the spawned group with -pid when a step times out', async () => {
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    let seenOpts: { detached?: boolean } | undefined;
+    vi.mocked(execFile).mockImplementation(((
+      _command: string,
+      _args: string[],
+      opts: { detached?: boolean },
+      cb: (error: unknown, stdout: string, stderr: string) => void,
+    ) => {
+      seenOpts = opts;
+      // Real execFile fires the callback asynchronously; mirror that so the
+      // runner's `child.pid` is assigned before the error path reads it.
+      queueMicrotask(() => {
+        cb(Object.assign(new Error('killed'), { killed: true }), '', '');
+      });
+      return { pid: 4242 };
+    }) as never);
+
+    await expect(runRelease()).resolves.toEqual({
+      ok: false,
+      step: 'typecheck',
+      timedOut: true,
+    });
+    expect(seenOpts?.detached).toBe(true);
+    expect(kill).toHaveBeenCalledWith(-4242, 'SIGKILL');
+    kill.mockRestore();
+    vi.mocked(execFile).mockReset();
   });
 });

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { clearBootFailures } from '../../daemon/boot-guard';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -283,6 +284,10 @@ export async function runServiceStart(opts: ServiceStartOptions = {}): Promise<v
   await preFlightChecks({ skipCheckLarkCli: opts.skipCheckLarkCli });
 
   await adapter.install();
+
+  // 人工 `start` 是熔断后的恢复入口：先清熔断计数，否则刚被熔断挡下的
+  // boot 会立刻再次拒绝启动（用户按告警提示操作却毫无效果）。
+  await clearBootFailures();
 
   // If already running, stop first so start operations don't race.
   if (adapter.isRunning()) {

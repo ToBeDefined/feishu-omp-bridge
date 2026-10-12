@@ -14,6 +14,7 @@ monkeypatch/tmp_path 直接驱动 self-heal 模块，覆盖全部自愈行为：
 """
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -41,8 +42,12 @@ def heal(tmp_path, monkeypatch):
     monkeypatch.setattr(mod, "STATE_FILE", str(tmp_path / "heal-state.json"))
     monkeypatch.setattr(mod, "LOCK_FILE", str(tmp_path / "heal.lock"))
     monkeypatch.setattr(mod, "LOG_FILE", str(tmp_path / "heal.log"))
-    # 原 omp 测试语义：跳过 rollback（单独测 rollback）
-    monkeypatch.setenv("HEAL_ROLLBACK", "0")
+    # 原 omp 测试语义：危险动作默认关闭，测试里显式打开 omp（rollback 由各用例单独开）
+    monkeypatch.setenv("HEAL_ALLOW_OMP", "1")
+    monkeypatch.delenv("HEAL_ALLOW_ROLLBACK", raising=False)
+    # 熔断状态文件 + 共享 git 工作树锁隔离到 tmp（避免读宿主机真实文件 / 真实锁）
+    monkeypatch.setattr(mod, "BOOT_ATTEMPTS_FILE", str(tmp_path / "boot-attempts.json"))
+    monkeypatch.setattr(mod, "_shared_lock_paths", lambda: [str(tmp_path / "heal-shared.lock")])
     # rollback 会在 REPO 跑 git/build —— 隔离到 tmp 避免碰真仓库
     monkeypatch.setattr(mod, "REPO", str(tmp_path))
 
@@ -359,7 +364,7 @@ def test_prompt_contract(heal):
 def test_rollback_runs_before_omp_when_enabled(heal, tmp_path, monkeypatch):
     # 开启 rollback：restart 失败后应先 git reset + build，再 omp。
     # 预置 lastGoodSha（模拟此前健康时记录的已知好提交）→ 回滚走 reset --hard <sha>。
-    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    monkeypatch.setenv("HEAL_ALLOW_ROLLBACK", "1")
     heal._write_state({"lastGoodSha": "abc123def456"})
     heal.probe_state["alive"] = False
     heal.RESTART_OK = False      # restart 失败
@@ -386,7 +391,7 @@ def _mock_rollback_git(heal, monkeypatch, reset_targets):
 
 def test_rollback_prefers_last_good(heal, monkeypatch):
     """有 lastGoodSha 且 != HEAD 时，优先一步回退到它，而非从头逐节点。"""
-    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    monkeypatch.setenv("HEAL_ALLOW_ROLLBACK", "1")
     heal._write_state({"lastGoodSha": "good", "rollbackCursor": "", "rollbackSteps": 0, "rollbackBackoffUntil": 0})
     monkeypatch.setattr(heal, "_git_head", lambda: "bad")
     monkeypatch.setattr(heal, "_git_rev", lambda ref: "good")
@@ -401,7 +406,7 @@ def test_rollback_prefers_last_good(heal, monkeypatch):
 
 def test_rollback_backs_off_after_failure(heal, monkeypatch):
     """失败后进入退避：退避期内不再 reset，避免连续过激回退。"""
-    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    monkeypatch.setenv("HEAL_ALLOW_ROLLBACK", "1")
     heal._write_state({
         "lastGoodSha": "good", "rollbackCursor": "good",
         "rollbackSteps": 1, "rollbackBackoffUntil": int(time.time()) + 3600,
@@ -417,7 +422,7 @@ def test_rollback_backs_off_after_failure(heal, monkeypatch):
 
 def test_rollback_steps_after_backoff(heal, monkeypatch):
     """退避过后从游标父节点继续退；成功后更新 lastGoodSha 并清游标。"""
-    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    monkeypatch.setenv("HEAL_ALLOW_ROLLBACK", "1")
     heal._write_state({
         "lastGoodSha": "good", "rollbackCursor": "good",
         "rollbackSteps": 1, "rollbackBackoffUntil": 0,
@@ -438,7 +443,7 @@ def test_rollback_steps_after_backoff(heal, monkeypatch):
 
 def test_rollback_step_limit(heal, monkeypatch):
     """退满 MAX_ROLLBACK_STEPS 步仍未恢复时停止，交给 omp。"""
-    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    monkeypatch.setenv("HEAL_ALLOW_ROLLBACK", "1")
     heal.MAX_ROLLBACK_STEPS = 3
     heal._write_state({"lastGoodSha": "", "rollbackCursor": "x", "rollbackSteps": 3, "rollbackBackoffUntil": 0})
     monkeypatch.setattr(heal, "_git_head", lambda: "x")
@@ -476,7 +481,7 @@ def _mock_git_build_timeout(heal, monkeypatch, reset_targets):
 def test_rollback_build_timeout_restores_head(heal, monkeypatch):
     """build 超时是环境问题、不是"这个提交坏"：恢复原 HEAD，不推进游标，
     也不把用户的提交留在被回退的状态（旧实现会留 dist/src 漂移）。"""
-    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    monkeypatch.setenv("HEAL_ALLOW_ROLLBACK", "1")
     monkeypatch.setattr(heal, "_git_head", lambda: "HEAD0")
     monkeypatch.setattr(heal, "_git_rev", lambda ref: "older1")
     monkeypatch.setattr(heal, "repair_restart", lambda: False)
@@ -494,7 +499,7 @@ def test_rollback_build_timeout_restores_head(heal, monkeypatch):
 
 def test_rollback_build_failure_still_advances_cursor(heal, monkeypatch):
     """build 非零退出才是"此节点坏"：保持回退并推进游标（原行为）。"""
-    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    monkeypatch.setenv("HEAL_ALLOW_ROLLBACK", "1")
     monkeypatch.setattr(heal, "_git_head", lambda: "bad")
     monkeypatch.setattr(heal, "_git_rev", lambda ref: "bad~1")
     monkeypatch.setattr(heal, "repair_restart", lambda: False)
@@ -527,7 +532,7 @@ def test_rollback_build_failure_still_advances_cursor(heal, monkeypatch):
 
 
 def test_rollback_skipped_when_disabled(heal, tmp_path, monkeypatch):
-    # 默认 HEAL_ROLLBACK=0（fixture）：restart 失败直接 omp，无 git 操作
+    # 默认未开 HEAL_ALLOW_ROLLBACK（fixture）：restart 失败直接 omp，无 git 操作
     heal.probe_state["alive"] = False
     heal.RESTART_OK = False
     heal.OMP_RUN_OK = True
@@ -535,6 +540,7 @@ def test_rollback_skipped_when_disabled(heal, tmp_path, monkeypatch):
     heal.heal_once()
     heal.heal_once()
     assert heal.calls["git_checkout"] == 0
+    assert heal.calls["git_reset"] == 0        # 默认不开回退，绝不 reset
     assert heal.calls["omp_run"] >= 1
 
 
@@ -566,7 +572,7 @@ time.sleep(60)
 
 def test_rollback_success_restores_stashed_local_changes(heal, monkeypatch):
     """回退成功后必须把回滚前 stash 的本地改动还回去（此前会静默留在 stash 里）。"""
-    monkeypatch.setenv("HEAL_ROLLBACK", "1")
+    monkeypatch.setenv("HEAL_ALLOW_ROLLBACK", "1")
     heal._write_state({"lastGoodSha": "abc123def456"})
     heal.BACKOFF_BASE_S = 0
 
@@ -588,3 +594,186 @@ def test_rollback_success_restores_stashed_local_changes(heal, monkeypatch):
     assert heal.repair_rollback() is True
     assert any(c[:2] == ["git", "stash"] and c[2] != "pop" for c in git_calls), "应当先 stash"
     assert ["git", "stash", "pop"] in git_calls, "回退成功后必须 pop 回本地改动"
+
+
+# --- 13. 熔断：daemon boot 连续失败时本轮不动手 ---
+def _write_boot_attempts(heal, failures, last_success=None):
+    path = Path(heal.BOOT_ATTEMPTS_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"failures": failures, "lastSuccessAt": last_success}), encoding="utf-8"
+    )
+
+
+def _iso_ago(seconds: float) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+
+def _recent_failures(n: int) -> list[dict]:
+    return [{"at": _iso_ago(i), "reason": f"boot failed #{i}"} for i in range(n)]
+
+
+def test_boot_circuit_open_skips_repair(heal):
+    """近窗口内 boot 失败 ≥ 阈值 → 本轮完全不动作（不 restart/omp，也不计 fails）。"""
+    _write_boot_attempts(heal, _recent_failures(heal.MAX_BOOT_FAILURES))
+    heal.probe_state["alive"] = False
+    for _ in range(heal.FAIL_THRESHOLD + 2):
+        heal.heal_once()
+    assert heal.calls["restart"] == 0
+    assert heal.calls["omp_run"] == 0
+    assert heal.state_get("fails") == 0      # 熔断时连 fails 都不累加
+
+
+def test_boot_circuit_below_threshold_still_acts(heal):
+    """失败次数不到阈值 → 照常自愈（熔断不误伤）。"""
+    _write_boot_attempts(heal, _recent_failures(heal.MAX_BOOT_FAILURES - 1))
+    heal.probe_state["alive"] = False
+    heal.heal_once()
+    heal.heal_once()
+    assert heal.calls["restart"] == 1
+
+
+def test_boot_circuit_threshold_override(heal, monkeypatch):
+    """HEAL_MAX_BOOT_FAILURES 可覆盖阈值（此处降到 2）。"""
+    monkeypatch.setenv("HEAL_MAX_BOOT_FAILURES", "2")
+    monkeypatch.setattr(heal, "MAX_BOOT_FAILURES", 2)
+    _write_boot_attempts(heal, _recent_failures(2))
+    heal.probe_state["alive"] = False
+    heal.heal_once()
+    heal.heal_once()
+    assert heal.calls["restart"] == 0
+
+
+def test_boot_attempts_missing_or_corrupt_is_empty(heal):
+    """熔断文件不存在 / 损坏 / 形状不符 → 当 0，绝不因读不到就乱动。"""
+    assert heal.boot_failure_count() == 0                       # 不存在
+    Path(heal.BOOT_ATTEMPTS_FILE).write_text("{not json", encoding="utf-8")
+    assert heal.boot_failure_count() == 0                       # 损坏
+    Path(heal.BOOT_ATTEMPTS_FILE).write_text(json.dumps({"failures": "x"}), encoding="utf-8")
+    assert heal.boot_failure_count() == 0                       # 形状不符
+    Path(heal.BOOT_ATTEMPTS_FILE).write_text(json.dumps([1, 2]), encoding="utf-8")
+    assert heal.boot_failure_count() == 0                       # 顶层非 dict
+
+
+def test_boot_failures_outside_window_ignored(heal):
+    """窗口之外的旧失败不算数（窗口滑过后自动恢复自愈能力）。"""
+    old = _iso_ago(heal.BOOT_FAILURE_WINDOW_S + 120)
+    _write_boot_attempts(heal, [{"at": old, "reason": "x"}] * (heal.MAX_BOOT_FAILURES + 5))
+    assert heal.boot_failure_count() == 0
+    heal.probe_state["alive"] = False
+    heal.heal_once()
+    heal.heal_once()
+    assert heal.calls["restart"] == 1
+
+
+# --- 14. 危险动作默认关闭 ---
+def test_omp_disabled_by_default(heal, monkeypatch):
+    """HEAL_ALLOW_OMP 未开 → restart 失败也不拉起 omp；打开后可用（实现未丢）。"""
+    monkeypatch.delenv("HEAL_ALLOW_OMP", raising=False)
+    heal.probe_state["alive"] = False
+    heal.RESTART_OK = False
+    heal.RESTART_FIX = False
+    heal.OMP_RUN_OK = True
+    heal.heal_once()
+    heal.heal_once()
+    assert heal.calls["omp_run"] == 0
+
+    monkeypatch.setenv("HEAL_ALLOW_OMP", "1")
+    heal.heal_once()
+    heal.heal_once()
+    assert heal.calls["omp_run"] == 1
+
+
+def test_rollback_disabled_by_default(heal, monkeypatch):
+    """HEAL_ALLOW_ROLLBACK 未开 → 即使代码可疑也不动 git 工作树。"""
+    monkeypatch.delenv("HEAL_ALLOW_ROLLBACK", raising=False)
+    monkeypatch.setattr(heal, "_git_head", lambda: "bad")
+    assert heal.repair_rollback() is False
+    assert heal.calls["git_reset"] == 0
+
+
+# --- 15. 与 self-update.py 共享 git 工作树锁 ---
+def test_boot_max_failures_env_override(tmp_path, monkeypatch):
+    """HEAL_MAX_BOOT_FAILURES 环境变量在导入时生效（默认 5）。"""
+    monkeypatch.setenv("HEAL_MAX_BOOT_FAILURES", "2")
+    mod = load_module()
+    assert mod.MAX_BOOT_FAILURES == 2
+
+
+def test_shared_lock_paths_env_override(tmp_path, monkeypatch):
+    """HEAL_SHARED_LOCK_FILE 可覆盖共享锁路径（单路径）。"""
+    monkeypatch.setenv("HEAL_SHARED_LOCK_FILE", str(tmp_path / "custom.lock"))
+    monkeypatch.setenv("HEAL_STATE_DIR", str(tmp_path))
+    mod = load_module()
+    mod.STATE_DIR = str(tmp_path)
+    assert mod._shared_lock_paths() == [str(tmp_path / "custom.lock")]
+
+
+def test_shared_lock_paths_default_covers_self_update(tmp_path, monkeypatch):
+    """默认共享锁同时覆盖全局 heal.lock 与 self-update.py 的锁文件。"""
+    monkeypatch.setenv("HEAL_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("HEAL_SHARED_LOCK_FILE", raising=False)
+    monkeypatch.delenv("UPDATE_LOCK_FILE", raising=False)
+    mod = load_module()
+    paths = mod._shared_lock_paths()
+    assert str(tmp_path / "heal.lock") in paths
+    assert any(p.endswith("feishu-omp-bridge-self-update.lock") for p in paths)
+
+
+def test_shared_lock_blocks_git_repair(heal, tmp_path, monkeypatch):
+    """共享锁被占（自更新在跑）→ 不 rollback、不 omp。"""
+    monkeypatch.setenv("HEAL_ALLOW_OMP", "1")
+    monkeypatch.setenv("HEAL_ALLOW_ROLLBACK", "1")
+    lock = heal.DirLock(str(tmp_path / "heal-shared.lock"))
+    assert lock.acquire()
+    try:
+        assert heal.repair_with_omp_guarded() is False
+        assert heal.calls["omp_run"] == 0
+        assert heal.calls["git_reset"] == 0
+
+        # heal_once 路径同样被挡
+        heal.probe_state["alive"] = False
+        heal.RESTART_OK = False
+        heal.RESTART_FIX = False
+        heal.heal_once()
+        heal.heal_once()
+        assert heal.calls["git_reset"] == 0
+        assert heal.calls["omp_run"] == 0
+    finally:
+        lock.release()
+
+
+def test_shared_lock_released_after_repair(heal):
+    """危险动作结束后共享锁必须释放，不长期阻塞 self-update。"""
+    heal.probe_state["alive"] = False
+    heal.RESTART_OK = False
+    heal.RESTART_FIX = False
+    heal.OMP_RUN_OK = False
+    heal.heal_once()
+    heal.heal_once()
+
+    probe = heal.DirLock(heal._shared_lock_paths()[0])
+    assert probe.acquire()          # 未被占用
+    probe.release()
+
+
+# --- 16. 常驻循环健壮性：单轮异常不中断 ---
+def test_main_loop_survives_round_exception(heal, tmp_path, monkeypatch):
+    """heal_once 抛异常只记日志，常驻循环继续；崩溃不会连锁重 spawn。"""
+    heal.LOCK_FILE = str(tmp_path / "loop.lock")
+    rounds = {"n": 0}
+
+    def flaky():
+        rounds["n"] += 1
+        if rounds["n"] >= 3:
+            raise KeyboardInterrupt  # 主动结束常驻循环
+        raise RuntimeError("probe exploded")
+
+    monkeypatch.setattr(heal, "heal_once", flaky)
+    monkeypatch.setattr(heal.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(heal.sys, "argv", ["self-heal.py"])
+    with pytest.raises(KeyboardInterrupt):
+        heal.main()
+    assert rounds["n"] == 3          # 前两轮异常未中断循环

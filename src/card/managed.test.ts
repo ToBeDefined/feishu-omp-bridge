@@ -234,4 +234,46 @@ describe('finalizeInterruptedCards（崩溃/重启后的补卡）', () => {
     expect(patched).toHaveLength(1);
     expect(Buffer.byteLength(JSON.stringify(patched[0]), 'utf8')).toBeLessThan(28 * 1024);
   });
+
+  it('连续补不上：attempts 累加保留，超过上限后丢弃记录（不再每 10s 无限外呼）', async () => {
+    await writeLeftovers([
+      { messageId: STREAM_ID, kind: 'stream', card: { schema: '2.0', body: { elements: [
+        { tag: 'markdown', content: '已输出内容' },
+      ] } } },
+    ]);
+    const { channel: ch } = channel(async () => {
+      throw new Error('AxiosError: Request failed with status code 400');
+    });
+
+    // 第 1~3 次启动：都被拒 → 记录还在，attempts 逐次 +1。
+    for (let i = 1; i <= 3; i += 1) {
+      await finalizeInterruptedCards(ch);
+      const left = JSON.parse(await readFile(file, 'utf8')) as Array<{ attempts?: number }>;
+      expect(left.map((c) => c.attempts)).toEqual([i]);
+    }
+
+    // 第 4 次：超过上限 → 丢弃记录，交给飞书自然消亡。
+    await finalizeInterruptedCards(ch);
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual([]);
+  });
+
+  it('补卡成功的那次不累加 attempts（记录整体清除）', async () => {
+    await writeLeftovers([
+      { messageId: STREAM_ID, kind: 'stream', card: { schema: '2.0', body: { elements: [
+        { tag: 'markdown', content: '已输出内容' },
+      ] } } },
+    ]);
+    // 第一次失败 → attempts=1 留着；第二次成功 → 记录清空。
+    let fail = true;
+    const { channel: ch } = channel(async () => {
+      if (fail) throw new Error('400');
+    });
+    await finalizeInterruptedCards(ch);
+    expect(
+      (JSON.parse(await readFile(file, 'utf8')) as Array<{ attempts?: number }>).map((c) => c.attempts),
+    ).toEqual([1]);
+    fail = false;
+    await finalizeInterruptedCards(ch);
+    expect(JSON.parse(await readFile(file, 'utf8'))).toEqual([]);
+  });
 });

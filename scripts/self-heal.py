@@ -15,7 +15,14 @@
 
   修复策略（由轻到重）：
     A. bridge restart（每轮阈值都试，轻量）
-    B. omp run 修复会话（并发锁 + 阶梯退避 + 最大次数上限 + 提示词退出契约）
+    B. 危险动作（git 回退 / omp 修复会话）默认**关闭**，分别需显式
+       HEAL_ALLOW_ROLLBACK=1 / HEAL_ALLOW_OMP=1 才执行；执行前后取与
+       self-update.py 共享的 git 工作树锁，避免两个脚本同时改同一工作树。
+
+  熔断：daemon 的 boot-guard 把连续 boot 失败写进 boot-attempts.json；
+  近 BOOT_FAILURE_WINDOW_S 内失败次数 ≥ HEAL_MAX_BOOT_FAILURES 时本轮
+  完全不动作（只告警）—— 避免在 daemon 起不来的最坏时刻再叠一层重启，
+  把机器拖垮。
 
 用法：
   self-heal.py            # 常驻循环（launchd KeepAlive 拉起）
@@ -30,7 +37,8 @@
   HEAL_FAIL_THRESHOLD / HEAL_OMP_TIMEOUT_S / HEAL_MODEL /
   HEAL_BACKOFF_BASE_S / HEAL_BACKOFF_MAX_S / HEAL_MAX_ATTEMPTS /
   HEAL_PROC_TIMEOUT_S / HEAL_WS_TIMEOUT_S / HEAL_BUILD_TIMEOUT_S /
-  HEAL_ROLLBACK
+  HEAL_ALLOW_ROLLBACK / HEAL_ALLOW_OMP / HEAL_BOOT_ATTEMPTS_FILE /
+  HEAL_MAX_BOOT_FAILURES / HEAL_BOOT_FAILURE_WINDOW_S / HEAL_SHARED_LOCK_FILE
 """
 
 from __future__ import annotations
@@ -78,6 +86,16 @@ ROLLBACK_MAX_S = int(os.environ.get("HEAL_ROLLBACK_MAX_S", "480"))
 MAX_ROLLBACK_STEPS = int(os.environ.get("HEAL_MAX_ROLLBACK_STEPS", "10"))
 
 SERVICE_LABEL = "ai.feishu-omp-bridge.heal"
+
+# 熔断状态文件（与 daemon 的 boot-guard 共享，形状见冻结契约）：
+#   { "failures": [{"at": "<ISO>", "reason": "..."}], "lastSuccessAt": "<ISO|null>" }
+BOOT_ATTEMPTS_FILE = os.environ.get("HEAL_BOOT_ATTEMPTS_FILE", os.path.join(STATE_DIR, "boot-attempts.json"))
+# 近 BOOT_FAILURE_WINDOW_S 内 boot 失败达此数 → 本轮不动手（默认对齐 boot-guard 的 5 次 / 10 分钟）。
+MAX_BOOT_FAILURES = int(os.environ.get("HEAL_MAX_BOOT_FAILURES", "5"))
+BOOT_FAILURE_WINDOW_S = int(os.environ.get("HEAL_BOOT_FAILURE_WINDOW_S", "600"))
+# 危险动作显式开关：默认关闭（必须显式打开才执行破坏性 git 回退 / omp 会话）。
+ALLOW_ROLLBACK_ENV = "HEAL_ALLOW_ROLLBACK"
+ALLOW_OMP_ENV = "HEAL_ALLOW_OMP"
 
 
 def log(msg: str) -> None:
@@ -153,6 +171,90 @@ def _now_iso() -> str:
 
 def write_fails(fails: int) -> None:
     _write_state({"fails": fails, "lastCheck": _now_iso()})
+
+
+# --- 熔断（与 daemon boot-guard 共享 boot-attempts.json） ---
+def _parse_iso_ts(value: object) -> float | None:
+    """解析 ISO 时间戳为 unix 秒。无法解析返回 None。
+
+    兼容 node 的 `new Date().toISOString()`（含毫秒 + 'Z'，py<3.11 不认 'Z'）。"""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
+def boot_failure_count(window_s: int | None = None) -> int:
+    """近 window_s（默认 BOOT_FAILURE_WINDOW_S）内的 daemon boot 失败次数。
+
+    文件不存在 / 损坏 / 形状不符一律当 0（容错）—— 读不到熔断状态时宁可
+    当作"无熔断"，也不能凭此去做破坏性动作；次数为 0 只会回到原有语义。
+    时间戳缺失/不可解析的条目无法判断是否在窗口内，保守计入。"""
+    try:
+        with open(BOOT_ATTEMPTS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    failures = data.get("failures")
+    if not isinstance(failures, list):
+        return 0
+    window = BOOT_FAILURE_WINDOW_S if window_s is None else window_s
+    now = time.time()
+    count = 0
+    for item in failures:
+        ts = _parse_iso_ts(item.get("at")) if isinstance(item, dict) else None
+        if ts is None:
+            count += 1
+            continue
+        if window <= 0 or now - ts <= window:
+            count += 1
+    return count
+
+
+# --- 与 self-update.py 共享的 git 工作树锁 ---
+# 回退 / omp 都会动 git 工作树 + build；self-update.py 也会。两个脚本若不互斥
+# 就可能同时改同一工作树（并发 reset / build / stash），互相踩踏。共享锁在
+# 危险动作前后取用，任一路径被占就整轮放弃（自更新通常很快结束，下轮再来）。
+def _shared_lock_paths() -> list[str]:
+    """共享锁文件路径列表（默认：全局 heal 锁 + self-update 的现有锁文件）。"""
+    override = os.environ.get("HEAL_SHARED_LOCK_FILE")
+    if override:
+        candidates = [override]
+    else:
+        candidates = [
+            os.path.join(STATE_DIR, "heal.lock"),
+            os.environ.get("UPDATE_LOCK_FILE")
+            or os.path.join(os.environ.get("TMPDIR", "/tmp"), "feishu-omp-bridge-self-update.lock"),
+        ]
+    paths: list[str] = []
+    for p in candidates:
+        if p not in paths:  # 去重：两者可能是同一路径
+            paths.append(p)
+    return paths
+
+
+def _acquire_shared_locks() -> list[DirLock] | None:
+    """取全部共享锁；任一取不到则释放已取得的并返回 None。"""
+    held: list[DirLock] = []
+    for path in _shared_lock_paths():
+        try:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        lk = DirLock(path)
+        if not lk.acquire():
+            for h in held:
+                h.release()
+            return None
+        held.append(lk)
+    return held
 
 
 # --- 健康探测 ---
@@ -322,6 +424,9 @@ def _build_omp_context() -> str:
 
 
 def repair_with_omp() -> bool:
+    if os.environ.get(ALLOW_OMP_ENV) != "1":
+        log(f"→ 跳过 omp 修复会话（危险动作默认关闭，需显式 {ALLOW_OMP_ENV}=1）")
+        return False
     log("→ 唤起 omp 修复会话（restart 仍失败）...")
     ctx = _build_omp_context()
     try:
@@ -471,9 +576,9 @@ def repair_rollback() -> bool:
     2) 失败则进入阶梯退避 —— 可能只是暂时性环境故障，先等再试；
     3) 退避过后仍失败，从 lastGoodSha 起一个个 commit 往前回退尝试。
     每一步都 build + restart + probe；最多退 MAX_ROLLBACK_STEPS 步。
-    返回 True 表示回退后 probe 恢复。"""
-    if os.environ.get("HEAL_ROLLBACK", "1") != "1":
-        log("→ 跳过 rollback（HEAL_ROLLBACK=0）")
+    返回 True 表示回退后 probe 恢复。默认关闭，需 HEAL_ALLOW_ROLLBACK=1。"""
+    if os.environ.get(ALLOW_ROLLBACK_ENV) != "1":
+        log(f"→ 跳过 rollback（危险动作默认关闭，需显式 {ALLOW_ROLLBACK_ENV}=1）")
         return False
     head = _git_head()
     if not head:
@@ -588,31 +693,52 @@ def repair_with_omp_guarded() -> bool:
     if rb_backoff and now < rb_backoff:
         log(f"⏳ 回退退避中（剩 {rb_backoff - now}s），暂不 omp")
         return False
-    omp_lock = DirLock(LOCK_FILE + ".omp")
-    if not omp_lock.acquire():
-        log("✗ 已有 omp 修复会话在运行，跳过本轮")
+    # 与 self-update.py 共享 git 工作树锁：回退 / omp 都会动 git+build，必须
+    # 与自更新互斥，避免两个脚本同时改同一工作树。取不到（自更新在跑）就
+    # 整轮不动手 —— 通常自更新很快结束，下一轮再来。
+    shared = _acquire_shared_locks()
+    if shared is None:
+        log("✗ 自更新/其他维护正在操作同一 git 工作树（共享锁被占），本轮不动手")
         return False
-    ok = False  # 初始化：repair_with_omp 若抛异常，finally 后仍安全
     try:
-        # 代码损坏优先回滚到上一个稳定提交 —— 比让 omp 现场改代码更稳。
-        if repair_rollback():
+        omp_lock = DirLock(LOCK_FILE + ".omp")
+        if not omp_lock.acquire():
+            log("✗ 已有 omp 修复会话在运行，跳过本轮")
+            return False
+        ok = False  # 初始化：repair_with_omp 若抛异常，finally 后仍安全
+        try:
+            # 代码损坏优先回滚到上一个稳定提交 —— 比让 omp 现场改代码更稳。
+            if repair_rollback():
+                return True
+            ok = repair_with_omp()
+        finally:
+            omp_lock.release()
+        if ok:
             return True
-        ok = repair_with_omp()
+        # 阶梯退避：2^attempts 分钟，上限 BACKOFF_MAX_S
+        backoff = min((2 ** attempts) * BACKOFF_BASE_S, BACKOFF_MAX_S)
+        _write_state({"ompAttempts": attempts + 1, "nextOmpAt": now + backoff})
+        if attempts + 1 >= MAX_ATTEMPTS:
+            log(f"⏳ omp 修复失败（第 {attempts + 1}/{MAX_ATTEMPTS} 次），已达上限，停止自愈。需人工介入。")
+        else:
+            log(f"⏳ omp 修复失败，退避 {backoff}s 后重试（第 {attempts + 1}/{MAX_ATTEMPTS} 次）")
+        return False
     finally:
-        omp_lock.release()
-    if ok:
-        return True
-    # 阶梯退避：2^attempts 分钟，上限 BACKOFF_MAX_S
-    backoff = min((2 ** attempts) * BACKOFF_BASE_S, BACKOFF_MAX_S)
-    _write_state({"ompAttempts": attempts + 1, "nextOmpAt": now + backoff})
-    if attempts + 1 >= MAX_ATTEMPTS:
-        log(f"⏳ omp 修复失败（第 {attempts + 1}/{MAX_ATTEMPTS} 次），已达上限，停止自愈。需人工介入。")
-    else:
-        log(f"⏳ omp 修复失败，退避 {backoff}s 后重试（第 {attempts + 1}/{MAX_ATTEMPTS} 次）")
-    return False
+        for lk in shared:
+            lk.release()
 
 
 def heal_once() -> None:
+    # 熔断优先：daemon 连续 boot 失败时，自愈动作大概率解决不了根因，却会在
+    # 最坏时刻再叠一层 restart / 回退，把机器拖垮（重启风暴放大器）。此轮
+    # 只告警、不探测、不计异常，等窗口滑过或人工介入。
+    boot_fails = boot_failure_count()
+    if boot_fails >= MAX_BOOT_FAILURES:
+        log(
+            f"✗ 熔断：近 {BOOT_FAILURE_WINDOW_S}s 内 daemon boot 已失败 {boot_fails} 次"
+            f"（≥{MAX_BOOT_FAILURES}），本轮不自愈，请人工排查 {BOOT_ATTEMPTS_FILE}"
+        )
+        return
     verdict = probe()
     if verdict is True:
         write_fails(0)
@@ -714,6 +840,14 @@ def uninstall() -> None:
     log("✓ watchdog 已卸载")
 
 
+def _safe_heal_once() -> None:
+    """单轮自愈的异常兜底：任何异常只记日志，绝不中断常驻循环、不清状态。"""
+    try:
+        heal_once()
+    except Exception as err:
+        log(f"✗ 本轮自愈异常（已忽略，继续下一轮）: {err!r}")
+
+
 def main() -> None:
     arg = sys.argv[1] if len(sys.argv) > 1 else ""
     # install / uninstall 是管理操作，不受 watchdog 常驻锁影响。
@@ -727,7 +861,10 @@ def main() -> None:
         # --repair 是 service.ts SELF_HEAL=1 的快速修复路径。它要防的是并发
         # omp 会话，不是并发探测 —— repair_with_omp_guarded 内部已用 omp 锁
         # 互斥。若在此抢主锁：常驻 watchdog 永远持有它，这条路径必然被拒。
-        repair_with_omp_guarded()
+        try:
+            repair_with_omp_guarded()
+        except Exception as err:
+            log(f"✗ --repair 异常: {err!r}")
         return
     # 探测/常驻：同一时间只允许一个实例
     lock = DirLock(LOCK_FILE)
@@ -736,15 +873,24 @@ def main() -> None:
         sys.exit(2)
     try:
         if arg == "--once":
-            heal_once()
+            _safe_heal_once()
         else:
             # 常驻循环（launchd 拉起后用）
             while True:
-                heal_once()
+                _safe_heal_once()
                 time.sleep(INTERVAL_S)
     finally:
         lock.release()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
+    except Exception as err:
+        # 顶层兜底：崩溃别让 launchd（KeepAlive+ThrottleInterval=10）立刻重
+        # spawn —— 先睡一个周期再退，抑制重启风暴。
+        log(f"✗ 看门狗顶层异常退出: {err!r}（休眠 {INTERVAL_S}s 后退出，抑制 launchd 重启风暴）")
+        time.sleep(INTERVAL_S)
+        sys.exit(1)

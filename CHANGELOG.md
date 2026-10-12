@@ -330,6 +330,13 @@
     避免 Bun 源码帧噪音把卡片撑爆。
 
 ### Fixed
+- **孤儿测试 worker 清扫**：`/release` 的测试步骤后紧接 `kickstart -k` 会 SIGTERM 整个
+  守护进程树，vitest 的 worker 池若未走完 teardown 就以孤儿（ppid=1）身份残留——
+  实测一轮发布留下 10 个 worker，各占约 4GB 内存并持续吃 CPU。现在 boot 时清扫
+  这类孤儿（判据：ppid=1 且命令行为 vitest worker；开发者自己跑的测试父进程存活，
+  不会误伤）。
+
+### Fixed
 - **重启死锁（生产事故）**：`kickstart` 杀掉 supervisor 后其 node 子进程可能脱管存活
   （ppid=1 孤儿），此后每次 launchd 拉起的新实例都会因「单实例守卫」拒绝启动并 exit 1，
   无限崩溃循环，release 卡永远停在「重启中」。现在 boot 时会把**可顶替**的冲突实例

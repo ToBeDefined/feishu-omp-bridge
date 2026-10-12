@@ -1,4 +1,5 @@
 import dns from 'node:dns';
+import { sweepOrphanedTestWorkers } from '../../core/strays';
 import { spawnSync } from 'node:child_process';
 import pkg from '../../../package.json';
 import { OmpAdapter } from '../../agent';
@@ -109,6 +110,10 @@ export async function runStart(opts: StartOptions): Promise<void> {
   void rotateDaemonStdoutIfNeeded().catch((err) =>
     log.warn('daemon', 'stdout-rotate-failed', { err: String(err) }),
   );
+
+  // 上一轮 /release 的测试 worker 若在 kickstart 打断 teardown 后残留，会是
+  // ppid=1 的孤儿并各占数 GB 内存；boot 时清掉。
+  sweepOrphanedTestWorkers();
 
   const configPath = opts.config ?? paths.configFile;
   const existing = await loadConfig(configPath);

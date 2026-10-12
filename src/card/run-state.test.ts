@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '../agent/types';
-import { ERROR_MSG_MAX, initialState, reduce } from './run-state';
+import {
+  ERROR_MSG_MAX,
+  finalizeIfRunning,
+  initialState,
+  markIdleTimeout,
+  markInterrupted,
+  reduce,
+} from './run-state';
 
 describe('run-state error clamping', () => {
   it('keeps short error messages verbatim', () => {
@@ -78,5 +85,44 @@ describe('mount notices are not rendered into the card', () => {
     const later = reduce(initialState, notice(`failed: ${MOUNT}`, 'info'));
     expect(later.blocks).toHaveLength(1);
     expect(later.blocks[0]).toMatchObject({ kind: 'text', content: `ℹ️ failed: ${MOUNT}` });
+  });
+});
+
+describe('usage 事件并进运行态', () => {
+  const usage = (u: { inputTokens?: number; outputTokens?: number; costUsd?: number }) =>
+    ({ type: 'usage', ...u }) as Extract<AgentEvent, { type: 'usage' }>;
+
+  it('一次 run 跨多个 turn：用量求和', () => {
+    let state = reduce(initialState, usage({ inputTokens: 100, outputTokens: 10, costUsd: 0.001 }));
+    state = reduce(state, usage({ inputTokens: 200, outputTokens: 20, costUsd: 0.002 }));
+    expect(state.usage).toEqual({ inputTokens: 300, outputTokens: 30, costUsd: 0.003 });
+  });
+
+  it('缺的字段不会凭空补 0', () => {
+    let state = reduce(initialState, usage({ outputTokens: 5 }));
+    state = reduce(state, usage({ costUsd: 0.5 }));
+    expect(state.usage).toEqual({ outputTokens: 5, costUsd: 0.5 });
+  });
+
+  it('一次都没报过就没 usage 字段（脚注据此不留空占位）', () => {
+    expect(reduce(initialState, { type: 'done' }).usage).toBeUndefined();
+  });
+});
+
+describe('终态记下结束时间', () => {
+  const started = { ...initialState, startedAt: 1_000 };
+
+  it('done / error / 中断 / 超时都带上 endedAt', () => {
+    expect(reduce(started, { type: 'done' }).endedAt).toBeGreaterThanOrEqual(1_000);
+    expect(reduce(started, { type: 'error', message: 'boom' }).endedAt).toBeGreaterThanOrEqual(1_000);
+    expect(markInterrupted(started).endedAt).toBeGreaterThanOrEqual(1_000);
+    expect(markIdleTimeout(started, 5).endedAt).toBeGreaterThanOrEqual(1_000);
+    expect(finalizeIfRunning(started).endedAt).toBeGreaterThanOrEqual(1_000);
+  });
+
+  it('已终态的状态再收尾不会刷新结束时间', () => {
+    const done = reduce(started, { type: 'done' });
+    expect(finalizeIfRunning(done).endedAt).toBe(done.endedAt);
+    expect(markInterrupted(done).endedAt).toBe(done.endedAt);
   });
 });

@@ -1,7 +1,15 @@
-import type { Block, FooterStatus, RunState, SubagentEntry, ToolEntry, UiState } from './run-state';
+import type {
+  Block,
+  FooterStatus,
+  RunState,
+  RunUsage,
+  SubagentEntry,
+  ToolEntry,
+  UiState,
+} from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 import { createTableBudget, type TableBudget } from './tables';
-import { codeFence, collapsiblePanel } from './templates';
+import { codeFence, collapsiblePanel, md } from './templates';
 import { codeSpan, escapeMd } from '../utils/text';
 
 /** Max chars per reasoning body — reasoning is auxiliary, truncation is fine. */
@@ -41,6 +49,7 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   // first: auxiliary panels (reasoning, OMP UI) only spend what is left, so a
   // chatty thinking block can never push the answer's tables into code blocks.
   const tables = createTableBudget();
+  const now = Date.now();
 
   // Answer text renders inline; a contiguous stretch of process elements
   // (tool runs + thinking segments with no text in between) collapses into
@@ -55,6 +64,13 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
     );
   }
 
+  // Control/result line goes FIRST, ahead of every body element: a long
+  // answer used to bury ⏹ 终止 (and the failure mark) below the fold, out of
+  // thumb reach on a phone. Pagination only ever trims `blocks`, so the row
+  // cannot be split away onto another page.
+  const head = headerRow(state, now);
+  if (head) elements.push(head);
+
   if (opts?.topNote) elements.push(noteMd(opts.topNote));
 
   const ui = uiContextPanel(state.ui, tables);
@@ -63,26 +79,16 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   for (const line of subagentLines(state.subagents)) elements.push(noteMd(line));
   for (const element of bodyElements) elements.push(element);
 
-  if (state.terminal === 'interrupted') {
-    elements.push(noteMd('_⏹ 已被中断_'));
-  } else if (state.terminal === 'idle_timeout') {
-    const mins = state.idleTimeoutMinutes ?? 0;
-    elements.push(noteMd(`_⏱ ${mins} 分钟无响应,已自动终止_`));
-  } else if (state.terminal === 'error' && state.errorMsg) {
+  // Failure detail stays in the body: the headline above says WHAT happened,
+  // this says why (OMP's own message, often long).
+  if (state.terminal === 'error' && state.errorMsg) {
     elements.push(noteMd(`⚠️ agent 失败：${escapeMd(state.errorMsg)}`));
   } else if (state.terminal === 'done' && elements.length === 0) {
     elements.push(noteMd('_（未返回内容）_'));
   }
 
-  if (state.terminal === 'running') {
-    // 分割线把控制区（状态 + ⏹）和正文隔开。
-    elements.push({ tag: 'hr' });
-    if (state.footer) {
-      elements.push(runningFooter(state.footer));
-    } else {
-      elements.push(stopButton());
-    }
-  }
+  const usage = usageNote(state, now);
+  if (usage) elements.push(usage);
 
   if (opts?.bottomNote) elements.push(noteMd(opts.bottomNote));
 
@@ -249,16 +255,25 @@ function stopButton(): object {
   };
 }
 
-/** Status note on the left + ⏹ stop button on the right, one aligned row. */
-function runningFooter(status: Exclude<FooterStatus, null>): object {
+/** The card's first element: while running the control row (status + elapsed
+ *  + ⏹ on the right), once the run ended badly the terminal result headline.
+ *  Both live above the body — the stop button stays in thumb reach and a
+ *  failure is a heading instead of a line of small grey notation at the very
+ *  bottom. A `done` run gets no banner: a successful answer needs no stamp,
+ *  and the pagination flow renders intermediate pages as `done`, where a
+ *  「已完成」 headline would be a lie. */
+function headerRow(state: RunState, now: number): object | undefined {
+  if (state.terminal === 'interrupted') return md('⏹ **已被中断**', 'heading');
+  if (state.terminal === 'idle_timeout') {
+    const mins = state.idleTimeoutMinutes ?? 0;
+    return md(`⏱ **${mins} 分钟无响应，已自动终止**`, 'heading');
+  }
+  if (state.terminal === 'error') return md('❌ **运行失败**', 'heading');
+  if (state.terminal !== 'running') return undefined;
+
+  // 状态文案 + 已用时长挤在一行，右边留给 ⏹。
   const text =
-    status === 'thinking'
-      ? '🧠 正在思考'
-      : status === 'tool_running'
-        ? '🛠 正在调用工具'
-        : status === 'waiting_input'
-          ? '🧩 等待用户交互'
-          : '✍️ 正在输出';
+    [footerLabel(state.footer), elapsedText(state, now)].filter(Boolean).join(' · ') || '⏱ 运行中';
   return {
     tag: 'column_set',
     flex_mode: 'none',
@@ -279,6 +294,87 @@ function runningFooter(status: Exclude<FooterStatus, null>): object {
       },
     ],
   };
+}
+
+function footerLabel(status: FooterStatus): string | undefined {
+  switch (status) {
+    case 'thinking':
+      return '🧠 正在思考';
+    case 'tool_running':
+      return '🛠 正在调用工具';
+    case 'waiting_input':
+      return '🧩 等待用户交互';
+    case 'streaming':
+      return '✍️ 正在输出';
+    default:
+      return undefined;
+  }
+}
+
+/** `⏱ 用时 12.4s` — the run's wall clock. Undefined when the state carries no
+ *  start stamp (synthetic runs such as `/doctor` reuse `initialState`), in
+ *  which case the footnote simply shows no duration rather than a fake 0s. */
+function elapsedText(state: RunState, now: number): string | undefined {
+  if (state.startedAt === undefined) return undefined;
+  return `⏱ 用时 ${formatDuration(Math.max(0, (state.endedAt ?? now) - state.startedAt))}`;
+}
+
+/** 12.4s under a minute; 1 分 5 秒 past it. */
+function formatDuration(ms: number): string {
+  const secs = ms / 1000;
+  if (secs < 60) return `${secs.toFixed(1)}s`;
+  const mins = Math.floor(secs / 60);
+  const rest = Math.round(secs - mins * 60);
+  return rest === 60 ? `${mins + 1} 分` : `${mins} 分 ${rest} 秒`;
+}
+
+/** Bottom notation line: 用时 / token 数 / 费用, whichever we actually have —
+ *  no usage event means no token or cost text, and nothing at all means no
+ *  line (never an empty placeholder). While running the elapsed clock already
+ *  ticks in the header row, so a live card only adds tokens/cost here. */
+function usageNote(state: RunState, now: number): object | undefined {
+  const parts: string[] = [];
+  if (state.terminal !== 'running') {
+    const elapsed = elapsedText(state, now);
+    if (elapsed) parts.push(elapsed);
+  }
+  const usage = state.usage;
+  if (usage) {
+    const tokens = tokensText(usage);
+    if (tokens) parts.push(tokens);
+    if (usage.costUsd !== undefined) parts.push(`💰 ${formatCost(usage.costUsd)}`);
+  }
+  return parts.length > 0 ? noteMd(parts.join(' · ')) : undefined;
+}
+
+/** `🧮 12.3k tok（入 11.1k / 出 1.2k）` — only the sides the provider sent. */
+function tokensText(usage: RunUsage): string | undefined {
+  const input = usage.inputTokens;
+  const output = usage.outputTokens;
+  if (input === undefined && output === undefined) return undefined;
+  const sides: string[] = [];
+  if (input !== undefined) sides.push(`入 ${formatTokens(input)}`);
+  if (output !== undefined) sides.push(`出 ${formatTokens(output)}`);
+  return `🧮 ${formatTokens((input ?? 0) + (output ?? 0))} tok（${sides.join(' / ')}）`;
+}
+
+/** 940 → `940`, 12345 → `12.3k`, 1234567 → `1.2M`. */
+function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${trimZero(n / 1000)}k`;
+  return `${trimZero(n / 1_000_000)}M`;
+}
+
+function trimZero(v: number): string {
+  const s = v.toFixed(1);
+  return s.endsWith('.0') ? s.slice(0, -2) : s;
+}
+
+/** 0.01234 → `$0.0123`; sub-cent amounts do not round to a free-looking $0.0000. */
+function formatCost(usd: number): string {
+  if (usd === 0) return '$0';
+  if (usd < 0.0001) return '<$0.0001';
+  return `$${usd.toFixed(4)}`;
 }
 
 function uiContextPanel(ui: UiState, tables: TableBudget): object | undefined {

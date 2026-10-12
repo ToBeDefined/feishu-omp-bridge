@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { renderCard } from './run-renderer';
 import { countTables } from './tables';
-import { initialState, type RunState, type ToolEntry } from './run-state';
+import { initialState, reduce, type RunState, type ToolEntry } from './run-state';
 
 function tool(id: number): ToolEntry {
   return { id: `t${id}`, name: 'Bash', input: { command: `cmd ${id}` }, status: 'done', output: 'ok' };
@@ -50,6 +50,15 @@ function longMarkdown(elements: unknown[], prefix: string): string | undefined {
     const c = e.content;
     return typeof c === 'string' && c.startsWith(prefix) ? c : acc;
   }, undefined);
+}
+
+/** Top-level notation markdown lines (the card's small grey notes). */
+function notationMarkdown(elements: unknown[]): string[] {
+  return elements.flatMap((e) => {
+    if (typeof e !== 'object' || e === null || !('tag' in e) || !('content' in e)) return [];
+    if (e.tag !== 'markdown' || !('text_size' in e) || e.text_size !== 'notation') return [];
+    return typeof e.content === 'string' ? [e.content] : [];
+  });
 }
 
 describe('renderCard', () => {
@@ -234,19 +243,150 @@ describe('renderCard', () => {
     );
   });
 
-  it('aligns the running status and stop button in one footer row', () => {
-    const elements = cardElements(renderCard(longRunState(1)));
-    const rows = elements.filter(
-      (e): e is Record<string, unknown> =>
-        typeof e === 'object' && e !== null && 'tag' in e && e.tag === 'column_set',
+  it('把「状态 + ⏹ 终止」行放在卡片最上方，正文之前', () => {
+    const state = { ...longRunState(3), startedAt: 1_000_000, endedAt: 1_012_400 };
+    const elements = cardElements(renderCard(state));
+    // 第一个元素就是控制行：长回复下手机一屏也够得到 ⏹。
+    const json = JSON.stringify(elements[0]);
+    expect(elements[0]).toMatchObject({ tag: 'column_set' });
+    expect(json).toContain('⏹ 终止');
+    expect(json).toContain('"cmd":"stop"');
+    expect(json).toContain('正在输出');
+    expect(json).toContain('⏱ 用时 12.4s');
+    // 正文第一段排在其后 —— 控制行不是文末元素。
+    const firstBody = elements.findIndex((e) => JSON.stringify(e).includes('text block 0'));
+    expect(firstBody).toBeGreaterThan(0);
+    // 控制区上移后不再需要尾部那条分割线。
+    expect(countByTag(elements, 'hr')).toBe(0);
+  });
+
+  it('运行中的已用时长随时长递增（同一状态不同时刻渲染）', () => {
+    const startedAt = 1_000_000;
+    const head = (elapsedMs: number): string =>
+      JSON.stringify(cardElements(renderCard({ ...longRunState(1), startedAt, endedAt: startedAt + elapsedMs }))[0]);
+    expect(head(0)).toContain('⏱ 用时 0.0s');
+    expect(head(12_400)).toContain('⏱ 用时 12.4s');
+    expect(head(65_000)).toContain('⏱ 用时 1 分 5 秒');
+  });
+
+  it('失败/超时/中断在正文之前给出醒目结果行', () => {
+    const blocks: RunState['blocks'] = [
+      { kind: 'text', content: '这里是很长的正文', streaming: false },
+    ];
+    const errored: RunState = {
+      ...longRunState(0),
+      blocks,
+      terminal: 'error',
+      footer: null,
+      errorMsg: 'boom',
+      startedAt: 1_000_000,
+      endedAt: 1_002_000,
+    };
+    const failed = cardElements(renderCard(errored));
+    expect(failed[0]).toMatchObject({
+      tag: 'markdown',
+      content: '❌ **运行失败**',
+      text_size: 'heading',
+    });
+    // 详情保留在正文里（标题只说结果，细节留给这一行）。
+    expect(longMarkdown(failed, '⚠️ agent 失败：boom')).toBeDefined();
+    expect(failed.findIndex((e) => JSON.stringify(e).includes('很长的正文'))).toBeGreaterThan(0);
+
+    const timedOutCard = renderCard({
+      ...errored,
+      terminal: 'idle_timeout',
+      idleTimeoutMinutes: 5,
+      errorMsg: undefined,
+    });
+    const timedOut = cardElements(timedOutCard);
+    expect(timedOut[0]).toMatchObject({
+      tag: 'markdown',
+      // 全角标点：旧文案的 `无响应,已自动终止` 不再出现。
+      content: '⏱ **5 分钟无响应，已自动终止**',
+      text_size: 'heading',
+    });
+    expect(JSON.stringify(timedOutCard)).not.toContain('无响应,');
+
+    const interrupted = renderCard({ ...errored, terminal: 'interrupted', errorMsg: undefined });
+    expect(cardElements(interrupted)[0]).toMatchObject({
+      tag: 'markdown',
+      content: '⏹ **已被中断**',
+      text_size: 'heading',
+    });
+    expect(JSON.stringify(interrupted)).not.toContain('_⏹ 已被中断_');
+  });
+
+  it('终态脚注显示用时/token/费用，缺哪个省哪个', () => {
+    const base: RunState = {
+      ...longRunState(0),
+      terminal: 'done',
+      footer: null,
+      startedAt: 1_000_000,
+      endedAt: 1_012_400,
+    };
+    base.blocks.push({ kind: 'text', content: '正文', streaming: false });
+
+    expect(
+      notationMarkdown(
+        cardElements(
+          renderCard({ ...base, usage: { inputTokens: 11_100, outputTokens: 1_200, costUsd: 0.01234 } }),
+        ),
+      ),
+    ).toContain('⏱ 用时 12.4s · 🧮 12.3k tok（入 11.1k / 出 1.2k） · 💰 $0.0123');
+
+    // 脚注排在正文之后。
+    const elements = cardElements(renderCard({ ...base, usage: { costUsd: 0.01234 } }));
+    expect(elements.findIndex((e) => JSON.stringify(e).includes('用时 12.4s'))).toBeGreaterThan(
+      elements.findIndex((e) => JSON.stringify(e).includes('正文')),
     );
-    const footerRow = rows.find((r) =>
-      JSON.stringify(r).includes('⏹ 终止'),
+
+    // 只报了输出侧：不臆造「入 0」。
+    expect(notationMarkdown(cardElements(renderCard({ ...base, usage: { outputTokens: 500 } })))).toContain(
+      '⏱ 用时 12.4s · 🧮 500 tok（出 500）',
     );
-    expect(footerRow).toBeDefined();
-    expect(JSON.stringify(footerRow)).toContain('正在输出');
-    // 正文与控制区之间有分割线。
-    expect(elements[elements.length - 2]).toMatchObject({ tag: 'hr' });
+
+    // 没有 usage：只显示用时，不留空占位。
+    const onlyTime = notationMarkdown(cardElements(renderCard(base)));
+    expect(onlyTime).toContain('⏱ 用时 12.4s');
+    expect(JSON.stringify(onlyTime)).not.toContain('tok');
+    expect(JSON.stringify(onlyTime)).not.toContain('$');
+  });
+
+  it('没有 usage 也没有起跑时间时不出现脚注', () => {
+    const state: RunState = { ...longRunState(0), terminal: 'done', footer: null };
+    state.blocks.push({ kind: 'text', content: '正文', streaming: false });
+    const elements = cardElements(renderCard(state));
+    expect(notationMarkdown(elements).filter((line) => line.includes('用时'))).toEqual([]);
+    expect(JSON.stringify(elements)).not.toContain('💰');
+  });
+
+  it('运行中脚注不重复时长（控制行已经在走表）', () => {
+    const state = {
+      ...longRunState(1),
+      startedAt: 1_000_000,
+      endedAt: 1_012_400,
+      usage: { inputTokens: 2_000, outputTokens: 300, costUsd: 0.5 },
+    };
+    const elements = cardElements(renderCard(state));
+    expect(JSON.stringify(elements[0])).toContain('⏱ 用时 12.4s');
+    const notes = notationMarkdown(elements);
+    expect(notes).toContain('🧮 2.3k tok（入 2k / 出 300） · 💰 $0.5000');
+    expect(notes.filter((line) => line.includes('用时'))).toEqual([]);
+  });
+
+  it('usage 事件经 reduce 进状态后，脚注就带上 token 与费用', () => {
+    // batch 收到 usage 后不再只写日志：reduce 进 session.state，卡的终态脚注
+    // 因此有东西可显示（这里一路跑到 done，验证接得上）。
+    const startedAt = Date.now() - 12_400;
+    let state: RunState = { ...initialState, startedAt };
+    state = reduce(state, { type: 'text', delta: '正文' });
+    state = reduce(state, { type: 'usage', inputTokens: 11_100, outputTokens: 1_200, costUsd: 0.01234 });
+    state = reduce(state, { type: 'done' });
+    expect(notationMarkdown(cardElements(renderCard(state)))).toContainEqual(
+      expect.stringMatching(
+        /^⏱ 用时 12\.\ds · 🧮 12\.3k tok（入 11\.1k \/ 出 1\.2k） · 💰 \$0\.0123$/,
+      ),
+    );
   });
 
   it('skips the thinking panel when thinking is a bare placeholder (e.g. ".")', () => {

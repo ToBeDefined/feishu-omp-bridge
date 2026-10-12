@@ -26,9 +26,9 @@ export function renderText(state: RunState): string {
     parts.push('_⏹ 已被中断_');
   } else if (state.terminal === 'idle_timeout') {
     const mins = state.idleTimeoutMinutes ?? 0;
-    parts.push(`_⏱ ${mins} 分钟无响应,已自动终止_`);
+    parts.push(`_⏱ ${mins} 分钟无响应，已自动终止_`);
   } else if (state.terminal === 'error' && state.errorMsg) {
-    parts.push(`⚠️ agent 失败:${escapeMd(state.errorMsg)}`);
+    parts.push(`⚠️ agent 失败：${escapeMd(state.errorMsg)}`);
   } else if (state.terminal === 'running' && state.footer) {
     parts.push(footerLine(state.footer));
   }
@@ -71,7 +71,7 @@ function renderUiContext(ui: UiState): string {
   if (ui.title) lines.push(`- 标题：${escapeMd(ui.title)}`);
   for (const [key, text] of Object.entries(ui.statuses)) lines.push(`- ${escapeMd(key)}：${escapeMd(text)}`);
   for (const [key, widget] of Object.entries(ui.widgets)) {
-    lines.push(`- ${escapeMd(key)}: ${(widget.lines ?? []).map(escapeMd).join(' / ')}`);
+    lines.push(`- ${escapeMd(key)}：${(widget.lines ?? []).map(escapeMd).join(' / ')}`);
   }
   if (ui.editorText) lines.push(`- 编辑器内容：${escapeMd(ui.editorText.slice(0, 300))}`);
   return lines.length > 0 ? `> 🧩 OMP 状态\n${lines.join('\n')}` : '';

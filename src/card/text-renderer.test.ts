@@ -27,7 +27,9 @@ describe('renderText', () => {
 
   it('marks idle timeout with minutes', () => {
     const st = markIdleTimeout(initialState, 5);
-    expect(renderText(st)).toContain('5 分钟无响应');
+    expect(renderText(st)).toContain('5 分钟无响应，已自动终止');
+    // 全角标点：半角逗号的旧文案不再出现。
+    expect(renderText(st)).not.toContain('无响应,');
   });
 
   it('renders running footer while streaming', () => {
@@ -49,6 +51,22 @@ describe('renderText', () => {
   it('renders error message', () => {
     const st = { ...initialState, terminal: 'error', errorMsg: 'boom' } as never;
     expect(renderText(st as never)).toContain('boom');
+    // 全角冒号（旧文案是 `agent 失败:boom`）。
+    expect(renderText(st as never)).toContain('agent 失败：boom');
+    expect(renderText(st as never)).not.toContain('agent 失败:');
+  });
+
+  it('renders widget/status lines with full-width colons', () => {
+    const st = {
+      ...initialState,
+      ui: {
+        statuses: { 模式: '计划' },
+        widgets: { 待办: { key: '待办', lines: ['第一项'] } },
+      },
+    } as never;
+    const out = renderText(st as never);
+    expect(out).toContain('- 模式：计划');
+    expect(out).toContain('- 待办：第一项');
   });
 
   it('joins multiple blocks with blank lines', () => {

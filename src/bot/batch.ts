@@ -433,7 +433,8 @@ interface StreamSession {
 
 function createStreamSession(handle: RunHandle, idleTimeoutMs: number | undefined): StreamSession {
   const session: StreamSession = {
-    state: initialState,
+    // 起跑时间戳：卡上的「用时」脚注从这一刻算起。
+    state: { ...initialState, startedAt: Date.now() },
     iter: handle.run.events[Symbol.asyncIterator](),
     idleFired: false,
     timer: undefined,
@@ -514,6 +515,10 @@ async function streamEvents(
       continue;
     }
     if (evt.type === 'usage') {
+      // 用量不再只写日志：并进运行态，卡的底部脚注才有 token / 费用可显示。
+      // 它不改变任何正文，所以**不单独触发一次 patch** —— 下一个事件的 patch
+      // 会顺带把它带上；流在 usage 之后直接结束的话，收尾的终态渲染也读得到。
+      session.state = reduce(session.state, evt);
       if (evt.costUsd !== undefined) {
         log.info('agent', 'usage', { costUsd: Number(evt.costUsd.toFixed(4)) });
       }

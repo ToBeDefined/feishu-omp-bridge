@@ -41,6 +41,15 @@ export interface UiState {
 export type FooterStatus = 'thinking' | 'tool_running' | 'streaming' | 'waiting_input' | null;
 export type Terminal = 'running' | 'done' | 'interrupted' | 'error' | 'idle_timeout';
 
+/** Provider usage summed over one run (`usage` events arrive once per OMP
+ *  turn; a run may span several turns, and the footnote reports the total).
+ *  Every field is optional — report whichever ones the provider sent. */
+export interface RunUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd?: number;
+}
+
 export type SubagentStatus = 'started' | 'completed' | 'failed' | 'aborted';
 
 export interface SubagentEntry {
@@ -63,6 +72,15 @@ export interface RunState {
   /** Set when terminal === 'idle_timeout' — how long OMP was idle before
    * the watchdog gave up (so the message can say "N 分钟无响应"). */
   idleTimeoutMinutes?: number;
+  /** Epoch ms the run started — the card footnote's elapsed clock. Absent on
+   * synthetic runs (e.g. `/doctor`) that never set one, and the footnote then
+   * simply has no duration to show. */
+  startedAt?: number;
+  /** Epoch ms the run reached a terminal state. While the run is live the
+   * elapsed clock keeps ticking, so the renderer falls back to "now". */
+  endedAt?: number;
+  /** Summed provider usage; absent until the first `usage` event. */
+  usage?: RunUsage;
 }
 
 export const initialState: RunState = {
@@ -256,7 +274,7 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
     case 'error': {
       const raw = evt.message;
       const msg = raw.length > ERROR_MSG_MAX ? `…${raw.slice(-ERROR_MSG_MAX)}` : raw;
-      return { ...state, terminal: 'error', errorMsg: msg, footer: null };
+      return { ...state, terminal: 'error', errorMsg: msg, footer: null, endedAt: Date.now() };
     }
 
     case 'done': {
@@ -265,12 +283,29 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
         blocks: deactivateTrailingThinking(closeStreamingText(state.blocks)),
         terminal: 'done',
         footer: null,
+        endedAt: Date.now(),
       };
+    }
+
+    case 'usage': {
+      return { ...state, usage: addUsage(state.usage, evt) };
     }
 
     default:
       return state;
   }
+}
+
+/** Fold one `usage` event into the run total. OMP emits usage per turn
+ *  (`turn_end`), so a multi-turn run sums: the card footnote reports what the
+ *  whole run spent, not just its last turn. Fields the provider omitted keep
+ *  their previous total — never invent a zero. */
+function addUsage(prev: RunUsage | undefined, evt: Extract<AgentEvent, { type: 'usage' }>): RunUsage {
+  const next: RunUsage = { ...prev };
+  if (typeof evt.inputTokens === 'number') next.inputTokens = (prev?.inputTokens ?? 0) + evt.inputTokens;
+  if (typeof evt.outputTokens === 'number') next.outputTokens = (prev?.outputTokens ?? 0) + evt.outputTokens;
+  if (typeof evt.costUsd === 'number') next.costUsd = (prev?.costUsd ?? 0) + evt.costUsd;
+  return next;
 }
 
 function noticeText(evt: Extract<AgentEvent, { type: 'ui_notice' }>): string {
@@ -311,6 +346,7 @@ export function markInterrupted(state: RunState): RunState {
     blocks: deactivateTrailingThinking(closeStreamingText(state.blocks)),
     terminal: 'interrupted',
     footer: null,
+    endedAt: state.endedAt ?? Date.now(),
   };
 }
 
@@ -321,6 +357,7 @@ export function markIdleTimeout(state: RunState, minutes: number): RunState {
     terminal: 'idle_timeout',
     footer: null,
     idleTimeoutMinutes: minutes,
+    endedAt: state.endedAt ?? Date.now(),
   };
 }
 
@@ -331,5 +368,6 @@ export function finalizeIfRunning(state: RunState): RunState {
     blocks: deactivateTrailingThinking(closeStreamingText(state.blocks)),
     terminal: 'done',
     footer: null,
+    endedAt: state.endedAt ?? Date.now(),
   };
 }

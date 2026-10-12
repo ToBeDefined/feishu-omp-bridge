@@ -1,4 +1,4 @@
-import { spawn, writeFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BridgeChannel } from '../../bot/channel';

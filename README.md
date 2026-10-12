@@ -215,6 +215,7 @@ feishu-omp-bridge restart      # restart the daemon
 feishu-omp-bridge stop         # stop the daemon (registration files stay)
 feishu-omp-bridge unregister   # remove the daemon registration (bootout + delete plist)
 feishu-omp-bridge release      # typecheck → test → build, then restart the daemon
+feishu-omp-bridge rollback     # revert to the last known-good commit, rebuild, then restart
 feishu-omp-bridge ps           # list running bridge processes on this machine
 feishu-omp-bridge kill <id|#>  # kill a bridge process (SIGTERM, then SIGKILL after 2s)
 feishu-omp-bridge secrets get|set|list|remove   # inspect / manage the encrypted secret keystore
@@ -223,7 +224,27 @@ feishu-omp-bridge -v, --version
 ```
 
 Process-level commands (`ps`, `kill`) act on running bridge processes; service-level commands
-(`start`, `stop`, `restart`, `status`, `unregister`, `release`) act on the OS-managed daemon.
+(`start`, `stop`, `restart`, `status`, `unregister`, `release`, `rollback`) act on the OS-managed daemon.
+
+### Recovery flow (release → restart → rollback)
+
+`release` is fail-fast: a broken typecheck/test/build aborts **without** restarting, so the
+running daemon keeps serving the previous code and nothing has to be undone.
+
+If a *successful* release turns out to be bad at runtime (the daemon boots but misbehaves), use
+`rollback` from a terminal — it is deliberately a CLI command, because the bot may be too broken
+to accept a chat command:
+
+```bash
+feishu-omp-bridge rollback          # target = lastGoodSha from the self-heal state, else HEAD~1
+feishu-omp-bridge rollback <sha>    # or an explicit commit/ref
+```
+
+What it does, in order: refuses to run on a dirty worktree → `git revert --no-commit
+<target>..HEAD` + one revert commit (**history is never rewritten**) → runs the same
+typecheck/test/build gate as `release` → clears the boot circuit breaker → restarts the daemon.
+Any failure restores the pre-rollback HEAD, and a failed pipeline removes the revert commit it
+just created, leaving the repository exactly as it was.
 
 ## Background daemon
 

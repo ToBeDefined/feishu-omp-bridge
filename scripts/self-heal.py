@@ -15,9 +15,13 @@
 
   修复策略（由轻到重）：
     A. bridge restart（每轮阈值都试，轻量）
-    B. 危险动作（git 回退 / omp 修复会话）默认**关闭**，分别需显式
-       HEAL_ALLOW_ROLLBACK=1 / HEAL_ALLOW_OMP=1 才执行；执行前后取与
-       self-update.py 共享的 git 工作树锁，避免两个脚本同时改同一工作树。
+    B. 危险动作（git 回退 / omp 修复会话）由安装时的环境变量决定：
+       `install()` 默认把 **HEAL_ALLOW_ROLLBACK=1**（自动回退到 lastGoodSha，
+       经 git+build+restart 验证后推进）与 **HEAL_ALLOW_OMP=0** 写进 launchd
+       plist；需要改回来就 `HEAL_ALLOW_ROLLBACK=0 python3 self-heal.py install`
+       再 bootout+bootstrap 该 job（直接 kickstart 不会刷新 plist 定义）。
+       两者执行前后都取与 self-update.py 共享的 git 工作树锁，避免两个脚本
+       同时改同一工作树。
 
   熔断：daemon 的 boot-guard 把连续 boot 失败写进 boot-attempts.json；
   近 BOOT_FAILURE_WINDOW_S 内失败次数 ≥ HEAL_MAX_BOOT_FAILURES 时本轮
@@ -833,6 +837,10 @@ def install() -> None:
     <dict>
         <key>PATH</key>
         <string>{os.environ.get('PATH', '')}</string>
+        <key>HEAL_ALLOW_ROLLBACK</key>
+        <string>{os.environ.get('HEAL_ALLOW_ROLLBACK', '1')}</string>
+        <key>HEAL_ALLOW_OMP</key>
+        <string>{os.environ.get('HEAL_ALLOW_OMP', '0')}</string>
     </dict>
 </dict>
 </plist>

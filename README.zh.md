@@ -506,6 +506,16 @@ feishu://message/<message_id>
 
 架构与代码组织约定见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
+### 发布 / 回退（recovery）
+
+- `feishu-omp-bridge release`：`typecheck → test → build` 全过才重启；任一步失败**不重启**，
+  旧进程继续服务（不存在"带病上线"）。
+- `feishu-omp-bridge rollback [sha]`：**发布后运行时才发现坏掉**时用（故意做成 CLI 命令，
+  因为此时 bot 可能已经无法接收聊天命令）。默认目标是自愈状态里的 `lastGoodSha`，没有则
+  `HEAD~1`；执行顺序：脏工作区直接拒绝 → `git revert --no-commit <target>..HEAD` + 一条
+  revert 提交（**不改写历史**） → 与 release 同一套门禁 → 清熔断 → 重启。任一步失败都会
+  把仓库恢复到操作前的 HEAD（流水线失败时连同刚创建的 revert 提交一起撤销）。
+
 ### 自更新 / 自愈
 
 以下脚本位于 `scripts/`（随仓库分发），用于防止"周末 bot 自己更新后起不来"这类问题：

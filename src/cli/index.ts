@@ -3,6 +3,7 @@ import pkg from '../../package.json';
 import { runMigrate } from './commands/migrate';
 import { runKillCli, runPs } from './commands/ps';
 import { runReleaseCli } from './commands/release';
+import { runRollbackCli } from './commands/rollback';
 import {
   runSecretsGet,
   runSecretsList,
@@ -81,6 +82,13 @@ program
   .description('Self-release: typecheck → test → build, then restart the daemon')
   .action(async () => {
     await runReleaseCli();
+  });
+
+program
+  .command('rollback [target]')
+  .description('Roll back to the last known-good commit, rebuild, then restart the daemon')
+  .action(async (target?: string) => {
+    await runRollbackCli(target);
   });
 
 program

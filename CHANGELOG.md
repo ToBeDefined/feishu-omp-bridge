@@ -329,6 +329,19 @@
     stderr 尾部做截断（保留末尾 2000 字符，具体错误行在最后），
     避免 Bun 源码帧噪音把卡片撑爆。
 
+### Added
+- **`feishu-omp-bridge rollback [sha]`**：发布后运行时才发现坏掉时的救回通道（故意做成
+  CLI 命令 —— 此时 bot 可能已无法接收聊天命令）。默认目标取自自愈状态里的 `lastGoodSha`，
+  无则 `HEAD~1`；顺序：脏工作区拒绝 → `git revert --no-commit <target>..HEAD` + 一条 revert
+  提交（**不改历史**） → 与 `release` 同一套 typecheck/test/build 门禁 → 清熔断 → 重启。
+  任一步失败都把仓库恢复到操作前的 HEAD（流水线失败时连刚创建的 revert 提交一起撤销）。
+  23 条测试，含真实临时 git 仓库下的 revert/冲突/脏树/流水线失败场景。
+- **self-heal 自动回退默认开启**：`install()` 把 `HEAL_ALLOW_ROLLBACK=1` 写进 heal 的
+  launchd plist（`HEAL_ALLOW_OMP` 仍默认 0，即不自动起 omp 修复会话）；改回只需
+  `HEAL_ALLOW_ROLLBACK=0 python3 scripts/self-heal.py install` + bootout/bootstrap 该 job
+  （直接 kickstart 不会刷新 plist 定义 —— 已写入脚本注释）。
+- README（中英）补「发布 / 回退（recovery）」流程说明。
+
 ### Fixed
 - **复查发现的 4 个自身缺陷（本轮 hardening 引入/遗留）**：
   - **`FOB_SUPERVISED` 误标会导致自我击杀（P0）**：plist 无条件写该标记，而

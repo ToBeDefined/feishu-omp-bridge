@@ -296,14 +296,14 @@ describe('心跳：事件流静默期间卡片继续走动', () => {
       const afterFirstEvent = record.cards.length;
       expect(afterFirstEvent).toBeGreaterThanOrEqual(2); // initial + 事件 patch
       const before = controlRow(record.cards.at(-1)!);
-      expect(before).toContain('⏱ 用时');
+      expect(before).toContain('⏱');
 
       // 静默 5s：没有任何 agent 事件，心跳仍推了一张新卡，时长跟着走。
       await vi.advanceTimersByTimeAsync(5000);
       expect(record.cards.length).toBeGreaterThan(afterFirstEvent);
       const after = controlRow(record.cards.at(-1)!);
       expect(after).not.toBe(before);
-      expect(after).toContain('⏱ 用时 5');
+      expect(after).toContain('⏱5');
 
       release();
       await vi.advanceTimersByTimeAsync(1000);

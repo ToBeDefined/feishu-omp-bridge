@@ -318,10 +318,10 @@ function resultRow(state: RunState): object | undefined {
   return undefined;
 }
 
-/** 运行态状态行：agent 在干什么 + 已用时长（示例：`🧠 正在思考 · ⏱ 用时 1 分 32 秒`）。 */
+/** 运行态状态行：agent 在干什么 + 已用时长（示例：`🧠 正在思考 · ⏱1 分 32 秒`）。 */
 function statusLine(state: RunState, now: number): string {
   return (
-    [footerLabel(state.footer), elapsedText(state, now)].filter(Boolean).join(' · ') || '⏱ 运行中'
+    [footerLabel(state.footer), elapsedText(state, now)].filter(Boolean).join(' · ') || '⏱运行中'
   );
 }
 
@@ -347,12 +347,11 @@ function footerLabel(status: FooterStatus): string | undefined {
   }
 }
 
-/** `⏱ 用时 12.4s` — the run's wall clock. Undefined when the state carries no
- *  start stamp (synthetic runs such as `/doctor` reuse `initialState`), in
- *  which case the footnote simply shows no duration rather than a fake 0s. */
+/** `⏱12.4s`（或 `⏱1 分 31 秒`）—— run 的墙钟。状态没带起跑时刻时返回 undefined
+ *  （`/doctor` 这类合成 run 复用 `initialState`），脚注就不写时长，而不是假的 0s。 */
 function elapsedText(state: RunState, now: number): string | undefined {
   if (state.startedAt === undefined) return undefined;
-  return `⏱ 用时 ${formatDuration(Math.max(0, (state.endedAt ?? now) - state.startedAt))}`;
+  return `⏱${formatDuration(Math.max(0, (state.endedAt ?? now) - state.startedAt))}`;
 }
 
 /** 12.4s under a minute; 1 分 5 秒 past it. Exported so callers that build
@@ -382,15 +381,15 @@ function usageNote(state: RunState, now: number): object | undefined {
   return parts.length > 0 ? noteMd(parts.join(' · ')) : undefined;
 }
 
-/** `🧮 12.3k tok（入 11.1k / 出 1.2k）` — only the sides the provider sent. */
+/** `🧮 12.3k token（in 11.1k / out 1.2k）` —— 只写服务端真给了的那侧。 */
 function tokensText(usage: RunUsage): string | undefined {
   const input = usage.inputTokens;
   const output = usage.outputTokens;
   if (input === undefined && output === undefined) return undefined;
   const sides: string[] = [];
-  if (input !== undefined) sides.push(`入 ${formatTokens(input)}`);
-  if (output !== undefined) sides.push(`出 ${formatTokens(output)}`);
-  return `🧮 ${formatTokens((input ?? 0) + (output ?? 0))} tok（${sides.join(' / ')}）`;
+  if (input !== undefined) sides.push(`in ${formatTokens(input)}`);
+  if (output !== undefined) sides.push(`out ${formatTokens(output)}`);
+  return `🧮 ${formatTokens((input ?? 0) + (output ?? 0))} token（${sides.join(' / ')}）`;
 }
 
 /** 940 → `940`, 12345 → `12.3k`, 1234567 → `1.2M`. Shared with /doctor's footer. */

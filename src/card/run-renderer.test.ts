@@ -316,7 +316,7 @@ describe('renderCard', () => {
     expect(lines[0]).toContain('🧮');
     expect(lines[0]).not.toContain('💰'); // 花费不显示
     expect(lines[1]).toContain('正在输出');
-    expect(lines[1]).toContain('⏱ 用时 12.4s');
+    expect(lines[1]).toContain('⏱12.4s');
     expect(lines[1]).not.toContain('tok');
     // 右列是 ⏹，两列都垂直居中 —— 按钮对齐这两行的高度中线。
     const right = controlRight(renderCard(state));
@@ -341,15 +341,15 @@ describe('renderCard', () => {
       bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
     });
     const midJson = JSON.stringify(mid);
-    expect(midJson).not.toContain('⏱ 用时');
+    expect(midJson).not.toContain('⏱');
     expect(midJson).not.toContain('🧮'); // 用量行（emoji 判定，`"token"` 是面板图标字段）
     expect(midJson).not.toContain('💰');
     expect(countByTag(cardElements(mid), 'hr')).toBe(0); // 那条分割线也不该出现
     expect(midJson).toContain('已分页'); // 但「下一条消息继续」的提示要留
     // 同一状态作为「最新一页」渲染时，脚注照旧。
     const last = JSON.stringify(renderCard(state));
-    expect(last).toContain('⏱ 用时 12.4s');
-    expect(last).toContain('🧮 2.3k tok（入 2k / 出 300）');
+    expect(last).toContain('⏱12.4s');
+    expect(last).toContain('🧮 2.3k token（in 2k / out 300）');
     expect(last).not.toContain('💰'); // 花费一律不显示
   });
 
@@ -357,7 +357,7 @@ describe('renderCard', () => {
     const state = { ...longRunState(1), startedAt: 1_000_000, endedAt: 1_012_400 };
     const lines = controlLines(renderCard(state));
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('⏱ 用时 12.4s');
+    expect(lines[0]).toContain('⏱12.4s');
   });
 
   it('运行卡没有顶层标题（按用户要求去掉 🤖 OMP 噪音）', () => {
@@ -380,9 +380,9 @@ describe('renderCard', () => {
     const startedAt = 1_000_000;
     const head = (elapsedMs: number): string =>
       controlLines(renderCard({ ...longRunState(1), startedAt, endedAt: startedAt + elapsedMs })).at(-1) ?? '';
-    expect(head(0)).toContain('⏱ 用时 0.0s');
-    expect(head(12_400)).toContain('⏱ 用时 12.4s');
-    expect(head(65_000)).toContain('⏱ 用时 1 分 5 秒');
+    expect(head(0)).toContain('⏱0.0s');
+    expect(head(12_400)).toContain('⏱12.4s');
+    expect(head(65_000)).toContain('⏱1 分 5 秒');
   });
 
   it('注入 now：心跳在运行中重渲染同一状态，时长读的是注入的时刻', () => {
@@ -390,11 +390,11 @@ describe('renderCard', () => {
     const state: RunState = { ...longRunState(1), startedAt: 1_000_000 };
     const head = (now: number): string =>
       controlLines(renderCard(state, { now })).at(-1) ?? '';
-    expect(head(1_000_400)).toContain('⏱ 用时 0.4s');
-    expect(head(1_005_400)).toContain('⏱ 用时 5.4s');
-    expect(head(1_065_000)).toContain('⏱ 用时 1 分 5 秒');
+    expect(head(1_000_400)).toContain('⏱0.4s');
+    expect(head(1_005_400)).toContain('⏱5.4s');
+    expect(head(1_065_000)).toContain('⏱1 分 5 秒');
     // 不传 now 时回退到真实时钟：仍是运行中的控制行，没有崩溃/缺字段。
-    expect(JSON.stringify(renderCard(state))).toContain('⏱ 用时');
+    expect(JSON.stringify(renderCard(state))).toContain('⏱');
   });
 
   it('失败/超时/中断在正文之前给出醒目结果行', () => {
@@ -462,22 +462,22 @@ describe('renderCard', () => {
           renderCard({ ...base, usage: { inputTokens: 11_100, outputTokens: 1_200, costUsd: 0.01234 } }),
         ),
       ),
-    ).toContain('⏱ 用时 12.4s · 🧮 12.3k tok（入 11.1k / 出 1.2k）');
+    ).toContain('⏱12.4s · 🧮 12.3k token（in 11.1k / out 1.2k）');
 
     // 脚注排在正文之后。
     const elements = cardElements(renderCard({ ...base, usage: { costUsd: 0.01234 } }));
-    expect(elements.findIndex((e) => JSON.stringify(e).includes('用时 12.4s'))).toBeGreaterThan(
+    expect(elements.findIndex((e) => JSON.stringify(e).includes('⏱12.4s'))).toBeGreaterThan(
       elements.findIndex((e) => JSON.stringify(e).includes('正文')),
     );
 
     // 只报了输出侧：不臆造「入 0」。
     expect(notationMarkdown(cardElements(renderCard({ ...base, usage: { outputTokens: 500 } })))).toContain(
-      '⏱ 用时 12.4s · 🧮 500 tok（出 500）',
+      '⏱12.4s · 🧮 500 token（out 500）',
     );
 
     // 没有 usage：只显示用时，不留空占位。
     const onlyTime = notationMarkdown(cardElements(renderCard(base)));
-    expect(onlyTime).toContain('⏱ 用时 12.4s');
+    expect(onlyTime).toContain('⏱12.4s');
     expect(JSON.stringify(onlyTime)).not.toContain('tok');
     expect(JSON.stringify(onlyTime)).not.toContain('$');
   });
@@ -486,7 +486,7 @@ describe('renderCard', () => {
     const state: RunState = { ...longRunState(0), terminal: 'done', footer: null };
     state.blocks.push({ kind: 'text', content: '正文', streaming: false });
     const elements = cardElements(renderCard(state));
-    expect(notationMarkdown(elements).filter((line) => line.includes('用时'))).toEqual([]);
+    expect(notationMarkdown(elements).filter((line) => line.includes('⏱'))).toEqual([]);
     expect(JSON.stringify(elements)).not.toContain('💰');
   });
 
@@ -500,9 +500,9 @@ describe('renderCard', () => {
     const lines = controlLines(renderCard(state));
     expect(lines).toHaveLength(2);
     // 用量行给 token 总量与入/出明细（但不再有花费），用时留给下面那行状态。
-    expect(lines[0]).toBe('🧮 2.3k tok（入 2k / 出 300）');
+    expect(lines[0]).toBe('🧮 2.3k token（in 2k / out 300）');
     expect(lines[0]).not.toContain('用时');
-    expect(lines[1]).toContain('⏱ 用时 12.4s');
+    expect(lines[1]).toContain('⏱12.4s');
   });
 
   it('usage 事件经 reduce 进状态后，脚注就带上 token', () => {
@@ -515,7 +515,7 @@ describe('renderCard', () => {
     state = reduce(state, { type: 'done' });
     expect(notationMarkdown(cardElements(renderCard(state)))).toContainEqual(
       expect.stringMatching(
-        /^⏱ 用时 12\.\ds · 🧮 12\.3k tok（入 11\.1k \/ 出 1\.2k）$/,
+        /^⏱12\.\ds · 🧮 12\.3k token（in 11\.1k \/ out 1\.2k）$/,
       ),
     );
   });

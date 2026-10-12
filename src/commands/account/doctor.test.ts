@@ -110,8 +110,8 @@ describe('/doctor 结果卡用量行', () => {
     await doctorHandlers['/doctor']!('', ctx);
 
     const json = createdCard(ctx);
-    expect(json).toContain('⏱ 用时');
-    expect(json).toContain('🧮 12.3k tok');
+    expect(json).toContain('⏱');
+    expect(json).toContain('🧮 12.3k token');
     expect(json).not.toContain('💰'); // 花费不显示
     expect(activeRuns.has('oc_1')).toBe(false);
   });
@@ -123,7 +123,7 @@ describe('/doctor 结果卡用量行', () => {
     await doctorHandlers['/doctor']!('', ctx);
 
     const json = createdCard(ctx);
-    expect(json).toContain('⏱ 用时');
+    expect(json).toContain('⏱');
     expect(json).not.toContain('🧮');
     expect(json).not.toContain('💰');
   });

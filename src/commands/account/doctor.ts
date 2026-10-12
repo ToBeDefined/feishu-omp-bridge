@@ -134,9 +134,9 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
     };
     // 缺项即省：只有用量事件到了才出现 token/费用；用时总是有（记录了开始时间）。
     const footerLine = (): string => {
-      const parts = [`⏱ 用时 ${formatDuration(Date.now() - startedAt)}`];
+      const parts = [`⏱${formatDuration(Date.now() - startedAt)}`];
       if (usage && (usage.inputTokens !== undefined || usage.outputTokens !== undefined)) {
-        parts.push(`🧮 ${formatTokens((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0))} tok`);
+        parts.push(`🧮 ${formatTokens((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0))} token`);
       }
       // 花费不显示（与运行卡一致：过程中与结束都不要）。
       return parts.join(' · ');

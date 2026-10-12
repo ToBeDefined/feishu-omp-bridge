@@ -75,10 +75,10 @@ function toolLine(tool: ToolEntry): string {
 }
 
 function footerLine(status: 'thinking' | 'tool_running' | 'streaming' | 'waiting_input'): string {
-  if (status === 'thinking') return '_🧠 正在思考…_';
+  if (status === 'thinking') return '_🧠 正在思考_';
   if (status === 'tool_running') return '_🛠 正在调用工具…_';
-  if (status === 'waiting_input') return '_🧩 等待用户交互…_';
-  return '_✍️ 正在输出…_';
+  if (status === 'waiting_input') return '_⌛ 等待用户交互_';
+  return '_✍️ 正在输出_';
 }
 
 function renderUiContext(ui: UiState): string {
@@ -89,7 +89,7 @@ function renderUiContext(ui: UiState): string {
     lines.push(`- ${escapeMd(key)}：${(widget.lines ?? []).map(escapeMd).join(' / ')}`);
   }
   if (ui.editorText) lines.push(`- 编辑器内容：${escapeMd(ui.editorText.slice(0, 300))}`);
-  return lines.length > 0 ? `> 🧩 OMP 状态\n${lines.join('\n')}` : '';
+  return lines.length > 0 ? `> 📡 OMP 状态\n${lines.join('\n')}` : '';
 }
 
 function truncate(s: string, max: number): string {

@@ -84,10 +84,13 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
 
   if (opts?.topNote) elements.push(noteMd(opts.topNote));
 
-  const ui = uiContextPanel(state.ui, tables);
-  if (ui) elements.push(ui);
-
-  for (const line of subagentLines(state.subagents)) elements.push(noteMd(line));
+  // OMP 状态面板与子代理行属于「本轮的运行态」：续页（midPage）只带内容 +
+  // 分页提示，否则每一页都重复顶一块面板，白吃该页预算（用户也要求续页干净）。
+  if (!opts?.midPage) {
+    const ui = uiContextPanel(state.ui, tables);
+    if (ui) elements.push(ui);
+    for (const line of subagentLines(state.subagents)) elements.push(noteMd(line));
+  }
   for (const element of bodyElements) elements.push(element);
 
   // Failure detail stays in the body: the headline above says WHAT happened,
@@ -109,7 +112,8 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
     const left: object[] = [];
     if (usageText) left.push(noteMd(usageText));
     left.push(noteMd(statusLine(state, now)));
-    elements.push({ tag: 'hr' });
+    // 没有任何正文时不要以 hr 开头（纯装饰分隔线）。
+    if (elements.length > 0) elements.push({ tag: 'hr' });
     elements.push({
       tag: 'column_set',
       flex_mode: 'none',
@@ -269,11 +273,13 @@ function thinkingGroupPanel(
   thoughts: Array<{ content: string; active: boolean }>,
   tables: TableBudget,
 ): object {
+  // 多段思考合并进**一个**正文块：早先套 N 个同名 reasoningPanel，展开后是一摞
+  // 名字一样的折叠面板，分不清哪段是哪段。
   return collapsiblePanel({
     title: thoughts.some((t) => t.active) ? '🧠 **思考中…**' : '🧠 **思考过程**',
     expanded: false,
     border: 'grey',
-    elements: thoughts.map((t) => reasoningPanel(t.content, t.active, tables)),
+    body: tables(truncate(thoughts.map((t) => t.content).join('\n\n---\n\n'), REASONING_MAX)),
   });
 }
 
@@ -345,7 +351,7 @@ function resultRow(state: RunState): object | undefined {
 /** 运行态状态行：agent 在干什么 + 已用时长（示例：`🧠 正在思考 · ⏱ 1 分 32 秒`）。 */
 function statusLine(state: RunState, now: number): string {
   return (
-    [footerLabel(state.footer), elapsedText(state, now)].filter(Boolean).join(' · ') || '⏱ 运行中'
+    [footerLabel(state.footer), elapsedText(state, now)].filter(Boolean).join(' · ') || '🔄 运行中'
   );
 }
 
@@ -363,7 +369,7 @@ function footerLabel(status: FooterStatus): string | undefined {
     case 'tool_running':
       return '🛠 正在调用工具';
     case 'waiting_input':
-      return '🧩 等待用户交互';
+      return '⌛ 等待用户交互';
     case 'streaming':
       return '✍️ 正在输出';
     default:
@@ -440,13 +446,15 @@ function uiContextPanel(ui: UiState, tables: TableBudget): object | undefined {
     lines.push(`**${escapeMd(key)}** ${placement}\n${widgetLines}`.trim());
   }
   if (ui.editorText) {
-    lines.push(`**编辑器内容**\n${codeFence(truncate(ui.editorText, 1200))}`);
+    lines.push(`**编辑器内容**：\n${codeFence(truncate(ui.editorText, 1200))}`);
   }
   if (lines.length === 0) return undefined;
   return collapsiblePanel({
-    title: '🧩 **OMP 状态 / Widget**',
-    expanded: true,
-    border: 'blue',
+    // 折叠 + 灰底：与全仓其它组面板一致（曾是全仓唯一 expanded:true / blue 的面板，
+    // 2500 字的展开块会把答案顶到折叠线以下）。
+    title: '📡 **OMP 状态**',
+    expanded: false,
+    border: 'grey',
     body: tables(truncate(lines.join('\n\n'), UI_PANEL_MAX)),
   });
 }
@@ -454,7 +462,7 @@ function uiContextPanel(ui: UiState, tables: TableBudget): object | undefined {
 function summaryText(state: RunState): string {
   if (state.terminal === 'interrupted') return '已中断';
   if (state.terminal === 'idle_timeout') return '已超时';
-  if (state.terminal === 'error') return '出错';
+  if (state.terminal === 'error') return '运行失败';
   if (state.terminal === 'done') return '已完成';
   if (state.footer === 'tool_running') return '正在调用工具';
   if (state.footer === 'streaming') return '正在输出';

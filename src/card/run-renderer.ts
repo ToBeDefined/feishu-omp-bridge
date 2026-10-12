@@ -42,12 +42,6 @@ export interface CardPageOptions {
   now?: number;
 }
 
-/** The card's constant top-of-card title. Command cards all carry a heading;
- *  the run card used to have none, which read as a different kind of message.
- *  Deliberately constant — a state-dependent title would repaint on every
- *  heartbeat without telling the user anything new. */
-const CARD_TITLE = '🤖 **OMP**';
-
 /** The CardKit 2.0 envelope `renderCard` produces. Named so callers can
  *  read `body.elements.length` (pagination budget) without casts. */
 export interface RunCard {
@@ -65,9 +59,8 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   const tables = createTableBudget();
   const now = opts?.now ?? Date.now();
 
-  // 标题恒为第一个元素：命令卡都带 heading，运行卡以前没有；恒定文案意味着
-  // 心跳刷新不会让标题变来变去。
-  elements.push(md(CARD_TITLE, 'heading'));
+  // 不再加顶层标题：运行卡以前没有、也不需要有（用户明确说 `🤖 OMP` 是噪音）。
+  // 卡片第一行直接就是状态结果行（仅终态）或正文，信息密度优先。
 
   // Answer text renders inline; a contiguous stretch of process elements
   // (tool runs + thinking segments with no text in between) collapses into

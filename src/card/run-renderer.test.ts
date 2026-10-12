@@ -40,11 +40,9 @@ function countByTag(elements: unknown[], tag: string): number {
   ).length;
 }
 
-/** Elements below the constant top-of-card title (`🤖 **OMP**`). The title is
- *  pinned by its own test; element-ORDER tests assert on the state-bearing
- *  elements so they stay readable. */
+/** 卡片 body 的全部元素（运行卡已无顶层标题，`elements[0]` 是结果行或正文）。 */
 function cardBody(card: object): unknown[] {
-  return cardElements(card).slice(1);
+  return cardElements(card);
 }
 
 /** 运行态底部控制区（右列带 ⏹ 终止的那个 column_set）。 */
@@ -309,7 +307,7 @@ describe('renderCard', () => {
     // 紧挨着一条分割线，正文整段在它上面。
     expect((elements[blockIndex - 1] as { tag: string }).tag).toBe('hr');
     const firstBody = elements.findIndex((e) => JSON.stringify(e).includes('text block 0'));
-    expect(firstBody).toBeGreaterThan(0);
+    expect(firstBody).toBeGreaterThanOrEqual(0); // 没有顶层标题了，正文可以从第一行开始
     expect(firstBody).toBeLessThan(blockIndex);
     // 左列两行：token/费用在上，`状态 · 用时` 独立成行在下。
     const lines = controlLines(renderCard(state));
@@ -336,23 +334,20 @@ describe('renderCard', () => {
     expect(lines[0]).toContain('⏱ 用时 12.4s');
   });
 
-  it('运行卡顶层标题恒定：第一个元素是 heading，且不随状态/心跳变化', () => {
-    // 命令卡都带 heading，运行卡以前没有 —— 风格不统一。文案恒定（不带随
-    // 会话/状态变化的字段），否则每次心跳刷新标题都会跟着变，视觉上像在闪。
+  it('运行卡没有顶层标题（按用户要求去掉 🤖 OMP 噪音）', () => {
+    // 曾经为「与命令卡风格一致」加过恒定 `🤖 OMP` heading；用户明确说没必要，
+    // 所以现在第一行直接就是状态结果行（仅终态）或正文。
     const running = cardElements(renderCard({ ...longRunState(2), startedAt: 1_000_000 }));
-    expect(running[0]).toMatchObject({
-      tag: 'markdown',
-      content: '🤖 **OMP**',
-      text_size: 'heading',
-    });
+    expect(JSON.stringify(running)).not.toContain('🤖 **OMP**');
+    expect(running[0]).not.toMatchObject({ text_size: 'heading' }); // 正文/面板开头
     expect(JSON.stringify(running.at(-1))).toContain('"cmd":"stop"'); // 控制区在卡片末尾
     const done = cardElements(renderCard({ ...longRunState(2), terminal: 'done', footer: null }));
-    expect(done[0]).toMatchObject({ content: '🤖 **OMP**' });
+    expect(JSON.stringify(done)).not.toContain('🤖 **OMP**');
     const errored = cardElements(
       renderCard({ ...longRunState(2), terminal: 'error', footer: null, errorMsg: 'boom' }),
     );
-    expect(errored[0]).toMatchObject({ content: '🤖 **OMP**' });
-    expect(errored[1]).toMatchObject({ content: '❌ **运行失败**' });
+    expect(errored[0]).toMatchObject({ content: '❌ **运行失败**' });
+    expect(JSON.stringify(errored)).not.toContain('🤖 **OMP**');
   });
 
   it('运行中的已用时长随时长递增（同一状态不同时刻渲染）', () => {
@@ -421,8 +416,8 @@ describe('renderCard', () => {
       text_size: 'heading',
     });
     expect(JSON.stringify(interrupted)).not.toContain('_⏹ 已被中断_');
-    // 标题这条 heading 与状态 heading 并存：标题恒在，结果行紧随其后。
-    expect(cardElements(interrupted)[0]).toMatchObject({ content: '🤖 **OMP**' });
+    // 结果行就是卡片的第一行（没有顶层标题了）。
+    expect(cardElements(interrupted)[0]).toMatchObject({ content: '⏹ **已被中断**' });
   });
 
   it('终态脚注显示用时/token/费用，缺哪个省哪个', () => {

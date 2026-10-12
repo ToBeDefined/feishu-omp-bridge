@@ -62,8 +62,9 @@ It fits these situations:
 - Closes with a one-line footer — elapsed time, tokens (in/out) and cost, whichever OMP reports;
   failures, idle timeouts and interruptions render as a bold result line **above** the body instead of
   a small grey note at the end.
-- Carries a constant `🤖 OMP` title and re-renders about every 5 s while running, so a long tool call
-  (a full test suite) no longer looks frozen. The same footer shows up on the `/doctor` card.
+- Re-renders about every 5 s while running, so a long tool call (a full test suite) no longer looks
+  frozen. The card carries **no title**: the first line is the answer itself (or the failure headline).
+  The same usage footer shows up on the `/doctor` card.
 - In plain-text reply mode long answers are split across messages instead of being dropped, and
   failures keep their reason.
 

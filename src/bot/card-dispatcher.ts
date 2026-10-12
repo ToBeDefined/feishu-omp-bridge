@@ -1,5 +1,5 @@
 import type { CardActionEvent, LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
-import type { AgentAdapter } from '../agent/types';
+import type { AgentAdapter, AgentUiResponse } from '../agent/types';
 import type { ActiveRuns } from './active-runs';
 import type { ChatModeCache } from './chat-mode-cache';
 import type { PendingQueue } from './pending-queue';
@@ -14,7 +14,7 @@ import {
 import { isChatAllowed, isUserAllowed } from '../config/schema';
 import { log } from '../core/logger';
 import type { SessionStore } from '../session/store';
-import { AGENT_CALLBACK_MARKER } from '../card/agent-card';
+import { AGENT_CALLBACK_MARKER, AGENT_MARK_ISSUED_AT, AGENT_MARK_RUN, AGENT_MARK_SCOPE } from '../card/agent-card';
 import { forgetManagedCard, updateManagedCard } from '../card/managed';
 import { agentSelectedCard } from '../card/templates';
 import {
@@ -107,12 +107,27 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   // into the scope's pending queue so OMP resumes its session and sees
   // the click as a follow-up message, with full context of what it sent.
   if (AGENT_CALLBACK_MARKER in payload) {
+    // 桥自己发出的卡片带发行标记：过期 / 换了 run 就拦下，别再往新会话里注入
+    // 一段莫名的 [card-click] JSON。无标记的手工卡片不校验，行为不变。
+    if (bridgeMarkExpired(ctx.msg.chatId, deps, payload)) {
+      log.info('cardAction', 'agent-callback-expired', { messageId: ctx.msg.messageId });
+      if (rememberDuplicateNotice(ctx.msg.messageId)) {
+        await reply(ctx, AGENT_BUTTON_EXPIRED_TEXT);
+      }
+      return;
+    }
     await forwardToAgent(deps, ctx, payload, formValue);
     return;
   }
 
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
   if (!cmd) return;
+  // 普通命令按钮（/history 翻页、/ps 等）也要防连点重复执行命令。用带时间窗的
+  // 去重：窗口内的重复点击静默忽略，窗口外照常执行（否则合法连点会被吃掉）。
+  if (!allowCommandClick(deps.evt.messageId, payload)) {
+    log.info('cardAction', 'command-dedup', { cmd, scope });
+    return;
+  }
   log.info('cardAction', 'cmd', { cmd, scope });
 
   const { name, args } = resolveCardCommand(cmd, payload);
@@ -215,6 +230,66 @@ async function noticeDuplicateClick(ctx: CommandContext): Promise<void> {
   await reply(ctx, DUPLICATE_CLICK_NOTICE);
 }
 
+/** agent 卡片按钮的过期 TTL：发行超过这么久一律按「任务已结束」处理。 */
+const AGENT_MARK_TTL_MS = 30 * 60_000;
+/** 带队过期 / run 不匹配时的回执。 */
+const AGENT_BUTTON_EXPIRED_TEXT = '⚠️ 该按钮所属任务已结束，请用最新卡片。';
+
+/** 从 payload 里剔除桥注入的 `__omp_*` 标记，别透传给 agent。 */
+function stripBridgeMarks(payload: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (key.startsWith('__omp_')) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * 校验桥自己发出的 agent 卡片按钮是否仍然有效。**只对带标记的按钮生效** ——
+ * 手工 lark-cli 卡片没有标记，行为不变。三种失效情形：
+ * ① `__omp_iat` 超过 TTL；② `__omp_scope` 声明的作用域没有在跑的 run（旧任务结束、
+ * `/new` 或 `/cd` 换了 run）；③ `__omp_run` 与当前 run token 不相等。
+ */
+function bridgeMarkExpired(
+  chatId: string,
+  deps: CardDispatchDeps,
+  payload: Record<string, unknown>,
+): boolean {
+  const iat = payload[AGENT_MARK_ISSUED_AT];
+  if (typeof iat === 'number' && (!Number.isFinite(iat) || Date.now() - iat > AGENT_MARK_TTL_MS)) {
+    return true;
+  }
+  const claimed = payload[AGENT_MARK_SCOPE];
+  if (typeof claimed !== 'string' || claimed === '') return false;
+  // 声明的作用域必须属于本次点击的会话（防伪造去污染别的会话的 run）。
+  if (claimed !== chatId && !claimed.startsWith(`${chatId}:`)) return true;
+  // 作用域必须仍有一个在跑的 run；否则这张卡属于已经结束的任务。
+  if (!deps.activeRuns.has(claimed)) return true;
+  const run = payload[AGENT_MARK_RUN];
+  if (typeof run !== 'string' || !run) return false;
+  return deps.activeRuns.getRunToken?.(claimed) !== run;
+}
+
+/** 普通命令按钮的时间窗去重：同一张卡、同一个按钮在窗口内的重复点击静默忽略。
+ * 必须带时间窗 —— 用户合法地连点「下一页」不能被吃掉。 */
+const COMMAND_CLICK_WINDOW_MS = 2_000;
+const COMMAND_CLICK_CAP = 2_000;
+const recentCommandClicks = new Map<string, number>();
+
+function allowCommandClick(messageId: string, payload: Record<string, unknown>): boolean {
+  const key = `${messageId}:${JSON.stringify(payload)}`;
+  const now = Date.now();
+  const last = recentCommandClicks.get(key);
+  if (last !== undefined && now - last < COMMAND_CLICK_WINDOW_MS) return false;
+  if (recentCommandClicks.size >= COMMAND_CLICK_CAP) {
+    const oldest = recentCommandClicks.keys().next().value;
+    if (oldest !== undefined) recentCommandClicks.delete(oldest);
+  }
+  recentCommandClicks.set(key, now);
+  return true;
+}
+
 async function forwardToAgent(
   deps: CardDispatchDeps,
   ctx: CommandContext,
@@ -230,8 +305,9 @@ async function forwardToAgent(
     return;
   }
 
-  // Strip the marker so OMP only sees the meaningful fields it set.
-  const { [AGENT_CALLBACK_MARKER]: _marker, ...agentPayload } = payload;
+  // Strip the callback marker and the bridge's `__omp_*` marks so OMP only
+  // sees the meaningful fields it set.
+  const { [AGENT_CALLBACK_MARKER]: _marker, ...agentPayload } = stripBridgeMarks(payload);
   const merged = formValue ? { ...agentPayload, form_value: formValue } : agentPayload;
   log.info('cardAction', 'forward-agent', {
     scope: ctx.scope,
@@ -270,11 +346,35 @@ async function forwardToAgent(
   deps.pending.push(ctx.scope, synthetic);
 }
 
+/** 空提交（select 未选 / input 留空直接点提交）的可见提示。 */
+const EMPTY_SUBMIT_NOTICE = '⚠️ 请先选择 / 填写后再提交。';
+
+/** 结果卡的回显文本：confirm → 「确认 / 否」；submit → 用户提交的值。 */
+function echoOf(response: AgentUiResponse | undefined): string | undefined {
+  if (!response) return undefined;
+  if ('value' in response) return response.value;
+  if ('confirmed' in response) return response.confirmed ? '确认' : '否';
+  return undefined;
+}
+
 async function respondToOmpUi(
   ctx: CommandContext,
   payload: Record<string, unknown>,
   formValue: Record<string, unknown> | undefined,
 ): Promise<void> {
+  const requestId = ompUiRequestId(payload);
+  const title = ompUiTitle(payload);
+  const response = responseFromOmpUiAction(payload, formValue);
+
+  // 空提交不能当成交付给 OMP（否则 agent 收到空串，界面还显示「已提交」）：
+  // 不调用 respondToUi，回一句提示，并保持原卡片可继续操作 —— 因此**不**消费
+  // 一次性去重、也**不**更新卡片。
+  if (response && 'value' in response && response.value.trim() === '') {
+    log.info('cardAction', 'omp-ui-empty-submit', { messageId: ctx.msg.messageId, requestId });
+    await reply(ctx, EMPTY_SUBMIT_NOTICE);
+    return;
+  }
+
   // One click per card, same as the agent-callback path: a double-tap (or an
   // un-updated card) must not deliver two UI responses to OMP.
   if (!rememberForwardedClick(ctx.msg.messageId)) {
@@ -283,9 +383,6 @@ async function respondToOmpUi(
     return;
   }
 
-  const requestId = ompUiRequestId(payload);
-  const title = ompUiTitle(payload);
-  const response = responseFromOmpUiAction(payload, formValue);
   // Only trust a payload-supplied scope when it provably belongs to the
   // clicked chat — the plain chatId, or a topic scope `chatId:threadId`.
   // A forged value could otherwise answer another chat's pending UI request.
@@ -300,7 +397,7 @@ async function respondToOmpUi(
     : 'unavailable';
 
   log.info('cardAction', 'omp-ui', { scope: targetScope, requestId, submitted, status });
-  const resultCard = renderOmpUiResultCard(title, status);
+  const resultCard = renderOmpUiResultCard(title, status, submitted ? echoOf(response) : undefined);
   try {
     await updateManagedCard(ctx.channel, ctx.msg.messageId, resultCard);
   } catch (err) {

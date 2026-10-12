@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { AGENT_CALLBACK_MARKER, buildAgentCard } from './agent-card';
+import {
+  AGENT_CALLBACK_MARKER,
+  AGENT_MARK_ISSUED_AT,
+  AGENT_MARK_RUN,
+  AGENT_MARK_SCOPE,
+  buildAgentCard,
+} from './agent-card';
 
 type Button = { name: string; text: { content: string }; type: string; behaviors: Array<{ type: string; value: unknown }> };
 type Card = {
@@ -50,6 +56,40 @@ describe('buildAgentCard', () => {
     const card = buildAgentCard('t', 'text', [{ label: 'go', value }]) as unknown as Card;
     expect(buttonsOf(card)[0]?.behaviors[0]?.value).toEqual({ action: 'deploy', [AGENT_CALLBACK_MARKER]: true });
     expect(value).toEqual({ action: 'deploy' });
+  });
+
+  it('stamps the bridge issuance marks when the caller supplies them', () => {
+    const card = buildAgentCard(
+      't',
+      'text',
+      [{ label: 'go', value: { action: 'deploy' } }],
+      { issuedAt: 1234, scope: 'oc_1', run: 'run-1' },
+    ) as unknown as Card;
+    expect(buttonsOf(card)[0]?.behaviors[0]?.value).toEqual({
+      action: 'deploy',
+      [AGENT_MARK_ISSUED_AT]: 1234,
+      [AGENT_MARK_SCOPE]: 'oc_1',
+      [AGENT_MARK_RUN]: 'run-1',
+      [AGENT_CALLBACK_MARKER]: true,
+    });
+  });
+
+  it('omits the run mark when no run token is available', () => {
+    const card = buildAgentCard(
+      't',
+      'text',
+      [{ label: 'go', value: {} }],
+      { issuedAt: 1, scope: 'oc_1' },
+    ) as unknown as Card;
+    const value = buttonsOf(card)[0]?.behaviors[0]?.value as Record<string, unknown>;
+    expect(value[AGENT_MARK_SCOPE]).toBe('oc_1');
+    expect(AGENT_MARK_RUN in value).toBe(false);
+  });
+
+  it('rejects model-supplied bridge marks (they are bridge-internal)', () => {
+    expect(() =>
+      buildAgentCard('t', 'text', [{ label: 'go', value: { [AGENT_MARK_RUN]: 'forged' } }]),
+    ).toThrow('保留字段');
   });
 
   it('requires at least one button', () => {

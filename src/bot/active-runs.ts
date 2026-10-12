@@ -1,8 +1,15 @@
+import { randomUUID } from 'node:crypto';
 import type { AgentRun, AgentUiResponse } from '../agent/types';
 import { log } from '../core/logger';
 
 export interface RunHandle {
   run: AgentRun;
+  /**
+   * 本次 run 的标识，register 时生成。agent 卡片按钮把发行时的 token 写进
+   * `__omp_run`，点击时用 {@link ActiveRuns.getRunToken} 比对 —— 作用域里换了
+   * 一个 run（旧任务结束 / `/new` 之后重启的新 run）就不再相等，从而拦截过期按钮。
+   */
+  readonly token: string;
   interrupted: boolean;
   pendingUiRequests: Set<string>;
   onUiSettled?: () => void;
@@ -83,6 +90,7 @@ export class ActiveRuns {
     }
     const handle: RunHandle = {
       run,
+      token: randomUUID(),
       interrupted: false,
       pendingUiRequests: new Set(),
       uiTimers: new Map(),
@@ -107,6 +115,14 @@ export class ActiveRuns {
 
   has(chatId: string): boolean {
     return this.handles.has(chatId) || this.claims.has(chatId);
+  }
+
+  /**
+   * 该 scope 当前在跑的 run 的 token（已 claim 未 register 的占位没有 token，
+   * 返回 undefined）。agent 卡片按钮的 `__omp_run` 校验用它判断「还是不是同一个 run」。
+   */
+  getRunToken(scope: string): string | undefined {
+    return this.handles.get(scope)?.token;
   }
 
   /** 进程内是否没有任何在跑/占位的 run（发布/重启前的排空判断）。 */

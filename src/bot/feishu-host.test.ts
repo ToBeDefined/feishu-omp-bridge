@@ -231,9 +231,11 @@ describe('feishu_send_card', () => {
     const cardCall = cardCreated[0] as { data: { type: string; data: string } };
     expect(cardCall.data.type).toBe('card_json');
     const card = JSON.parse(cardCall.data.data);
-    expect(card.body.elements[1].columns[0].elements[0].behaviors[0].value).toEqual({
-      action: 'deploy', __codex_cb: true,
-    });
+    const value = card.body.elements[1].columns[0].elements[0].behaviors[0].value;
+    expect(value).toMatchObject({ action: 'deploy', __codex_cb: true, __omp_scope: 'chat-1' });
+    expect(typeof value.__omp_iat).toBe('number');
+    // 没有 activeRuns（无在跑 run）时不盖 run 标记。
+    expect('__omp_run' in value).toBe(false);
     expect(replies[0]).toEqual({ path: { message_id: 'msg-1' }, data: { msg_type: 'interactive', content: expect.any(String) } });
   });
 

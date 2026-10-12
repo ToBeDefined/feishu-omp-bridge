@@ -10,7 +10,7 @@ import type { Controls } from '../commands';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import type * as loggerModule from '../core/logger';
-import { AGENT_CALLBACK_MARKER } from '../card/agent-card';
+import { AGENT_CALLBACK_MARKER, AGENT_MARK_ISSUED_AT, AGENT_MARK_RUN, AGENT_MARK_SCOPE } from '../card/agent-card';
 import { agentSelectedCard } from '../card/templates';
 
 type LoggerModule = typeof loggerModule;
@@ -73,6 +73,8 @@ interface Harness {
   push: Mock;
   cancel: Mock;
   respondToUi: Mock;
+  has: Mock;
+  getRunToken: Mock;
 }
 
 /**
@@ -86,6 +88,9 @@ function makeHarness(opts: {
   name?: string;
   admins?: string[];
   patchFails?: boolean;
+  /** activeRuns 的 liveness / run token（agent 卡片过期保护用）。 */
+  hasScope?: boolean;
+  runToken?: string;
 }): Harness {
   const send = vi.fn(async () => ({}));
   const patch = opts.patchFails
@@ -96,6 +101,8 @@ function makeHarness(opts: {
   const push = vi.fn((): number => 1);
   const cancel = vi.fn((): NormalizedMessage[] => []);
   const respondToUi = vi.fn((): boolean => true);
+  const has = vi.fn((): boolean => opts.hasScope ?? true);
+  const getRunToken = vi.fn((): string | undefined => opts.runToken);
 
   // 只用到 send + rawClient.im.v1.message.patch 两条出网路径。
   const channel = {
@@ -113,7 +120,7 @@ function makeHarness(opts: {
     evt,
     sessions: {} as unknown as SessionStore,
     workspaces: {} as unknown as WorkspaceStore,
-    activeRuns: { respondToUi } as unknown as ActiveRuns,
+    activeRuns: { respondToUi, has, getRunToken } as unknown as ActiveRuns,
     agent: {} as unknown as AgentAdapter,
     controls: {
       cfg: { preferences: { access: { admins: opts.admins ?? [] } } },
@@ -126,7 +133,7 @@ function makeHarness(opts: {
     pending: { push, cancel } as unknown as PendingQueue,
     chatModeCache: { resolve: async () => 'p2p' as const } as unknown as ChatModeCache,
   };
-  return { deps, send, patch, push, cancel, respondToUi };
+  return { deps, send, patch, push, cancel, respondToUi, has, getRunToken };
 }
 
 describe('handleCardAction — 非管理员点击管理员按钮', () => {
@@ -206,5 +213,133 @@ describe('handleCardAction — 重复点击', () => {
     expect(h.send).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(h.send.mock.calls[0]?.[1])).toContain('已过期');
     expect(JSON.stringify(h.send.mock.calls[1]?.[1])).toContain('重复点击');
+  });
+});
+
+describe('handleCardAction — OMP UI 结果卡回显 / 空提交', () => {
+  it('select 提交后结果卡回显所选值', async () => {
+    const h = makeHarness({
+      messageId: 'om_ui_echo_select',
+      value: {
+        __omp_ui: true,
+        requestId: 'req_1',
+        title: '选择模型',
+        method: 'select',
+        action: 'submit',
+        value: 'gpt-5',
+      },
+    });
+    await handleCardAction(h.deps);
+
+    expect(h.respondToUi).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(h.patch.mock.calls[0])).toContain('gpt-5');
+  });
+
+  it('confirm 提交后结果卡回显「确认」', async () => {
+    const h = makeHarness({
+      messageId: 'om_ui_echo_confirm',
+      value: { __omp_ui: true, requestId: 'req_1', title: '确认发布', method: 'confirm', action: 'confirm' },
+    });
+    await handleCardAction(h.deps);
+
+    expect(h.respondToUi).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(h.patch.mock.calls[0])).toContain('确认');
+  });
+
+  it('空提交：不回答 OMP、回一句可见提示、卡片保持可操作', async () => {
+    const h = makeHarness({
+      messageId: 'om_ui_empty_submit',
+      value: { __omp_ui: true, requestId: 'req_1', title: '选择模型', method: 'select', action: 'submit', value: '' },
+    });
+    await handleCardAction(h.deps);
+
+    expect(h.respondToUi).not.toHaveBeenCalled();
+    expect(h.patch).not.toHaveBeenCalled();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(h.send.mock.calls[0]?.[1])).toContain('请先选择');
+  });
+});
+
+describe('handleCardAction — agent 卡片过期保护', () => {
+  it('__omp_run 与当前 run 不匹配 → 回「任务已结束」且不透传', async () => {
+    const h = makeHarness({
+      messageId: 'om_agent_stale_run',
+      value: {
+        [AGENT_CALLBACK_MARKER]: true,
+        [AGENT_MARK_SCOPE]: CHAT_ID,
+        [AGENT_MARK_RUN]: 'old-run',
+        [AGENT_MARK_ISSUED_AT]: Date.now(),
+      },
+      runToken: 'new-run',
+    });
+    await handleCardAction(h.deps);
+
+    expect(h.push).not.toHaveBeenCalled();
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(h.send.mock.calls[0]?.[1])).toContain('任务已结束');
+  });
+
+  it('发行时间超过 TTL → 回「任务已结束」且不透传', async () => {
+    const h = makeHarness({
+      messageId: 'om_agent_stale_ttl',
+      value: {
+        [AGENT_CALLBACK_MARKER]: true,
+        [AGENT_MARK_SCOPE]: CHAT_ID,
+        [AGENT_MARK_ISSUED_AT]: Date.now() - 31 * 60_000,
+      },
+    });
+    await handleCardAction(h.deps);
+
+    expect(h.push).not.toHaveBeenCalled();
+    expect(JSON.stringify(h.send.mock.calls[0]?.[1])).toContain('任务已结束');
+  });
+
+  it('有效标记：透传，但不把 __omp_* 混进 [card-click] JSON', async () => {
+    const h = makeHarness({
+      messageId: 'om_agent_valid',
+      value: {
+        [AGENT_CALLBACK_MARKER]: true,
+        action: 'deploy',
+        [AGENT_MARK_SCOPE]: CHAT_ID,
+        [AGENT_MARK_RUN]: 'run-current',
+        [AGENT_MARK_ISSUED_AT]: Date.now(),
+      },
+      runToken: 'run-current',
+    });
+    await handleCardAction(h.deps);
+
+    expect(h.push).toHaveBeenCalledTimes(1);
+    const content = (h.push.mock.calls[0]?.[1] as NormalizedMessage).content;
+    expect(content).toContain('[card-click]');
+    expect(content).toContain('deploy');
+    expect(content).not.toContain('__omp_');
+  });
+
+  it('无标记的手工卡片行为不变：照常透传', async () => {
+    const h = makeHarness({
+      messageId: 'om_agent_manual',
+      value: { [AGENT_CALLBACK_MARKER]: true, action: 'go' },
+    });
+    await handleCardAction(h.deps);
+
+    expect(h.push).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('handleCardAction — 命令按钮时间窗去重', () => {
+  it('同一卡同一按钮 2s 内连点只执行一次，超窗后再次点击会执行', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = makeHarness({ messageId: 'om_cmd_dedup', value: { cmd: 'new' } });
+      await handleCardAction(h.deps);
+      await handleCardAction(h.deps);
+      expect(h.cancel).toHaveBeenCalledTimes(1);
+
+      vi.advanceTimersByTime(2_001);
+      await handleCardAction(h.deps);
+      expect(h.cancel).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

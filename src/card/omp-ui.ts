@@ -43,7 +43,9 @@ export function renderOmpUiRequestCard(request: AgentUiRequest, scope?: string):
 
   const timeout = 'timeout' in request ? request.timeout : undefined;
   if (timeout !== undefined && timeout > 0) {
-    elements.push(markdown(`_此请求有超时限制：${Math.ceil(timeout / 1000)} 秒_`));
+    elements.push(
+      markdown(`_此请求有超时限制：${Math.ceil(timeout / 1000)} 秒；超时后按取消处理。_`),
+    );
   }
 
   if (request.method === 'confirm') {
@@ -99,9 +101,15 @@ export function renderOmpUiRequestCard(request: AgentUiRequest, scope?: string):
   return shell('等待 OMP 交互', elements);
 }
 
+/** 结果卡回声值的最长展示长度（超出截断，避免一段超长输入把卡撑爆）。 */
+const RESULT_ECHO_MAX = 200;
+
 export function renderOmpUiResultCard(
   title: string,
   status: 'submitted' | 'cancelled' | 'timed_out' | 'unavailable',
+  /** 用户所选 / 提交的值（由调用方从 payload/formValue 取出）——回显在结果卡上，
+   * 否则用户事后翻记录看不到自己选了什么。 */
+  echo?: string,
 ): object {
   const text =
     status === 'submitted'
@@ -111,7 +119,13 @@ export function renderOmpUiResultCard(
         : status === 'timed_out'
           ? '⏱ 已超时，OMP 会按取消处理。'
           : '⚠️ 当前 OMP 任务已结束，无法提交这个交互。';
-  return shell('OMP 交互已处理', [markdown(`🧩 **${escapeMd(title)}**`), markdown(text)]);
+  const elements: object[] = [markdown(`🧩 **${escapeMd(title)}**`), markdown(text)];
+  if (echo !== undefined && echo !== '') {
+    const flat = echo.replace(/\s+/g, ' ').trim();
+    const shown = flat.length > RESULT_ECHO_MAX ? `${flat.slice(0, RESULT_ECHO_MAX)}…` : flat;
+    elements.push(markdown(`✅ 已提交：**${escapeMd(shown)}**`));
+  }
+  return shell('OMP 交互已处理', elements);
 }
 
 function form(request: AgentUiRequest, elements: object[], scope?: string): object {

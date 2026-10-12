@@ -7,11 +7,12 @@ description: Drive pi/omp/kimi/Cursor agent TUIs running inside cmux terminals r
 
 在 cmux 终端里跑的 agent（pi/omp、kimi、Cursor）从外部进程（feishu-omp-bridge、脚本）远程操控。
 
-## 三条铁律
+## 四条铁律
 
 1. **只用 `send`（文本通道），不用 `send-key`** —— 全体键名当前报 `Unknown key`（见 `references/cli-basics.md` §3.4）
-2. **Enter 用 `'\r'`**（`cmux send --surface X '文本\r'` 或分两步）；`'\n'` 可能不提交
-3. **验证读落盘状态（session 文件 / store.db / state.json），不读屏**；`read-screen` 可能超时，仅作辅助
+2. **Enter 用 `'\r'`**（`cmux send --surface X '文本\r'` 或分两步）。⚠️ **`\n` 与 `\r` 一样都发 Enter** ⇒ 多行文本用普通 `send` 会被**逐行提交、拆成多条 prompt**；**多行/长文本一律 `send --paste` 再单独发 `'\r'`**（见 §3.8）
+3. **目标输入框有未提交草稿（或弹着对话框）时 `send` 会失败**——可能**静默超时**、看不出原因；`--force` 可强发，但**草稿会与本次文本拼成一条**提交 ⇒ 投递后必须核对落库文本（见 §3.8）
+4. **验证读落盘状态（session 文件 / store.db / state.json），不读屏**；`read-screen` 可能超时/返回空，仅作辅助
 
 ## 核心循环：定位 → 观察 → 投递 → 验证
 
@@ -32,6 +33,10 @@ cmux send --surface surface:1 '消息文本\r'   # idle：一步提交
 cmux send --surface surface:1 '长文本'       # busy：进 follow-up 队列（屏幕下方 ○ 框）
 cmux send --surface surface:1 '\r'           # 队列消息 steer 进当前回合（立即注入）
 cmux send --surface surface:1 "$(printf '\x03')"   # 停止回合（Esc/control-c 不可靠，用 \x03 字节）
+
+# 多行 / 长文本（✱ 别用普通 send，会逐行提交 —— 见 §3.8）
+cmux send --paste --force --surface surface:1 "$(cat msg.txt)"   # 整段贴进输入框（不提交）
+cmux send --surface surface:1 '\r'                               # 单独提交
 ```
 
 - 长文本尾部 `\r` 会被**括号粘贴吞掉**（kimi/cursor）：分两步——先发文本，再单独发 `'\r'`。提交与否看输入框：文本还在 `-> ` 处 = 未提交
@@ -59,6 +64,8 @@ cmux read-screen --surface surface:1 --lines 30 | tail -27 | cut -c1-145
 | 场景 | 操作 |
 |---|---|
 | 确认收到并执行 | 验证 session 文件追加 / wire.jsonl mtime 前进 |
+| **投递多行/长指令** | `send --paste --force "$(cat msg.txt)"` → 再单独发 `'\r'`；**不要**用普通 `send`（逐行提交，拆成多条 prompt，§3.8） |
+| **`send` 超时/无输出** | 先查目标 session mtime 是否前进：没前进 = 没送达；改 `--paste --force` 重发；注意超时的那次可能已把文本留在输入框 ⇒ 投递后核对落库文本（§3.8） |
 | busy 时补充指令 | `send '文本'` 进 ○ 队列（回合结束消费）；要立即生效再发 `'\r'` steer |
 | 撤回已排队消息 | cmux CLI **无远程撤回命令**；`\x03` 停回合不会清队列。需用户在终端 `^` 选中 + `esc` |
 | 交互式向导（多选/单选） | `read-screen` 读全部选项 → 实测按键 → 空格勾选/数字选择 → `'\r'` 进提交页 →（`\x1b[Z` 测切换）→ `'\r'` 提交 |
@@ -73,7 +80,7 @@ cmux 需开启 `Settings → Automation → Socket Control Mode → Automation`�
 
 | 文件 | 内容 |
 |---|---|
-| `references/cli-basics.md` | 权限前置(§1)、命令面(§2)、surface 定位(§3.1)、read-screen(§3.2)、键名与 send-key 回归(§3.3/3.4)、按键副作用(§3.5)、paste-buffer 残留坑(§3.6)、一次读全状态(§3.7) |
+| `references/cli-basics.md` | 权限前置(§1)、命令面(§2)、surface 定位(§3.1)、read-screen(§3.2)、键名与 send-key 回归(§3.3/3.4)、按键副作用(§3.5)、paste-buffer 残留坑(§3.6)、一次读全状态(§3.7)、**多行投递与「草稿卡死 send」(§3.8)** |
 | `references/pi.md` | 锁屏能力矩阵(§1)、pi/omp 区分(§2)、投递语义(§3)、session 定位与推进判定(§2.2/4)、回答交互提问速查(§5) |
 | `references/kimi.md` | state.json/wire.jsonl 驱动(§1.3)、投递与残留行清理(§1.4)、多行投递 |
 | `references/cursor.md` | 版本锁定 argv 非 symlink(§1.1)、store.db SQLite 读取(§1.2)、`-p` 非交互通道与权限警告(§1.3)、TUI 注入差异(§1.4–1.6) |

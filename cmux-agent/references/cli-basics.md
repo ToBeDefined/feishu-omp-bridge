@@ -195,6 +195,8 @@ cmux list-panels --workspace workspace:7
 cmux read-screen --workspace workspace:7 --lines 40     # 实测 0.1–11 s 返回，连续多次稳定
 ```
 
+⚠️ 但**偶发**：同一 surface 相邻两次调用出现**空输出 / 无输出直接超时**（实测），重试即恢复 —— 单次空结果不足以判定目标状态，**先重试一次**再下结论。
+
 用途：判断目标状态（thinking / 空闲 / 有排队消息）、读 TUI footer（模式、cwd、分支、未推送数、上下文占用）、读侧栏 Todo、**验收"输入框是否已清空"**（`│ >  │`，§3.6 必需）。
 **分工不变**：读屏用于**交互状态**，落盘 session 文件用于**事实**（pi.md §1 建议）。
 
@@ -266,7 +268,7 @@ cmux read-screen --workspace workspace:7 --lines 8          # 验收：输入框
 ```
 
 > `Up` 只是把残留**移回输入框**（不会自己消失）；不清就等于留了一颗雷。
-> 更稳的替代（待验，见 pi.md §7）：改用 `send` 分段 + 逐段 `'\r'`，绕开括号粘贴。
+> **更稳的替代（已实测，见 §3.8）**：改用 `cmux send --paste --force --surface X "$(cat msg.txt)"` + 单独发 `'\r'` —— 走粘贴通道，不做括号粘贴的逐键输入，也不受草稿阻塞。
 
 ### 3.7 一次读全部窗口/面板状态（排查利器）
 
@@ -289,6 +291,45 @@ PY
 - 一次拿到**所有窗口标题 + 每个面板的最新通知**（agent 完成通知写在这里，如 `Kimi Code task complete: …`）
 - 与锁屏无关、不受 `read-screen` 超时影响，是**最快的全局态势读取**
 - 同目录另有 `closed-item-history-*.json`、`notification-feed-history-*.json` 可查历史
+
+---
+
+### 3.8 ★ 多行投递：普通 `send` 会逐行提交；输入框有草稿时 `send` 会卡死（实测）
+
+> 实测环境：cmux + pi TUI（`feishu-omp-bridge` 外部进程调用），2026-10-13。
+
+`cmux send --help` 里两条原文即可定性：
+
+- *"For large text (for example over 4 KB, or several lines going to an agent), use `--paste` or `cmux paste`. Keystrokes press Enter at every newline, which can submit each line on its own."*
+- *"If an agent prompt in the target holds text someone is typing, or a question or permission dialog is open, nothing is sent and the command fails. `--force` sends anyway."*
+
+#### 坑 1：多行文本被拆成多条 prompt
+
+**现象（实测）**：一条 5 行指令用普通 `send` 发出后，目标 agent 的 session 里出现**多条独立 user message**——单字符行（`}`、` ``` `）、单条代码行各自成条；agent 便**逐条回答**，不把它当一条完整指令。
+
+**可靠姿势**：
+
+```bash
+cmux send --paste --force --surface surface:X "$(cat msg.txt)"   # 整段贴进输入框（不提交、不解释 \n）
+cmux send --surface surface:X '\r'                                # 单独提交
+```
+
+- `--paste` 走与 `Cmd+V` 相同的粘贴路径：`\n` **不**被解释成回车、`Esc`/`Ctrl-C` 等控制字符被替换为空格
+- 实测**不会自动提交**（长文本尾部 `\r` 会被括号粘贴吞掉的同类问题），必须再单独发 `'\r'`
+
+#### 坑 2：输入框有草稿时 `send` 静默卡死
+
+**现象（实测）**：连续两次 `cmux send`（20 s / 60 s 超时）**无任何输出**，退出码 `124` / `Command timed out`；目标 session 文件 mtime **不动** ⇒ **确认未送达**。加大超时重试仍卡。同一目标的 `--paste --force` **立即成功**（0.08 s）。
+
+**判据**：`send` 超时/无输出 **≠ 已送达**。必须查目标落盘 session 的 mtime / 行数是否前进（SKILL.md 铁律 4）。
+
+#### 坑 3（坑 2 的副作用）：超时的 `send` 已把文本写进输入框
+
+超时的那两次**其实已经把文本打进输入框**（只是没提交）。随后 `--paste --force` 成功时，**新文本拼在草稿后面**一起提交。
+
+**实测后果**：目标收到的 user message = **上一轮消息的尾行 + 本次全文**（内容没丢，但语义被拼接）。
+
+**规矩**：用过 `--force`（或此前有过失败的 `send`）之后，**核对落库文本** —— 读目标 session 最新一条 user message 的开头，确认没被草稿污染。`\x03` 只停回合、**不清输入框**；清输入框见 §3.6（`Up` 取回 + 连打 backspace）。
 
 ---
 

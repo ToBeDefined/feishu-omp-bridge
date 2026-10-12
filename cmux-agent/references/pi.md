@@ -224,7 +224,7 @@ cmux send --surface $S '\r'                                                  # �
 - [ ] `cmux notify` / `set-status` / `set-progress` 能否**反向**把 pi 状态推到 cmux UI
 
 - [ ] 锁屏下 `paste-buffer` 是否仍可靠
-- [ ] `paste-buffer` **残留排队行**的成因与更稳替代（如 `send` 分段 + `\r` 逐段提交）
+- [x] ~~`paste-buffer` **残留排队行**的成因与更稳替代~~ → 已实测：`cmux send --paste --force` + 单独 `'\r'`（cli-basics.md §3.8）
 - [ ] **`shift-tab` = kimi Plan mode 开关**的因果隔离（本次是批量探键时误触，未逐一隔离）
 - [ ] kimi 是否也有类似 pi `--mode rpc` 的**非 TUI 通道**（有 `~/.kimi-code/server` + `server.token`，用途未探明）
 - [ ] kimi 会话目录 hash 的生成规则（本次只按 basename 前缀匹配，`session_index.jsonl` 更可靠）

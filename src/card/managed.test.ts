@@ -41,6 +41,45 @@ describe('stripRunningState', () => {
     expect(json).not.toContain('正在输出');
     expect(json).toContain('以上为已输出的部分内容');
     expect(json).toContain('进程中断');
+    // 控制区自带的 hr 一并剥掉，否则和补的中断注记 `---` 叠成双线。
+    expect(json).not.toContain('"tag":"hr"');
+    expect(json.match(/---/g)).toHaveLength(1);
+  });
+
+  it('只剥控制区上方那条 hr，不碰正文自己的分隔线', () => {
+    const card = {
+      schema: '2.0',
+      body: {
+        elements: [
+          { tag: 'markdown', content: '第一段' },
+          { tag: 'hr' },
+          { tag: 'markdown', content: '第二段' },
+          { tag: 'hr' },
+          {
+            tag: 'column_set',
+            columns: [
+              {
+                tag: 'column',
+                elements: [{ tag: 'markdown', content: '✍️ 正在输出' }],
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const out = stripRunningState(card) as {
+      body: { elements: Array<{ tag: string; content?: string }> };
+    };
+    // 正文之间的那条 hr 留下；控制行正上方那条随控制行一起消失。
+    expect(out.body.elements.map((el) => el.tag)).toEqual([
+      'markdown',
+      'hr',
+      'markdown',
+      'markdown',
+      'markdown',
+    ]);
+    expect(out.body.elements[2]).toMatchObject({ content: '第二段' });
+    expect(out.body.elements[3]).toMatchObject({ content: '---' });
   });
 
   it('已完工的卡片（没有运行态元素）不贴「进程中断」——崩溃记录没删干净也不该误报', () => {

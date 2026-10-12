@@ -127,3 +127,38 @@ export async function shouldAnnounceOrdinaryBoot(
   }
   return true;
 }
+
+// ---------------------------------------------------------------------------
+// Boot fan-out: who to notify, and why.
+// ---------------------------------------------------------------------------
+
+/**
+ * 广播窗口：只通知最近这么久**有活动**的会话。长期不活跃的群不再被每次
+ * 重启打扰（覆盖 crash 循环之外的正常重启）。
+ */
+export const ONLINE_ACTIVE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** 普通 boot 广播「已上线」的原因（`/release` / `/restart` 有自己的卡，不广播）。 */
+export type OnlineBootReason = 'crash-recovery' | 'manual';
+
+/** 原因 → 通知里的一行说明（调用方持有文案，卡片层只负责转义渲染）。 */
+export function onlineReasonNote(reason: OnlineBootReason): string {
+  return reason === 'crash-recovery' ? '原因：检测到进程中断，已自动恢复。' : '原因：手动启动。';
+}
+
+/**
+ * 最近 `windowMs` 内有活动的会话。纯函数：`updatedAtOf` 由调用方从会话库
+ * 取（会话/通知层不自己推导字段）。**活动时间缺失按不活跃处理** —— 宁可不
+ * 打扰，也不要给一个没有时间信息的群发通知。
+ */
+export function recentChats(
+  chats: readonly string[],
+  updatedAtOf: (chatId: string) => number | undefined,
+  now: number,
+  windowMs: number = ONLINE_ACTIVE_WINDOW_MS,
+): string[] {
+  return chats.filter((chatId) => {
+    const at = updatedAtOf(chatId);
+    return typeof at === 'number' && Number.isFinite(at) && now - at <= windowMs;
+  });
+}

@@ -42,6 +42,14 @@ describe('toolBodyMd fence safety', () => {
     expect(body).toContain('`src/a(b)[1].ts`');
     expect(body).not.toContain('\\(');
   });
+
+  it('truncation notice keeps full-width punctuation', () => {
+    // A backtick-heavy payload widens the fence past BODY_TOTAL_MAX, which is
+    // the only way into the truncation notice.
+    const body = toolBodyMd(tool({ output: '`'.repeat(1200) }));
+    expect(body).toContain('（body 已截断，完整内容查 `/doctor` 或日志）');
+    expect(body).not.toContain('已截断,');
+  });
 });
 
 describe('escapeMd', () => {

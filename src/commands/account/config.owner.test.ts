@@ -183,3 +183,119 @@ describe('/config submit 与 access.owner', () => {
     expect(written.preferences?.access?.owner).toBe('ou_3a4845d7ce8becd003e2728ab7774666');
   });
 });
+
+interface CapturedSend {
+  markdown?: string;
+  card?: object;
+}
+
+/** 把 channel.send 换成收集器（测试里唯一需要绕过 CommandContext 类型的地方）。 */
+function captureSends(ctx: CommandContext): CapturedSend[] {
+  const sent: CapturedSend[] = [];
+  const channel: unknown = ctx.channel;
+  if (typeof channel !== 'object' || channel === null) return sent;
+  (channel as { send: (chatId: string, payload: CapturedSend) => Promise<void> }).send =
+    async (_chatId, payload) => {
+      sent.push(payload);
+    };
+  return sent;
+}
+
+describe('/config submit 的数值校验', () => {
+  beforeEach(() => {
+    vi.mocked(saveConfig).mockClear();
+    vi.mocked(updateManagedCard).mockClear();
+  });
+
+  it('拒绝越界的并发上限（旧行为：静默 clamp 成 50 还回「已保存」）', async () => {
+    const { ctx, cfg } = ctxWith({ max_concurrent_runs: '999' });
+    const sent = captureSends(ctx);
+    (cfg.preferences as { maxConcurrentRuns?: number }).maxConcurrentRuns = 10;
+
+    await configHandlers['/config']!('submit', ctx);
+
+    expect(saveConfig).not.toHaveBeenCalled();
+    expect((cfg.preferences as { maxConcurrentRuns?: number }).maxConcurrentRuns).toBe(10);
+    const cards = JSON.stringify(sent.map((s) => s.card));
+    expect(cards).toContain('提交被拒绝');
+    expect(cards).toContain('并发上限');
+    expect(cards).toContain('1-50');
+    expect(cards).toContain('999');
+    expect(cards).not.toContain('偏好已保存');
+  });
+
+  it('把 1e3 / 5.5 / abc 当非法，而不是被 parseInt 截断', async () => {
+    for (const bad of ['1e3', '5.5', 'abc']) {
+      const { ctx } = ctxWith({
+        max_concurrent_runs: bad,
+        run_idle_timeout_minutes: bad,
+      });
+      const sent = captureSends(ctx);
+      await configHandlers['/config']!('submit', ctx);
+      expect(saveConfig).not.toHaveBeenCalled();
+      const cards = JSON.stringify(sent.map((s) => s.card));
+      expect(cards).toContain('并发上限');
+      expect(cards).toContain('run 探活');
+      expect(cards).toContain(bad);
+    }
+  });
+
+  it('合法整数照常保存', async () => {
+    const { ctx } = ctxWith({ max_concurrent_runs: '7', run_idle_timeout_minutes: '30' });
+    await configHandlers['/config']!('submit', ctx);
+    const written = vi.mocked(saveConfig).mock.calls[0]![0] as AppConfig;
+    expect(written.preferences?.maxConcurrentRuns).toBe(7);
+    expect(written.preferences?.runIdleTimeoutMinutes).toBe(30);
+  });
+
+  it('字段缺失（CardKit 丢字段）仍回落当前值，不算非法', async () => {
+    const { ctx, cfg } = ctxWith({});
+    (cfg.preferences as { maxConcurrentRuns?: number }).maxConcurrentRuns = 12;
+    await configHandlers['/config']!('submit', ctx);
+    const written = vi.mocked(saveConfig).mock.calls[0]![0] as AppConfig;
+    expect(written.preferences?.maxConcurrentRuns).toBe(12);
+  });
+});
+
+describe('/config submit 写盘失败', () => {
+  beforeEach(() => {
+    vi.mocked(saveConfig).mockReset();
+    vi.mocked(saveConfig).mockResolvedValue();
+    vi.mocked(updateManagedCard).mockClear();
+    vi.mocked(updateManagedCard).mockResolvedValue();
+  });
+
+  it('换成明确的失败卡（写清原因），不再谎称「已取消」', async () => {
+    const { ctx } = ctxWith({ max_concurrent_runs: '7' });
+    captureSends(ctx);
+    vi.mocked(saveConfig).mockRejectedValueOnce(new Error('EACCES: permission denied'));
+
+    // 收尾链由 FORM_SETTLE_MS 的定时器驱动 → 用假时钟推进，不真等 1.3s。
+    vi.useFakeTimers();
+    await configHandlers['/config']!('submit', ctx);
+    await vi.advanceTimersByTimeAsync(1300);
+    vi.useRealTimers();
+
+    const settled = JSON.stringify(vi.mocked(updateManagedCard).mock.calls.at(-1)?.[2]);
+    expect(settled).toContain('偏好保存失败');
+    expect(settled).toContain('EACCES: permission denied');
+    expect(settled).not.toContain('已取消');
+    // 配置内存态没被写脏。
+    expect(ctx.controls.cfg.preferences?.maxConcurrentRuns).not.toBe(7);
+  });
+
+  it('卡片更新不了时补发一条文本（有兜底，不静默）', async () => {
+    const { ctx } = ctxWith({ max_concurrent_runs: '7' });
+    const sent = captureSends(ctx);
+    vi.mocked(saveConfig).mockRejectedValueOnce(new Error('ENOSPC: no space left'));
+
+    vi.useFakeTimers();
+    await configHandlers['/config']!('submit', ctx);
+    vi.mocked(updateManagedCard).mockRejectedValueOnce(new Error('no managed card registered'));
+    await vi.advanceTimersByTimeAsync(1300);
+    vi.useRealTimers();
+
+    expect(sent.map((s) => s.markdown ?? '').join('\n')).toContain('偏好保存失败');
+    expect(sent.map((s) => s.markdown ?? '').join('\n')).toContain('ENOSPC');
+  });
+});

@@ -48,7 +48,7 @@ omp --mode rpc --session-dir ~/.feishu-omp-bridge/omp-sessions
   只有没有当前会话时（`/new`、`/cd`、`/ws use` 之后）才用窗口的 cwd 决定新对话落在哪。
   `/history` 的默认视图、`/ctx`、`/status`、`/diff`、`/compact`、`/exec` 都按这个口径。
 - 标题属于**那个对话**：`/rename` 命名当前对话；没名字时 `/history`、`/search` 回退显示该对话最后一条用户消息。
-- `/history` 一行 = 一个对话（活动时间 / 轮数 / 标题或最后一条用户消息）；「继续对话」恢复它，`/history all` 看全部工作目录。
+- `/history` 一行 = 一个对话（活动时间 / 轮数 / 标题或最后一条用户消息）；「继续对话」恢复它，`/history all` 看全部工作目录，卡片上也带一个范围切换键（🌐 全部工作区），不用再手敲命令。
 - 升级须知：早期版本把多个 OMP 会话挂在同一「工作会话」下（需要手工合并/拆分），现在加载旧文件时会自动规范化成「一段一对话」，并留一份 `sessions.json.v2.bak`。
 
 ### OMP RPC 流式输出
@@ -58,6 +58,14 @@ omp --mode rpc --session-dir ~/.feishu-omp-bridge/omp-sessions
 - 展示工具调用开始、增量更新和最终结果。
 - 展示 token usage（当 OMP RPC 返回 usage 时）。
 - 支持中断：`/stop` 会向 OMP 发送 `abort`，随后按 grace period 终止进程。
+- 运行卡底部是控制区：一条分割线，下面左边堆「token / 费用」与「状态 · 用时」
+  （如 `🧠 正在思考 · ⏱ 用时 1 分 32 秒`）两行，⏹ 终止 在右边与这两行垂直居中。一条回答被拆成
+  多张卡时，**只有最新那一页**带这块；早先的页只留内容 + 一行「⬇️ 已分页，下一条消息继续」。
+- 结束时给一行脚注：用时、token（入/出）、费用 —— OMP 报哪个显示哪个；失败、探活超时、
+  被中断会在**正文之前**给出加粗结果行，而不是文末一行小灰字。
+- 运行中约每 5 秒重渲染一次：长工具调用（跑一整套测试）不再看着像卡死。卡片**没有顶层标题**：
+  第一行直接是正文（终态时是失败/中断的结果行）。同一套用量脚注也出现在 `/doctor` 的诊断卡上。
+- 纯文本回复模式下超长回答会分条发送而不是直接丢掉，失败也保留原因。
 
 ### OMP 原生 UI → 飞书交互卡片
 
@@ -81,6 +89,14 @@ OMP RPC 的 extension UI request 会被映射为飞书卡片，并把用户响�
 
 当 OMP 正在等待 UI 响应时，idle watchdog 会暂停；用户提交或取消后再恢复探活，避免误杀等待人工输入的 run。
 
+这类卡片有三条反馈规则：
+
+- 请求卡带**剩余秒数**倒计时（`⏳ 剩余 N 秒；超时后按取消处理`），一眼能看到还有多久、超时会怎样。
+- **空提交不会发出去**（没选 / 没填）：卡片留在原地并提示，而不是把空值当成交付给 OMP。
+- 结果卡**回显你选了什么**（`✅ 已提交：prod`），卡片被自身结果替换后仍能回溯当时的选项。
+- 别人（agent）用 `feishu_send_card` 发的按钮带发行标记：run 结束后（或超过 30 分钟）再点会回
+  「该按钮所属任务已结束」，不会把过期 payload 泄进当前对话。
+
 ### Feishu-native OMP host surface
 
 每个 OMP run 启动时都会注册 Feishu host tools：
@@ -92,7 +108,7 @@ OMP RPC 的 extension UI request 会被映射为飞书卡片，并把用户响�
 | `feishu_reply_message` | 回复触发消息或显式 `messageId`。 |
 | `feishu_get_message` | 按 `messageId` 拉取并规范化飞书消息。 |
 | `feishu_send_file` | 上传本地文件 / 图片并发送到当前 chat 或显式 `chatId`。 |
-| `feishu_send_card` | 用标题 + markdown 正文 + 按钮列表发交互卡片，点击经 `__codex_cb` 回填为 `[card-click]`。 |
+| `feishu_send_card` | 用标题 + markdown 正文 + 按钮列表发交互卡片，点击经 `__codex_cb` 回填为 `[card-click]`。按钮会带上发行 run 与时间：该 run 已结束（或超过 30 分钟）后再点会回「该按钮所属任务已结束」，不会把过期 payload 泄进当前对话。 |
 | `feishu_recall_message` | 撤回 bot 自己发出的消息。 |
 | `feishu_view_image` | 把本地图片注入当前 run，让模型直接看图。 |
 
@@ -392,23 +408,26 @@ node bin/feishu-omp-bridge.mjs kill <id|#>
 | `/new`、`/reset` | 开一段**新对话**（旧对话留在 `/history` 里）。 |
 | `/new chat [name]` | 创建新群并拉你进去，继承当前 cwd。需要 bot 具备 `im:chat` 权限。 |
 | `/cd <path>` | 切换当前 chat/topic 的工作目录并开新对话（cwd 不匹配没法续旧会话）。支持绝对路径、`~/xxx`、相对当前目录的路径（如 `src`、`../x`）。 |
-| `/ws list` | 查看命名工作空间。 |
+| `/ws list` | 查看命名工作空间。删除前需要点一次确认，删除后卡片原地刷新；列表为空时卡片提供一键「保存当前 cwd」。 |
 | `/ws add <name> <path>` | 保存当前 cwd 为命名工作空间。 |
 | `/ws use <name>` | 切换到命名工作空间（换目录 = 开新对话；`/ws undo` 同理）。 |
-| `/config` | 打开偏好设置卡片。 |
+| `/config` | 打开偏好设置卡片。数值字段会校验：非法或越界（`abc`、`5.5`、`1e3`、并发 `999`）会拒绝提交并说明原因，**不写盘、不静默截断**；写盘失败会明确报失败，不再显示成「已取消」。 |
+| `/model [id\|reset]` | 打开模型选择卡（最近使用 → 常用 → 提供方）或直接切换。不能聊天的模型（语音/图像/TTS/embedding/OCR 等）不会出现在选择器里：OMP 对它们同样报 `kind: "chat"`，所以规则按名字判断；可用 `FOB_ALLOW_NON_CHAT_MODELS=<selector,...>` 对指定模型豁免。切换提供方时不再替用户预选模型。最近使用会标注「多久前 · 用过几次」（如 `3 分钟前 · 5 次`），历史文件在首次读取时自动升级为带时间戳的新结构。 |
+| `/thinking [level\|reset]` | 设置当前对话的思考强度。选择卡只列当前模型支持的档位，并始终带「跟随 OMP 默认」，所以从卡片也能回到默认值。 |
 | `/account` | 更换 bot app 凭据并重连。 |
 | `/rename <标题>` | 给当前**对话**起名；`/rename auto` 用 LLM 生成(≤20 字)，`/rename clear` 清除。标题显示在 `/status`（`/ctx`）、`/history`、`/search`。 |
 | `/history [all]`、`/sessions` | 会话清单，按最后活动时间倒序：默认只看**当前工作目录**，`all` 看全部工作目录。每行 = 一个 OMP 会话（活动时间 / 轮数 / 标题或最后一条用户消息），「继续对话」恢复它；超过 8 条分页。admin 命令。 |
 | `/status`、`/ctx`、`/context` | 会话状态卡片 —— 一条命令三个写法：会话（id / 标题 / 开始 / 最近活动 / 运行态）、环境（cwd / agent / 模型 / 思考强度 / 探活 / 工作空间快捷名）与最近一问一答的摘要。 |
 | `/stop` | 终止当前正在执行的 OMP run。 |
-| `/timeout [N\|off\|default]` | 设置当前 session 的 idle timeout，或关闭 / 恢复全局默认。 |
-| `/ps` | 列出本机所有 bridge 进程，并标识当前回复进程。 |
+| `/timeout [N\|off\|default]` | 设置当前 session 的 idle timeout，或关闭 / 恢复全局默认。无参时打开一张设置卡（当前值 + 15 / 30 / 关闭 / 回退全局 按钮）；`1e3`、小数、越界值会被拒绝，不再被 `parseInt` 静默当成整数。 |
+| `/compact` | 压缩会话上下文。若当前有 run 在跑，会明确回一句「已排队」而不是毫无反应；进度卡上带「取消压缩」按钮。 |
+| `/ps` | 列出本机所有 bridge 进程，并标识当前回复进程。退出前需要点一次确认（正在回复你的那个进程会额外提示），退出后卡片原地刷新。 |
 | `/release [force]` | 自发布：`pnpm typecheck` → `pnpm test` → `pnpm build` 后重启 daemon 加载新代码。失败即中止、不重启。`force` 跳过等待在跑的 run。 |
 | `/exec <命令>`、`/run` | 在当前 cwd 下执行 shell 命令并回退出码 + 输出（30s 超时，输出截断 1000 字符）。admin 命令。 |
 | `/exit <id\|#>` | 关闭指定 bridge 进程。 |
 | `/reconnect` | 强制重连 WebSocket。 |
-| `/doctor [描述]` | 把最近日志和故障描述交给 OMP 自助诊断。 |
-| `/help` | 显示帮助卡片。 |
+| `/doctor [描述]` | 把最近日志和故障描述交给 OMP 自助诊断。结果卡在 OMP 报 usage 时会带上用时 / token / 费用脚注。 |
+| `/help` | 显示帮助卡片（默认展开「🗂 会话管理」与「⏯ 运行控制」两组，其余保持折叠）。 |
 
 普通消息会直接交给 OMP。群聊默认需要 `@bot`；私聊不需要。
 
@@ -517,6 +536,13 @@ feishu://message/<message_id>
   可显式跳过排空，立即重启；正在跑的 run 会被中断，卡片上会写明「强制重启」。
 - **参数拼错不会被静默降级**：只认这几个写法，其它 token 会回一条用法提示、什么都不做
   （否则 `/release frce` 会退化成等满 5 分钟排空，看起来就像卡死）。
+- **排空期间看得见**：卡片会写明「在等 N 个在跑的会话收尾（最多 5 分钟）」，数字随收尾进度刷新，
+  不再是停着不动的「正在重启」；`force` 则直接写明会被中断几个任务（0 个显示「无在跑会话」）。
+- **排空超时也上卡**：等到 5 分钟上限仍没收尾时，卡片会写明「超时强杀 + 几个任务被中断」，
+  而不是只写进日志。
+- **上线通知收敛**：普通启动的「🚀 已上线」广播只发给**最近 7 天有活动**的会话，并注明原因
+  （`crash-recovery` 崩溃自愈 / `manual` 手动启动）；`/release`、`/restart` 不再广播——发起方
+  自己会收到发布 / 重启卡，其它会话不被打扰。
 - `feishu-omp-bridge rollback [sha]`：**发布后运行时才发现坏掉**时用（故意做成 CLI 命令，
   因为此时 bot 可能已经无法接收聊天命令）。默认目标是自愈状态里的 `lastGoodSha`，没有则
   `HEAD~1`；执行顺序：脏工作区直接拒绝 → `git revert --no-commit <target>..HEAD` + 一条
@@ -618,6 +644,7 @@ pnpm build
 | --- | --- |
 | 启动时报找不到 `omp` | 确认 `omp --version` 可用，并先运行一次 `omp` 完成模型 / 认证配置。 |
 | OMP RPC 启动后无响应 | 单独运行 `omp --mode rpc` 做 smoke test；检查 `~/.feishu-omp-bridge/logs/`。 |
+| 发语音得到答非所问 | 转写或附件下载失败了 —— 现在会在对话里给一条 ⚠️ 提示；改用文字重发即可。 |
 | OMP 没有续上次对话 | 发 `/context` 看当前会话 id：会话文件被删、或你 `/cd`、`/ws use`、`/new` 都会换成新对话（旧对话仍在 `/history` 里，点「继续对话」回去）。窗口的 cwd 不再影响续接——续的是会话自己的目录。 |
 | 群聊无响应 | 确认消息里 `@bot`，或在 `/config` / `config.json` 中调整 `requireMentionInGroup`。 |
 | 卡片长时间不动 | 用 `/stop` 中断；也可设置 `/timeout 10` 开启当前 session idle 探活。 |

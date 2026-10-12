@@ -35,9 +35,14 @@ vi.mock('../config/schema', async (importOriginal) => {
 vi.mock('./reaction', () => ({ addReaction }));
 vi.mock('./prompt', () => ({ buildPrompt }));
 vi.mock('./quote', () => ({ fetchQuotedContext }));
+vi.mock('../media/transcribe', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../media/transcribe')>();
+  return { ...actual, attachTranscripts: vi.fn(async () => []) };
+});
 
 import type { IntakeDeps } from './intake';
 import { intakeMessage, messageIdSeen, rememberMessageId, resetSeenMessageIds } from './intake';
+import { attachTranscripts } from '../media/transcribe';
 
 function makeMsg(content: string, overrides: Partial<NormalizedMessage> = {}): NormalizedMessage {
   return {
@@ -238,6 +243,67 @@ describe('intakeMessage mid-run routing', () => {
 
     expect(deps.pending.push).toHaveBeenCalledWith('oc_1', deps.msg);
     expect(submitPrompt).toHaveBeenCalled();
+  });
+});
+
+describe('steer 的媒体失败提示', () => {
+  function steerDeps(overrides: Partial<IntakeDeps> = {}): {
+    deps: IntakeDeps;
+    sent: Array<{ markdown: string }>;
+  } {
+    const sent: Array<{ markdown: string }> = [];
+    const deps = makeDeps({
+      activeRuns: { has: vi.fn(() => true), submitPrompt: vi.fn(async () => true) } as never,
+      media: { resolve: vi.fn(async () => [{ kind: 'audio', path: '/tmp/voice.opus' }]) } as never,
+      channel: {
+        send: vi.fn(async (_chatId: string, msg: { markdown: string }) => {
+          sent.push(msg);
+        }),
+      } as never,
+      msg: makeMsg('!听一下语音', { messageId: 'om_voice', resources: [{ type: 'audio' }] as never }),
+      ...overrides,
+    });
+    return { deps, sent };
+  }
+
+  it('转写失败时给当前对话一条可见提示', async () => {
+    vi.mocked(attachTranscripts).mockResolvedValueOnce([
+      { kind: 'audio', path: '/tmp/voice.opus', reason: '音频转码失败' },
+    ]);
+    const { deps, sent } = steerDeps();
+
+    await intakeMessage(deps);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.markdown).toContain('转写失败');
+    // 提示不改变主流程：steer 照常发出。
+    expect(deps.activeRuns.submitPrompt).toHaveBeenCalled();
+  });
+
+  it('成功转写不发任何提示', async () => {
+    vi.mocked(attachTranscripts).mockResolvedValueOnce([]);
+    const { deps, sent } = steerDeps();
+
+    await intakeMessage(deps);
+
+    expect(sent).toHaveLength(0);
+    expect(deps.activeRuns.submitPrompt).toHaveBeenCalled();
+  });
+
+  it('提示本身发送失败不影响 steer 主流程', async () => {
+    vi.mocked(attachTranscripts).mockResolvedValueOnce([
+      { kind: 'audio', path: '/tmp/voice.opus', reason: '音频转码失败' },
+    ]);
+    const { deps } = steerDeps({
+      channel: {
+        send: vi.fn(async () => {
+          throw new Error('offline');
+        }),
+      } as never,
+    });
+
+    await expect(intakeMessage(deps)).resolves.toBeUndefined();
+    expect(deps.activeRuns.submitPrompt).toHaveBeenCalled();
   });
 });
 

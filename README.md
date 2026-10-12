@@ -46,7 +46,7 @@ It fits these situations:
 - These do **not** switch sessions: a `/release` restart and `/compact` (both keep running in the same conversation).
 - **The cwd travels with the session**: resuming a conversation runs it in *its own* directory (the window's cwd follows it); only when there is no current session (after `/new`, `/cd`, `/ws use`) does the window's cwd decide where the new conversation lands. The default view of `/history` and the `/ctx`, `/status`, `/diff`, `/compact`, `/exec` commands all use this rule.
 - A title belongs to **that conversation**: `/rename` names the current one; without a name, `/history` and `/search` fall back to its last user message.
-- One `/history` row = one conversation (activity time / turn count / title or last user message); “Continue chat” restores it, and `/history all` covers every working directory.
+- One `/history` row = one conversation (activity time / turn count / title or last user message); “Continue chat” restores it, `/history all` covers every working directory, and the card carries a scope toggle (🌐 全部工作区) so you do not have to retype the command.
 - Upgrade note: early versions hung multiple OMP sessions under one “work session” (requiring manual merge/split). Old files are now normalized on load into “one conversation per session”, with a `sessions.json.v2.bak` kept.
 
 ### OMP RPC streaming output
@@ -56,6 +56,18 @@ It fits these situations:
 - Shows tool-call starts, incremental updates and final results.
 - Shows token usage (when OMP RPC reports usage).
 - Supports interruption: `/stop` sends `abort` to OMP and then terminates the process after a grace period.
+- Keeps a bottom control block on the running card: a divider, then the token/cost line and the live
+  status line (`🧠 正在思考 · ⏱ 用时 1 分 32 秒`) stacked on the left, with ⏹ stop vertically centred
+  to their right. When a reply is split into several cards, only the newest page shows that block —
+  earlier pages carry just their content plus a「⬇️ 已分页，下一条消息继续」 note.
+- Closes with a one-line footer — elapsed time, tokens (in/out) and cost, whichever OMP reports;
+  failures, idle timeouts and interruptions render as a bold result line **above** the body instead of
+  a small grey note at the end.
+- Re-renders about every 5 s while running, so a long tool call (a full test suite) no longer looks
+  frozen. The card carries **no title**: the first line is the answer itself (or the failure headline).
+  The same usage footer shows up on the `/doctor` card.
+- In plain-text reply mode long answers are split across messages instead of being dropped, and
+  failures keep their reason.
 
 ### OMP native UI → Feishu interactive cards
 
@@ -79,6 +91,14 @@ Non-blocking UI events render into the run card or the text output:
 
 While OMP is waiting for a UI response the idle watchdog is paused; it resumes probing after the user submits or cancels, so a run waiting on a human is never killed by mistake.
 
+Three feedback rules apply to these cards:
+
+- The request card counts down (`⏳ 剩余 N 秒；超时后按取消处理`), so you can see how long you have and
+  what happens if it runs out.
+- An empty submission (nothing selected, blank input) is **not** sent: the card stays and says so.
+- The result card echoes what you chose (`✅ 已提交：prod`), so a card that has been replaced by its own
+  result is still readable afterwards.
+
 ### Feishu-native OMP host surface
 
 Every OMP run registers Feishu host tools:
@@ -90,7 +110,7 @@ Every OMP run registers Feishu host tools:
 | `feishu_reply_message` | Replies to the triggering message or an explicit `messageId`. |
 | `feishu_get_message` | Fetches and normalizes a Feishu message by `messageId`. |
 | `feishu_send_file` | Uploads a local file / image and sends it to the current chat or an explicit `chatId`. |
-| `feishu_send_card` | Sends an interactive card from a title + markdown body + button list; clicks come back as `[card-click]` through `__codex_cb`. |
+| `feishu_send_card` | Sends an interactive card from a title + markdown body + button list; clicks come back as `[card-click]` through `__codex_cb`. Buttons are stamped with the issuing run and time: once that run has ended (or after 30 minutes) a click answers 「该按钮所属任务已结束」 instead of leaking a stale payload into the current conversation. |
 | `feishu_recall_message` | Recalls a message the bot itself sent. |
 | `feishu_view_image` | Injects a local image into the current run so the model can look at it. |
 
@@ -247,6 +267,15 @@ feishu-omp-bridge rollback <sha>    # or an explicit commit/ref
 >
 > Append `force` (`/release force`, `/restart force`, also `--force` / `-f`) to skip the drain
 > explicitly: the bounce happens at once and any in-flight run is cut off (the card says so).
+>
+> While draining, the card shows how many in-flight conversations it is waiting for and the 5-minute
+> cap, so a slow drain no longer looks like a hang; `force` states how many runs it will cut off
+> (`0` reads as “no in-flight conversations”, not “cutting off 0”). If the cap is hit, the card says so
+> (timeout + how many runs were cut off) instead of only writing it to the log.
+>
+> The ordinary 「已上线」 broadcast after a boot now goes only to chats that were active in the last
+> 7 days and names the reason (`crash-recovery` / `manual`). `/release` and `/restart` do not broadcast
+> at all — the chat that asked gets its own release / restart card, everyone else is left alone.
 
 What it does, in order: refuses to run on a dirty worktree → `git revert --no-commit
 <target>..HEAD` + one revert commit (**history is never rewritten**) → runs the same
@@ -427,23 +456,26 @@ Semantics:
 | `/new`, `/reset` | Start a **new conversation** (the old one stays in `/history`). |
 | `/new chat [name]` | Create a new group and pull you into it, inheriting the current cwd. Requires the `im:chat` permission for the bot. |
 | `/cd <path>` | Change the working directory of the current chat/topic and start a new conversation (a mismatched cwd cannot resume the old session). Accepts absolute paths, `~/xxx`, and paths relative to the current directory (`src`, `../x`). |
-| `/ws list` | List named workspaces. |
+| `/ws list` | List named workspaces. The card deletes a workspace only after a confirmation tap, refreshes in place afterwards, and offers a one-tap “save current cwd” action when the list is empty. |
 | `/ws add <name> <path>` | Save the current cwd as a named workspace. |
 | `/ws use <name>` | Switch to a named workspace (changing the directory = a new conversation; same for `/ws undo`). |
-| `/config` | Open the preferences card. |
+| `/config` | Open the preferences card. Numeric fields are validated: an invalid or out-of-range value (`abc`, `5.5`, `1e3`, `999` for concurrency) is rejected with the reason and **nothing is written** — no silent clamping. A failed write reports the failure instead of claiming the change was cancelled. |
+| `/model [id\|reset]` | Show the model picker (recent → common → providers) or switch directly. Models that cannot chat (speech / image / TTS / embedding / OCR …) are filtered out of the picker: OMP reports `kind: "chat"` for all of them, so the rule is name-based. Set `FOB_ALLOW_NON_CHAT_MODELS=<selector,...>` to lift it for specific models. Switching provider no longer pre-selects a model for you. Recent entries are annotated with how long ago and how often they were used (`3 分钟前 · 5 次`); the history file upgrades itself to the timestamped format on first read. |
+| `/thinking [level\|reset]` | Set the reasoning effort for the current chat. The picker lists only the levels the current model supports plus “follow OMP default”, so you can always get back to the default from the card. |
 | `/account` | Replace the bot app credentials and reconnect. |
 | `/rename <title>` | Name the current **conversation**; `/rename auto` generates it with an LLM (≤20 chars), `/rename clear` clears it. The title shows up in `/status` (`/ctx`), `/history` and `/search`. |
 | `/history [all]`, `/sessions` | Session list, newest activity first: by default only the **current working directory**, `all` for every working directory. One row = one OMP session (activity time / turn count / title or last user message); “Continue chat” restores it; paginates beyond 8 rows. Admin command. |
 | `/status`、`/ctx`、`/context` | The session status card — one command, three spellings: session (id / title / start / last active / running), environment (cwd / agent / model / thinking / idle timeout / workspace quick-dirs) and the digested recent message + reply. |
 | `/stop` | Abort the OMP run currently executing. |
-| `/timeout [N\|off\|default]` | Set the current session's idle timeout, or turn it off / fall back to the global default. |
-| `/ps` | List every bridge process on this machine and mark the one replying now. |
+| `/timeout [N\|off\|default]` | Set the current session's idle timeout, or turn it off / fall back to the global default. Without arguments it opens a card showing the current value with 15 / 30 / off / back-to-global buttons; `1e3`, decimals and out-of-range values are rejected instead of being silently truncated to an integer. |
+| `/compact` | Compress the conversation context. If a run is busy it says that it queued instead of staying silent, and the progress card carries a «取消压缩» button. |
+| `/ps` | List every bridge process on this machine and mark the one replying now. Exiting asks for one confirmation tap first (the card warns when you are about to stop the process replying to you) and refreshes in place afterwards. |
 | `/release [force]` | Self-release: `pnpm typecheck` → `pnpm test` → `pnpm build`, then restart the daemon to load the new code. Any failure aborts without restarting. `force` skips waiting for in-flight runs (KEEPS any failure abort). |
 | `/exec <command>`, `/run` | Run a shell command in the current cwd and return its exit code + output (30 s timeout, output truncated to 1000 chars). Admin command. |
 | `/exit <id\|#>` | Shut down the given bridge process. |
 | `/reconnect` | Force a WebSocket reconnect. |
-| `/doctor [description]` | Hand the recent logs plus your failure description to OMP for self-diagnosis. |
-| `/help` | Show the help card. |
+| `/doctor [description]` | Hand the recent logs plus your failure description to OMP for self-diagnosis. The result card ends with an elapsed-time / tokens / cost footer when OMP reports usage. |
+| `/help` | Show the help card («🗂 会话管理» and «⏯ 运行控制» are expanded by default; the other groups stay collapsed). |
 
 Plain messages go straight to OMP. Group chats require `@bot` by default; DMs do not.
 
@@ -641,6 +673,7 @@ Real Feishu end-to-end verification needs working PersonalAgent credentials and 
 | Startup reports `omp` not found | Make sure `omp --version` works and run `omp` once to finish model / auth configuration. |
 | No response after OMP RPC starts | Run `omp --mode rpc` alone as a smoke test; check `~/.feishu-omp-bridge/logs/`. |
 | OMP did not continue the previous conversation | Send `/status` (`/ctx`) and look at the current session id: a deleted session file, or your own `/cd`, `/ws use`, `/new`, all switch to a new conversation (the old one is still in `/history` — click “Continue chat” to go back). The window's cwd no longer affects resumption: the bridge resumes the session's own directory. |
+| I sent a voice message and got an odd answer | Transcription or the attachment download failed — you now get a ⚠️ notice in the chat; re-send it as text. |
 | A group chat gets no response | Make sure the message `@bot`s the bot, or adjust `requireMentionInGroup` in `/config` / `config.json`. |
 | A card sits there for a long time | Interrupt with `/stop`; you can also enable idle probing for the current session with `/timeout 10`. |
 | OMP is waiting for a choice / input | Reply to the standalone “OMP interaction” card; the idle watchdog is paused while waiting. |

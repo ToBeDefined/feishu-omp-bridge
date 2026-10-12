@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import type { CommandContext } from './index';
 import { log } from '../core/logger';
 import { forgetManagedCard, updateManagedCard } from '../card/managed';
-import { staleNoticeCard } from '../card/templates';
+import { md, staleNoticeCard } from '../card/templates';
 
 /** Rendered idle-timeout line: scope override wins over the global default. */
 export function formatIdleLine(
@@ -77,6 +77,31 @@ export async function settleManagedCard(
 ): Promise<void> {
   await new Promise((r) => setTimeout(r, FORM_SETTLE_MS));
   await updateOrFallback(ctx, card, fallbackText);
+}
+
+/**
+ * 卡片原地更新不了时的兜底文案。触发场景：重启前发出的老卡片、bridge 之外发的
+ * 卡片 —— 按钮还亮着，但点了已经没有任何去处，必须说清楚而不是静默。
+ */
+export const EXPIRED_INTERACTION_TEXT = '⚠️ 此交互已过期，请使用最新卡片。';
+
+/**
+ * 在原卡片末尾补一行「已过期」提示，其余元素一个不动。
+ *
+ * 用于 `updateOrFallback` 的兜底卡：终态卡（如 OMP 交互结果卡）本身已经回答不了
+ * 「点了没反应」，再补一行说明才闭环。入参是 patch / CardKit 更新共用的 `object`，
+ * 所以这里就地收窄形状；拿不到 `body.elements` 就原样返回。
+ */
+export function withExpiryNotice(card: object): object {
+  if (!('body' in card)) return card;
+  const body = card.body;
+  if (typeof body !== 'object' || body === null || !('elements' in body)) return card;
+  const elements = body.elements;
+  if (!Array.isArray(elements)) return card;
+  return {
+    ...card,
+    body: { ...body, elements: [...elements, md(`_${EXPIRED_INTERACTION_TEXT}_`)] },
+  };
 }
 
 /**

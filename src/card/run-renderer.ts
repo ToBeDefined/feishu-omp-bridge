@@ -1,7 +1,15 @@
-import type { Block, FooterStatus, RunState, SubagentEntry, ToolEntry, UiState } from './run-state';
+import type {
+  Block,
+  FooterStatus,
+  RunState,
+  RunUsage,
+  SubagentEntry,
+  ToolEntry,
+  UiState,
+} from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 import { createTableBudget, type TableBudget } from './tables';
-import { codeFence, collapsiblePanel } from './templates';
+import { codeFence, collapsiblePanel, md } from './templates';
 import { codeSpan, escapeMd } from '../utils/text';
 
 /** Max chars per reasoning body — reasoning is auxiliary, truncation is fine. */
@@ -20,10 +28,20 @@ type RenderOp = { kind: 'text'; content: string } | { kind: 'process'; items: Pr
 
 /** Per-page markers for the card pagination flow (see batch.ts streamCardPages). */
 export interface CardPageOptions {
+  /** 早先关掉的续页（后面还有一张卡）：不显示底部控制区（耗时/token/状态）。 */
+  midPage?: boolean;
   /** Note rendered at the top of the card ("continues previous message"). */
   topNote?: string;
   /** Note rendered at the bottom ("continues in the next message"). */
   bottomNote?: string;
+  /**
+   * Render clock (epoch ms) for the elapsed-time text. Injected so the
+   * heartbeat's ticking clock is testable, and so the byte-budget probe and
+   * the card actually pushed read the SAME instant (the 「用时」 string changes
+   * length at the 60s boundary, so measuring and sending must not disagree).
+   * Falls back to `Date.now()` when the caller has no clock to hand.
+   */
+  now?: number;
 }
 
 /** The CardKit 2.0 envelope `renderCard` produces. Named so callers can
@@ -41,10 +59,14 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   // first: auxiliary panels (reasoning, OMP UI) only spend what is left, so a
   // chatty thinking block can never push the answer's tables into code blocks.
   const tables = createTableBudget();
+  const now = opts?.now ?? Date.now();
+
+  // 不再加顶层标题：运行卡以前没有、也不需要有（用户明确说 `🤖 OMP` 是噪音）。
+  // 卡片第一行直接就是状态结果行（仅终态）或正文，信息密度优先。
 
   // Answer text renders inline; a contiguous stretch of process elements
   // (tool runs + thinking segments with no text in between) collapses into
-  // ONE outer row —「🛠 工具调用 ×N · 🧠 思考过程 ×M」when both kinds are
+  // ONE outer row —「🧠 思考 ×N · 🛠 工具调用 ×M」when both kinds are
   // present, or the plain tool/thinking row when only one kind is.
   const bodyElements: object[] = [];
   for (const op of collectOps(state.blocks)) {
@@ -55,6 +77,11 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
     );
   }
 
+  // Terminal headline (what happened) still goes first, ahead of the body: a
+  // long answer used to bury the failure mark below the fold.
+  const head = resultRow(state);
+  if (head) elements.push(head);
+
   if (opts?.topNote) elements.push(noteMd(opts.topNote));
 
   const ui = uiContextPanel(state.ui, tables);
@@ -63,24 +90,51 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   for (const line of subagentLines(state.subagents)) elements.push(noteMd(line));
   for (const element of bodyElements) elements.push(element);
 
-  if (state.terminal === 'interrupted') {
-    elements.push(noteMd('_⏹ 已被中断_'));
-  } else if (state.terminal === 'idle_timeout') {
-    const mins = state.idleTimeoutMinutes ?? 0;
-    elements.push(noteMd(`_⏱ ${mins} 分钟无响应,已自动终止_`));
-  } else if (state.terminal === 'error' && state.errorMsg) {
+  // Failure detail stays in the body: the headline above says WHAT happened,
+  // this says why (OMP's own message, often long).
+  if (state.terminal === 'error' && state.errorMsg) {
     elements.push(noteMd(`⚠️ agent 失败：${escapeMd(state.errorMsg)}`));
   } else if (state.terminal === 'done' && elements.length === 0) {
     elements.push(noteMd('_（未返回内容）_'));
   }
 
-  if (state.terminal === 'running') {
-    // 分割线把控制区（状态 + ⏹）和正文隔开。
+  // 底部控制区（仅运行态）：一条分割线，下面是
+  // `token/费用` 与 `状态 · 用时` 两行堆在左列，⏹ 终止 在右列与这两行垂直居中。
+  // 早先关掉的续页（`midPage`，后面还有一张卡）不渲染这块：耗时/token/状态只在
+  // **最新**那一页给出，旧页上的快照数字不该被当成终值。
+  if (opts?.midPage) {
+    // 续页只剩内容 + 「已分页，下一条消息继续」的 bottomNote。
+  } else if (state.terminal === 'running') {
+    const usageText = usageLine(state);
+    const left: object[] = [];
+    if (usageText) left.push(noteMd(usageText));
+    left.push(noteMd(statusLine(state, now)));
     elements.push({ tag: 'hr' });
-    if (state.footer) {
-      elements.push(runningFooter(state.footer));
-    } else {
-      elements.push(stopButton());
+    elements.push({
+      tag: 'column_set',
+      flex_mode: 'none',
+      horizontal_spacing: 'small',
+      columns: [
+        {
+          tag: 'column',
+          width: 'weighted',
+          weight: 1,
+          vertical_align: 'center',
+          elements: left,
+        },
+        {
+          tag: 'column',
+          width: 'auto',
+          vertical_align: 'center',
+          elements: [stopButton()],
+        },
+      ],
+    });
+  } else {
+    const usage = usageNote(state, now);
+    if (usage) {
+      elements.push({ tag: 'hr' });
+      elements.push(usage);
     }
   }
 
@@ -141,7 +195,7 @@ function collectOps(blocks: Block[]): RenderOp[] {
  * Render one process stretch as a single outer row.
  *
  * Single kind → the plain row (「🛠 工具调用 ×N」/「🧠 思考过程」), unchanged.
- * Both kinds → one merged row titled「🛠 工具调用 ×N · 🧠 思考过程 ×M」whose
+ * Both kinds → one merged row titled「🧠 思考 ×N · 🛠 工具调用 ×M」whose
  * children are the individual calls and thinking segments IN CHRONOLOGICAL
  * ORDER (so tool,thinking,tool reads top-to-bottom inside one group instead
  * of stacking three separate rows).
@@ -160,9 +214,10 @@ function renderProcessRun(items: ProcessItem[], tables: TableBudget): object {
   const suffix = failed > 0 ? `（${failed} 失败）` : '';
   // Thinking first, tools last: the stretch usually opens with reasoning, and
   // trailing the tool count lets its failure count sit at the end of the
-  // title instead of dangling next to an unrelated count.
+  // title instead of dangling next to an unrelated count. The noun is
+  // 「工具调用」 — the same word the tools-only row uses.
   return collapsiblePanel({
-    title: `🧠 **思考** ×${thinkingCount} · 🛠 **工具** ×${toolCount}${suffix}`,
+    title: `🧠 **思考** ×${thinkingCount} · 🛠 **工具调用** ×${toolCount}${suffix}`,
     expanded: false,
     border: failed > 0 ? 'red' : 'grey',
     elements: items.flatMap((it) =>
@@ -249,36 +304,119 @@ function stopButton(): object {
   };
 }
 
-/** Status note on the left + ⏹ stop button on the right, one aligned row. */
-function runningFooter(status: Exclude<FooterStatus, null>): object {
-  const text =
-    status === 'thinking'
-      ? '🧠 正在思考'
-      : status === 'tool_running'
-        ? '🛠 正在调用工具'
-        : status === 'waiting_input'
-          ? '🧩 等待用户交互'
-          : '✍️ 正在输出';
-  return {
-    tag: 'column_set',
-    flex_mode: 'none',
-    horizontal_spacing: 'small',
-    columns: [
-      {
-        tag: 'column',
-        width: 'weighted',
-        weight: 1,
-        vertical_align: 'center',
-        elements: [noteMd(text)],
-      },
-      {
-        tag: 'column',
-        width: 'auto',
-        vertical_align: 'center',
-        elements: [stopButton()],
-      },
-    ],
-  };
+/** 终态结果行（卡片第一个元素）：失败 / 探活超时 / 被中断用一个 heading 说明，
+ *  而不是文末一行小灰字。运行态没有这一行 —— 状态与 ⏹ 都在卡片底部的控制区里
+ *  （见 `renderCard` 的运行态拼装）。成功的 `done` 不加横幅：答案本身不需要盖章，
+ *  且分页中间页也是以 `done` 渲染的，加「已完成」就是撒谎。 */
+function resultRow(state: RunState): object | undefined {
+  if (state.terminal === 'interrupted') return md('⏹ **已被中断**', 'heading');
+  if (state.terminal === 'idle_timeout') {
+    const mins = state.idleTimeoutMinutes ?? 0;
+    return md(`⏱ **${mins} 分钟无响应，已自动终止**`, 'heading');
+  }
+  if (state.terminal === 'error') return md('❌ **运行失败**', 'heading');
+  return undefined;
+}
+
+/** 运行态状态行：agent 在干什么 + 已用时长（示例：`🧠 正在思考 · ⏱ 用时 1 分 32 秒`）。 */
+function statusLine(state: RunState, now: number): string {
+  return (
+    [footerLabel(state.footer), elapsedText(state, now)].filter(Boolean).join(' · ') || '⏱ 运行中'
+  );
+}
+
+/** 用量行（只有 token 与费用）：已用时长归下面的状态行，别重复。 */
+function usageLine(state: RunState): string | undefined {
+  const usage = state.usage;
+  if (!usage) return undefined;
+  const parts: string[] = [];
+  const tokens = tokensText(usage);
+  if (tokens) parts.push(tokens);
+  if (usage.costUsd !== undefined) parts.push(`💰 ${formatCost(usage.costUsd)}`);
+  return parts.length > 0 ? parts.join(' · ') : undefined;
+}
+
+function footerLabel(status: FooterStatus): string | undefined {
+  switch (status) {
+    case 'thinking':
+      return '🧠 正在思考';
+    case 'tool_running':
+      return '🛠 正在调用工具';
+    case 'waiting_input':
+      return '🧩 等待用户交互';
+    case 'streaming':
+      return '✍️ 正在输出';
+    default:
+      return undefined;
+  }
+}
+
+/** `⏱ 用时 12.4s` — the run's wall clock. Undefined when the state carries no
+ *  start stamp (synthetic runs such as `/doctor` reuse `initialState`), in
+ *  which case the footnote simply shows no duration rather than a fake 0s. */
+function elapsedText(state: RunState, now: number): string | undefined {
+  if (state.startedAt === undefined) return undefined;
+  return `⏱ 用时 ${formatDuration(Math.max(0, (state.endedAt ?? now) - state.startedAt))}`;
+}
+
+/** 12.4s under a minute; 1 分 5 秒 past it. Exported so callers that build
+ *  their own footer line (e.g. `/doctor`) share the exact format. */
+export function formatDuration(ms: number): string {
+  const secs = ms / 1000;
+  if (secs < 60) return `${secs.toFixed(1)}s`;
+  const mins = Math.floor(secs / 60);
+  const rest = Math.round(secs - mins * 60);
+  return rest === 60 ? `${mins + 1} 分` : `${mins} 分 ${rest} 秒`;
+}
+
+/** Bottom notation line: 用时 / token 数 / 费用, whichever we actually have —
+ *  no usage event means no token or cost text, and nothing at all means no
+ *  line (never an empty placeholder). While running the elapsed clock already
+ *  ticks in the header row, so a live card only adds tokens/cost here. */
+function usageNote(state: RunState, now: number): object | undefined {
+  const parts: string[] = [];
+  if (state.terminal !== 'running') {
+    const elapsed = elapsedText(state, now);
+    if (elapsed) parts.push(elapsed);
+  }
+  const usage = state.usage;
+  if (usage) {
+    const tokens = tokensText(usage);
+    if (tokens) parts.push(tokens);
+    if (usage.costUsd !== undefined) parts.push(`💰 ${formatCost(usage.costUsd)}`);
+  }
+  return parts.length > 0 ? noteMd(parts.join(' · ')) : undefined;
+}
+
+/** `🧮 12.3k tok（入 11.1k / 出 1.2k）` — only the sides the provider sent. */
+function tokensText(usage: RunUsage): string | undefined {
+  const input = usage.inputTokens;
+  const output = usage.outputTokens;
+  if (input === undefined && output === undefined) return undefined;
+  const sides: string[] = [];
+  if (input !== undefined) sides.push(`入 ${formatTokens(input)}`);
+  if (output !== undefined) sides.push(`出 ${formatTokens(output)}`);
+  return `🧮 ${formatTokens((input ?? 0) + (output ?? 0))} tok（${sides.join(' / ')}）`;
+}
+
+/** 940 → `940`, 12345 → `12.3k`, 1234567 → `1.2M`. Shared with /doctor's footer. */
+export function formatTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${trimZero(n / 1000)}k`;
+  return `${trimZero(n / 1_000_000)}M`;
+}
+
+function trimZero(v: number): string {
+  const s = v.toFixed(1);
+  return s.endsWith('.0') ? s.slice(0, -2) : s;
+}
+
+/** 0.01234 → `$0.0123`; sub-cent amounts do not round to a free-looking $0.0000.
+ *  Shared with /doctor's footer. */
+export function formatCost(usd: number): string {
+  if (usd === 0) return '$0';
+  if (usd < 0.0001) return '<$0.0001';
+  return `$${usd.toFixed(4)}`;
 }
 
 function uiContextPanel(ui: UiState, tables: TableBudget): object | undefined {

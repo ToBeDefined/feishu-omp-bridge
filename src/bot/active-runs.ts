@@ -1,8 +1,15 @@
+import { randomUUID } from 'node:crypto';
 import type { AgentRun, AgentUiResponse } from '../agent/types';
 import { log } from '../core/logger';
 
 export interface RunHandle {
   run: AgentRun;
+  /**
+   * 本次 run 的标识，register 时生成。agent 卡片按钮把发行时的 token 写进
+   * `__omp_run`，点击时用 {@link ActiveRuns.getRunToken} 比对 —— 作用域里换了
+   * 一个 run（旧任务结束 / `/new` 之后重启的新 run）就不再相等，从而拦截过期按钮。
+   */
+  readonly token: string;
   interrupted: boolean;
   pendingUiRequests: Set<string>;
   onUiSettled?: () => void;
@@ -83,6 +90,7 @@ export class ActiveRuns {
     }
     const handle: RunHandle = {
       run,
+      token: randomUUID(),
       interrupted: false,
       pendingUiRequests: new Set(),
       uiTimers: new Map(),
@@ -109,9 +117,26 @@ export class ActiveRuns {
     return this.handles.has(chatId) || this.claims.has(chatId);
   }
 
+  /**
+   * 该 scope 当前在跑的 run 的 token（已 claim 未 register 的占位没有 token，
+   * 返回 undefined）。agent 卡片按钮的 `__omp_run` 校验用它判断「还是不是同一个 run」。
+   */
+  getRunToken(scope: string): string | undefined {
+    return this.handles.get(scope)?.token;
+  }
+
   /** 进程内是否没有任何在跑/占位的 run（发布/重启前的排空判断）。 */
   idle(): boolean {
     return this.handles.size === 0 && this.claims.size === 0;
+  }
+
+  /**
+   * 在跑 + 已占位的 run 数。`/release`、`/restart` 的排空等待要在卡片上写清
+   * 「还在等几个会话收尾」（以及 `force` 会中断几个）——只说「正在等待」正是
+   * 用户以为卡死的原因。计数口径与 {@link idle} 一致。
+   */
+  runningCount(): number {
+    return this.handles.size + this.claims.size;
   }
 
   /**

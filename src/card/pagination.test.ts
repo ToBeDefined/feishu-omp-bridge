@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { renderCard } from './run-renderer';
 import { countTables } from './tables';
 import {
@@ -237,6 +237,70 @@ describe('carryOverBlocks', () => {
     const ids = carried.map((b) => (b.kind === 'tool' ? b.tool.id : b.kind));
     expect(ids).not.toContain('t1');
     expect(ids).not.toContain('text');
+  });
+});
+
+describe('时钟注入：探测与最终渲染共用同一个 now', () => {
+  const limit = 26 * 1024 - 1024; // splitByByteBudget 的页预算（26KB − 1KB chrome 余量）
+  const cap = 26 * 1024; // cardExceedsBudget 的硬上限
+  const startedAt = 1_000_000;
+  // 同一份内容、两个 now：「用时」从 9.4s 变成 10.0s，文本多 1 字节。
+  const nowShort = startedAt + 9_400;
+  const nowLong = startedAt + 10_000;
+  const stateFor = (content: string): RunState => ({
+    ...initialState,
+    startedAt,
+    blocks: [{ kind: 'text', content, streaming: false }],
+  });
+  const bytesAt = (content: string, now: number): number =>
+    Buffer.byteLength(JSON.stringify(renderCard(stateFor(content), { now })), 'utf8');
+
+  /** base 之上补若干个 ASCII 字节，使渲染恰好落在 target 字节上（ASCII 是 1 字节）。 */
+  const contentAt = (base: string, target: number, now: number): string => {
+    const gap = target - bytesAt(base, now);
+    expect(gap).toBeGreaterThanOrEqual(0);
+    return base + 'a'.repeat(gap);
+  };
+
+  it('fits() 与最终 renderCard 读同一个 now，不再因跨秒多 1 字节而改变分段', () => {
+    const content = contentAt('中'.repeat(8000), limit, nowShort);
+    expect(bytesAt(content, nowShort)).toBe(limit);
+    expect(bytesAt(content, nowLong)).toBe(limit + 1);
+
+    const state = stateFor(content);
+    // 系统时钟停在「长」时刻；调用方显式传 nowShort。修复前 splitByByteBudget 内部
+    // 的 renderCard 会读 Date.now()（nowLong）→ 探测多 1 字节 → 误判超限去切页。
+    vi.useFakeTimers();
+    vi.setSystemTime(nowLong);
+    try {
+      const shortSplit = splitByByteBudget(state, (s) => s, nowShort);
+      expect(shortSplit.carry).toEqual([]);
+      expect(shortSplit.page).toBe(state);
+
+      const longSplit = splitByByteBudget(state, (s) => s, nowLong);
+      expect(longSplit.carry.length).toBeGreaterThan(0);
+      // 切出来的页在同一个 now 下确实装得下（探测与最终渲染一致）。
+      const pageBytes = Buffer.byteLength(
+        JSON.stringify(renderCard(longSplit.page, { now: nowLong })),
+        'utf8',
+      );
+      expect(pageBytes).toBeLessThanOrEqual(limit);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cardExceedsBudget 与同一 now 的 renderCard 字节数一致（26KB 硬上限）', () => {
+    const content = contentAt('中'.repeat(8300), cap, nowShort);
+    const state = stateFor(content);
+
+    const shortCard = renderCard(state, { now: nowShort });
+    expect(Buffer.byteLength(JSON.stringify(shortCard), 'utf8')).toBe(cap);
+    expect(cardExceedsBudget(shortCard, state)).toBe(false);
+
+    const longCard = renderCard(state, { now: nowLong });
+    expect(Buffer.byteLength(JSON.stringify(longCard), 'utf8')).toBe(cap + 1);
+    expect(cardExceedsBudget(longCard, state)).toBe(true);
   });
 });
 

@@ -41,7 +41,7 @@ export function toolBodyMd(tool: ToolEntry): string {
 
   const body = parts.join('\n\n');
   if (body.length <= BODY_TOTAL_MAX) return body;
-  return `${body.slice(0, BODY_TOTAL_MAX)}…\n\n_（body 已截断,完整内容查 \`/doctor\` 或日志）_`;
+  return `${body.slice(0, BODY_TOTAL_MAX)}…\n\n_（body 已截断，完整内容查 \`/doctor\` 或日志）_`;
 }
 
 function summarizeInput(name: string, input: unknown): string {

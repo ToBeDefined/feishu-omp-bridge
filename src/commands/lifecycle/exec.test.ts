@@ -27,7 +27,7 @@ function fakeChild(): FakeChild {
   return child;
 }
 
-function makeCtx(): { ctx: CommandContext; sent: string[] } {
+function makeCtx(cwd = '/home/proj'): { ctx: CommandContext; sent: string[] } {
   const sent: string[] = [];
   const ctx = {
     channel: {
@@ -39,7 +39,7 @@ function makeCtx(): { ctx: CommandContext; sent: string[] } {
     scope: 'oc_1',
     chatMode: 'p2p',
     sessions: { sessionFor: () => undefined },
-    workspaces: { cwdFor: () => '/home/proj', setCwd: () => {} },
+    workspaces: { cwdFor: () => cwd, setCwd: () => {} },
     agent: {},
     activeRuns: {},
     controls: {},
@@ -103,7 +103,35 @@ describe('runCommand', () => {
     vi.mocked(spawn).mockReturnValue(child as never);
     const p = runCommand('x', '/bad-cwd', 30000);
     child.emit('error', new Error('spawn bash ENOENT'));
-    await expect(p).resolves.toMatchObject({ exitCode: null, timedOut: false });
+    await expect(p).resolves.toMatchObject({
+      exitCode: null,
+      timedOut: false,
+      reason: 'shell 进程启动失败',
+    });
+  });
+
+  it('被信号终止（没有退出码）时给出原因', async () => {
+    const child = fakeChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const p = runCommand('x', '/cwd', 30000);
+    child.emit('close', null);
+    await expect(p).resolves.toMatchObject({
+      exitCode: null,
+      timedOut: false,
+      reason: '进程被信号终止，退出码未知',
+    });
+  });
+
+  it('超时不额外贴信号原因（超时那一路自己会说明）', async () => {
+    vi.useFakeTimers();
+    const child = fakeChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const p = runCommand('sleep 100', '/cwd', 30000);
+    vi.advanceTimersByTime(30000);
+    child.emit('close', null);
+    const res = await p;
+    expect(res.timedOut).toBe(true);
+    expect(res.reason).toBeUndefined();
   });
 
   it('truncates long output to the tail', async () => {
@@ -147,6 +175,29 @@ describe('/exec', () => {
     await p;
     expect(sent[0]).toContain('命令执行完成');
     expect(sent[0]).toContain('hi');
+    // 执行目录上卡：命令在哪跑的必须一眼看到。
+    expect(sent[0]).toContain('📁 `/home/proj`');
+  });
+
+  it('执行目录已不存在时，卡片写明原因而不是只写「无法执行」', async () => {
+    const child = fakeChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const { ctx, sent } = makeCtx('/definitely/gone-dir-9d3f');
+    const p = execHandlers['/exec']!('ls', ctx);
+    child.emit('error', new Error('spawn bash ENOENT'));
+    await p;
+    expect(sent[0]).toContain('无法执行**：执行目录不存在');
+    expect(sent[0]).toContain('gone-dir-9d3f');
+  });
+
+  it('目录还在时把 spawn 失败报成 shell 启动失败', async () => {
+    const child = fakeChild();
+    vi.mocked(spawn).mockReturnValue(child as never);
+    const { ctx, sent } = makeCtx('/');
+    const p = execHandlers['/exec']!('ls', ctx);
+    child.emit('error', new Error('spawn bash ENOENT'));
+    await p;
+    expect(sent[0]).toContain('无法执行**：shell 进程启动失败');
   });
 
   it('reports a timeout', async () => {

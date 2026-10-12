@@ -55,8 +55,8 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
     opts.total > page.length ? ` · 第 ${opts.offset + 1}-${opts.offset + page.length} 个` : '';
   const head =
     opts.mode === 'all'
-      ? `全部工作区 · ${opts.total} 个会话${range}`
-      : `\`${shortPath(opts.cwd ?? '')}\` · ${opts.total} 个会话${range}`;
+      ? `全部工作区 · ${opts.total} 个会话${range} · 每页 ${HISTORY_PAGE_SIZE} 条`
+      : `\`${shortPath(opts.cwd ?? '')}\` · ${opts.total} 个会话${range} · 每页 ${HISTORY_PAGE_SIZE} 条`;
 
   const elements: object[] = [
     { tag: 'markdown', content: '🕘 **对话历史**', text_size: 'heading' },
@@ -126,7 +126,8 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
   const pager: Array<{ text: string; value: Record<string, unknown> }> = [];
   if (opts.offset > 0) {
     pager.push({
-      text: '↑ 较新的',
+      // 与 /search 同一套文案：两卡翻页读起来一样（此前是「较新的 / 更早」）。
+      text: '↑ 上一页',
       value: {
         cmd: 'history.page',
         arg: `${opts.mode} ${Math.max(0, opts.offset - HISTORY_PAGE_SIZE)}`,
@@ -135,19 +136,25 @@ export function historyCard(rows: HistoryRow[], opts: HistoryPage): object {
   }
   if (remaining > 0) {
     pager.push({
-      text: `↓ 更早（剩 ${remaining}）`,
+      text: `↓ 下一页（剩 ${remaining}）`,
       value: { cmd: 'history.page', arg: `${opts.mode} ${opts.offset + HISTORY_PAGE_SIZE}` },
     });
   }
-  // 分页按钮并排（规则 1）；长标签多分宽度。
-  if (pager.length > 0) {
-    elements.push(
-      ...inlineActions(pager.map((b) => (b.text.includes('更早') ? { ...b, weight: 1.6 } : b))),
-    );
-  }
+  // 显式的工作区范围入口：默认只列当前目录，用户不看文档根本不知道有 `/history all`。
+  // 复用 history.page 管线，切模式 = 回到该模式第 1 页。
+  const modeToggle =
+    opts.mode === 'all'
+      ? { text: '📂 当前工作区', value: { cmd: 'history.page', arg: 'cwd 0' } }
+      : { text: '🌐 全部工作区', value: { cmd: 'history.page', arg: 'all 0' } };
+  // 分页按钮并排（规则 1）；长标签多分宽度。模式按钮跟在分页键后面，超出一行时
+  // `inlineActions` 自动折行。
+  const actions = [...pager, modeToggle];
+  elements.push(
+    ...inlineActions(actions.map((b) => (b.text.includes('下一页') ? { ...b, weight: 1.6 } : b))),
+  );
   elements.push({
     tag: 'markdown',
-    content: '_点「继续对话」接着聊（等同 `/resume <id>`），检索内容用 `/search`。_',
+    content: '_点「继续对话」接着聊（等同 `/resume <id>`），检索内容用 `/search`；跨工作区看用「全部工作区」。_',
     text_size: 'notation',
   });
 

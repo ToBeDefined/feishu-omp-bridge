@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { execResultCard } from '../../card/templates';
 import type { CommandContext, Handler } from '../index';
 import { reply } from '../shared';
@@ -25,6 +26,9 @@ export interface RunResult {
   /** Merged stdout+stderr, tail-truncated. */
   output: string;
   timedOut: boolean;
+  /** Why there is no exit code — spawn failure or a signal kill. The caller may
+   * override it when it can name a better root cause (e.g. a dead cwd). */
+  reason?: string;
 }
 
 /**
@@ -73,6 +77,7 @@ export function runCommand(cmd: string, cwd: string, timeoutMs: number): Promise
         exitCode: null,
         output: `${output}\n(无法执行: ${err.message})`.trim(),
         timedOut: false,
+        reason: 'shell 进程启动失败',
       });
     });
 
@@ -81,7 +86,9 @@ export function runCommand(cmd: string, cwd: string, timeoutMs: number): Promise
         output.length > OUTPUT_TAIL
           ? `…（输出已截断，仅显示尾部）\n${output.slice(-OUTPUT_TAIL)}`
           : output;
-      finish({ exitCode: code, output: tailed, timedOut });
+      // 超时那一路自己会说明原因；其余的 code === null 是被外部信号打断。
+      const reason = code === null && !timedOut ? '进程被信号终止，退出码未知' : undefined;
+      finish({ exitCode: code, output: tailed, timedOut, ...(reason ? { reason } : {}) });
     });
   });
 }
@@ -107,17 +114,27 @@ async function handleExec(args: string, ctx: CommandContext): Promise<void> {
     timedOut: result.timedOut,
   });
   const body = result.output.trim();
+  const reason = failureReason(result, cwd);
   await ctx.channel.send(
     ctx.msg.chatId,
     {
       card: execResultCard({
         cmd,
+        cwd,
         exitCode: result.exitCode,
         output: body,
         timedOut: result.timedOut,
         timeoutSeconds: EXEC_TIMEOUT_MS / 1000,
+        ...(reason !== undefined ? { reason } : {}),
       }),
     },
     { replyTo: ctx.msg.messageId },
   );
+}
+
+/** spawn 失败时 Node 只报 `spawn bash ENOENT`，看不出是 shell 还是目录的问题；
+ *  目录已经不在（被删 / 被 /cd 到一个已移除的工作空间）是最常见的真因，优先报它。 */
+function failureReason(result: RunResult, cwd: string): string | undefined {
+  if (result.exitCode !== null || result.timedOut) return undefined;
+  return existsSync(cwd) ? result.reason : '执行目录不存在';
 }

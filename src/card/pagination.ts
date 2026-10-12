@@ -169,12 +169,18 @@ export function cardExceedsBudget(card: import('./run-renderer').RunCard, state:
 export function splitByByteBudget(
   state: RunState,
   filter: (s: RunState) => RunState,
+  /**
+   * 渲染时钟（epoch ms），一路传给这里每一次 `renderCard`。调用方在「探测 + 最终
+   * 推送」里共用同一个值，探测与出厂卡才读同一个「用时」字符串 —— 否则跨过一个
+   * 秒边界（如 9.9s → 10.0s）会让两边差 1 字节，分段结果不确定。默认 `Date.now()`。
+   */
+  now?: number,
 ): { page: RunState; carry: Block[] } {
   // 1KB slack inside the budget for the bottomNote/footer chrome the closing
   // render adds on top of what a plain renderCard produced.
   const limit = CARD_SIZE_BUDGET - 1024;
   const fits = (blocks: Block[]): boolean =>
-    Buffer.byteLength(JSON.stringify(renderCard(filter({ ...state, blocks }))), 'utf8') <= limit;
+    Buffer.byteLength(JSON.stringify(renderCard(filter({ ...state, blocks }), { now })), 'utf8') <= limit;
 
   if (fits(state.blocks)) return { page: state, carry: [] };
 

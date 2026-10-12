@@ -1,14 +1,16 @@
-import { getOmpThinking, isOmpThinkingLevel } from '../../config/schema';
+import { getOmpModel, getOmpThinking, isOmpThinkingLevel } from '../../config/schema';
 import type { AppPreferences } from '../../config/schema';
 import { saveConfig } from '../../config/store';
 import { sendManagedCard } from '../../card/managed';
 import {
+  THINKING_FOLLOW_DEFAULT,
   thinkingCancelledCard,
   thinkingCard,
   thinkingSavedCard,
 } from '../../card/model-card';
 import type { CommandContext, Handler } from '../index';
 import { recallMessage, reply, settleManagedCard } from '../shared';
+import { loadModelData } from './data';
 import { log } from '../../core/logger';
 
 export const thinkingHandlers: Record<string, Handler> = {
@@ -46,8 +48,18 @@ async function handleThinking(args: string, ctx: CommandContext): Promise<void> 
 }
 
 async function showThinkingPicker(ctx: CommandContext, current: string | undefined): Promise<void> {
+  const data = await loadModelData(ctx.controls.cfg, false);
+  // 能力看的是**当前模型**（`current` 是当前档位）：缓存里找不到（没设模型 /
+  // 模型被过滤后直接指定的）就是「不知道」→ 不限制档位；找到了但 thinking 为空
+  // = 该模型确实不支持思考强度。
+  const model = getOmpModel(ctx.controls.cfg);
+  const entry = model ? data.list.find((m) => m.selector === model) : undefined;
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, thinkingCard(current));
+  await sendManagedCard(
+    ctx.channel,
+    ctx.msg.chatId,
+    thinkingCard(current, entry ? (entry.thinking ?? []) : undefined),
+  );
 }
 
 /**
@@ -97,8 +109,12 @@ async function setThinking(level: string, ctx: CommandContext): Promise<void> {
 async function submitThinking(ctx: CommandContext): Promise<void> {
   const level = String(ctx.formValue?.thinking_level ?? '').trim();
   if (!level) {
-    await reply(ctx, '未选择思考强度,已取消。');
+    await reply(ctx, '未选择思考强度，未做修改。');
     return;
+  }
+  // 卡片里的「跟随 OMP 默认」= 清掉 ompThinking —— 否则卡片路径回不到默认。
+  if (level === THINKING_FOLLOW_DEFAULT) {
+    return resetThinking(ctx, getOmpThinking(ctx.controls.cfg));
   }
   await setThinking(level, ctx);
 }
@@ -117,5 +133,14 @@ async function resetThinking(ctx: CommandContext, current: string | undefined): 
   const nextPreferences = { ...(cfg.preferences ?? {}), ompThinking: undefined };
   if (!(await persistThinkingPreferences(ctx, nextPreferences))) return;
   log.info('command', 'thinking-reset', { scope: ctx.scope });
+  if (ctx.fromCardAction) {
+    // 卡片上选「跟随 OMP 默认」也要把卡片收尾（否则点完还是原样、看不出生效）。
+    void settleManagedCard(
+      ctx,
+      thinkingSavedCard(THINKING_FOLLOW_DEFAULT),
+      '✅ 已回退 OMP 默认思考强度。下一条消息生效。',
+    );
+    return;
+  }
   await reply(ctx, '✅ 已清除思考强度设置,回退 OMP 默认。下一条消息生效。');
 }

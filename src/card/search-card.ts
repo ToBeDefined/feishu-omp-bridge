@@ -293,7 +293,7 @@ export function searchResultsCard(
   // rows fit on a phone screen without half a page of oversized type.
   const elements: object[] = [
     md(`🔍 **搜索** \`${codeSpan(keyword)}\``, 'heading'),
-    md(`找到 ${contexts.length} 个对话 · ${totalMatches} 处匹配${range}`, 'notation'),
+    md(`找到 ${contexts.length} 个对话 · ${totalMatches} 处匹配${range} · 每页 ${SEARCH_PAGE_SIZE} 条`, 'notation'),
     { tag: 'hr' },
   ];
   // Pager buttons, built before the rows so the last row knows whether a
@@ -360,7 +360,7 @@ export function searchResultsCard(
                 style: 'primary' as const,
               },
             ]),
-        { text: '详情', value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1}` } },
+        { text: '详情', value: { cmd: 'search.show', arg: `${queryId} ${globalIdx + 1} ${offset}` } },
       ]),
     );
     // One divider per row boundary — after every row that has something below
@@ -399,6 +399,14 @@ export function searchEmptyCard(keyword: string): object {
       elements: [
         md(`🔍 没有找到包含 \`${codeSpan(keyword)}\` 的消息。`),
         md('_换个关键词，或缩短关键词再试。历史里的每条消息（含助手回答）都会被检索。_', 'notation'),
+        // 死胡同没有出路：给一个真能点的动作 —— 重跑同一次检索（刚写下的会话可能
+        // 还没进索引，重搜一次比「请自己再输入一遍」有用，而且对所有人都有意义）。
+        ...inlineActions([
+          {
+            text: '🔄 重新搜索',
+            value: { cmd: 'search.do', arg: keyword },
+          },
+        ]),
       ],
     },
   };
@@ -416,6 +424,12 @@ export interface SearchDetailInfo {
   keyword?: string;
   /** `<queryId> <index>` — kept for the card's own bookkeeping. */
   queryRef?: string;
+  /** Query id of the result set this detail came from; when present the card
+   *  renders a 返回结果 button that re-renders the result page. */
+  queryId?: string;
+  /** Result-page offset to return to — the same coordinate the detail was
+   *  opened from, so 返回 lands on the identical page. */
+  offset?: number;
   /** This conversation is the scope's current one — marked, and its 继续对话
    * button (a no-op) is dropped. */
   current?: boolean;
@@ -441,19 +455,33 @@ export function searchDetailCard(info: SearchDetailInfo): object {
     { tag: 'hr' },
     ...pairBlocks(info.groups, 'detail', info.keyword, info.groups.length > 1),
   );
-  // 当前对话没有可执行的动作（继续它等于原地重启），此时整个页脚都不渲染 ——
-  // 不给一条光秃秃的分隔线收尾。
+  // 页脚动作：返回结果永远在（钻进详情后不能只剩「重发 /search」这一条出路），
+  // 继续对话只在非当前会话时给（当前会话继续它等于原地重启）。
+  const backOffset =
+    info.offset ??
+    (info.index !== undefined
+      ? Math.floor((info.index - 1) / SEARCH_PAGE_SIZE) * SEARCH_PAGE_SIZE
+      : 0);
+  const footer: Array<{
+    text: string;
+    value: Record<string, unknown>;
+    style?: 'primary' | 'danger' | 'default';
+  }> = [];
+  if (info.queryId !== undefined) {
+    footer.push({
+      text: '← 返回结果',
+      value: { cmd: 'search.page', arg: `${info.queryId} ${backOffset}` },
+    });
+  }
   if (!info.current) {
-    elements.push(
-      { tag: 'hr' },
-      ...inlineActions([
-        {
-          text: '继续对话',
-          value: { cmd: 'search.resume', arg: info.sessionId },
-          style: 'primary' as const,
-        },
-      ]),
-    );
+    footer.push({
+      text: '继续对话',
+      value: { cmd: 'search.resume', arg: info.sessionId },
+      style: 'primary',
+    });
+  }
+  if (footer.length > 0) {
+    elements.push({ tag: 'hr' }, ...inlineActions(footer));
   }
   return {
     schema: '2.0',

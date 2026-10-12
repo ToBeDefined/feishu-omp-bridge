@@ -63,6 +63,11 @@ describe('detailInfoFor', () => {
     expect(detailInfoFor(hit, 'q1', 1, {}).current).toBeUndefined();
     // 永远带 queryRef（卡片自身记作用）。
     expect(marked.queryRef).toBe('q1 1');
+    // 详情卡带上 queryId + 进入时的 offset，返回时回到同一页。
+    expect(marked.queryId).toBe('q1');
+    expect(detailInfoFor(hit, 'q1', 7, { offset: 6 }).offset).toBe(6);
+    // 没给 offset 就不写（卡片按行号推算）。
+    expect(marked.offset).toBeUndefined();
   });
 });
 
@@ -531,7 +536,7 @@ describe('/search 卡片按钮链路', () => {
   }
 
   function queryIdOf(card: string): string {
-    const qid = /"arg":"(s[a-z0-9]+) 1"/.exec(card)?.[1];
+    const qid = /"arg":"(s[a-z0-9]+) 1 \d+"/.exec(card)?.[1];
     expect(qid).toBeTruthy();
     return qid!;
   }
@@ -557,10 +562,43 @@ describe('/search 卡片按钮链路', () => {
     expect(cards[0]).toContain('第 7-8 个');
     expect(cards[0]).not.toContain('**#1**');
 
+    // 从第 2 页点「详情」（详情载荷带全局行号 7 + 进入时的 offset 6）。
     cards.length = 0;
-    await searchHandlers['/search']!(`show ${qid} 1`, { ...ctx, fromCardAction: true } as CommandContext);
-    expect(cards[0]).toContain('搜索结果 #1');
+    await searchHandlers['/search']!(`show ${qid} 7 6`, { ...ctx, fromCardAction: true } as CommandContext);
+    expect(cards[0]).toContain('搜索结果 #7');
     expect(cards[0]).toContain('继续对话');
+    // 「返回结果」带同一个 offset —— 回到同一页（不是重发 /search 的第一页）。
+    expect(cards[0]).toContain('返回结果');
+    expect(cards[0]).toContain(`"arg":"${qid} 6"`);
+
+    // 真的执行这条返回：又回到第 2 页（同一坐标）。
+    cards.length = 0;
+    await searchHandlers['/search']!(`page ${qid} 6`, { ...ctx, fromCardAction: true } as CommandContext);
+    expect(cards[0]).toContain('**#7**');
+    expect(cards[0]).toContain('第 7-8 个');
+  });
+
+  it('空态卡给出可执行动作：重新搜索回链到 search.do', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;   // 空目录 → 没有任何命中
+
+    const { ctx, cards } = cardCtx();
+    await searchHandlers['/search']!('zzz-not-found', ctx);
+    expect(cards[0]).toContain('没有找到包含');
+    // 不是一个点不动的死胡同：真能执行的「重新搜索」。
+    expect(cards[0]).toContain('重新搜索');
+    expect(cards[0]).toContain('"cmd":"search.do"');
+  });
+
+  it('search.do <kw> 重跑同一次检索（与直接输入关键词同义）', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    await seed(tmp);
+
+    const { ctx, cards } = cardCtx();
+    await searchHandlers['/search']!('do kwhit', ctx);
+    expect(cards[0]).toContain('**#1**');
+    expect(cards[0]).toContain('每页 6 条');
   });
 
   it('show 命中当前会话时带「✅ 当前对话」且不给继续对话', async () => {
@@ -604,5 +642,24 @@ describe('/search with an expired cache', () => {
     expect(reply.mock.calls[0]![1]).toContain('/search');
     // Never falls through to adopting the current chat session.
     expect(ctx.sessions.sessionFor).not.toHaveBeenCalled();
+  });
+
+  it('a 返回结果 / page button on an expired cache asks for a fresh search', async () => {
+    const ctx = {
+      scope: 'oc_1',
+      msg: { chatId: 'oc_1', messageId: 'om_1' },
+      fromCardAction: true,
+      channel: { send: async () => {} },
+      sessions: { sessionFor: vi.fn() },
+      controls: { cfg: {} },
+    } as unknown as CommandContext;
+    reply.mockClear();
+
+    await searchHandlers['/search']!('page s-expired 6', ctx);
+
+    // 不再把「page s-expired 6」当关键词乱搜 —— 明确提示重新检索。
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(reply.mock.calls[0]![1]).toContain('过期');
+    expect(reply.mock.calls[0]![1]).toContain('/search');
   });
 });

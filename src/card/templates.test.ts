@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { resumeSavedCard } from './model-card';
 import type { RunCard } from './run-renderer';
 import {
+  agentSelectedCard,
   compactCard,
   cwdChangedCard,
   everyCard,
@@ -19,7 +20,9 @@ import {
   releaseCard,
   restartCard,
   shell,
+  staleNoticeCard,
   statusCard,
+  timeoutCard,
   type ContextInfo,
   workspacesCard,
 } from './templates';
@@ -89,6 +92,53 @@ describe('releaseCard', () => {
     );
     expect(out).toContain('已发布上线');
   });
+
+  it('renders the drain wait as the current step, with count and cap', () => {
+    const card = releaseCard({
+      phase: 'running',
+      steps: [
+        { name: 'typecheck', status: 'ok' },
+        { name: 'test', status: 'ok' },
+        { name: 'build', status: 'ok' },
+      ],
+      drain: { runningCount: 3, timeoutMs: 5 * 60_000 },
+    });
+    assertNoBareColumns(card);
+    const out = JSON.stringify(card);
+    // 排空阶段不再是「三个步骤全打勾、后面空着」的假死画面。
+    expect(out).toContain('⏳ 等待 3 个在跑的会话收尾（最多 5 分钟）');
+    expect(out).toContain('✅ 构建');
+    expect(out).not.toContain('⭕️ 构建');
+  });
+
+  it('keeps the drain step visible when no pipeline step reported yet', () => {
+    const out = JSON.stringify(
+      releaseCard({
+        phase: 'running',
+        steps: [],
+        drain: { runningCount: 1, timeoutMs: 60_000 },
+      }),
+    );
+    expect(out).toContain('等待 1 个在跑的会话收尾（最多 1 分钟）');
+    expect(out).toContain('column_set');
+  });
+});
+describe('releaseCard force cost', () => {
+  it('spells out how many running runs a forced restart cuts off', () => {
+    const out = JSON.stringify(
+      releaseCard({ steps: [], phase: 'restarting', forced: true, interruptedCount: 2 }),
+    );
+    expect(out).toContain('强制重启');
+    expect(out).toContain('中断 2 个在跑的会话');
+  });
+
+  it('says nothing was running instead of 「中断 0 个」', () => {
+    const out = JSON.stringify(
+      releaseCard({ steps: [], phase: 'restarting', forced: true, interruptedCount: 0 }),
+    );
+    expect(out).toContain('无在跑会话');
+    expect(out).not.toContain('中断 0 个');
+  });
 });
 describe('restartCard', () => {
   it('renders starting, done, and failed states as distinct headings', () => {
@@ -100,6 +150,44 @@ describe('restartCard', () => {
   it('marks a forced restart, so a cut-off run is not read as an anomaly', () => {
     expect(JSON.stringify(restartCard('starting', undefined, { forced: true }))).toContain('强制重启');
     expect(JSON.stringify(restartCard('starting'))).not.toContain('强制重启');
+  });
+
+  it('shows the drain wait with the running count and cap', () => {
+    const out = JSON.stringify(
+      restartCard('draining', undefined, { runningCount: 2, timeoutMs: 5 * 60_000 }),
+    );
+    expect(out).toContain('正在等待 2 个在跑的会话收尾');
+    expect(out).toContain('收尾');
+    expect(out).toContain('最多 5 分钟');
+  });
+
+  it('时限由调用方给定：没给时限就不自己编一个「最多 N 分钟」', () => {
+    const withEta = JSON.stringify(
+      restartCard('draining', undefined, { runningCount: 2, timeoutMs: 5 * 60_000 }),
+    );
+    expect(withEta).toContain('最多 5 分钟');
+    const noEta = JSON.stringify(restartCard('draining', undefined, { runningCount: 2 }));
+    expect(noEta).toContain('正在等待 2 个在跑的会话收尾');
+    expect(noEta).not.toContain('最多');
+  });
+
+  it('says nothing about waiting when no run is in flight', () => {
+    const out = JSON.stringify(restartCard('starting', undefined, { runningCount: 0 }));
+    expect(out).toContain('服务即将重启');
+    expect(out).not.toContain('收尾');
+    expect(out).not.toContain('等待');
+  });
+
+  it('writes the interrupted count for force, and no 「中断 0 个」', () => {
+    const busy = JSON.stringify(
+      restartCard('starting', undefined, { forced: true, runningCount: 3 }),
+    );
+    expect(busy).toContain('强制重启');
+    expect(busy).toContain('中断 3 个在跑的会话');
+
+    const idle = JSON.stringify(restartCard('starting', undefined, { forced: true, runningCount: 0 }));
+    expect(idle).toContain('无在跑会话');
+    expect(idle).not.toContain('中断 0 个');
   });
 });
 
@@ -130,6 +218,11 @@ describe('compactCard', () => {
   });
 });
 
+/** every 卡的元素 0 是标题，之后每个任务一个 collapsible_panel。 */
+interface EveryPanelCard {
+  body: { elements: Array<{ tag: string; header?: { title: { content: string } } }> };
+}
+
 describe('everyCard', () => {
   it('lists tasks with delete buttons and the full prompt', () => {
     const out = JSON.stringify(
@@ -151,6 +244,30 @@ describe('everyCard', () => {
     expect(out).not.toContain('×');
     expect(out).toContain('暂无定时任务');
   });
+
+  it('截断过长的 prompt：补省略号，含省略号共 40 字', () => {
+    const long = '一二三四五六七八九十'.repeat(6);
+    const card = everyCard([
+      { id: 't1', interval: '30 分钟', nextRun: '14:00', prompt: long },
+    ]) as EveryPanelCard;
+    const title = card.body.elements[1]?.header?.title.content ?? '';
+    expect(title.endsWith('…')).toBe(true);
+    const shown = title.slice(title.indexOf('— ') + 2);
+    expect(shown).toBe(`${long.slice(0, 39)}…`);
+    expect(shown).toHaveLength(40);
+    // 完整指令仍留在面板里的代码块（标题只是摘要）。
+    expect(JSON.stringify(card)).toContain(long);
+  });
+
+  it('不截断刚好 40 字的 prompt（也就不会多出省略号）', () => {
+    const exact = '甲'.repeat(40);
+    const card = everyCard([
+      { id: 't1', interval: '1 天', nextRun: '09:00', prompt: exact },
+    ]) as EveryPanelCard;
+    const title = card.body.elements[1]?.header?.title.content ?? '';
+    expect(title).toContain(exact);
+    expect(title.endsWith('…')).toBe(false);
+  });
 });
 
 describe('psCard', () => {
@@ -169,6 +286,43 @@ describe('psCard', () => {
     expect(out).toContain('3 小时前');
   });
 
+  it('首态不直接执行退出：只有 exit.ask，真正的 exit 只在确认态', () => {
+    const out = JSON.stringify(
+      psCard([{ id: 'p1', appId: 'cli_a', startedAgo: '刚刚', isCurrent: false }]),
+    );
+    expect(out).toContain('"cmd":"exit.ask","arg":"p1"');
+    // 没有首击即杀的按钮。
+    expect(out).not.toContain('"cmd":"exit","arg":"p1"');
+  });
+
+  it('确认态：确认按钮的执行 arg 仍是被点的进程 id，并带当前进程额外警示', () => {
+    const sel = JSON.stringify(
+      psCard([{ id: 'p1', appId: 'cli_a', startedAgo: '刚刚', isCurrent: false }], {
+        confirmId: 'p1',
+      }),
+    );
+    expect(sel).toContain('"cmd":"exit","arg":"p1"');
+    expect(sel).not.toContain('"cmd":"exit.ask","arg":"p1"');
+    expect(sel).toContain('"cmd":"exit.cancel","arg":"p1"');
+
+    const self = JSON.stringify(
+      psCard([{ id: 'p1', appId: 'cli_a', startedAgo: '刚刚', isCurrent: true }], {
+        confirmId: 'p1',
+      }),
+    );
+    expect(self).toContain('正在回复你的进程');
+  });
+
+  it('exitingSelf：告别态，不再渲染任何退出按钮', () => {
+    const out = JSON.stringify(
+      psCard([{ id: 'p1', appId: 'cli_a', startedAgo: '刚刚', isCurrent: true }], {
+        exitingSelf: true,
+      }),
+    );
+    expect(out).toContain('即将退出');
+    expect(out).not.toContain('"cmd":"exit');
+  });
+
   it('renders a single process without the count noise', () => {
     const out = JSON.stringify(
       psCard([{ id: 'p1', appId: 'cli_a', startedAgo: '刚刚', isCurrent: true }]),
@@ -180,26 +334,67 @@ describe('psCard', () => {
 describe('execResultCard', () => {
   it('renders success with collapsed output and the command line', () => {
     const out = JSON.stringify(
-      execResultCard({ cmd: 'pnpm test', exitCode: 0, output: 'all green', timedOut: false, timeoutSeconds: 30 }),
+      execResultCard({ cmd: 'pnpm test', cwd: '/repo/app', exitCode: 0, output: 'all green', timedOut: false, timeoutSeconds: 30 }),
     );
     expect(out).toContain('命令执行完成');
     expect(out).toContain('$ pnpm test');
+    // 执行目录单独一行：命令在哪跑的，是失败排查的第一现场。
+    expect(out).toContain('📁 `/repo/app`');
     expect(out).toContain('"expanded":false');
     expect(out).toContain('all green');
   });
 
+  it('shortens a deep cwd in the exec card', () => {
+    const out = JSON.stringify(
+      execResultCard({
+        cmd: 'pwd',
+        cwd: '/Users/somebody/very/deep/nested/project/dir',
+        exitCode: 0,
+        output: '/x',
+        timedOut: false,
+        timeoutSeconds: 30,
+      }),
+    );
+    expect(out).toContain('📁 `…');
+    expect(out).not.toContain('/Users/somebody/very/deep');
+  });
+
   it('expands output and marks failure on non-zero exit', () => {
     const out = JSON.stringify(
-      execResultCard({ cmd: 'boom', exitCode: 2, output: 'err', timedOut: false, timeoutSeconds: 30 }),
+      execResultCard({ cmd: 'boom', cwd: '/repo', exitCode: 2, output: 'err', timedOut: false, timeoutSeconds: 30 }),
     );
     expect(out).toContain('命令失败**（退出码 2）');
     expect(out).toContain('"expanded":true');
     expect(out).toContain('"color":"red"');
   });
 
+  it('names the reason it could not run, not just 无法执行', () => {
+    const out = JSON.stringify(
+      execResultCard({
+        cmd: 'ls',
+        cwd: '/gone',
+        exitCode: null,
+        output: '',
+        timedOut: false,
+        timeoutSeconds: 30,
+        reason: '执行目录不存在',
+      }),
+    );
+    expect(out).toContain('无法执行**：执行目录不存在');
+    expect(out).toContain('📁 `/gone`');
+    expect(out).not.toContain('原因未知');
+  });
+
+  it('falls back to 原因未知 when the caller has none', () => {
+    const out = JSON.stringify(
+      execResultCard({ cmd: 'ls', cwd: '/repo', exitCode: null, output: '', timedOut: false, timeoutSeconds: 30 }),
+    );
+    expect(out).toContain('无法执行**：原因未知');
+  });
+
   it('marks timeouts and empty output', () => {
     const out = JSON.stringify(
-      execResultCard({ cmd: 'sleep 100', exitCode: null, output: '', timedOut: true, timeoutSeconds: 30 }),
+      execResultCard({ cmd: 'sleep 100', cwd: '/repo', exitCode: null, output: '', timedOut: true, timeoutSeconds: 30 }),
     );
     expect(out).toContain('执行超时**（30s）');
     expect(out).toContain('无输出');
@@ -218,6 +413,28 @@ describe('shared card kit', () => {
       tag: 'column_set',
     });
     expect(inlineRow([{ element: md('go') }])[0]).toMatchObject({ tag: 'column_set' });
+  });
+
+  it('staleNoticeCard 带 summary：通知/会话列表预览不是空灰块', () => {
+    const card = staleNoticeCard();
+    expect(card).toMatchObject({
+      schema: '2.0',
+      config: { update_multi: true, summary: { content: '⚠️ 卡片已过期' } },
+    });
+    expect(JSON.stringify(card)).toContain('此卡片已过期');
+    // 过期卡不残留任何可点的按钮。
+    expect(JSON.stringify(card)).not.toContain('"button"');
+  });
+
+  it('agentSelectedCard 的 summary 与正文同样转义', () => {
+    const card = agentSelectedCard('a*b_c') as {
+      config: { summary: { content: string } };
+      body: { elements: Array<{ content: string }> };
+    };
+    const safe = 'a\\*b\\_c';
+    expect(card.config.summary.content).toBe(`✅ 已选择 ${safe}`);
+    expect(card.config.summary.content).not.toContain('a*b');
+    expect(card.body.elements[0]?.content).toBe(`✅ 已选择：**${safe}**`);
   });
 
   it('lays parallel actions side by side, cancel full width underneath', () => {
@@ -427,6 +644,18 @@ describe('session id rendering', () => {
   });
 });
 
+/** help 卡：元素 0 是标题，之后每个分组一个 collapsible_panel。 */
+interface HelpPanelCard {
+  body: {
+    elements: Array<{
+      tag: string;
+      expanded?: boolean;
+      header: { title: { content: string } };
+      elements?: Array<{ content?: string }>;
+    }>;
+  };
+}
+
 describe('helpCard', () => {
   it('groups commands into collapsible category panels', () => {
     const card = helpCard();
@@ -445,6 +674,7 @@ describe('helpCard', () => {
       '/timeout',
       '/model',
       '/thinking',
+      '/think',
       '/account',
       '/cd',
       '/ws',
@@ -459,30 +689,107 @@ describe('helpCard', () => {
       '/search',
       '/context',
       '/status',
+      '/session',
+      '/diff',
+      '/every',
     ]) {
       expect(out).toContain(cmd);
     }
-    // One collapsible panel per category, all collapsed by default.
+    // One collapsible panel per category.
     expect(out.match(/"tag":"collapsible_panel"/g)).toHaveLength(5);
-    expect(out.match(/"expanded":false/g)?.length).toBeGreaterThanOrEqual(5);
+    expect(out.match(/"expanded":(true|false)/g)).toHaveLength(5);
+  });
+
+  it('默认展开「会话管理」与「运行控制」，其余分组保持折叠', () => {
+    const card = helpCard();
+    const out = JSON.stringify(card);
+    // 全折叠时 /help 只剩 5 行标题，用户看不到任何命令 —— 至少这两组要摊开。
+    expect(out.match(/"expanded":true/g)).toHaveLength(2);
+    expect(out.match(/"expanded":false/g)).toHaveLength(3);
+
+    const card2 = helpCard() as HelpPanelCard;
+    const panels = card2.body.elements.filter((el) => el.tag === 'collapsible_panel');
+    const expandedTitles = panels
+      .filter((el) => el.expanded === true)
+      .map((el) => el.header.title.content);
+    expect(expandedTitles).toHaveLength(2);
+    expect(expandedTitles.some((t) => t.includes('会话管理'))).toBe(true);
+    expect(expandedTitles.some((t) => t.includes('运行控制'))).toBe(true);
+    // 默认展开的分组里必须真的看得到命令，否则展开没意义。
+    const session = panels.find((el) => el.header.title.content.includes('会话管理'));
+    expect(JSON.stringify(session)).toContain('/session');
+    const run = panels.find((el) => el.header.title.content.includes('运行控制'));
+    expect(JSON.stringify(run)).toContain('/stop');
+  });
+
+  it('把 /session /diff /every /think 补进对应分组', () => {
+    const card = helpCard() as HelpPanelCard;
+    const panels = card.body.elements.filter((el) => el.tag === 'collapsible_panel');
+    const groupsOf = (cmd: string) =>
+      panels
+        .filter((el) => JSON.stringify(el).includes(cmd))
+        .map((el) => el.header.title.content);
+    expect(groupsOf('/session')).toEqual([expect.stringContaining('会话管理')]);
+    expect(groupsOf('/diff')).toEqual([expect.stringContaining('会话管理')]);
+    expect(groupsOf('/every')).toEqual([expect.stringContaining('进程与诊断')]);
+
+    const pref = panels.find((el) => el.header.title.content.includes('偏好设置'));
+    // `/think` 与 `/thinking` 是同一个 handler：必须落在**同一行**，用户才知道是别名。
+    const lines = (pref?.elements?.[0]?.content ?? '').split('\n');
+    expect(lines.some((l) => l.includes('/thinking') && l.includes('/think'))).toBe(true);
+    expect(
+      panels.filter((el) => el.header.title.content.includes('偏好设置')),
+    ).toHaveLength(1);
   });
 });
 
 describe('workspacesCard', () => {
-  it('marks the current workspace and keeps switch/remove actions per row', () => {
+  it('首态每行是「切换 / 删除」，删除只进入确认态而非直接删', () => {
     const out = JSON.stringify(
       workspacesCard('/repo', { 'proj-a': '/repo', 'proj-b': '/other' }),
     );
     expect(out).toContain('proj-a');
     expect(out).toContain('⭐');
     expect(out).toContain('"cmd":"ws.use","name":"proj-b"');
+    // 首次点击只带 removeAsk；真正执行的 ws.remove 只在确认态出现。
+    expect(out).toContain('"cmd":"ws.removeAsk","name":"proj-b"');
+    expect(out).not.toContain('"cmd":"ws.remove"');
+  });
+
+  it('删除确认态给出确认行：确认按钮的 value 与首次点击不同', () => {
+    const out = JSON.stringify(
+      workspacesCard('/repo', { 'proj-a': '/repo', 'proj-b': '/other' }, 'proj-b'),
+    );
+    // 确认按钮带真正的执行 cmd，且指向同一个工作空间。
     expect(out).toContain('"cmd":"ws.remove","name":"proj-b"');
+    // 该行不再渲染首态的 removeAsk（换成了确认行）。
+    expect(out).not.toContain('"cmd":"ws.removeAsk","name":"proj-b"');
+    // 未确认的另一行仍是首态。
+    expect(out).toContain('"cmd":"ws.removeAsk","name":"proj-a"');
+    // 退路「取消」把卡换回普通列表。
+    expect(out).toContain('"cmd":"ws.list"');
+    expect(out).toContain('确认删除工作空间');
   });
 
   it('shows the empty-state hint', () => {
     const out = JSON.stringify(workspacesCard(undefined, {}));
     expect(out).toContain('暂无命名工作空间');
     expect(out).toContain('/ws save');
+  });
+
+  it('空态给出一键保存的推进动作，不再只有 ws.cancel', () => {
+    // 有 cwd + 命令层给了建议名：按钮直接用该名字保存。
+    const withCwd = JSON.stringify(workspacesCard('/home/me/proj', {}, undefined, 'proj'));
+    expect(withCwd).toContain('"cmd":"ws.save","name":"proj"');
+    expect(withCwd).not.toContain('"cmd":"ws.cancel"');
+    // 命令层没给名字时，卡片不自己推导（不 import node:path），按钮仍给出下一步。
+    const noName = JSON.stringify(workspacesCard('/home/me/proj', {}));
+    expect(noName).toContain('"cmd":"ws.save"');
+    expect(noName).not.toContain('"name"');
+    // 没有 cwd：仍有一个推进按钮（引导下一步），不留死路。
+    const noCwd = JSON.stringify(workspacesCard(undefined, {}));
+    expect(noCwd).toContain('"cmd":"ws.save"');
+    expect(noCwd).not.toContain('"cmd":"ws.cancel"');
   });
 });
 
@@ -628,6 +935,78 @@ describe('onlineCard', () => {
     expect(out).toContain('服务已重新启动');
     expect(out).not.toContain('"button"');
     expect(out).not.toContain('column');
+  });
+
+  it('附上调用方给的重启原因行（卡片只负责转义渲染）', () => {
+    const out = JSON.stringify(onlineCard('原因：手动启动。'));
+    expect(out).toContain('原因：手动启动。');
+  });
+});
+
+describe('timeoutCard', () => {
+  it('当前值两行 + 四个动作按钮的 payload', () => {
+    const out = JSON.stringify(
+      timeoutCard({ current: '当前 session 探活：30 分钟', global: '全局默认：60 分钟' }),
+    );
+    expect(out).toContain('当前 session 探活：30 分钟');
+    expect(out).toContain('全局默认：60 分钟');
+    expect(out).toContain('"cmd":"timeout","arg":"15"');
+    expect(out).toContain('"cmd":"timeout","arg":"30"');
+    expect(out).toContain('"cmd":"timeout","arg":"off"');
+    expect(out).toContain('"cmd":"timeout","arg":"default"');
+  });
+
+  it('notice 转义后原样回显（错误值里带 markdown 也不破卡）', () => {
+    const card = timeoutCard({ current: 'a', global: 'b', notice: '**1e3**' }) as {
+      body: { elements: Array<{ content?: string }> };
+    };
+    const noticeEl = card.body.elements.find((el) => el.content?.includes('1e3'));
+    expect(noticeEl?.content).toBe('\\*\\*1e3\\*\\*');
+  });
+
+  it('cancelled 终态不再渲染任何动作按钮', () => {
+    const out = JSON.stringify(timeoutCard({ current: 'a', global: 'b', cancelled: true }));
+    expect(out).toContain('已取消操作');
+    expect(out).not.toContain('"cmd":"timeout"');
+  });
+});
+
+describe('compactCard 取消入口', () => {
+  it('started 卡带「取消压缩」按钮，payload 复用 /stop', () => {
+    const out = JSON.stringify(compactCard({ phase: 'started' }));
+    expect(out).toContain('取消压缩');
+    expect(out).toContain('"cmd":"stop"');
+  });
+});
+
+describe('releaseCard / restartCard 排空超时', () => {
+  it('release 的超时态写明「超时」与中断数量，时限仍来自调用方', () => {
+    const out = JSON.stringify(
+      releaseCard({
+        steps: [],
+        phase: 'restarting',
+        drain: { runningCount: 2, timeoutMs: 5 * 60_000, timedOut: true },
+      }),
+    );
+    expect(out).toContain('超时');
+    expect(out).toContain('2 个在跑任务被中断');
+    // 每一处时限都由「最多」引出（没有另外硬编码的时间）。
+    const caps = out.match(/最多 \d+ 分钟/g) ?? [];
+    const mins = out.match(/\d+ 分钟/g) ?? [];
+    expect(mins.length).toBeGreaterThan(0);
+    expect(mins.length).toBe(caps.length);
+  });
+
+  it('restart 的 draining 超时变体说清强杀与中断数量', () => {
+    const out = JSON.stringify(
+      restartCard('draining', undefined, {
+        runningCount: 3,
+        timeoutMs: 5 * 60_000,
+        timedOut: true,
+      }),
+    );
+    expect(out).toContain('超时');
+    expect(out).toContain('3 个在跑任务被中断');
   });
 });
 

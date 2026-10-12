@@ -7,8 +7,14 @@ import {
   getShowToolCalls,
 } from '../../config/schema';
 import { saveConfig } from '../../config/store';
-import { configCancelledCard, configFormCard, configSavedCard } from '../../card/config-card';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
+import {
+  configCancelledCard,
+  configFormCard,
+  configInvalidCard,
+  configSaveFailedCard,
+  configSavedCard,
+} from '../../card/config-card';
+import { forgetManagedCard, sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
 import { FORM_SETTLE_MS, recallMessage, reply, settleManagedCard, updateOrFallback } from '../shared';
 import { log } from '../../core/logger';
@@ -73,27 +79,38 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       ? rawTools === 'show'
       : getShowToolCalls(ctx.controls.cfg);
   const rawMaxCC = String(fv.max_concurrent_runs ?? '').trim();
-  const parsedMaxCC = Number(rawMaxCC);
-  const maxConcurrentRuns =
-    Number.isFinite(parsedMaxCC) && parsedMaxCC >= 1
-      ? Math.min(50, Math.floor(parsedMaxCC))
-      : getMaxConcurrentRuns(ctx.controls.cfg);
   const rawIdle = String(fv.run_idle_timeout_minutes ?? '').trim();
   const currentIdleMs = getRunIdleTimeoutMs(ctx.controls.cfg);
   const currentIdleMinutes = currentIdleMs ? Math.round(currentIdleMs / 60_000) : 0;
-  let runIdleTimeoutMinutes: number;
-  if (rawIdle === '') {
-    runIdleTimeoutMinutes = currentIdleMinutes;
-  } else {
-    const parsedIdle = Number(rawIdle);
-    if (!Number.isFinite(parsedIdle) || parsedIdle < 0) {
-      runIdleTimeoutMinutes = currentIdleMinutes;
-    } else if (parsedIdle === 0) {
-      runIdleTimeoutMinutes = 0;
-    } else {
-      runIdleTimeoutMinutes = Math.min(120, Math.max(1, Math.floor(parsedIdle)));
+  // 数值字段：字段缺失（CardKit 偶发丢字段）与「明确填了非法值」必须分开 ——
+  // 前者回落当前值，后者**拒绝提交**。旧行为是静默 clamp / 保留旧值（`999` → 50、
+  // `abc` → 旧值、`1e3`/`5.5` 被 parseInt 截断），卡片却回「✅ 偏好已保存」。
+  const invalid: string[] = [];
+  const parseCount = (raw: string, label: string, min: number, max: number, fallback: number): number => {
+    if (raw === '') return fallback;
+    // 只认十进制整数：`1e3`、`5.5`、`-1`、`+5`、全角数字全算非法（旧代码用
+    // `Number()`/`parseInt` 会把它们悄悄截断成 1000 / 5 / -1 / 5）。
+    const n = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+    if (!Number.isInteger(n) || n < min || n > max) {
+      invalid.push(`${label}只接受 ${min}-${max} 的整数，收到「${raw}」`);
+      return fallback;
     }
-  }
+    return n;
+  };
+  const maxConcurrentRuns = parseCount(
+    rawMaxCC,
+    '「并发上限」',
+    1,
+    50,
+    getMaxConcurrentRuns(ctx.controls.cfg),
+  );
+  const runIdleTimeoutMinutes = parseCount(
+    rawIdle,
+    '「run 探活（分钟）」',
+    0,
+    120,
+    currentIdleMinutes,
+  );
   const rawRequireMention = String(fv.require_mention_in_group ?? '').trim();
   let requireMentionInGroup: boolean;
   if (rawRequireMention === 'yes') requireMentionInGroup = true;
@@ -162,8 +179,23 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     return;
   }
 
+  // 数值非法 / 越界：不写盘、不 clamp，明确回一张错误卡说清是哪一项。
+  if (invalid.length > 0) {
+    log.warn('command', 'config-rejected', { fields: invalid.length, reason: 'invalid-number' });
+    try {
+      await ctx.channel.send(
+        ctx.msg.chatId,
+        { card: configInvalidCard(invalid) },
+        { replyTo: ctx.msg.messageId },
+      );
+    } catch (err) {
+      log.fail('command', err, { step: 'config-invalid-card' });
+      await reply(ctx, `❌ 提交被拒绝，未做任何修改：\n${invalid.map((e) => `· ${e}`).join('\n')}`);
+    }
+    return;
+  }
+
   const formMsgId = ctx.msg.messageId;
-  const channel = ctx.channel;
   const configPath = ctx.controls.configPath;
 
   void (async () => {
@@ -202,8 +234,15 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       ctx.controls.cfg.preferences = nextPreferences;
     } catch (err) {
       log.fail('command', err, { step: 'config.save' });
+      const reason = err instanceof Error ? err.message : String(err);
       await waitForSettle();
-      await updateManagedCard(channel, formMsgId, configCancelledCard()).catch(() => {});
+      // 明确的失败卡（写清原因）+ 兜底：原地更新不行就 patch 消息，再不行回一条文本。
+      // 旧行为是把卡换成「已取消，未做修改」并吞掉异常 —— 用户以为命令被忽略了。
+      await updateOrFallback(
+        ctx,
+        configSaveFailedCard(reason),
+        `❌ 偏好保存失败：${reason}（配置未改动，请稍后重试）`,
+      );
       forgetManagedCard(formMsgId);
       return;
     }

@@ -1,5 +1,6 @@
 import type { CommandContext, Handler } from '../index';
-import { recallMessage, reply } from '../shared';
+import { basename } from 'node:path';
+import { recallMessage, reply, updateOrFallback } from '../shared';
 import { codeSpan } from '../../utils/text';
 import { workspacesCard } from '../../card/templates';
 import { log } from '../../core/logger';
@@ -23,6 +24,8 @@ async function handleWs(args: string, ctx: CommandContext): Promise<void> {
     case 'remove':
     case 'rm':
       return handleWsRemove(name, ctx);
+    case 'removeAsk':
+      return handleWsRemoveAsk(name, ctx);
     case 'undo':
       return handleWsUndo(ctx);
     case 'cancel':
@@ -33,11 +36,28 @@ async function handleWs(args: string, ctx: CommandContext): Promise<void> {
   }
 }
 
-async function handleWsList(ctx: CommandContext): Promise<void> {
-  const named = ctx.workspaces.listNamed();
-  const currentCwd = ctx.workspaces.cwdFor(ctx.scope);
-  const card = workspacesCard(currentCwd, named);
+/**
+ * 渲染 `/ws` 列表卡。卡片按钮点进来的（`fromCardAction`）一律**原地更新**同一张卡
+ * —— 另发一张会让聊天里出现两张列表卡，且旧卡上已失效的按钮还能点。
+ */
+async function renderWorkspacesCard(ctx: CommandContext, confirmRemove?: string): Promise<void> {
+  const cwd = ctx.workspaces.cwdFor(ctx.scope);
+  const card = workspacesCard(
+    cwd,
+    ctx.workspaces.listNamed(),
+    confirmRemove,
+    // 「存为…」建议名取目录名（省去手敲）；这是产品决策，归命令层。
+    cwd ? basename(cwd) : undefined,
+  );
+  if (ctx.fromCardAction) {
+    await updateOrFallback(ctx, card, '📂 请重新发送 `/ws` 查看工作空间列表。');
+    return;
+  }
   await ctx.channel.send(ctx.msg.chatId, { card }, { replyTo: ctx.msg.messageId });
+}
+
+async function handleWsList(ctx: CommandContext): Promise<void> {
+  await renderWorkspacesCard(ctx);
 }
 
 async function handleWsSave(name: string, ctx: CommandContext): Promise<void> {
@@ -51,6 +71,11 @@ async function handleWsSave(name: string, ctx: CommandContext): Promise<void> {
     return;
   }
   ctx.workspaces.saveNamed(name, cwd);
+  if (ctx.fromCardAction) {
+    // 面板里保存的：原地刷新列表（新条目以 ⭐ 出现在卡上即确认），不另发卡片。
+    await renderWorkspacesCard(ctx);
+    return;
+  }
   await reply(ctx, `✅ 工作空间已保存：\`${codeSpan(name)}\` → ${cwd}`);
 }
 
@@ -93,6 +118,19 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
   }
 }
 
+/** 卡片点「删除」的第一步：把该行换成确认行，不删任何东西。 */
+async function handleWsRemoveAsk(name: string, ctx: CommandContext): Promise<void> {
+  if (!name) {
+    await reply(ctx, '用法：`/ws remove <name>`');
+    return;
+  }
+  if (ctx.workspaces.getNamed(name) === undefined) {
+    await reply(ctx, `未找到工作空间：\`${codeSpan(name)}\``);
+    return;
+  }
+  await renderWorkspacesCard(ctx, name);
+}
+
 async function handleWsRemove(name: string, ctx: CommandContext): Promise<void> {
   if (!name) {
     await reply(ctx, '用法：`/ws remove <name>`');
@@ -100,6 +138,11 @@ async function handleWsRemove(name: string, ctx: CommandContext): Promise<void> 
   }
   if (!ctx.workspaces.removeNamed(name)) {
     await reply(ctx, `未找到工作空间：\`${codeSpan(name)}\``);
+    return;
+  }
+  if (ctx.fromCardAction) {
+    // 原地刷新：被删的行从卡上消失即确认，避免「另发一张列表卡」+ 旧卡按钮仍可点。
+    await renderWorkspacesCard(ctx);
     return;
   }
   await reply(ctx, `✅ 已删除工作空间：\`${codeSpan(name)}\``);

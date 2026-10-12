@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { attachTranscripts, asrFileId, transcodeToPcm, transcribeVoice } from './transcribe';
+import { attachTranscripts, asrFileId, mediaFailureNotice, transcodeToPcm, transcribeVoice } from './transcribe';
 
 const ffmpegAvailable = (() => {
   try {
@@ -111,5 +111,41 @@ describe('attachTranscripts', () => {
     await attachTranscripts({} as never, attachments);
     // Best-effort: a broken file must not throw or block the caller.
     expect(attachments[0]!.transcript).toBeUndefined();
+  });
+
+  it('向上返回失败项（带 reason），非音视频不产生失败', async () => {
+    const junk = join(dir, 'junk5.bin');
+    writeFileSync(junk, 'not audio');
+    const failures = await attachTranscripts({} as never, [{ kind: 'audio', path: junk }]);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({ kind: 'audio', path: junk });
+    expect(failures[0]!.reason).toBeTruthy();
+
+    expect(await attachTranscripts({} as never, [{ kind: 'image', path: '/x.png' }])).toEqual([]);
+    expect(await attachTranscripts({} as never, [])).toEqual([]);
+  });
+});
+
+describe('mediaFailureNotice', () => {
+  it('全空返回 undefined —— 成功的语音不打扰用户', () => {
+    expect(mediaFailureNotice({})).toBeUndefined();
+    expect(mediaFailureNotice({ transcriptFailures: [], unresolvedDownloads: 0 })).toBeUndefined();
+  });
+
+  it('转写失败给一条轻量提示', () => {
+    const notice = mediaFailureNotice({
+      transcriptFailures: [{ kind: 'audio', path: '/a.opus', reason: '音频转码失败' }],
+    });
+    expect(notice).toContain('转写失败');
+    expect(notice).toContain('已忽略');
+  });
+
+  it('转写失败与下载失败各占一行', () => {
+    const notice = mediaFailureNotice({
+      transcriptFailures: [{ kind: 'video', path: '/v.mp4', reason: '识别失败（1）' }],
+      unresolvedDownloads: 2,
+    });
+    expect(notice).toContain('转写失败');
+    expect(notice).toContain('附件下载失败');
   });
 });

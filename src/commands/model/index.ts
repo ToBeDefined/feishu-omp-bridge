@@ -8,4 +8,12 @@ export const modelHandlers: Record<string, Handler> = {
   ...thinkingHandlers,
 };
 
-export { loadModelData, commonOmpModels, listOmpModels, type OmpModelEntry, type ModelsCache } from './data';
+export {
+  loadModelData,
+  commonOmpModels,
+  listOmpModels,
+  isChatModel,
+  NON_CHAT_ALLOWLIST_ENV,
+  type OmpModelEntry,
+  type ModelsCache,
+} from './data';

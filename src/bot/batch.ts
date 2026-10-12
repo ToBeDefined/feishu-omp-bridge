@@ -31,7 +31,7 @@ import {
   type Block,
   type RunState,
 } from '../card/run-state';
-import { renderText } from '../card/text-renderer';
+import { renderText, splitText } from '../card/text-renderer';
 import type { Controls } from '../commands';
 import {
   getAgentStopGraceMs,
@@ -45,7 +45,7 @@ import {
 import { resolveConversationCwd } from '../session/current-cwd';
 import { log } from '../core/logger';
 import { attachTextExtracts, type MediaCache } from '../media/cache';
-import { attachTranscripts } from '../media/transcribe';
+import { attachTranscripts, mediaFailureNotice } from '../media/transcribe';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { recordModelUse } from '../session/model-history';
@@ -77,7 +77,17 @@ export interface AgentStreamHooks {
 interface UiCardEntry {
   messageId: string;
   title: string;
+  /** 交互卡的超时截止时刻（epoch ms）。倒计时续期与重渲染都读它，避免每拍
+   *  重新推算 deadline 累积漂移；无超时的请求不写这个字段。 */
+  deadline?: number;
 }
+
+/**
+ * 交互卡剩余时间的重渲染节拍。5s 一拍：显示粒度为整数秒，一拍一变；间隔刻意
+ * 远大于单消息更新下限 `CARD_UPDATE_MIN_INTERVAL_MS`（300ms），因此不会每个
+ * tick 都 patch —— 只有整数秒变化时才写一次。
+ */
+const UI_COUNTDOWN_TICK_MS = 5000;
 
 /**
  * Bridge OMP's extension UI requests to interactive Feishu cards. Shared by
@@ -86,48 +96,112 @@ interface UiCardEntry {
  *
  * `replyToMessageId` threads the card under the user's message; a scheduled
  * run has none and posts at chat level.
+ *
+ * Exported for tests: it is the only place that turns an OMP UI request into a
+ * Feishu card, and its failure path (see `onUiRequest`'s catch) is a
+ * user-visible behaviour worth pinning down.
  */
-function createUiHooks(opts: {
+export function createUiHooks(opts: {
   channel: LarkChannel;
   chatId: string;
   scope: string;
   replyToMessageId: string | undefined;
   activeRuns: ActiveRuns;
   cards: Map<string, UiCardEntry>;
+  /**
+   * 该 UI 请求是否还在等答案（用户回答 / OMP 撤回后为 false）。倒计时每一拍用它
+   * 决定是否继续续期 —— `ui_cancel` 走的是 streamEvents 直删 pending 的路径，
+   * 不经过 `respondToUi`，光靠定时器清理挡不住「醒来再 patch 一张结果卡」。
+   * 不提供时退化为只靠 active-runs 的定时器清理。
+   */
+  isPending?: (requestId: string) => boolean;
 }): AgentStreamHooks {
-  const { channel, chatId, scope, replyToMessageId, activeRuns, cards } = opts;
+  const { channel, chatId, scope, replyToMessageId, activeRuns, cards, isPending } = opts;
+
+  /** 剩余整秒（向上取整）；纯计算，时钟只在这里读。 */
+  const secondsLeft = (deadline: number): number =>
+    Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+
+  /** 渲染请求卡：剩余秒数由这里算好传进纯函数构建器。 */
+  const renderRequest = (request: AgentUiRequest, remaining?: number): object =>
+    remaining === undefined
+      ? renderOmpUiRequestCard(request, scope)
+      : renderOmpUiRequestCard(request, scope, { remainingSeconds: remaining });
+
+  /**
+   * 交互卡倒计时。**复用 active-runs 里同一个 UI 超时定时器**（`armUiTimeout`）：
+   * 每一拍醒来先同步续下一拍、再重渲染剩余秒数；只有到点时才真正走超时取消。
+   * 用户回包时 `respondToUi` 会清掉这个定时器，倒计时自然终止；`isPending` 再兜
+   * 一层 `ui_cancel` 路径。整条链只经手 active-runs 那一个定时器，不新造机制。
+   */
+  const armCountdown = (request: AgentUiRequest, messageId: string, deadline: number): void => {
+    let lastShown = secondsLeft(deadline);
+    const tick = (): void => {
+      // 已被回答 / 被 OMP 撤回：链条到此为止（绝不再刷回请求卡）。
+      if (isPending && !isPending(request.id)) return;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        // 到点：沿用既有行为 —— 回包 cancelled、卡改终态、不再续期。
+        // respondToUi 返回 false 说明请求已 settle，这时绝不能再补一张
+        // timed_out 卡盖掉用户刚看到的结果卡。
+        if (!activeRuns.respondToUi(scope, request.id, { cancelled: true, timedOut: true })) return;
+        updateManagedCard(channel, messageId, renderOmpUiResultCard(request.title, 'timed_out'))
+          .catch(() => {
+            /* card update is best-effort */
+          })
+          .finally(() => forgetManagedCard(messageId));
+        cards.delete(request.id);
+        return;
+      }
+      // 先续拍（同步）再渲染：用户若在这之后回包，respondToUi 会清掉新定时器。
+      // 间隔取 min(节拍, 剩余)，到点仍落在原 deadline 上 —— 不因倒计时延长超时。
+      activeRuns.armUiTimeout(scope, request.id, Math.min(UI_COUNTDOWN_TICK_MS, remainingMs), tick);
+      const remaining = secondsLeft(deadline);
+      if (remaining === lastShown) return;
+      lastShown = remaining;
+      updateManagedCard(channel, messageId, renderRequest(request, remaining)).catch(() => {
+        /* card update is best-effort */
+      });
+    };
+    activeRuns.armUiTimeout(
+      scope,
+      request.id,
+      Math.min(UI_COUNTDOWN_TICK_MS, Math.max(0, deadline - Date.now())),
+      tick,
+    );
+  };
+
   return {
     async onUiRequest(request) {
       try {
         const existing = cards.get(request.id);
         if (existing) {
-          await updateManagedCard(channel, existing.messageId, renderOmpUiRequestCard(request, scope));
+          const remaining =
+            existing.deadline === undefined ? undefined : secondsLeft(existing.deadline);
+          await updateManagedCard(channel, existing.messageId, renderRequest(request, remaining));
           existing.title = request.title;
           return;
         }
+        const timeout = 'timeout' in request ? request.timeout : undefined;
+        const deadline = timeout !== undefined && timeout > 0 ? Date.now() + timeout : undefined;
         const sent = await sendManagedCard(
           channel,
           chatId,
-          renderOmpUiRequestCard(request, scope),
+          renderRequest(request, deadline === undefined ? undefined : secondsLeft(deadline)),
           replyToMessageId,
           { track: true, kind: 'form' },
         );
-        cards.set(request.id, { messageId: sent.messageId, title: request.title });
+        cards.set(request.id, {
+          messageId: sent.messageId,
+          title: request.title,
+          ...(deadline === undefined ? {} : { deadline }),
+        });
         // Auto-cancel on timeout: while OMP waits for UI input the idle
         // watchdog is paused, so an unanswered prompt would hang the run
         // forever. The timer is cancelled in ActiveRuns.respondToUi when the
-        // user answers first.
-        if ('timeout' in request && request.timeout !== undefined && request.timeout > 0) {
-          activeRuns.armUiTimeout(scope, request.id, request.timeout, () => {
-            activeRuns.respondToUi(scope, request.id, { cancelled: true, timedOut: true });
-            updateManagedCard(channel, sent.messageId, renderOmpUiResultCard(request.title, 'timed_out'))
-              .catch(() => {
-                /* card update is best-effort */
-              })
-              .finally(() => forgetManagedCard(sent.messageId));
-            cards.delete(request.id);
-          });
-        }
+        // user answers first; `armCountdown` re-arms the same timer every tick
+        // so the card can show the remaining seconds.
+        if (deadline !== undefined) armCountdown(request, sent.messageId, deadline);
       } catch (err) {
         // The request is already registered as outstanding, and an outstanding
         // request pauses the idle watchdog. With no card on screen and no timer
@@ -136,12 +210,28 @@ function createUiHooks(opts: {
         log.fail('omp-ui', err, { scope, requestId: request.id, method: request.method });
         activeRuns.respondToUi(scope, request.id, { cancelled: true });
         activeRuns.dropUiRequest(scope, request.id);
+        // 用户侧不能静默：卡片没出现，OMP 却已经按「取消」继续跑 —— 用户只会看到
+        // 自己的消息石沉大海，或一个他从未见过的确认框被跳过。发一条明确提示。
+        // 发送本身也可能失败（网络正是出错的原因），因此只记日志。
+        await channel
+          .send(
+            chatId,
+            { markdown: '⚠️ 交互卡片发送失败，已按取消处理' },
+            replyToMessageId ? { replyTo: replyToMessageId } : {},
+          )
+          .catch((notifyErr) =>
+            log.fail('omp-ui', notifyErr, { scope, requestId: request.id, step: 'notify' }),
+          );
       }
     },
     async onUiCancel(targetId) {
       const entry = cards.get(targetId);
       if (!entry) return;
       cards.delete(targetId);
+      // OMP 撤回这个请求走的是 streamEvents 直删 pending 的路径，不经过
+      // respondToUi，因此没人替它清掉倒计时定时器 —— 这里自己收，否则下一拍醒来
+      // 还要 patch 一次结果卡。（无定时器的请求里这一步是空操作。）
+      activeRuns.dropUiRequest(scope, targetId);
       try {
         await updateManagedCard(channel, entry.messageId, renderOmpUiResultCard(entry.title, 'cancelled'));
       } catch (err) {
@@ -208,7 +298,7 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
     log.warn('media', 'unresolved', { count: unresolvedFileKeys.length });
   }
   // Voice messages: transcribe to text so the agent can read the content.
-  await attachTranscripts(channel, attachments);
+  const transcriptFailures = await attachTranscripts(channel, attachments);
   // Text-like files: inline their content so the agent sees it directly.
   await attachTextExtracts(attachments);
   const imagePaths = attachments
@@ -318,6 +408,19 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
     ...(mode === 'topic' && threadId ? { replyInThread: true } : {}),
   };
 
+  // 媒体 best-effort 失败的可见回执：转写失败 / 附件下载失败以前完全静默 ——
+  // 用户只看到 Typing，之后可能收到一个答非所问的回答，却不知道语音被忽略了。
+  // 只失败才发（成功的语音不发），且提示自身 catch 掉：一条提示绝不能拖垮主流程。
+  const mediaNotice = mediaFailureNotice({
+    transcriptFailures,
+    unresolvedDownloads: unresolvedFileKeys.length,
+  });
+  if (mediaNotice) {
+    await channel
+      .send(chatId, { markdown: mediaNotice }, sendOpts)
+      .catch((err) => log.fail('media', err, { scope, step: 'failure-notice' }));
+  }
+
   const uiCards = new Map<string, UiCardEntry>();
   const uiHooks = createUiHooks({
     channel,
@@ -326,6 +429,7 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
     replyToMessageId: lastMsg.messageId,
     activeRuns,
     cards: uiCards,
+    isPending: (requestId) => handle.pendingUiRequests.has(requestId),
   });
 
   try {
@@ -343,6 +447,9 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
         filter,
       );
     } else if (replyMode === 'markdown') {
+      // 这里不做分段：markdown 流式回复自带 rollover —— SDK 在单个元素超过
+      // `streamMaxElementChars` 时会把内容切成新卡继续（见 SDK 的
+      // MarkdownStreamControllerImpl），超长内容不会整条被拒。
       await channel.stream(
         chatId,
         {
@@ -366,7 +473,7 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
       }, uiHooks);
       const body = renderText(filter(finalState));
       if (body.trim()) {
-        await channel.send(chatId, { markdown: body }, sendOpts);
+        await sendTextPages(channel, chatId, sendOpts, body);
       }
     }
   } catch (err) {
@@ -433,7 +540,8 @@ interface StreamSession {
 
 function createStreamSession(handle: RunHandle, idleTimeoutMs: number | undefined): StreamSession {
   const session: StreamSession = {
-    state: initialState,
+    // 起跑时间戳：卡上的「用时」脚注从这一刻算起。
+    state: { ...initialState, startedAt: Date.now() },
     iter: handle.run.events[Symbol.asyncIterator](),
     idleFired: false,
     timer: undefined,
@@ -514,6 +622,10 @@ async function streamEvents(
       continue;
     }
     if (evt.type === 'usage') {
+      // 用量不再只写日志：并进运行态，卡的底部脚注才有 token / 费用可显示。
+      // 它不改变任何正文，所以**不单独触发一次 patch** —— 下一个事件的 patch
+      // 会顺带把它带上；流在 usage 之后直接结束的话，收尾的终态渲染也读得到。
+      session.state = reduce(session.state, evt);
       if (evt.costUsd !== undefined) {
         log.info('agent', 'usage', { costUsd: Number(evt.costUsd.toFixed(4)) });
       }
@@ -617,6 +729,42 @@ async function processAgentStream(
 type SendOpts = { replyTo?: string; replyInThread?: boolean };
 
 /**
+ * Card refresh interval while a run is live but its event stream is silent.
+ * A single long tool call (a full `pnpm test`, a slow network fetch) emits no
+ * events for minutes; without this the card's 「已用时长」 freezes and the run
+ * looks hung. 5s is deliberately low-frequency: it is ~17x the 300ms patch
+ * throttle, so it can never be the thing that trips Feishu's per-message
+ * update rate limit (230020) during normal fast streaming.
+ */
+const CARD_HEARTBEAT_INTERVAL_MS = 5000;
+
+/**
+ * Byte ceiling for one text/markdown-mode message. Feishu caps a single
+ * message's content at 30KB (same order as the card cap the paginator works
+ * to); we split at 20KB to leave room for the post/JSON re-serialization the
+ * wire format adds. Text mode has no card paginator behind it, so an oversized
+ * answer would otherwise fail as one rejected message and the whole tail would
+ * be lost.
+ */
+export const TEXT_MESSAGE_BUDGET = 20 * 1024;
+
+/**
+ * Send a text-mode reply, paginated: one oversized message is rejected by
+ * Feishu and its tail never reaches the user. Splitting happens on line
+ * boundaries (see `splitText`) and loses nothing.
+ */
+export async function sendTextPages(
+  channel: LarkChannel,
+  chatId: string,
+  sendOpts: SendOpts,
+  body: string,
+): Promise<void> {
+  for (const chunk of splitText(body, TEXT_MESSAGE_BUDGET)) {
+    if (chunk.trim()) await channel.send(chatId, { markdown: chunk }, sendOpts);
+  }
+}
+
+/**
  * Card reply mode pagination: drive the stream across multiple messages.
  * A single card can't hold an unbounded number of tool panels (Feishu
  * rejects cards over ~64KB, ErrCode 11310), so when a page's card JSON
@@ -663,14 +811,17 @@ export async function streamCardPages(
       // runs, so a carry past the byte budget would open the page with a
       // card Feishu rejects (>30KB cap). Trim this page's opening state to
       // fit; the trimmed remainder rides the next page via carry again.
-      const initialSplit = splitByByteBudget(session.state, filter);
+      // 同一个 `pageNow` 贯穿这一页的「探测 + 初始卡」：两个渲染必须读同一段
+      // 「用时」文本，否则跨秒边界会差 1 字节、分段结果不确定。
+      const pageNow = Date.now();
+      const initialSplit = splitByByteBudget(session.state, filter, pageNow);
       if (initialSplit.carry.length > 0) {
         session.state = initialSplit.page;
         session.carry = initialSplit.carry;
       }
       const overflow = await runCardPage(
         channel, chatId, sendOpts, session, handle, sessions, scope, cwd,
-        idleTimeoutMs, hooks, filter, pageIndex, (messageId) => {
+        idleTimeoutMs, hooks, filter, pageIndex, pageNow, (messageId) => {
           inflightCardId = messageId;
         },
       );
@@ -733,13 +884,17 @@ async function patchStrandedCard(
   filter: (state: RunState) => RunState,
 ): Promise<void> {
   const final = finalizeSessionState(session, handle, idleTimeoutMs);
-  const split = splitByByteBudget(final, filter);
+  // 一个 now 贯穿「字节探测 + 补卡渲染」：探测用 A 时刻、发送用 B 时刻会让
+  // 「用时」字符串在秒边界处差 1 字节，切出来的卡可能刚好过线。
+  const now = Date.now();
+  const split = splitByByteBudget(final, filter, now);
   const card =
     split.carry.length > 0
       ? renderCard(filter({ ...split.page, terminal: 'done' }), {
+          now,
           bottomNote: '⚠️ 卡片更新失败，本条回复可能不完整',
         })
-      : renderCard(filter(final));
+      : renderCard(filter(final), { now });
   try {
     await channel.rawClient.im.v1.message.patch({
       path: { message_id: messageId },
@@ -766,6 +921,8 @@ async function runCardPage(
   hooks: AgentStreamHooks | undefined,
   filter: (state: RunState) => RunState,
   pageIndex: number,
+  /** 这一页的开启时刻，与 streamCardPages 的字节探测共用同一值（见那里注释）。 */
+  pageNow: number,
   onCard?: (messageId: string) => void,
 ): Promise<boolean> {
   let overflow = false;
@@ -784,7 +941,7 @@ async function runCardPage(
   let sawTerminalPush = filter(session.state).terminal !== 'running';
   const initialCard = renderCard(
     filter(session.state),
-    pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
+    pageIndex > 0 ? { topNote: '⬆️ 接上一条消息', now: pageNow } : { now: pageNow },
   );
   await channel.stream(
     chatId,
@@ -799,6 +956,7 @@ async function runCardPage(
           void rememberStreamingCard(ctrl.messageId, chatId, initialCard);
           // 失败标记：决定 finally 是否撤掉崩溃恢复记录（见下）。
           let failed = false;
+          let heartbeat: NodeJS.Timeout | undefined;
           try {
           const q = coalesceLatest((card: object) => {
             // Persist the snapshot BEFORE pushing: whatever reached Feishu is
@@ -808,7 +966,33 @@ async function runCardPage(
           }, {
             minIntervalMs: CARD_UPDATE_MIN_INTERVAL_MS,
           });
+          // 心跳：一次 `pnpm test` 之类的长工具调用期间，事件流可以几分钟没有
+          // 任何一条事件 —— 没有 patch，卡片上的「已用时长」就冻住，用户看到的
+          // 就是卡死。低频（5s）定时刷新让表继续走；它走同一个 q，因此仍然受
+          // 300ms 节流保护，不会额外撞飞书的单消息更新限频。
+          //
+          // 存活期与这一页的 producer 等长：streamEvents 返回（终态 / 流结束 /
+          // 溢出换页）后 interval 在 finally 里清掉；终态之后的兜底推送也不会
+          // 再触发它（回调里再挡一次，防止在 finalize 的 await 窗口里插进来）。
+          heartbeat = setInterval(() => {
+            if (session.state.terminal !== 'running') return;
+            try {
+              q.push(
+                renderCard(
+                  filter(session.state),
+                  pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
+                ),
+              );
+            } catch {
+              // 写失败会在 producer 的 await 路径上抛出并走正常收尾；定时器这条
+              // 独立调用栈上不能再抛（会成为 uncaughtException）。
+            }
+          }, CARD_HEARTBEAT_INTERVAL_MS);
           await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
+            // 同一个时刻既用于字节预算探测（renderCard + cardExceedsBudget），
+            // 也用于随后推出去的那张卡：「用时」字符串在 60s 边界会变长，测量与
+            // 发送若读不同时刻，探测就少算了一个字节。
+            const now = Date.now();
             // Tables first: Feishu rejects a card past five table components
             // (ErrCode 11310 "card table number over limit") no matter how
             // small it is, so a page must be cut at the table budget rather
@@ -819,6 +1003,8 @@ async function runCardPage(
               session.carry = split.carry;
               q.push(
                 renderCard(filter({ ...split.page, terminal: 'done' }), {
+                  now,
+                  midPage: true,
                   bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
                 }),
               );
@@ -826,18 +1012,20 @@ async function runCardPage(
               return false;
             }
             const filtered = filter(state);
-            const card = renderCard(filtered);
+            const card = renderCard(filtered, { now });
             if (cardExceedsBudget(card, filtered)) {
               // Close this page with only the content that FITS: the closing
               // card used to carry the full overflowing state, so Feishu
               // rejected it and the run died on the markdown fallback.
               // Overflow blocks ride the next page via session.carry.
-              const byteSplit = splitByByteBudget(state, filter);
+              const byteSplit = splitByByteBudget(state, filter, now);
               if (byteSplit.carry.length > 0) {
                 overflow = true;
                 session.carry = byteSplit.carry;
                 q.push(
                   renderCard(filter({ ...byteSplit.page, terminal: 'done' }), {
+                    now,
+                    midPage: true,
                     bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
                   }),
                 );
@@ -865,16 +1053,19 @@ async function runCardPage(
               terminal: final.terminal,
               interrupted: handle.interrupted,
             });
-            const byteSplit = splitByByteBudget(final, filter);
+            const now = Date.now();
+            const byteSplit = splitByByteBudget(final, filter, now);
             if (byteSplit.carry.length > 0) {
               session.carry = byteSplit.carry;
               q.push(
                 renderCard(filter(byteSplit.page), {
+                  now,
+                  midPage: true,
                   bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
                 }),
               );
             } else {
-              q.push(renderCard(filter(final)));
+              q.push(renderCard(filter(final), { now }));
             }
             await q.flush();
             // (reap happens once in streamCardPages' finally, after all pages)
@@ -885,6 +1076,9 @@ async function runCardPage(
             failed = true;
             throw err;
           } finally {
+            // 终态 / 换页 / 异常：三条路都必须停掉心跳，否则定时器会在卡片已经
+            // 终结之后继续 patch（也会把测试进程吊住）。
+            clearInterval(heartbeat);
             // 只在**正常收尾**时撤记录：那张卡此刻已是终态（⏹ 已随终态渲染消失）。
             // 抛错的路径留着记录 —— 卡片停在运行态，要让下次启动的兜底补卡去收尾。
             if (!failed) void forgetStreamingCard(ctrl.messageId);
@@ -931,14 +1125,6 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
   const { channel, agent, sessions, workspaces, activeRuns, controls, pool, chatId, prompt, claim } = deps;
   const scope = chatId;
   const uiCards = new Map<string, UiCardEntry>();
-  const uiHooks = createUiHooks({
-    channel,
-    chatId,
-    scope,
-    replyToMessageId: undefined,
-    activeRuns,
-    cards: uiCards,
-  });
   // Same across-the-bridge cap as an interactive run — a scheduled prompt must
   // not push the process count past maxConcurrentRuns. Acquired INSIDE the try
   // so a failure here still releases the caller's claim (a leaked claim leaves
@@ -981,6 +1167,18 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
       return;
     }
 
+    // UI 交互卡 hooks 建在 register 之后：倒计时要读 handle 的 pendingUiRequests
+    // （见 createUiHooks 的 isPending），register 前还拿不到它。
+    const uiHooks = createUiHooks({
+      channel,
+      chatId,
+      scope,
+      replyToMessageId: undefined,
+      activeRuns,
+      cards: uiCards,
+      isPending: (requestId) => handle.pendingUiRequests.has(requestId),
+    });
+
     try {
       if (replyMode === 'card') {
         await streamCardPages(
@@ -1010,7 +1208,7 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
         );
         const body = renderText(filterToolBlocks(finalState, controls));
         if (body.trim()) {
-          await channel.send(chatId, { markdown: body }, {});
+          await sendTextPages(channel, chatId, {}, body);
         }
       }
     } catch (err) {

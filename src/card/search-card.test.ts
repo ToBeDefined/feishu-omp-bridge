@@ -11,6 +11,7 @@ import {
   type SearchContext,
   type SearchHitGroup,
 } from './search-card';
+import { historyCard } from './history-card';
 
 function sampleContext(over: Partial<SearchContext> = {}): SearchContext {
   const messages = over.messages ?? [{ role: 'user' as const, content: '问题' }];
@@ -49,6 +50,20 @@ function markdowns(card: object): string[] {
   const walk = (els: El[]): void => {
     for (const e of els) {
       if (e.tag === 'markdown') out.push(e.content ?? '');
+      for (const col of e.columns ?? []) walk(col.elements);
+    }
+  };
+  walk((card as { body: { elements: El[] } }).body.elements);
+  return out;
+}
+
+/** Every button label (descending into column rows), for pager-copy assertions. */
+function buttonLabels(card: object): string[] {
+  type El = { tag: string; text?: { content?: string }; columns?: Array<{ elements: El[] }> };
+  const out: string[] = [];
+  const walk = (els: El[]): void => {
+    for (const e of els) {
+      if (e.tag === 'button') out.push(e.text?.content ?? '');
       for (const col of e.columns ?? []) walk(col.elements);
     }
   };
@@ -335,7 +350,7 @@ describe('searchResultsCard', () => {
     const single = JSON.stringify(searchResultsCard('foo', [sampleContext()], 'q1'));
     expect(single).toContain('继续对话');
     expect(single).toContain('详情');
-    expect(single).toContain('"arg":"q1 1"');
+    expect(single).toContain('"arg":"q1 1 0"');
     // 只有一页 → 没有分页行，也没有尾随的分隔线。
     expect(single).not.toContain('上一页');
     expect(single).not.toContain('下一页');
@@ -404,7 +419,7 @@ describe('searchResultsCard', () => {
   it('pages its row numbering off the page offset', () => {
     const many = Array.from({ length: 8 }, (_, i) => sampleContext({ sessionId: `s${i}` }));
     // The 详情 payload must carry the GLOBAL row number, not the page-local one.
-    expect(JSON.stringify(searchResultsCard('kw', many, 'q9', 6))).toContain('"arg":"q9 7"');
+    expect(JSON.stringify(searchResultsCard('kw', many, 'q9', 6))).toContain('"arg":"q9 7 6"');
   });
 
   it('never advertises a segment count (one session = one conversation)', () => {
@@ -436,6 +451,14 @@ describe('searchResultsCard', () => {
     const out = JSON.stringify(searchEmptyCard('foo'));
     expect(out).toContain('没有找到包含');
     expect(out).toContain('foo');
+  });
+
+  it('gives the empty card a real, executable next step (no dead end)', () => {
+    const card = JSON.stringify(searchEmptyCard('foo'));
+    // 不是死胡同：一个真能点的动作，重跑同一次检索。
+    expect(card).toContain('重新搜索');
+    expect(card).toContain('"cmd":"search.do"');
+    expect(card).toContain('"arg":"foo"');
   });
 });
 
@@ -470,6 +493,30 @@ describe('searchDetailCard', () => {
     );
     expect(active).not.toContain('完成');
     expect(active).not.toContain('上一页');
+  });
+
+  it('adds a 返回结果 escape that lands on the same result page', () => {
+    const groups = [{ messages: [{ role: 'user' as const, content: '内容' }], hitIndex: 0, matchCount: 1 }];
+    // 从第 2 页（offset 6）进入详情 → 返回必须带同一个 offset，坐标与进入时一致。
+    const fromPage2 = JSON.stringify(
+      searchDetailCard({ sessionId: 'sess-9', index: 7, groups, queryId: 'q1', offset: 6 }),
+    );
+    expect(fromPage2).toContain('返回结果');
+    expect(fromPage2).toContain('"cmd":"search.page"');
+    expect(fromPage2).toContain('"arg":"q1 6"');
+    expect(fromPage2).toContain('继续对话');
+    // 没显式给 offset 时按行号推算所属页（第 1 行 → 第 1 页）。
+    const derived = JSON.stringify(
+      searchDetailCard({ sessionId: 'sess-9', index: 1, groups, queryId: 'q1' }),
+    );
+    expect(derived).toContain('"arg":"q1 0"');
+    // 当前会话不再给「继续对话」，但「返回结果」这条出路仍在。
+    const current = JSON.stringify(
+      searchDetailCard({ sessionId: 'sess-9', index: 8, groups, queryId: 'q1', offset: 6, current: true }),
+    );
+    expect(current).toContain('返回结果');
+    expect(current).toContain('"arg":"q1 6"');
+    expect(current).not.toContain('继续对话');
   });
 
   it('renders the footer as one inline action', () => {
@@ -570,5 +617,46 @@ describe('searchDetailCard', () => {
     expect(text).toContain('🆔 会话: `sess-9`');
     expect(text).toContain('**第 1 处**');
     expect(text).toContain('**第 2 处**');
+  });
+});
+
+describe('两卡翻页与每页条数', () => {
+  it('uses one shared pager copy in /history and /search', () => {
+    // 两卡都停在第 2 页且都还剩 2 条：翻页键文案必须逐字相同。
+    const searchPaged = searchResultsCard(
+      'kw',
+      Array.from({ length: 14 }, (_, i) => sampleContext({ sessionId: `s${i}` })),
+      'q9',
+      6,
+    );
+    const historyPaged = historyCard(
+      Array.from({ length: 18 }, (_, i) => ({
+        sessionId: `s${i}`,
+        updatedAtMs: Date.now(),
+        turns: 1,
+        workspace: 'w',
+      })),
+      { mode: 'all', offset: 8, total: 18 },
+    );
+    const pagerOf = (card: object) =>
+      buttonLabels(card).filter((l) => l.includes('上一页') || l.includes('下一页'));
+    expect(pagerOf(searchPaged)).toEqual(['↑ 上一页', '↓ 下一页（剩 2）']);
+    expect(pagerOf(historyPaged)).toEqual(pagerOf(searchPaged));
+  });
+
+  it('states the page size on both cards so nobody has to count', () => {
+    expect(markdowns(searchResultsCard('kw', [sampleContext()], 'q1')).join('\n')).toContain(
+      '每页 6 条',
+    );
+    expect(
+      markdowns(
+        historyCard([{ sessionId: 's1', updatedAtMs: Date.now(), turns: 1, workspace: 'w' }], {
+          mode: 'cwd',
+          cwd: '/tmp/x',
+          offset: 0,
+          total: 1,
+        }),
+      ).join('\n'),
+    ).toContain('每页 8 条');
   });
 });

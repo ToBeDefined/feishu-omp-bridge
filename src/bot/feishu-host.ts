@@ -512,7 +512,14 @@ function sendCardTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTo
       // 与 feishu_reply_message 同样的守卫：replyTo 决定落点会话，不能指向
       // allowedChats 之外的群（触发消息本身免检，见 assertMessageChatAllowed）。
       if (replyTo) await assertMessageChatAllowed(channel, ctx, replyTo);
-      const card = buildAgentCard(title, text, args['buttons']);
+      // 盖上发行标记：点击时 dispatcher 据此拦掉「任务已结束 / 换了 run」的过期按钮。
+      // run token 由 activeRuns 在 register 时生成，工具执行时该 run 已经在跑。
+      const run = ctx.activeRuns?.getRunToken?.(ctx.scope);
+      const card = buildAgentCard(title, text, args['buttons'], {
+        issuedAt: Date.now(),
+        scope: ctx.scope,
+        ...(run ? { run } : {}),
+      });
       const { messageId } = await sendManagedCard(channel, ctx.chatId, card, replyTo);
       return { result: jsonResult({ messageId }) };
     },

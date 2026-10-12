@@ -160,6 +160,16 @@ describe('restartCard', () => {
     expect(out).toContain('最多 5 分钟');
   });
 
+  it('时限由调用方给定：没给时限就不自己编一个「最多 N 分钟」', () => {
+    const withEta = JSON.stringify(
+      restartCard('draining', undefined, { runningCount: 2, timeoutMs: 5 * 60_000 }),
+    );
+    expect(withEta).toContain('最多 5 分钟');
+    const noEta = JSON.stringify(restartCard('draining', undefined, { runningCount: 2 }));
+    expect(noEta).toContain('正在等待 2 个在跑的会话收尾');
+    expect(noEta).not.toContain('最多');
+  });
+
   it('says nothing about waiting when no run is in flight', () => {
     const out = JSON.stringify(restartCard('starting', undefined, { runningCount: 0 }));
     expect(out).toContain('服务即将重启');
@@ -767,10 +777,14 @@ describe('workspacesCard', () => {
   });
 
   it('空态给出一键保存的推进动作，不再只有 ws.cancel', () => {
-    // 有 cwd：按钮直接用目录名保存。
-    const withCwd = JSON.stringify(workspacesCard('/home/me/proj', {}));
+    // 有 cwd + 命令层给了建议名：按钮直接用该名字保存。
+    const withCwd = JSON.stringify(workspacesCard('/home/me/proj', {}, undefined, 'proj'));
     expect(withCwd).toContain('"cmd":"ws.save","name":"proj"');
     expect(withCwd).not.toContain('"cmd":"ws.cancel"');
+    // 命令层没给名字时，卡片不自己推导（不 import node:path），按钮仍给出下一步。
+    const noName = JSON.stringify(workspacesCard('/home/me/proj', {}));
+    expect(noName).toContain('"cmd":"ws.save"');
+    expect(noName).not.toContain('"name"');
     // 没有 cwd：仍有一个推进按钮（引导下一步），不留死路。
     const noCwd = JSON.stringify(workspacesCard(undefined, {}));
     expect(noCwd).toContain('"cmd":"ws.save"');

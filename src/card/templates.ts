@@ -1,5 +1,4 @@
 import { homedir } from 'node:os';
-import { basename } from 'node:path';
 import type { RunCard } from './run-renderer';
 import { formatAgoOr, formatClockOr } from '../utils/time';
 import { escapeCode, escapeMd } from '../utils/text';
@@ -239,6 +238,8 @@ export function workspacesCard(
   current: string | undefined,
   named: Record<string, string>,
   confirmRemove?: string,
+  /** 空态「存为…」按钮建议的名字，由命令层给（卡片层不做路径推导）。 */
+  suggestedName?: string,
 ): object {
   const entries = Object.entries(named);
   const elements: object[] = [];
@@ -252,7 +253,7 @@ export function workspacesCard(
     elements.push(md('_💡 也可发送 `/ws save <name>` 自定义名字。_', 'notation'));
     // 空态不能只留一个语义空洞的「取消」：给出一键把当前 cwd 存为工作空间的入口。
     // 有 cwd 时名字取目录名（省去手敲）；没有 cwd 时按钮仍给出下一步引导，不留死路。
-    const suggested = current ? basename(current) : '';
+    const suggested = suggestedName ?? '';
     elements.push(
       ...inlineActions([
         suggested
@@ -646,12 +647,9 @@ const STEP_MARK: Record<ReleaseStepState, string> = {
 };
 
 /**
- * 排空等待的时限文案。`timeoutMs` 省略时的兜底值必须与
- * `commands/lifecycle/release.ts` 的 `RELEASE_DRAIN_MAX_MS` 一致 —— 卡片层不反向
- * import 命令层（会成环），所以两处常量要一起改。
+ * 排空等待的时限文案。时限是**调用方的策略**（命令层的 `RELEASE_DRAIN_MAX_MS`）：
+ * 卡片层不持有默认值，省略时就不写「最多 N 分钟」，而不是自己编一个数字。
  */
-const DRAIN_DEFAULT_TIMEOUT_MS = 5 * 60_000;
-
 function drainEtaLabel(timeoutMs: number): string {
   const minutes = timeoutMs / 60_000;
   return `最多 ${Number.isInteger(minutes) ? minutes : minutes.toFixed(1)} 分钟`;
@@ -784,7 +782,7 @@ export function restartCard(
     return shell('⏳ 等待在跑的会话收尾', [
       md(`⏳ **正在等待 ${running} 个在跑的会话收尾**`, 'heading'),
       md(
-        `_${drainEtaLabel(options.timeoutMs ?? DRAIN_DEFAULT_TIMEOUT_MS)}；收尾结束后立即重启服务。_`,
+        `_${options.timeoutMs === undefined ? '' : `${drainEtaLabel(options.timeoutMs)}；`}收尾结束后立即重启服务。_`,
         'notation',
       ),
     ]);

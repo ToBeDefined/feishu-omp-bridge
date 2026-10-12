@@ -1,4 +1,5 @@
 import type { CommandContext, Handler } from '../index';
+import { basename } from 'node:path';
 import { recallMessage, reply, updateOrFallback } from '../shared';
 import { codeSpan } from '../../utils/text';
 import { workspacesCard } from '../../card/templates';
@@ -40,10 +41,13 @@ async function handleWs(args: string, ctx: CommandContext): Promise<void> {
  * —— 另发一张会让聊天里出现两张列表卡，且旧卡上已失效的按钮还能点。
  */
 async function renderWorkspacesCard(ctx: CommandContext, confirmRemove?: string): Promise<void> {
+  const cwd = ctx.workspaces.cwdFor(ctx.scope);
   const card = workspacesCard(
-    ctx.workspaces.cwdFor(ctx.scope),
+    cwd,
     ctx.workspaces.listNamed(),
     confirmRemove,
+    // 「存为…」建议名取目录名（省去手敲）；这是产品决策，归命令层。
+    cwd ? basename(cwd) : undefined,
   );
   if (ctx.fromCardAction) {
     await updateOrFallback(ctx, card, '📂 请重新发送 `/ws` 查看工作空间列表。');

@@ -87,17 +87,25 @@ export function countTables(md: string): number {
  * Keep the first `budget` tables of `md` as tables and wrap the rest in code
  * fences — the content survives verbatim, Feishu just stops counting it as
  * table components.
+ *
+ * The demotion is announced with one short notation line: a silently
+ * code-fenced table looks like the model gave up on formatting, and the user
+ * has no way to tell it was us working around Feishu's per-card table cap.
+ * The note is emitted once, right where the first table was demoted.
  */
 export function demoteTables(md: string, budget: number): string {
   const lines = md.split('\n');
   const tables = findTables(lines);
   if (tables.length <= budget) return md;
   const parts: string[] = [];
+  // 短提示（约 30 字）：本身不能再把卡顶过预算。
+  const note = `_（第 ${budget + 1} 张及之后的表格已转为代码块，以保证卡片可渲染）_`;
   let cursor = 0;
   tables.forEach(([start, end], index) => {
     if (index < budget) return;
     const before = lines.slice(cursor, start).join('\n').trim();
     if (before) parts.push(before);
+    if (index === budget) parts.push(note);
     parts.push(codeFence(lines.slice(start, end + 1).join('\n')));
     cursor = end + 1;
   });

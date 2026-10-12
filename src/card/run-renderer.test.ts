@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderCard } from './run-renderer';
+import { cardExceedsBudget } from './pagination';
 import { countTables } from './tables';
 import { initialState, reduce, type RunState, type ToolEntry } from './run-state';
 
@@ -37,6 +38,13 @@ function countByTag(elements: unknown[], tag: string): number {
   return elements.filter(
     (e) => typeof e === 'object' && e !== null && 'tag' in e && e.tag === tag,
   ).length;
+}
+
+/** Elements below the constant top-of-card title (`🤖 **OMP**`). The title is
+ *  pinned by its own test; element-ORDER tests assert on the state-bearing
+ *  elements so they stay readable. */
+function cardBody(card: object): unknown[] {
+  return cardElements(card).slice(1);
 }
 
 
@@ -78,8 +86,8 @@ describe('renderCard', () => {
     state.blocks.push({ kind: 'tool', tool: tool(2) });
     state.blocks.push({ kind: 'tool', tool: tool(3) });
     state.blocks.push({ kind: 'text', content: '段落三', streaming: false });
-    const elements = cardElements(renderCard(state));
-    // Top-level shape: 段落一 · group ×1 · 段落二 · group ×2 · 段落三.
+    const elements = cardBody(renderCard(state));
+    // Top-level shape below the title: 段落一 · group ×1 · 段落二 · group ×2 · 段落三.
     const shape = elements
       .filter((e) => typeof e === 'object' && e !== null && 'tag' in e)
       .map((e) => String(e.tag))
@@ -156,7 +164,7 @@ describe('renderCard', () => {
       border: { color: 'red' },
       header: {
         // Merged title: thinking first, tools last (failure count at the end).
-        title: { content: '🧠 **思考** ×1 · 🛠 **工具** ×3（1 失败）' },
+        title: { content: '🧠 **思考** ×1 · 🛠 **工具调用** ×3（1 失败）' },
       },
       elements: [
         // Chronological inside: the thinking segment came before the calls.
@@ -171,6 +179,23 @@ describe('renderCard', () => {
     const groupJson = JSON.stringify(panels[0]);
     expect(groupJson).toContain('Command');
     expect(groupJson).toContain('**Error**');
+  });
+
+  it('工具术语全卡统一为「工具调用」：合并行与单类行的写法不再打架', () => {
+    // 合并行曾是「🧠 思考 ×N · 🛠 工具 ×M」，单类行是「🛠 工具调用 ×N」——
+    // 同一个概念两个词，用户以为在说两件事。
+    const state = longRunState(0);
+    state.blocks.push({ kind: 'thinking', content: '先看调用链', active: false });
+    state.blocks.push({ kind: 'tool', tool: tool(1) });
+    state.blocks.push({ kind: 'text', content: '中间段落', streaming: false });
+    state.blocks.push({ kind: 'tool', tool: tool(2) });
+    const json = JSON.stringify(renderCard({ ...state, terminal: 'done', footer: null }));
+    expect(json).toContain('🧠 **思考** ×1 · 🛠 **工具调用** ×1');
+    expect(json).toContain('🛠 **工具调用** ×1');
+    // 旧词（没有「调用」二字）在任何面板标题里都不该再出现。
+    expect(json).not.toContain('🛠 **工具** ×');
+    // 巡检：工具箱 emoji 全仓未使用，卡片也不引入。
+    expect(json).not.toContain('🧰');
   });
 
   it('keeps a tools-only burst and a thinking-only run in their original shapes', () => {
@@ -219,7 +244,7 @@ describe('renderCard', () => {
         bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
       },
     );
-    const elements = cardElements(card);
+    const elements = cardBody(card);
     expect(countByTag(elements, 'note')).toBe(0);
     expect(elements[0]).toMatchObject({
       tag: 'markdown',
@@ -243,10 +268,10 @@ describe('renderCard', () => {
     );
   });
 
-  it('把「状态 + ⏹ 终止」行放在卡片最上方，正文之前', () => {
+  it('把「状态 + ⏹ 终止」行放在标题之下、正文之前', () => {
     const state = { ...longRunState(3), startedAt: 1_000_000, endedAt: 1_012_400 };
-    const elements = cardElements(renderCard(state));
-    // 第一个元素就是控制行：长回复下手机一屏也够得到 ⏹。
+    const elements = cardBody(renderCard(state));
+    // 第一个元素（标题之后）就是控制行：长回复下手机一屏也够得到 ⏹。
     const json = JSON.stringify(elements[0]);
     expect(elements[0]).toMatchObject({ tag: 'column_set' });
     expect(json).toContain('⏹ 终止');
@@ -260,13 +285,44 @@ describe('renderCard', () => {
     expect(countByTag(elements, 'hr')).toBe(0);
   });
 
+  it('运行卡顶层标题恒定：第一个元素是 heading，且不随状态/心跳变化', () => {
+    // 命令卡都带 heading，运行卡以前没有 —— 风格不统一。文案恒定（不带随
+    // 会话/状态变化的字段），否则每次心跳刷新标题都会跟着变，视觉上像在闪。
+    const running = cardElements(renderCard({ ...longRunState(2), startedAt: 1_000_000 }));
+    expect(running[0]).toMatchObject({
+      tag: 'markdown',
+      content: '🤖 **OMP**',
+      text_size: 'heading',
+    });
+    expect(running[1]).toMatchObject({ tag: 'column_set' }); // 控制行紧随其后
+    const done = cardElements(renderCard({ ...longRunState(2), terminal: 'done', footer: null }));
+    expect(done[0]).toMatchObject({ content: '🤖 **OMP**' });
+    const errored = cardElements(
+      renderCard({ ...longRunState(2), terminal: 'error', footer: null, errorMsg: 'boom' }),
+    );
+    expect(errored[0]).toMatchObject({ content: '🤖 **OMP**' });
+    expect(errored[1]).toMatchObject({ content: '❌ **运行失败**' });
+  });
+
   it('运行中的已用时长随时长递增（同一状态不同时刻渲染）', () => {
     const startedAt = 1_000_000;
     const head = (elapsedMs: number): string =>
-      JSON.stringify(cardElements(renderCard({ ...longRunState(1), startedAt, endedAt: startedAt + elapsedMs }))[0]);
+      JSON.stringify(cardBody(renderCard({ ...longRunState(1), startedAt, endedAt: startedAt + elapsedMs }))[0]);
     expect(head(0)).toContain('⏱ 用时 0.0s');
     expect(head(12_400)).toContain('⏱ 用时 12.4s');
     expect(head(65_000)).toContain('⏱ 用时 1 分 5 秒');
+  });
+
+  it('注入 now：心跳在运行中重渲染同一状态，时长读的是注入的时刻', () => {
+    // 心跳定时器就是这么刷新的：状态一个字节没变，只把「现在」喂进去。
+    const state: RunState = { ...longRunState(1), startedAt: 1_000_000 };
+    const head = (now: number): string =>
+      JSON.stringify(cardBody(renderCard(state, { now }))[0]);
+    expect(head(1_000_400)).toContain('⏱ 用时 0.4s');
+    expect(head(1_005_400)).toContain('⏱ 用时 5.4s');
+    expect(head(1_065_000)).toContain('⏱ 用时 1 分 5 秒');
+    // 不传 now 时回退到真实时钟：仍是运行中的控制行，没有崩溃/缺字段。
+    expect(JSON.stringify(renderCard(state))).toContain('⏱ 用时');
   });
 
   it('失败/超时/中断在正文之前给出醒目结果行', () => {
@@ -282,7 +338,7 @@ describe('renderCard', () => {
       startedAt: 1_000_000,
       endedAt: 1_002_000,
     };
-    const failed = cardElements(renderCard(errored));
+    const failed = cardBody(renderCard(errored));
     expect(failed[0]).toMatchObject({
       tag: 'markdown',
       content: '❌ **运行失败**',
@@ -298,7 +354,7 @@ describe('renderCard', () => {
       idleTimeoutMinutes: 5,
       errorMsg: undefined,
     });
-    const timedOut = cardElements(timedOutCard);
+    const timedOut = cardBody(timedOutCard);
     expect(timedOut[0]).toMatchObject({
       tag: 'markdown',
       // 全角标点：旧文案的 `无响应,已自动终止` 不再出现。
@@ -308,12 +364,14 @@ describe('renderCard', () => {
     expect(JSON.stringify(timedOutCard)).not.toContain('无响应,');
 
     const interrupted = renderCard({ ...errored, terminal: 'interrupted', errorMsg: undefined });
-    expect(cardElements(interrupted)[0]).toMatchObject({
+    expect(cardBody(interrupted)[0]).toMatchObject({
       tag: 'markdown',
       content: '⏹ **已被中断**',
       text_size: 'heading',
     });
     expect(JSON.stringify(interrupted)).not.toContain('_⏹ 已被中断_');
+    // 标题这条 heading 与状态 heading 并存：标题恒在，结果行紧随其后。
+    expect(cardElements(interrupted)[0]).toMatchObject({ content: '🤖 **OMP**' });
   });
 
   it('终态脚注显示用时/token/费用，缺哪个省哪个', () => {
@@ -367,7 +425,7 @@ describe('renderCard', () => {
       endedAt: 1_012_400,
       usage: { inputTokens: 2_000, outputTokens: 300, costUsd: 0.5 },
     };
-    const elements = cardElements(renderCard(state));
+    const elements = cardBody(renderCard(state));
     expect(JSON.stringify(elements[0])).toContain('⏱ 用时 12.4s');
     const notes = notationMarkdown(elements);
     expect(notes).toContain('🧮 2.3k tok（入 2k / 出 300） · 💰 $0.5000');
@@ -412,7 +470,7 @@ describe('renderCard', () => {
     state.blocks.push({ kind: 'tool', tool: tool(1) });
     state.blocks.push({ kind: 'thinking', content: '再看B', active: true });
     state.blocks.push({ kind: 'text', content: 'B 的结论', streaming: false });
-    const elements = cardElements(renderCard(state));
+    const elements = cardBody(renderCard(state));
     // Timeline: 🧠 ×1 → text → 🛠 group → 🧠 ×2 (active) → text.
     const shape = elements
       .filter((e) => typeof e === 'object' && e !== null && 'tag' in e)
@@ -431,7 +489,7 @@ describe('renderCard', () => {
       });
     // [0] the standalone thinking segment; [1] the merged tools+thinking row.
     expect(panelTitles[0]).toContain('思考过程');
-    expect(panelTitles[1]).toContain('🧠 **思考** ×1 · 🛠 **工具** ×1');
+    expect(panelTitles[1]).toContain('🧠 **思考** ×1 · 🛠 **工具调用** ×1');
     expect(longMarkdown(elements, 'A 的结论')).toBeDefined();
     expect(longMarkdown(elements, 'B 的结论')).toBeDefined();
   });
@@ -478,7 +536,9 @@ describe('renderCard', () => {
       content: `thinking\n\n${table(9)}`,
       active: false,
     });
-    const elements = cardElements(renderCard({ ...state, terminal: 'done' }));
+    const done: RunState = { ...state, terminal: 'done' };
+    const card = renderCard(done);
+    const elements = cardElements(card);
     // Every markdown source of the card, panels included: Feishu counts the
     // table components of the whole card.
     const sources = elements.flatMap((e) => {
@@ -494,6 +554,10 @@ describe('renderCard', () => {
     // The demoted tables keep their text — only the component count drops.
     const demoted = sources.find((md) => md.includes('| h7 |')) ?? '';
     expect(demoted).toContain('```');
+    // …and the demotion is announced instead of silent.
+    expect(demoted).toContain('第 6 张及之后的表格已转为代码块');
+    // 提示很短：加进来之后卡片仍然在预算内（否则它自己就成了新的超限源）。
+    expect(cardExceedsBudget(card, done)).toBe(false);
   });
 });
 

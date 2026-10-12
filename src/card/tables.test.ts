@@ -51,6 +51,26 @@ describe('demoteTables', () => {
     expect(out).toContain('tail');
   });
 
+  it('降级不再静默：给一行说明，且只给一次', () => {
+    // 用户看到表格变成代码块，得知道是我们在绕飞书的「单卡最多 5 张表」限制，
+    // 而不是模型不会画表格。
+    const md = [table(1), 'mid', table(2), 'mid', table(3)].join('\n');
+    const out = demoteTables(md, 1);
+    expect(out).toContain('_（第 2 张及之后的表格已转为代码块，以保证卡片可渲染）_');
+    // 提示本身很短（不会把卡顶过预算），且只在第一张被降级的表前出现一次。
+    expect(out.split('已转为代码块').length - 1).toBe(1);
+    expect(countTables(out)).toBe(1);
+    // 提示不是表格、也不吃掉任何原内容。
+    expect(out).toContain('| h3a | h3b |');
+    expect(out).toContain('mid');
+  });
+
+  it('budget 为 0（额度已被其它 markdown 用尽）时从第 1 张起提示', () => {
+    const out = demoteTables([table(1), '', table(2)].join('\n'), 0);
+    expect(out).toContain('_（第 1 张及之后的表格已转为代码块，以保证卡片可渲染）_');
+    expect(countTables(out)).toBe(0);
+  });
+
   it('leaves markdown at or under the budget untouched', () => {
     const md = `${table(1)}\n\ntext`;
     expect(demoteTables(md, 1)).toBe(md);

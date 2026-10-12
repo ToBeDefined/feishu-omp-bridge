@@ -31,7 +31,7 @@ import {
   type Block,
   type RunState,
 } from '../card/run-state';
-import { renderText } from '../card/text-renderer';
+import { renderText, splitText } from '../card/text-renderer';
 import type { Controls } from '../commands';
 import {
   getAgentStopGraceMs,
@@ -86,8 +86,12 @@ interface UiCardEntry {
  *
  * `replyToMessageId` threads the card under the user's message; a scheduled
  * run has none and posts at chat level.
+ *
+ * Exported for tests: it is the only place that turns an OMP UI request into a
+ * Feishu card, and its failure path (see `onUiRequest`'s catch) is a
+ * user-visible behaviour worth pinning down.
  */
-function createUiHooks(opts: {
+export function createUiHooks(opts: {
   channel: LarkChannel;
   chatId: string;
   scope: string;
@@ -136,6 +140,18 @@ function createUiHooks(opts: {
         log.fail('omp-ui', err, { scope, requestId: request.id, method: request.method });
         activeRuns.respondToUi(scope, request.id, { cancelled: true });
         activeRuns.dropUiRequest(scope, request.id);
+        // 用户侧不能静默：卡片没出现，OMP 却已经按「取消」继续跑 —— 用户只会看到
+        // 自己的消息石沉大海，或一个他从未见过的确认框被跳过。发一条明确提示。
+        // 发送本身也可能失败（网络正是出错的原因），因此只记日志。
+        await channel
+          .send(
+            chatId,
+            { markdown: '⚠️ 交互卡片发送失败，已按取消处理' },
+            replyToMessageId ? { replyTo: replyToMessageId } : {},
+          )
+          .catch((notifyErr) =>
+            log.fail('omp-ui', notifyErr, { scope, requestId: request.id, step: 'notify' }),
+          );
       }
     },
     async onUiCancel(targetId) {
@@ -343,6 +359,9 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
         filter,
       );
     } else if (replyMode === 'markdown') {
+      // 这里不做分段：markdown 流式回复自带 rollover —— SDK 在单个元素超过
+      // `streamMaxElementChars` 时会把内容切成新卡继续（见 SDK 的
+      // MarkdownStreamControllerImpl），超长内容不会整条被拒。
       await channel.stream(
         chatId,
         {
@@ -366,7 +385,7 @@ async function runBatchOnce(deps: RunBatchDeps, retriedStaleSession: boolean): P
       }, uiHooks);
       const body = renderText(filter(finalState));
       if (body.trim()) {
-        await channel.send(chatId, { markdown: body }, sendOpts);
+        await sendTextPages(channel, chatId, sendOpts, body);
       }
     }
   } catch (err) {
@@ -622,6 +641,42 @@ async function processAgentStream(
 type SendOpts = { replyTo?: string; replyInThread?: boolean };
 
 /**
+ * Card refresh interval while a run is live but its event stream is silent.
+ * A single long tool call (a full `pnpm test`, a slow network fetch) emits no
+ * events for minutes; without this the card's 「已用时长」 freezes and the run
+ * looks hung. 5s is deliberately low-frequency: it is ~17x the 300ms patch
+ * throttle, so it can never be the thing that trips Feishu's per-message
+ * update rate limit (230020) during normal fast streaming.
+ */
+const CARD_HEARTBEAT_INTERVAL_MS = 5000;
+
+/**
+ * Byte ceiling for one text/markdown-mode message. Feishu caps a single
+ * message's content at 30KB (same order as the card cap the paginator works
+ * to); we split at 20KB to leave room for the post/JSON re-serialization the
+ * wire format adds. Text mode has no card paginator behind it, so an oversized
+ * answer would otherwise fail as one rejected message and the whole tail would
+ * be lost.
+ */
+export const TEXT_MESSAGE_BUDGET = 20 * 1024;
+
+/**
+ * Send a text-mode reply, paginated: one oversized message is rejected by
+ * Feishu and its tail never reaches the user. Splitting happens on line
+ * boundaries (see `splitText`) and loses nothing.
+ */
+export async function sendTextPages(
+  channel: LarkChannel,
+  chatId: string,
+  sendOpts: SendOpts,
+  body: string,
+): Promise<void> {
+  for (const chunk of splitText(body, TEXT_MESSAGE_BUDGET)) {
+    if (chunk.trim()) await channel.send(chatId, { markdown: chunk }, sendOpts);
+  }
+}
+
+/**
  * Card reply mode pagination: drive the stream across multiple messages.
  * A single card can't hold an unbounded number of tool panels (Feishu
  * rejects cards over ~64KB, ErrCode 11310), so when a page's card JSON
@@ -804,6 +859,7 @@ async function runCardPage(
           void rememberStreamingCard(ctrl.messageId, chatId, initialCard);
           // 失败标记：决定 finally 是否撤掉崩溃恢复记录（见下）。
           let failed = false;
+          let heartbeat: NodeJS.Timeout | undefined;
           try {
           const q = coalesceLatest((card: object) => {
             // Persist the snapshot BEFORE pushing: whatever reached Feishu is
@@ -813,7 +869,33 @@ async function runCardPage(
           }, {
             minIntervalMs: CARD_UPDATE_MIN_INTERVAL_MS,
           });
+          // 心跳：一次 `pnpm test` 之类的长工具调用期间，事件流可以几分钟没有
+          // 任何一条事件 —— 没有 patch，卡片上的「已用时长」就冻住，用户看到的
+          // 就是卡死。低频（5s）定时刷新让表继续走；它走同一个 q，因此仍然受
+          // 300ms 节流保护，不会额外撞飞书的单消息更新限频。
+          //
+          // 存活期与这一页的 producer 等长：streamEvents 返回（终态 / 流结束 /
+          // 溢出换页）后 interval 在 finally 里清掉；终态之后的兜底推送也不会
+          // 再触发它（回调里再挡一次，防止在 finalize 的 await 窗口里插进来）。
+          heartbeat = setInterval(() => {
+            if (session.state.terminal !== 'running') return;
+            try {
+              q.push(
+                renderCard(
+                  filter(session.state),
+                  pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
+                ),
+              );
+            } catch {
+              // 写失败会在 producer 的 await 路径上抛出并走正常收尾；定时器这条
+              // 独立调用栈上不能再抛（会成为 uncaughtException）。
+            }
+          }, CARD_HEARTBEAT_INTERVAL_MS);
           await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
+            // 同一个时刻既用于字节预算探测（renderCard + cardExceedsBudget），
+            // 也用于随后推出去的那张卡：「用时」字符串在 60s 边界会变长，测量与
+            // 发送若读不同时刻，探测就少算了一个字节。
+            const now = Date.now();
             // Tables first: Feishu rejects a card past five table components
             // (ErrCode 11310 "card table number over limit") no matter how
             // small it is, so a page must be cut at the table budget rather
@@ -824,6 +906,7 @@ async function runCardPage(
               session.carry = split.carry;
               q.push(
                 renderCard(filter({ ...split.page, terminal: 'done' }), {
+                  now,
                   bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
                 }),
               );
@@ -831,7 +914,7 @@ async function runCardPage(
               return false;
             }
             const filtered = filter(state);
-            const card = renderCard(filtered);
+            const card = renderCard(filtered, { now });
             if (cardExceedsBudget(card, filtered)) {
               // Close this page with only the content that FITS: the closing
               // card used to carry the full overflowing state, so Feishu
@@ -843,6 +926,7 @@ async function runCardPage(
                 session.carry = byteSplit.carry;
                 q.push(
                   renderCard(filter({ ...byteSplit.page, terminal: 'done' }), {
+                    now,
                     bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
                   }),
                 );
@@ -870,16 +954,18 @@ async function runCardPage(
               terminal: final.terminal,
               interrupted: handle.interrupted,
             });
+            const now = Date.now();
             const byteSplit = splitByByteBudget(final, filter);
             if (byteSplit.carry.length > 0) {
               session.carry = byteSplit.carry;
               q.push(
                 renderCard(filter(byteSplit.page), {
+                  now,
                   bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
                 }),
               );
             } else {
-              q.push(renderCard(filter(final)));
+              q.push(renderCard(filter(final), { now }));
             }
             await q.flush();
             // (reap happens once in streamCardPages' finally, after all pages)
@@ -890,6 +976,9 @@ async function runCardPage(
             failed = true;
             throw err;
           } finally {
+            // 终态 / 换页 / 异常：三条路都必须停掉心跳，否则定时器会在卡片已经
+            // 终结之后继续 patch（也会把测试进程吊住）。
+            clearInterval(heartbeat);
             // 只在**正常收尾**时撤记录：那张卡此刻已是终态（⏹ 已随终态渲染消失）。
             // 抛错的路径留着记录 —— 卡片停在运行态，要让下次启动的兜底补卡去收尾。
             if (!failed) void forgetStreamingCard(ctrl.messageId);
@@ -1015,7 +1104,7 @@ export async function runScheduledPrompt(deps: ScheduledRunDeps): Promise<void> 
         );
         const body = renderText(filterToolBlocks(finalState, controls));
         if (body.trim()) {
-          await channel.send(chatId, { markdown: body }, {});
+          await sendTextPages(channel, chatId, {}, body);
         }
       }
     } catch (err) {

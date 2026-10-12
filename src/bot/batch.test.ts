@@ -4,12 +4,21 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { paths } from '../config/paths';
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
-import { streamCardPages } from './batch';
-import type { AgentEvent } from '../agent/types';
-import type { RunHandle } from './active-runs';
+import {
+  createUiHooks,
+  sendTextPages,
+  streamCardPages,
+  TEXT_MESSAGE_BUDGET,
+  type AgentStreamHooks,
+} from './batch';
+import type { ActiveRuns, RunHandle } from './active-runs';
+import type { AgentEvent, AgentUiRequest } from '../agent/types';
 import type { SessionStore } from '../session/store';
 import { runningCardsSettled } from '../card/managed';
 import { countTables } from '../card/tables';
+import { initialState, reduce, type RunState } from '../card/run-state';
+import type { RunCard } from '../card/run-renderer';
+import { renderText } from '../card/text-renderer';
 
 /** A 2-column GFM table tagged so tests can tell tables apart. */
 function tableMd(n: number): string {
@@ -46,12 +55,15 @@ function fakeChannel(record: { cards: object[]; pages: object[][] }): LarkChanne
   } as unknown as LarkChannel;
 }
 
-function fakeHandle(events: AgentEvent[]): RunHandle {
+function fakeHandle(events: AgentEvent[] | AsyncIterable<AgentEvent>): RunHandle {
+  const source = Array.isArray(events)
+    ? (async function* () {
+        yield* events;
+      })()
+    : events;
   return {
     run: {
-      events: (async function* () {
-        yield* events;
-      })(),
+      events: source,
       stop: async () => {},
       waitForExit: async () => true,
     },
@@ -244,5 +256,191 @@ describe('空流的卡片收尾', () => {
     const last = record.pages.at(-1)!.at(-1)!;
     expect(JSON.stringify(last)).not.toContain('⏹');
     expect(JSON.stringify(last)).not.toContain('"cmd":"stop"');
+  });
+});
+
+describe('心跳：事件流静默期间卡片继续走动', () => {
+  /** 控制行（标题之后的第一个元素）的 JSON —— 「用时」就写在里面。 */
+  const controlRow = (card: object): string => {
+    // 这里的 card 都是 renderCard 的产物（fakeChannel 只记录被推出去的卡）。
+    const rendered = card as RunCard;
+    return JSON.stringify(rendered.body.elements[1]);
+  };
+
+  it('没有新事件也会按时 patch，run 终结后定时器彻底停掉', async () => {
+    vi.useFakeTimers();
+    try {
+      const record = { cards: [] as object[], pages: [] as object[][] };
+      const channel = fakeChannel(record);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      // 一条 text 之后流彻底静默（一次长工具调用），直到测试放行才 done。
+      const handle = fakeHandle(
+        (async function* () {
+          yield { type: 'text', delta: '正文' } as AgentEvent;
+          await gate;
+          yield { type: 'done' } as AgentEvent;
+        })(),
+      );
+
+      const run = streamCardPages(
+        channel, 'oc_x', {}, handle, {} as unknown as SessionStore, 'oc_x', '/tmp',
+        undefined, undefined, (s) => s,
+      );
+
+      await vi.advanceTimersByTimeAsync(500);
+      const afterFirstEvent = record.cards.length;
+      expect(afterFirstEvent).toBeGreaterThanOrEqual(2); // initial + 事件 patch
+      const before = controlRow(record.cards.at(-1)!);
+      expect(before).toContain('⏱ 用时');
+
+      // 静默 5s：没有任何 agent 事件，心跳仍推了一张新卡，时长跟着走。
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(record.cards.length).toBeGreaterThan(afterFirstEvent);
+      const after = controlRow(record.cards.at(-1)!);
+      expect(after).not.toBe(before);
+      expect(after).toContain('⏱ 用时 5');
+
+      release();
+      await vi.advanceTimersByTimeAsync(1000);
+      await run;
+      const atEnd = record.cards.length;
+
+      // 终态之后再等三个心跳周期：一次 patch 都不能有（定时器已清干净）。
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(record.cards.length).toBe(atEnd);
+      // 直接证明没有泄漏的定时器（心跳 interval 是这张卡唯一的定时器）。
+      expect(vi.getTimerCount()).toBe(0);
+      expect(controlRow(record.cards.at(-1)!)).not.toContain('⏹');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('文本回退的分段发送', () => {
+  function recordingChannel(sent: string[]): LarkChannel {
+    return {
+      send: async (_chatId: string, msg: { markdown: string }) => {
+        sent.push(msg.markdown);
+      },
+    } as unknown as LarkChannel;
+  }
+
+  it('超长文本按预算分段发送，失败原因留在其中一条里', async () => {
+    const sent: string[] = [];
+    let state: RunState = reduce(initialState, {
+      type: 'text',
+      delta: '正文'.repeat(5000),
+    } as AgentEvent);
+    state = { ...state, terminal: 'error', errorMsg: 'boom：模型不可用' };
+    const body = renderText(state);
+
+    await sendTextPages(recordingChannel(sent), 'oc_x', {}, body);
+
+    expect(sent.length).toBeGreaterThan(1);
+    for (const message of sent) {
+      expect(Buffer.byteLength(message, 'utf8')).toBeLessThanOrEqual(TEXT_MESSAGE_BUDGET);
+    }
+    // 分段不丢内容（拼回去与原文本一致），失败原因没有被截在段外。
+    expect(sent.join('')).toBe(body);
+    expect(sent.some((message) => message.includes('boom：模型不可用'))).toBe(true);
+  });
+
+  it('短文本只发一条', async () => {
+    const sent: string[] = [];
+    await sendTextPages(recordingChannel(sent), 'oc_x', {}, '你好');
+    expect(sent).toEqual(['你好']);
+  });
+});
+
+describe('OMP 交互卡发送失败', () => {
+  /** 卡片发送直接失败的 channel（cardkit.card.create 抛出）。 */
+  function failingCardChannel(notices: string[]): LarkChannel {
+    return {
+      rawClient: {
+        cardkit: {
+          v1: {
+            card: {
+              create: async () => {
+                throw new Error('AxiosError: Request failed with status code 500');
+              },
+            },
+          },
+        },
+      },
+      send: async (_chatId: string, msg: { markdown: string }) => {
+        notices.push(msg.markdown);
+      },
+    } as unknown as LarkChannel;
+  }
+
+  function hooksFor(
+    channel: LarkChannel,
+    recorded: { responded: Array<{ id: string; response: unknown }>; dropped: string[] },
+  ): AgentStreamHooks {
+    return createUiHooks({
+      channel,
+      chatId: 'oc_x',
+      scope: 'oc_x',
+      replyToMessageId: 'om_user',
+      activeRuns: {
+        respondToUi: (_scope: string, id: string, response: unknown) => {
+          recorded.responded.push({ id, response });
+          return true;
+        },
+        dropUiRequest: (_scope: string, id: string) => {
+          recorded.dropped.push(id);
+        },
+      } as unknown as ActiveRuns,
+      cards: new Map(),
+    });
+  }
+
+  const request: AgentUiRequest = {
+    id: 'ui-1',
+    method: 'confirm',
+    title: '要删掉这个文件吗',
+    message: 'rm -rf build',
+  };
+
+  it('既回 {cancelled:true} 给 OMP（别让它挂着），也给用户一条可见提示', async () => {
+    const notices: string[] = [];
+    const recorded = { responded: [] as Array<{ id: string; response: unknown }>, dropped: [] as string[] };
+    const hooks = hooksFor(failingCardChannel(notices), recorded);
+
+    await hooks.onUiRequest(request);
+
+    // OMP 侧必须收到回包，否则这次 run 永远等一个不可能到来的答案。
+    expect(recorded.responded).toEqual([{ id: 'ui-1', response: { cancelled: true } }]);
+    expect(recorded.dropped).toEqual(['ui-1']);
+    // 用户侧不再静默：为什么没有确认框、以及已经按取消处理。
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toContain('⚠️ 交互卡片发送失败，已按取消处理');
+  });
+
+  it('提示本身也发不出去时不抛（网络正是卡片失败的原因）', async () => {
+    const recorded = { responded: [] as Array<{ id: string; response: unknown }>, dropped: [] as string[] };
+    const channel = {
+      rawClient: {
+        cardkit: {
+          v1: {
+            card: {
+              create: async () => {
+                throw new Error('offline');
+              },
+            },
+          },
+        },
+      },
+      send: async () => {
+        throw new Error('offline');
+      },
+    } as unknown as LarkChannel;
+
+    await expect(hooksFor(channel, recorded).onUiRequest(request)).resolves.toBeUndefined();
+    expect(recorded.responded).toHaveLength(1);
   });
 });

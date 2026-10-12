@@ -32,7 +32,21 @@ export interface CardPageOptions {
   topNote?: string;
   /** Note rendered at the bottom ("continues in the next message"). */
   bottomNote?: string;
+  /**
+   * Render clock (epoch ms) for the elapsed-time text. Injected so the
+   * heartbeat's ticking clock is testable, and so the byte-budget probe and
+   * the card actually pushed read the SAME instant (the 「用时」 string changes
+   * length at the 60s boundary, so measuring and sending must not disagree).
+   * Falls back to `Date.now()` when the caller has no clock to hand.
+   */
+  now?: number;
 }
+
+/** The card's constant top-of-card title. Command cards all carry a heading;
+ *  the run card used to have none, which read as a different kind of message.
+ *  Deliberately constant — a state-dependent title would repaint on every
+ *  heartbeat without telling the user anything new. */
+const CARD_TITLE = '🤖 **OMP**';
 
 /** The CardKit 2.0 envelope `renderCard` produces. Named so callers can
  *  read `body.elements.length` (pagination budget) without casts. */
@@ -49,11 +63,15 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   // first: auxiliary panels (reasoning, OMP UI) only spend what is left, so a
   // chatty thinking block can never push the answer's tables into code blocks.
   const tables = createTableBudget();
-  const now = Date.now();
+  const now = opts?.now ?? Date.now();
+
+  // 标题恒为第一个元素：命令卡都带 heading，运行卡以前没有；恒定文案意味着
+  // 心跳刷新不会让标题变来变去。
+  elements.push(md(CARD_TITLE, 'heading'));
 
   // Answer text renders inline; a contiguous stretch of process elements
   // (tool runs + thinking segments with no text in between) collapses into
-  // ONE outer row —「🛠 工具调用 ×N · 🧠 思考过程 ×M」when both kinds are
+  // ONE outer row —「🧠 思考 ×N · 🛠 工具调用 ×M」when both kinds are
   // present, or the plain tool/thinking row when only one kind is.
   const bodyElements: object[] = [];
   for (const op of collectOps(state.blocks)) {
@@ -67,7 +85,9 @@ export function renderCard(state: RunState, opts?: CardPageOptions): RunCard {
   // Control/result line goes FIRST, ahead of every body element: a long
   // answer used to bury ⏹ 终止 (and the failure mark) below the fold, out of
   // thumb reach on a phone. Pagination only ever trims `blocks`, so the row
-  // cannot be split away onto another page.
+  // cannot be split away onto another page. It sits below the title so the
+  // whole control area (title + status + ⏹) stays in one thumb-reachable
+  // block.
   const head = headerRow(state, now);
   if (head) elements.push(head);
 
@@ -147,7 +167,7 @@ function collectOps(blocks: Block[]): RenderOp[] {
  * Render one process stretch as a single outer row.
  *
  * Single kind → the plain row (「🛠 工具调用 ×N」/「🧠 思考过程」), unchanged.
- * Both kinds → one merged row titled「🛠 工具调用 ×N · 🧠 思考过程 ×M」whose
+ * Both kinds → one merged row titled「🧠 思考 ×N · 🛠 工具调用 ×M」whose
  * children are the individual calls and thinking segments IN CHRONOLOGICAL
  * ORDER (so tool,thinking,tool reads top-to-bottom inside one group instead
  * of stacking three separate rows).
@@ -166,9 +186,10 @@ function renderProcessRun(items: ProcessItem[], tables: TableBudget): object {
   const suffix = failed > 0 ? `（${failed} 失败）` : '';
   // Thinking first, tools last: the stretch usually opens with reasoning, and
   // trailing the tool count lets its failure count sit at the end of the
-  // title instead of dangling next to an unrelated count.
+  // title instead of dangling next to an unrelated count. The noun is
+  // 「工具调用」 — the same word the tools-only row uses.
   return collapsiblePanel({
-    title: `🧠 **思考** ×${thinkingCount} · 🛠 **工具** ×${toolCount}${suffix}`,
+    title: `🧠 **思考** ×${thinkingCount} · 🛠 **工具调用** ×${toolCount}${suffix}`,
     expanded: false,
     border: failed > 0 ? 'red' : 'grey',
     elements: items.flatMap((it) =>
@@ -319,8 +340,9 @@ function elapsedText(state: RunState, now: number): string | undefined {
   return `⏱ 用时 ${formatDuration(Math.max(0, (state.endedAt ?? now) - state.startedAt))}`;
 }
 
-/** 12.4s under a minute; 1 分 5 秒 past it. */
-function formatDuration(ms: number): string {
+/** 12.4s under a minute; 1 分 5 秒 past it. Exported so callers that build
+ *  their own footer line (e.g. `/doctor`) share the exact format. */
+export function formatDuration(ms: number): string {
   const secs = ms / 1000;
   if (secs < 60) return `${secs.toFixed(1)}s`;
   const mins = Math.floor(secs / 60);
@@ -358,8 +380,8 @@ function tokensText(usage: RunUsage): string | undefined {
   return `🧮 ${formatTokens((input ?? 0) + (output ?? 0))} tok（${sides.join(' / ')}）`;
 }
 
-/** 940 → `940`, 12345 → `12.3k`, 1234567 → `1.2M`. */
-function formatTokens(n: number): string {
+/** 940 → `940`, 12345 → `12.3k`, 1234567 → `1.2M`. Shared with /doctor's footer. */
+export function formatTokens(n: number): string {
   if (n < 1000) return String(n);
   if (n < 1_000_000) return `${trimZero(n / 1000)}k`;
   return `${trimZero(n / 1_000_000)}M`;
@@ -370,8 +392,9 @@ function trimZero(v: number): string {
   return s.endsWith('.0') ? s.slice(0, -2) : s;
 }
 
-/** 0.01234 → `$0.0123`; sub-cent amounts do not round to a free-looking $0.0000. */
-function formatCost(usd: number): string {
+/** 0.01234 → `$0.0123`; sub-cent amounts do not round to a free-looking $0.0000.
+ *  Shared with /doctor's footer. */
+export function formatCost(usd: number): string {
   if (usd === 0) return '$0';
   if (usd < 0.0001) return '<$0.0001';
   return `$${usd.toFixed(4)}`;

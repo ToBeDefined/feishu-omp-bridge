@@ -22,6 +22,7 @@ import {
   shell,
   staleNoticeCard,
   statusCard,
+  timeoutCard,
   type ContextInfo,
   workspacesCard,
 } from './templates';
@@ -934,6 +935,78 @@ describe('onlineCard', () => {
     expect(out).toContain('服务已重新启动');
     expect(out).not.toContain('"button"');
     expect(out).not.toContain('column');
+  });
+
+  it('附上调用方给的重启原因行（卡片只负责转义渲染）', () => {
+    const out = JSON.stringify(onlineCard('原因：手动启动。'));
+    expect(out).toContain('原因：手动启动。');
+  });
+});
+
+describe('timeoutCard', () => {
+  it('当前值两行 + 四个动作按钮的 payload', () => {
+    const out = JSON.stringify(
+      timeoutCard({ current: '当前 session 探活：30 分钟', global: '全局默认：60 分钟' }),
+    );
+    expect(out).toContain('当前 session 探活：30 分钟');
+    expect(out).toContain('全局默认：60 分钟');
+    expect(out).toContain('"cmd":"timeout","arg":"15"');
+    expect(out).toContain('"cmd":"timeout","arg":"30"');
+    expect(out).toContain('"cmd":"timeout","arg":"off"');
+    expect(out).toContain('"cmd":"timeout","arg":"default"');
+  });
+
+  it('notice 转义后原样回显（错误值里带 markdown 也不破卡）', () => {
+    const card = timeoutCard({ current: 'a', global: 'b', notice: '**1e3**' }) as {
+      body: { elements: Array<{ content?: string }> };
+    };
+    const noticeEl = card.body.elements.find((el) => el.content?.includes('1e3'));
+    expect(noticeEl?.content).toBe('\\*\\*1e3\\*\\*');
+  });
+
+  it('cancelled 终态不再渲染任何动作按钮', () => {
+    const out = JSON.stringify(timeoutCard({ current: 'a', global: 'b', cancelled: true }));
+    expect(out).toContain('已取消操作');
+    expect(out).not.toContain('"cmd":"timeout"');
+  });
+});
+
+describe('compactCard 取消入口', () => {
+  it('started 卡带「取消压缩」按钮，payload 复用 /stop', () => {
+    const out = JSON.stringify(compactCard({ phase: 'started' }));
+    expect(out).toContain('取消压缩');
+    expect(out).toContain('"cmd":"stop"');
+  });
+});
+
+describe('releaseCard / restartCard 排空超时', () => {
+  it('release 的超时态写明「超时」与中断数量，时限仍来自调用方', () => {
+    const out = JSON.stringify(
+      releaseCard({
+        steps: [],
+        phase: 'restarting',
+        drain: { runningCount: 2, timeoutMs: 5 * 60_000, timedOut: true },
+      }),
+    );
+    expect(out).toContain('超时');
+    expect(out).toContain('2 个在跑任务被中断');
+    // 每一处时限都由「最多」引出（没有另外硬编码的时间）。
+    const caps = out.match(/最多 \d+ 分钟/g) ?? [];
+    const mins = out.match(/\d+ 分钟/g) ?? [];
+    expect(mins.length).toBeGreaterThan(0);
+    expect(mins.length).toBe(caps.length);
+  });
+
+  it('restart 的 draining 超时变体说清强杀与中断数量', () => {
+    const out = JSON.stringify(
+      restartCard('draining', undefined, {
+        runningCount: 3,
+        timeoutMs: 5 * 60_000,
+        timedOut: true,
+      }),
+    );
+    expect(out).toContain('超时');
+    expect(out).toContain('3 个在跑任务被中断');
   });
 });
 

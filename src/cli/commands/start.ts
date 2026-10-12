@@ -40,8 +40,11 @@ import { resolveAppSecret } from '../../config/secret-resolver';
 import { finalizeInterruptedCards } from '../../card/managed';
 import {
   clearOnlineNotice,
+  onlineReasonNote,
+  recentChats,
   shouldAnnounceOrdinaryBoot,
   takeOnlineNotice,
+  type OnlineBootReason,
 } from '../../bot/online-notify';
 import { md, onlineCard, releaseCard, restartCard, shell } from '../../card/templates';
 import { RELEASE_STEPS } from '../../release/run';
@@ -466,10 +469,11 @@ export async function runStart(opts: StartOptions): Promise<void> {
     );
   }
 
-  // Startup notices are opt-in. `/release` already leaves its final
-  // 「🚀 已发布上线」 card, so ordinary boots and release boots stay silent;
-  // only `/restart` requests one, and even then the tracked restart card is
-  // finalized below — the text notice is just the no-card fallback.
+  // Startup notices are opt-in. `/release` leaves its final 「🚀 已发布上线」
+  // card for the requesting chat, and `/restart` finalizes its tracked card —
+  // both are handled below and neither broadcasts. The ordinary 「已上线」广播
+  // is throttled and, since this batch, limited to recently-active chats with
+  // a reason line.
   const notice = await takeOnlineNotice();
 
   // Crash/restart recovery: every card the previous process left in flight is
@@ -513,22 +517,29 @@ export async function runStart(opts: StartOptions): Promise<void> {
     await bridge.channel.send(notice.chatId, { markdown: '🚀 **已上线**' }, {}).catch((err) => {
       log.warn('notify', 'online-failed', { chatId: notice.chatId, err: String(err) });
     });
-  } else if (!notice) {
-    // ORDINARY boot (crash recovery, manual start, launchd relaunch): nobody
-    // requested the bounce, so announce the bot is back to every chat with a
-    // persisted session. `/release` (skip) and `/restart` (notify) cover
-    // themselves with their own command cards.
+  }
+
+  // 广播「已上线」：**只有完全无通知的普通启动**（含崩溃自愈）才广播；/release
+  // 与 /restart 都有自己的命令卡，不广播。只发给最近有活动的会话（长期不活跃
+  // 的群不再被打扰），并附上重启原因。
+  if (notice === undefined) {
+    const reason: OnlineBootReason = supervised ? 'crash-recovery' : 'manual';
     // Throttle: a crash loop would otherwise re-announce to every chat on each
     // boot. Stay silent if we announced within the window.
     if (await shouldAnnounceOrdinaryBoot()) {
       // Only real chat ids are valid receive_ids: session keys are scopes, and
       // cloud-doc comments (`doc:…`) / topic chats (`chatId:threadId`) would
-      // fail every boot.
-      const targets = sessions.chats().filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
+      // fail every boot. `recentChats` drops the long-inactive ones.
+      const targets = recentChats(
+        sessions.chats(),
+        (id) => sessions.getRaw(id)?.updatedAt,
+        Date.now(),
+      ).filter((id) => /^(oc_|cg_)/.test(id) && !id.includes(':'));
+      const card = onlineCard(onlineReasonNote(reason));
       for (const chatId of targets) {
         await bridge.channel
-          .send(chatId, { card: onlineCard() }, {})
-          .then(() => log.info('notify', 'online', { chatId }))
+          .send(chatId, { card }, {})
+          .then(() => log.info('notify', 'online', { chatId, reason }))
           .catch((err) => log.warn('notify', 'online-failed', { chatId, err: String(err) }));
       }
     } else {

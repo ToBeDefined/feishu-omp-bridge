@@ -595,6 +595,9 @@ export function compactCard(info: CompactInfo): object {
       md('🫧 **正在压缩会话上下文**', 'heading'),
       md('_完成后会在这里通知你。_', 'notation'),
       ...sizeBlock,
+      // 取消入口：压缩只用一个一次性 OMP 进程占住 run 槽（`occupyCompact`），
+      // 点它等价于 /stop —— 中断这次压缩，卡片随即被更新成「已取消」。
+      ...inlineActions([{ text: '⏹ 取消压缩', value: { cmd: 'stop' }, style: 'danger' }]),
     ]);
   }
   if (info.phase === 'failed') {
@@ -629,8 +632,11 @@ export interface ReleaseProgress {
    * 排空阶段：流水线已跑完，正在等在跑的 run 收尾 —— 当作**当前步骤**渲染，
    * 否则卡片停在「typecheck ✅、后面全空」，用户读到的就是卡死。数量由
    * `waitForRunsToDrain` 的回调刷新。
+   *
+   * `timedOut`：等到上限仍有 run 在跑，重启会把这些 run 一并杀掉 —— 必须
+   * 写在卡上（含被中断的数量），不能让用户以为它是正常收尾。
    */
-  drain?: { runningCount: number; timeoutMs: number };
+  drain?: { runningCount: number; timeoutMs: number; timedOut?: boolean };
   /** `force`：跳过排空、重启时会被中断的在跑 run 数（0 时不写数字）。 */
   interruptedCount?: number;
   /** Failure details from the failing step. */
@@ -665,6 +671,16 @@ function forceInterruptNote(runningCount: number): string {
     : '_强制重启：当前无在跑会话，服务马上重启。_';
 }
 
+/**
+ * 排空**超时**（等到上限仍有 run 在跑）的代价文案：说清是超时强杀、被杀掉
+ * 几个在跑任务。时限仍由调用方给出（`drainEtaLabel` 只把它读出来，卡片层
+ * 不编数字）；没给时限就不写「最多 N 分钟」。`/release` 与 `/restart` 共用。
+ */
+function drainTimeoutNote(runningCount: number, timeoutMs?: number): string {
+  const cap = timeoutMs === undefined ? '' : `（${drainEtaLabel(timeoutMs)}）`;
+  return `_⏱ 排空超时${cap}，强制重启；${runningCount} 个在跑任务被中断。_`;
+}
+
 export function releaseCard(progress: ReleaseProgress): RunCard {
   const icon =
     progress.phase === 'failed'
@@ -691,7 +707,9 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
   if (drain) {
     steps.push(
       md(
-        `${STEP_MARK.running} 等待 ${drain.runningCount} 个在跑的会话收尾（${drainEtaLabel(drain.timeoutMs)}）`,
+        drain.timedOut
+          ? `${STEP_MARK.running} 排空超时：${drain.runningCount} 个在跑会话未收尾`
+          : `${STEP_MARK.running} 等待 ${drain.runningCount} 个在跑的会话收尾（${drainEtaLabel(drain.timeoutMs)}）`,
       ),
     );
   }
@@ -720,9 +738,11 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
   } else if (progress.phase === 'restarting') {
     elements.push(
       md(
-        progress.forced
-          ? forceInterruptNote(progress.interruptedCount ?? 0)
-          : '_新进程启动后会确认上线。_',
+        drain?.timedOut
+          ? drainTimeoutNote(drain.runningCount, drain.timeoutMs)
+          : progress.forced
+            ? forceInterruptNote(progress.interruptedCount ?? 0)
+            : '_新进程启动后会确认上线。_',
         'notation',
       ),
     );
@@ -730,7 +750,9 @@ export function releaseCard(progress: ReleaseProgress): RunCard {
     elements.push(
       md(
         drain
-          ? '_排空完成后自动重启加载新产物。_'
+          ? drain.timedOut
+            ? drainTimeoutNote(drain.runningCount, drain.timeoutMs)
+            : '_排空完成后自动重启加载新产物。_'
           : progress.forced
             ? '_typecheck → test → build → 强制重启（不等在跑的 run）_'
             : '_typecheck → test → build → 自动重启_',
@@ -763,7 +785,7 @@ export function staleNoticeCard(): object {
 export function restartCard(
   phase: 'draining' | 'starting' | 'done' | 'failed',
   error?: string,
-  options: { forced?: boolean; runningCount?: number; timeoutMs?: number } = {},
+  options: { forced?: boolean; runningCount?: number; timeoutMs?: number; timedOut?: boolean } = {},
 ): object {
   if (phase === 'done') {
     return shell('🚀 重启完成', [
@@ -779,6 +801,12 @@ export function restartCard(
   }
   if (phase === 'draining') {
     const running = options.runningCount ?? 0;
+    if (options.timedOut) {
+      return shell('⏱ 排空超时', [
+        md('⏱ **排空超时，已强制重启**', 'heading'),
+        md(drainTimeoutNote(running, options.timeoutMs), 'notation'),
+      ]);
+    }
     return shell('⏳ 等待在跑的会话收尾', [
       md(`⏳ **正在等待 ${running} 个在跑的会话收尾**`, 'heading'),
       md(
@@ -812,12 +840,61 @@ export function agentSelectedCard(label: string): object {
 
 /** Boot confirmation for an ORDINARY start (crash recovery, manual launch):
  * nobody asked for the bounce, so the bot announces it came back. `/release`
- * and `/restart` are covered by their own command cards. */
-export function onlineCard(): RunCard {
+ * and `/restart` are covered by their own command cards.
+ *
+ * `reasonNote` is the preformatted restart reason (caller owns the wording;
+ * the card layer just renders it escaped). */
+export function onlineCard(reasonNote?: string): RunCard {
   return shell('🚀 已上线', [
     md('🚀 **已上线**', 'heading'),
     md('_服务已重新启动，可以继续发送消息。_', 'notation'),
+    ...(reasonNote ? [md(`_${escapeMd(reasonNote)}_`, 'notation')] : []),
   ]);
+}
+
+/**
+ * `/timeout` 设置卡。当前值 / 全局默认两行都由**调用方**拼好（它才持有配置
+ * 口径与文案策略），卡片只负责排版与转义 notice。`cancelled` 是取消后的
+ * 终态：保留当前值、去掉全部动作按钮。
+ *
+ * 动作按钮只带 `{cmd:'timeout', arg:'<值>'}` —— 点击走现有 `/timeout` 语义，
+ * 不新造命令。
+ */
+export interface TimeoutCardInfo {
+  /** 当前生效超时那一行（调用方拼好，如「当前 session 探活：15 分钟」）。 */
+  current: string;
+  /** 全局默认那一行（调用方拼好）。 */
+  global: string;
+  /** 可选的一行回执 / 报错（调用方给原文，卡片负责转义）。 */
+  notice?: string;
+  /** 取消后的终态：不再渲染动作按钮。 */
+  cancelled?: boolean;
+}
+
+export function timeoutCard(info: TimeoutCardInfo): object {
+  const elements: object[] = [
+    md('⏱ **探活超时设置**', 'heading'),
+    { tag: 'hr' },
+    ...(info.notice ? [md(escapeMd(info.notice))] : []),
+    md(info.current),
+    md(info.global, 'notation'),
+  ];
+  if (info.cancelled) {
+    elements.push(md('_已取消操作，未做修改。_', 'notation'));
+  } else {
+    elements.push(
+      ...inlineActions([
+        { text: '15 分钟', value: { cmd: 'timeout', arg: '15' } },
+        { text: '30 分钟', value: { cmd: 'timeout', arg: '30' } },
+      ]),
+      ...inlineActions([
+        { text: '关闭探活', value: { cmd: 'timeout', arg: 'off' }, style: 'danger' },
+        { text: '回退全局', value: { cmd: 'timeout', arg: 'default' } },
+      ]),
+      ...inlineActions([{ text: '取消', value: { cmd: 'timeout', arg: 'cancel' } }]),
+    );
+  }
+  return shell('⏱ 探活超时', elements);
 }
 
 const HELP_GROUPS: Array<{ title: string; items: Array<[string, string]> }> = [

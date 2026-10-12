@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import type { CommandContext } from '../index';
-import { releaseHandlers, waitForRunsToDrain, type DrainProgress } from './release';
+import { releaseHandlers, waitForRunsToDrain, RELEASE_DRAIN_MAX_MS, type DrainProgress } from './release';
 import { runRelease, type ReleaseResult } from '../../release/run';
 import { markOnlineNotice } from '../../bot/online-notify';
 
@@ -177,6 +177,24 @@ describe('/release', () => {
     const { ctx, sent } = makeCtx(false);
     await releaseHandlers['/release']!('', ctx);
     expect(sent.some((s) => s.includes('等待'))).toBe(false);
+  });
+
+  it('排空超时：卡上写明「超时」与被中断数量，不再只写日志', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(runRelease).mockResolvedValue({ ok: true });
+      const { ctx, sent } = makeCtx(() => 2);
+      const done = releaseHandlers['/release']!('', ctx);
+      await vi.advanceTimersByTimeAsync(RELEASE_DRAIN_MAX_MS + 1000);
+      await done;
+      const last = sent.at(-1)!;
+      expect(last).toContain('超时');
+      expect(last).toContain('2 个在跑任务被中断');
+      // 超时不能自称正常收尾，也不能提前宣布成功。
+      expect(last).not.toContain('已发布上线');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('force 也不能绕过「失败即止」：流水线失败就不重启', async () => {

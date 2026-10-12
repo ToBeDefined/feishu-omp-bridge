@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import {
   clearOnlineNotice,
   markOnlineNotice,
+  onlineReasonNote,
+  recentChats,
   shouldAnnounceOrdinaryBoot,
   takeOnlineNotice,
   withinAnnounceWindow,
@@ -95,5 +97,26 @@ describe('shouldAnnounceOrdinaryBoot（普通 boot 宣布节流）', () => {
     expect(withinAnnounceWindow(undefined, 1_000, 100)).toBe(false);
     expect(withinAnnounceWindow(950, 1_000, 100)).toBe(true);
     expect(withinAnnounceWindow(800, 1_000, 100)).toBe(false);
+  });
+});
+
+describe('online announce targeting（只通知活跃会话）', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  it('recentChats：只留窗口内有活动的会话，缺时间戳视为不活跃', () => {
+    const now = 1_700_000_000_000;
+    const updated: Record<string, number | undefined> = {
+      oc_active: now - 1000,
+      oc_old: now - 8 * DAY,
+      oc_missing: undefined,
+    };
+    expect(
+      recentChats(['oc_active', 'oc_old', 'oc_missing'], (id) => updated[id], now, 7 * DAY),
+    ).toEqual(['oc_active']);
+  });
+
+  it('onlineReasonNote：crash-recovery / manual（release 不广播，无此取值）', () => {
+    expect(onlineReasonNote('crash-recovery')).toContain('中断');
+    expect(onlineReasonNote('manual')).toContain('手动');
   });
 });

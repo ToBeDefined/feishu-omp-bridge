@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import type { CommandContext } from '../index';
 import { restartHandlers } from './restart';
+import { RELEASE_DRAIN_MAX_MS } from './release';
 import { clearOnlineNotice, markOnlineNotice } from '../../bot/online-notify';
 
 vi.mock('../../bot/online-notify', () => ({ markOnlineNotice: vi.fn(), clearOnlineNotice: vi.fn() }));
@@ -124,6 +125,23 @@ describe('/restart command', () => {
       expect(h.cards.at(-1)).not.toContain('等待');
       expect(restartProcess).toHaveBeenCalledTimes(1);
       expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'notify', undefined, 'om_card');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('排空超时：卡上写明超时与被中断数量，而非直接「服务即将重启」', async () => {
+    vi.useFakeTimers();
+    try {
+      const { ctx, restartProcess } = makeCtx(true, 2);
+      const done = restartHandlers['/restart']!('', ctx);
+      await vi.advanceTimersByTimeAsync(RELEASE_DRAIN_MAX_MS + 1000);
+      await done;
+      const last = h.cards.at(-1)!;
+      expect(last).toContain('排空超时');
+      expect(last).toContain('2 个在跑任务被中断');
+      expect(last).not.toContain('服务即将重启');
+      expect(restartProcess).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }

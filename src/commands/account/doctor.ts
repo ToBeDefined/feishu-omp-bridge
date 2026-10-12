@@ -1,12 +1,14 @@
 import { homedir } from 'node:os';
+import type { AgentEvent } from '../../agent/types';
 import { getAgentStopGraceMs } from '../../config/schema';
-import { renderCard } from '../../card/run-renderer';
+import { formatCost, formatDuration, formatTokens, renderCard } from '../../card/run-renderer';
 import {
   finalizeIfRunning,
   initialState,
   markInterrupted,
   reduce,
   type RunState,
+  type RunUsage,
 } from '../../card/run-state';
 import { log, readRecentLogs, sanitizeLogsForDoctor } from '../../core/logger';
 import type { CommandContext, Handler } from '../index';
@@ -118,6 +120,29 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
   }
 
   try {
+    // 本 run 的用时/用量：`usage` 事件不喂给 `reduce`（doctor 的卡由命令层
+    // 自己拼 footer，避免与 run-renderer 的内建脚注重复），而是这里累加后，
+    // 用 export 出来的格式化函数拼成一行 notation 交给卡片。
+    const startedAt = Date.now();
+    let usage: RunUsage | undefined;
+    const foldUsage = (evt: Extract<AgentEvent, { type: 'usage' }>): void => {
+      const next: RunUsage = { ...usage };
+      if (typeof evt.inputTokens === 'number') next.inputTokens = (usage?.inputTokens ?? 0) + evt.inputTokens;
+      if (typeof evt.outputTokens === 'number') next.outputTokens = (usage?.outputTokens ?? 0) + evt.outputTokens;
+      if (typeof evt.costUsd === 'number') next.costUsd = (usage?.costUsd ?? 0) + evt.costUsd;
+      usage = next;
+    };
+    // 缺项即省：只有用量事件到了才出现 token/费用；用时总是有（记录了开始时间）。
+    const footerLine = (): string => {
+      const parts = [`⏱ 用时 ${formatDuration(Date.now() - startedAt)}`];
+      if (usage && (usage.inputTokens !== undefined || usage.outputTokens !== undefined)) {
+        parts.push(`🧮 ${formatTokens((usage.inputTokens ?? 0) + (usage.outputTokens ?? 0))} tok`);
+      }
+      if (usage?.costUsd !== undefined) parts.push(`💰 ${formatCost(usage.costUsd)}`);
+      return parts.join(' · ');
+    };
+    const render = (state: RunState): object => renderCard(state, { bottomNote: footerLine() });
+
     if (isP2p) {
       await ctx.channel.stream(
         ctx.msg.chatId,
@@ -126,11 +151,12 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
             initial: renderCard(initialState),
             producer: async (ctrl) => {
               let state: RunState = initialState;
-              const flush = (): Promise<void> => ctrl.update(renderCard(state));
+              const flush = (): Promise<void> => ctrl.update(render(state));
               for await (const evt of handle.run.events) {
                 if (handle.interrupted) break;
                 if (evt.type === 'system') continue;
                 if (evt.type === 'usage') {
+                  foldUsage(evt);
                   if (evt.costUsd !== undefined) {
                     log.info('agent', 'usage', { step: 'doctor', costUsd: Number(evt.costUsd.toFixed(4)) });
                   }
@@ -154,6 +180,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
         if (handle.interrupted) break;
         if (evt.type === 'system') continue;
         if (evt.type === 'usage') {
+          foldUsage(evt);
           if (evt.costUsd !== undefined) {
             log.info('agent', 'usage', { step: 'doctor', costUsd: Number(evt.costUsd.toFixed(4)) });
           }
@@ -169,7 +196,7 @@ async function handleDoctor(args: string, ctx: CommandContext): Promise<void> {
         data: {
           receive_id: ctx.msg.senderId,
           msg_type: 'interactive',
-          content: JSON.stringify(renderCard(state)),
+          content: JSON.stringify(render(state)),
         },
       });
     }

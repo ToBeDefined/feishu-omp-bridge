@@ -61,9 +61,23 @@ async function handleRestart(args: string, ctx: CommandContext): Promise<void> {
       const drained = await waitForRunsToDrain(ctx.activeRuns, RELEASE_DRAIN_MAX_MS, {
         onWait: ({ runningCount: current }) => updateWaitCard(current),
       });
-      if (!drained) log.warn('command', 'restart-drain-timeout', { maxMs: RELEASE_DRAIN_MAX_MS });
-      // 排空结束、真要重启了：切回「服务即将重启」，别让等待态留在屏幕上。
-      if (messageId) {
+      if (!drained) {
+        log.warn('command', 'restart-drain-timeout', { maxMs: RELEASE_DRAIN_MAX_MS });
+        // 只写日志用户看不见：卡上写明超时强杀、几个在跑任务被中断，
+        // 别让「重启完成」把这次强杀盖过去。
+        if (messageId) {
+          await updateManagedCard(
+            ctx.channel,
+            messageId,
+            restartCard('draining', undefined, {
+              runningCount: ctx.activeRuns.runningCount(),
+              timeoutMs: RELEASE_DRAIN_MAX_MS,
+              timedOut: true,
+            }),
+          ).catch((err) => log.fail('command', err, { step: 'restart-card' }));
+        }
+      } else if (messageId) {
+        // 排空结束、真要重启了：切回「服务即将重启」，别让等待态留在屏幕上。
         await updateManagedCard(ctx.channel, messageId, restartCard('starting')).catch((err) =>
           log.fail('command', err, { step: 'restart-card' }),
         );

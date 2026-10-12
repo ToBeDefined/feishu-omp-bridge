@@ -146,6 +146,9 @@ async function handleRelease(args: string, ctx: CommandContext): Promise<void> {
         phase,
         forced: force,
         ...(interruptedCount !== undefined ? { interruptedCount } : {}),
+        // 排空超时也要留在**重启前最后一张卡**上（running 那张随后会被
+        // restarting 覆盖）：新进程只确认「已发布上线」，看不到这段。
+        ...(drain?.timedOut ? { drain } : {}),
         ...(phase === 'failed'
           ? { failStep: failingStep, failNote, output }
           : {}),
@@ -189,6 +192,12 @@ async function handleRelease(args: string, ctx: CommandContext): Promise<void> {
       });
       if (!drained) {
         log.warn('command', 'release-drain-timeout', { maxMs: RELEASE_DRAIN_MAX_MS });
+        // 只写日志用户看不见：卡上补「排空超时 + 被中断数量」，别把强杀
+        // 当成正常收尾。drain 至少被 onWait 写过一次（进入等待即上报）。
+        if (drain) {
+          drain = { ...drain, timedOut: true };
+          await push().catch((err) => log.fail('command', err, { step: 'release-card' }));
+        }
       }
     }
     await close('restarting').catch((err) => log.fail('command', err, { step: 'release-card' }));

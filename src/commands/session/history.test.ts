@@ -371,4 +371,24 @@ describe('/history', () => {
     // patch / 兜底回复都没发生。
     expect(reply).not.toHaveBeenCalled();
   });
+  it('card.update「收下但不渲染」（卡面标记没变）→ 自动补发新卡并撤回旧卡', async () => {
+    for (let i = 0; i < 9; i += 1) {
+      await writeSession(
+        `p${i}.jsonl`,
+        { id: `p${i}`, cwd: tmp, ts: '2026-01-01T00:00:00Z' },
+        1,
+        Date.now() - i * 60_000,
+      );
+    }
+    const { ctx } = makeCtx({ fromCardAction: true });
+    // 我们渲染的是第 2 页（第 9-9 个），但回读到的渲染文本仍停在第 1 页 →
+    // 判定「收下但不渲染」，不能让用户继续看着旧内容。
+    (ctx.channel as unknown as { rawClient: unknown }).rawClient = {
+      request: async () => ({ data: { messages: [{ content: '第 1-8 个' }] } }),
+    };
+    await handleHistory('all 8', ctx);
+    expect(updateManagedCard).toHaveBeenCalled();
+    // 关键：被判定「没渲染」后必须补发（用户才会看到新的一页），而不是静默。
+    expect(sendManagedCard).toHaveBeenCalled();
+  });
 });

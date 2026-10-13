@@ -122,6 +122,33 @@ export function withExpiryNotice(card: object): object {
  *      直接塞裸 card JSON 既不报错也不生效），然后认领登记，后续继续原地更新
  * ③ 都不行 → 回一句 `fallbackText`，绝不静默
  */
+/**
+ * CardKit 的 `card.update` 会「收下但不渲染」：HTTP 200 + `code 0`，实体的序号也前进了
+ * （所以不是并发/权限问题），但卡面回退成旧内容 —— 实测把同一份字节用 REST PUT 发出去
+ * 却能正常渲染。对**可校验的卡片**（如 /history 的分页卡带「第 N-M 个」标记），
+ * 更新后回读一次消息的渲染文本：标记没变就当作失败，走补发新卡，绝不让用户「点了没反应」。
+ */
+async function cardUpdateApplied(
+  channel: CommandContext['channel'],
+  messageId: string,
+  card: object,
+): Promise<boolean> {
+  const marker = /第 \d+-\d+ 个/.exec(JSON.stringify(card))?.[0];
+  if (!marker) return true; // 没有可校验标记的卡不做额外回读
+  try {
+    const res = await channel.rawClient.request({
+      method: 'GET',
+      url: '/open-apis/im/v1/messages',
+      params: { message_ids: messageId },
+    });
+    return JSON.stringify(res).includes(marker);
+  } catch (err) {
+    // 回读失败不改变主路径（宁可少一次校验，也不要因此把好卡判定为坏卡）。
+    log.warn('command', 'card-verify-failed', { messageId, err: String(err) });
+    return true;
+  }
+}
+
 export async function updateOrFallback(
   ctx: CommandContext,
   card: object,
@@ -134,8 +161,12 @@ export async function updateOrFallback(
   //    卡片层绝不自造 fallback：更新失败才走下面两条退路。
   try {
     await updateManagedCard(ctx.channel, messageId, card);
-    if (opts.keepManaged !== true) forgetManagedCard(messageId);
-    return;
+    if (await cardUpdateApplied(ctx.channel, messageId, card)) {
+      if (opts.keepManaged !== true) forgetManagedCard(messageId);
+      return;
+    }
+    // 「收下 but 不渲染」：不能让用户看着旧内容，落到下面的补发/回执路径。
+    log.warn('command', 'card-update-noop', { messageId });
   } catch (err) {
     log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
   }

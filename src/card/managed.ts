@@ -1,5 +1,7 @@
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
 import { readFile, rename, writeFile } from 'node:fs/promises';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import { compactCard, restartCard } from './templates';
@@ -90,6 +92,57 @@ export function freshSequence(last?: number): number {
   return seqFloor;
 }
 
+/**
+ * 每张卡已用过的最大 sequence 的水位（跨进程有效）。
+ *
+ * CardKit 的 `sequence` 是**实体级严格递增**：低于实体已用值的更新要么被拒
+ * （`300317`），要么更糟 —— HTTP 200 + `code 0` 却**不生效**。进程重启后若从
+ * `now` 重新起算，就可能落到水位之下，表现为「点了没反应/闪回旧页」。
+ * 所以水位必须落盘，且下一次取 `max(now, 水位 + 1)`。
+ */
+interface SeqWatermark {
+  [cardId: string]: number;
+}
+
+function watermarkPath(): string {
+  return join(dirname(paths.sessionsFile), 'card-sequences.json');
+}
+
+function loadWatermarks(): SeqWatermark {
+  try {
+    const raw = readFileSync(watermarkPath(), 'utf8');
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' ? (parsed as SeqWatermark) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveWatermarks(map: SeqWatermark): void {
+  try {
+    writeFileSync(watermarkPath(), `${JSON.stringify(map)}\n`, 'utf8');
+  } catch (err) {
+    log.warn('card', 'sequence-watermark-write-failed', { err: String(err) });
+  }
+}
+
+/** 该卡已知的最高序号（含历史进程写下的）。 */
+export function sequenceWatermark(cardId: string): number {
+  return loadWatermarks()[cardId] ?? 0;
+}
+
+function rememberSequence(cardId: string, sequence: number): void {
+  const map = loadWatermarks();
+  if ((map[cardId] ?? 0) >= sequence) return;
+  map[cardId] = sequence;
+  // 只保留最近的若干张卡，避免文件无限增长。
+  const keys = Object.keys(map);
+  if (keys.length > 200) {
+    for (const key of keys.slice(0, keys.length - 200)) delete map[key];
+  }
+  saveWatermarks(map);
+}
+
 export function managedSequence(messageId: string): number | undefined {
   return byMessageId.get(messageId)?.sequence;
 }
@@ -158,13 +211,16 @@ export async function updateManagedCard(
   if (!entry) {
     throw new Error(`no managed card registered for message ${messageId}`);
   }
-  entry.sequence = freshSequence(entry.sequence);
+  entry.sequence = freshSequence(Math.max(entry.sequence, sequenceWatermark(entry.cardId)));
   const payload = JSON.stringify(card);
+  // 诊断：卡片自报的页标记（/history 这类分页卡的「第 N-M 个」），一眼看出发的是哪一页。
+  const marker = /第 \d+-\d+ 个/.exec(payload)?.[0];
   log.debug('card', 'managed-update-sent', {
     messageId,
     cardId: entry.cardId,
     sequence: entry.sequence,
     chars: payload.length,
+    ...(marker ? { marker } : {}),
   });
   try {
     const res = await channel.rawClient.cardkit.v1.card.update({
@@ -182,11 +238,13 @@ export async function updateManagedCard(
     log.fail('card', err, { step: 'managed-update', cardId: entry.cardId, seq: entry.sequence });
     throw err;
   }
+  rememberSequence(entry.cardId, entry.sequence);
   log.debug('card', 'managed-updated', {
     messageId,
     cardId: entry.cardId,
     sequence: entry.sequence,
     chars: payload.length,
+    ...(marker ? { marker } : {}),
   });
   if (tracked.has(messageId)) void snapshotThrottled(messageId, card);
 }

@@ -10,6 +10,7 @@ import {
   forgetManagedCard,
   forgetStreamingCard,
   freshSequence,
+  sequenceWatermark,
   patchCardWithRetry,
   updateManagedCard,
   rememberStreamingCard,
@@ -463,5 +464,36 @@ describe('CardKit sequence（每张卡第一次更新曾经是空转）', () => 
     const b = freshSequence(a);
     expect(a).toBeGreaterThan(1);
     expect(b).toBeGreaterThan(a);
+  });
+});
+
+describe('sequence 水位（跨进程）', () => {
+  it('重启后取号必须高于该卡已用过的水位，否则更新会被静默忽略', async () => {
+    const seqs: number[] = [];
+    const channel = {
+      rawClient: {
+        cardkit: {
+          v1: {
+            card: {
+              update: async (req: { data: { sequence: number } }) => {
+                seqs.push(req.data.sequence);
+                return { code: 0 };
+              },
+            },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+    const card = { schema: '2.0', body: { elements: [] } };
+    adoptManagedCard('om_wm', '7699_wm');
+    await updateManagedCard(channel, 'om_wm', card);
+    forgetManagedCard('om_wm');
+    const watermark = sequenceWatermark('7699_wm');
+    // 上一进程用过的值必须被记住（CardKit 的 sequence 是实体级严格递增：
+    // 低于地板的值会被「接受但忽略」——HTTP 200 + code 0，卡面却不动）。
+    expect(watermark).toBeGreaterThan(1);
+    expect(watermark).toBe(seqs[0]);
+    // 模拟重启：新进程即使只按 now 取号，也必须被水位顶上去。
+    expect(freshSequence(sequenceWatermark('7699_wm'))).toBeGreaterThan(watermark);
   });
 });

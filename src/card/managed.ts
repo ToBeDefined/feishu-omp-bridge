@@ -159,13 +159,17 @@ export async function updateManagedCard(
     throw new Error(`no managed card registered for message ${messageId}`);
   }
   entry.sequence = freshSequence(entry.sequence);
+  const payload = JSON.stringify(card);
+  log.debug('card', 'managed-update-sent', {
+    messageId,
+    cardId: entry.cardId,
+    sequence: entry.sequence,
+    chars: payload.length,
+  });
   try {
     const res = await channel.rawClient.cardkit.v1.card.update({
       path: { card_id: entry.cardId },
-      data: {
-        card: { type: 'card_json', data: JSON.stringify(card) },
-        sequence: entry.sequence,
-      },
+      data: { card: { type: 'card_json', data: payload }, sequence: entry.sequence },
     });
     assertApiOk(res, 'managed-update', { cardId: entry.cardId, seq: entry.sequence });
   } catch (err) {
@@ -176,6 +180,7 @@ export async function updateManagedCard(
     messageId,
     cardId: entry.cardId,
     sequence: entry.sequence,
+    chars: payload.length,
   });
   if (tracked.has(messageId)) void snapshotThrottled(messageId, card);
 }

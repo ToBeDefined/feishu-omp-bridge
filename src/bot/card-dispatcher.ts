@@ -128,9 +128,9 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     log.info('cardAction', 'command-dedup', { cmd, scope });
     return;
   }
-  log.info('cardAction', 'cmd', { cmd, scope , messageId: deps.evt.messageId });
-
   const { name, args } = resolveCardCommand(cmd, payload);
+  // 把「意图参数」也记下来：卡片按钮的参数如果丢在回调里，命令会静默重渲染出同一页。
+  log.info('cardAction', 'cmd', { cmd, scope, messageId: deps.evt.messageId, args });
 
   try {
     const ok = await runCommandHandler(name ?? '', args, ctx);

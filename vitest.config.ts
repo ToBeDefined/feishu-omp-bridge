@@ -16,5 +16,10 @@ export default defineConfig({
     // 在 120s 步骤超时内跑完全量（实测 ~15s）。
     maxWorkers: 6,
     minWorkers: 1,
+    // 默认 5s 在这台机器上会假失败：`/release` 的测试步骤与其它重活并行时，load 能冲到 20~60
+    // （I/O 等待型），若干用例（熔断启动路径、OMP 子进程收尾）会超过 5s 而被判失败，
+    // 进而让整次发布中止。20s 只影响「真挂起」的发现时间，不掩盖真实失败。
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
   },
 });

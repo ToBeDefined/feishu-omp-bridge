@@ -137,7 +137,7 @@ describe('runStart 信号处理时序', () => {
     // 信号处理器在第一个 await 之前注册 —— runStart() 一返回就有效。
     process.emit('SIGINT');
 
-    await vi.waitFor(() => expect(codes).toEqual([0]));
+    await vi.waitFor(() => expect(codes).toEqual([0]), { timeout: 15_000 });
     // entry 尚未注册 → stop() 的守卫跳过注销；哨兵注册项毫发无损。
     expect(registryIds()).toEqual([SENTINEL_ID]);
   });
@@ -148,17 +148,17 @@ describe('runStart 信号处理时序', () => {
 
     pending = runStart({});
     // runStart 现在先 await 熔断闸门，故 loadConfig 的闸门句柄稍后才就位。
-    await vi.waitFor(() => expect(h.releaseConfig).toBeTypeOf('function'));
+    await vi.waitFor(() => expect(h.releaseConfig).toBeTypeOf('function'), { timeout: 15_000 });
     // 放行 config 读取，让 runStart 走完注册、停在建连上。
     h.releaseConfig?.({
       accounts: { app: { id: 'cli_self', tenant: 'feishu', secret: '${FOB_TEST_SECRET}' } },
       preferences: {},
     });
-    await vi.waitFor(() => expect(registryIds()).toHaveLength(2));
+    await vi.waitFor(() => expect(registryIds()).toHaveLength(2), { timeout: 15_000 });
 
     process.emit('SIGTERM');
 
-    await vi.waitFor(() => expect(codes).toEqual([0]));
+    await vi.waitFor(() => expect(codes).toEqual([0]), { timeout: 15_000 });
     const ids = registryIds();
     expect(ids).toContain(SENTINEL_ID); // 别人的注册项不受影响
     expect(ids.filter((id) => id !== SENTINEL_ID)).toEqual([]); // 自己的已注销
@@ -230,15 +230,15 @@ describe('runStart 失败路径最短化 + 熔断', () => {
     // 首轮 stop() 同步进入 stopping=true 后就 await，第二次信号应强杀。
     process.emit('SIGINT');
     process.emit('SIGINT');
-    await vi.waitFor(() => expect(codes).toContain(1));
+    await vi.waitFor(() => expect(codes).toContain(1), { timeout: 15_000 });
   });
 
   it('非 TTY 且配置不完整：exit(1) + 记录失败，且不做 preflight', async () => {
     const codes = captureExit();
     pending = runStart({});
-    await vi.waitFor(() => expect(h.releaseConfig).toBeTypeOf('function'));
+    await vi.waitFor(() => expect(h.releaseConfig).toBeTypeOf('function'), { timeout: 15_000 });
     h.releaseConfig?.({ accounts: { app: { id: 'cli_x' } } }); // 缺 tenant/secret
-    await vi.waitFor(() => expect(codes).toEqual([1]));
+    await vi.waitFor(() => expect(codes).toEqual([1]), { timeout: 15_000 });
     expect(vi.mocked(preFlightChecks)).not.toHaveBeenCalled();
     expect(await bootFailureCount()).toBe(1);
   });
@@ -253,7 +253,7 @@ describe('runStart 失败路径最短化 + 熔断', () => {
 
     pending = runStart({});
     // 熔断被放行 → 走到 loadConfig 挂闸门（说明继续了、没退）。
-    await vi.waitFor(() => expect(h.releaseConfig).toBeTypeOf('function'));
+    await vi.waitFor(() => expect(h.releaseConfig).toBeTypeOf('function'), { timeout: 15_000 });
     // 旧的 5 条被清零；本轮 boot 重新登记了一条 in-flight 记录（成功启动时会清掉）。
     const state = JSON.parse(readFileSync(BOOT_ATTEMPTS_FILE, 'utf8')) as {
       failures: Array<{ reason: string }>;

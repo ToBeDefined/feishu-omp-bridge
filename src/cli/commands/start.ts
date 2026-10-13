@@ -510,30 +510,30 @@ export async function runStart(opts: StartOptions): Promise<void> {
     // 所以更新它只有两条路：CardKit `card.update`（需要 card_id，命令层已随 marker 传过来）
     // 或重发。裸 card JSON 的 `im.message.patch` 对它无效（Historically 既不报错也不生效）。
     // 新进程没有旧进程的 sequence 计数，这里用毫秒时间戳保证严格递增。
-    const viaCardKit =
-      notice.cardId === undefined
-        ? false
-        : await bridge.channel.rawClient.cardkit.v1.card
-            .update({
-              path: { card_id: notice.cardId },
-              data: { card: { type: 'card_json', data: cardJson }, sequence: Date.now() },
-            })
-            .then(() => {
-              log.info('notify', 'command-card-confirmed', {
-                chatId: notice.chatId,
-                mode: notice.mode,
-                via: 'cardkit',
-              });
-              return true;
-            })
-            .catch((err) => {
-              log.warn('notify', 'command-card-confirm-failed', {
-                messageId: notice.messageId,
-                step: 'cardkit',
-                err: String(err),
-              });
-              return false;
-            });
+    // 注意：整段包 try/catch —— `rawClient.cardkit` 缺失时属性访问会**同步**抛错，
+    // 链式 `.catch()` 接不住，会把 boot 打挂（测试替身就是这种情况）。
+    let viaCardKit = false;
+    if (notice.cardId !== undefined) {
+      try {
+        await bridge.channel.rawClient.cardkit.v1.card.update({
+          path: { card_id: notice.cardId },
+          // 新进程没有旧进程的 sequence 计数：毫秒时间戳保证严格递增。
+          data: { card: { type: 'card_json', data: cardJson }, sequence: Date.now() },
+        });
+        log.info('notify', 'command-card-confirmed', {
+          chatId: notice.chatId,
+          mode: notice.mode,
+          via: 'cardkit',
+        });
+        viaCardKit = true;
+      } catch (err) {
+        log.warn('notify', 'command-card-confirm-failed', {
+          messageId: notice.messageId,
+          step: 'cardkit',
+          err: String(err),
+        });
+      }
+    }
     if (!viaCardKit) {
       const patched = await bridge.channel.rawClient.im.v1.message
         .patch({

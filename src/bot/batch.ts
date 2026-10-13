@@ -918,6 +918,10 @@ async function runCardPage(
   pageNow: number,
 ): Promise<boolean> {
   let overflow = false;
+  // 这一页的「页面级」渲染选项：续页（pageIndex>0）顶部始终带「接上一条消息」。
+  // 曾经只有初始卡与心跳带它，事件 patch 不带 —— 于是每来一个事件提示就消失、
+  // 心跳又把它加回来，用户看到的就是「一会有一会没有」。
+  const pageTop = pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : {};
   // Whether any agent event was reduced into this page. A page that only
   // drains carry after the stream ended has already shown its content in
   // the initial card (rendered in terminal state) — a finalize push would
@@ -933,7 +937,7 @@ async function runCardPage(
   let sawTerminalPush = filter(session.state).terminal !== 'running';
   const initialCard = renderCard(
     filter(session.state),
-    pageIndex > 0 ? { topNote: '⬆️ 接上一条消息', now: pageNow } : { now: pageNow },
+    { ...pageTop, now: pageNow },
   );
   // 这一页的飞书消息 id：producer 一开头就记下来（见下），收尾时用它决定
   // 「撤记录」还是「补终态」。**每一页各记各的** —— 从前它由外层的一个变量承接，
@@ -979,7 +983,7 @@ async function runCardPage(
                 if (tableSplit.carry.length > 0) return;
                 const heartbeatCard = renderCard(
                   heartbeatState,
-                  pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
+                  { ...pageTop },
                 );
                 if (cardExceedsBudget(heartbeatCard, heartbeatState)) return;
                 try {
@@ -1004,6 +1008,7 @@ async function runCardPage(
                   session.carry = split.carry;
                   q.push(
                     renderCard(filter({ ...split.page, terminal: 'done' }), {
+                      ...pageTop,
                       now,
                       midPage: true,
                       bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
@@ -1013,7 +1018,7 @@ async function runCardPage(
                   return false;
                 }
                 const filtered = filter(state);
-                const card = renderCard(filtered, { now });
+                const card = renderCard(filtered, { ...pageTop, now });
                 if (cardExceedsBudget(card, filtered)) {
                   // Close this page with only the content that FITS: the closing
                   // card used to carry the full overflowing state, so Feishu
@@ -1025,6 +1030,7 @@ async function runCardPage(
                     session.carry = byteSplit.carry;
                     q.push(
                       renderCard(filter({ ...byteSplit.page, terminal: 'done' }), {
+                        ...pageTop,
                         now,
                         midPage: true,
                         bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
@@ -1060,13 +1066,14 @@ async function runCardPage(
                   session.carry = byteSplit.carry;
                   q.push(
                     renderCard(filter(byteSplit.page), {
+                      ...pageTop,
                       now,
                       midPage: true,
                       bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
                     }),
                   );
                 } else {
-                  q.push(renderCard(filter(final), { now }));
+                  q.push(renderCard(filter(final), { ...pageTop, now }));
                 }
                 await q.flush();
                 // (reap happens once in streamCardPages' finally, after all pages)

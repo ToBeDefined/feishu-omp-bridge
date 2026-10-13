@@ -263,12 +263,15 @@ describe('分页关闭时 patch 未落地（SDK 的 patch 是异步的）', () =
     channel: LarkChannel;
     messageIds: string[];
     patched: object[];
+    patchedByMessage: Array<{ messageId: string; card: object }>;
   } {
     const messageIds: string[] = [];
     const patched: object[] = [];
+    const patchedByMessage: Array<{ messageId: string; card: object }> = [];
     const patch = async (messageId: string, card: object): Promise<void> => {
       if (failIds.has(messageId)) throw new Error('AxiosError: Request failed with status code 400');
       patched.push(card);
+      patchedByMessage.push({ messageId, card });
     };
     const channel = {
       stream: async (
@@ -306,7 +309,7 @@ describe('分页关闭时 patch 未落地（SDK 的 patch 是异步的）', () =
         },
       },
     };
-    return { channel: channel as unknown as LarkChannel, messageIds, patched };
+    return { channel: channel as unknown as LarkChannel, messageIds, patched, patchedByMessage };
   }
 
   /** 12 张表让第一页必然在表格预算处收尾（换页），即「一页关闭」。 */
@@ -322,7 +325,7 @@ describe('分页关闭时 patch 未落地（SDK 的 patch 是异步的）', () =
   it('一页关闭的 patch 被拒 → 这张卡的登记留着（否则卡停在运行态且无人认领）', async () => {
     // 修复前：producer 的 finally 无条件 forgetStreamingCard，等 stream() 把收尾
     // patch 的失败抛出来时，登记已经没了 —— 卡上的 ⏹ 永远挂着（线上事故形态）。
-    const { channel, messageIds } = deferredPatchChannel(new Set(['om_page0']));
+    const { channel, messageIds, patchedByMessage } = deferredPatchChannel(new Set(['om_page0']));
 
     await streamCardPages(
       channel, 'oc_x', {}, fakeHandle(overflowingEvents), {} as unknown as SessionStore, 'oc_x', '/tmp',
@@ -335,7 +338,7 @@ describe('分页关闭时 patch 未落地（SDK 的 patch 是异步的）', () =
   });
 
   it('每页的 patch 都确认落地才撤登记：分页正常跑完 running-cards 为空', async () => {
-    const { channel, messageIds, patched } = deferredPatchChannel(new Set());
+    const { channel, messageIds, patched, patchedByMessage } = deferredPatchChannel(new Set());
 
     await streamCardPages(
       channel, 'oc_x', {}, fakeHandle(overflowingEvents), {} as unknown as SessionStore, 'oc_x', '/tmp',
@@ -345,6 +348,13 @@ describe('分页关闭时 patch 未落地（SDK 的 patch 是异步的）', () =
 
     expect(messageIds.length).toBeGreaterThan(1); // 确实分页了
     expect(patched.length).toBeGreaterThan(0);
+    // 续页顶部提示必须**每张画面都在**：曾经只有初始卡与心跳带它，事件 patch 不带，
+    // 用户看到的就是「一会有一会没有」。
+    const firstPage = patchedByMessage.filter((p) => p.messageId === messageIds[0]);
+    const laterPages = patchedByMessage.filter((p) => p.messageId !== messageIds[0]);
+    expect(laterPages.length).toBeGreaterThan(0);
+    for (const p of firstPage) expect(JSON.stringify(p.card)).not.toContain('接上一条消息');
+    for (const p of laterPages) expect(JSON.stringify(p.card)).toContain('接上一条消息');
     // 确认成功 → 登记全撤（既不留死记录，也不给已完成的卡补「进程中断」）。
     expect(await leftovers()).toEqual([]);
   });

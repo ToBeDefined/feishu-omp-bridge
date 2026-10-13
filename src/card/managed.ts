@@ -140,6 +140,13 @@ export async function updateManagedCard(
 }
 
 /** Drop the mapping; call after the card is recalled or the flow ends. */
+/** 把一张**已存在**的卡片消息认领进托管表（消息内容已指向 cardId 的卡片实体）。
+ *  用于「卡片不在托管表里」时的补救路径：新建实体 → 改写消息引用 → 认领登记，
+ *  这样后续点击继续走 CardKit 原地更新，而不是每次都重发。 */
+export function adoptManagedCard(messageId: string, cardId: string): void {
+  byMessageId.set(messageId, { cardId, sequence: 0 });
+}
+
 export function forgetManagedCard(messageId: string): void {
   byMessageId.delete(messageId);
   tracked.delete(messageId);

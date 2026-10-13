@@ -37,7 +37,7 @@ import {
   noteBootSuccess,
 } from '../../daemon/boot-guard';
 import { resolveAppSecret } from '../../config/secret-resolver';
-import { finalizeInterruptedCards } from '../../card/managed';
+import { adoptManagedCard, finalizeInterruptedCards } from '../../card/managed';
 import {
   clearOnlineNotice,
   onlineReasonNote,
@@ -499,18 +499,36 @@ export async function runStart(opts: StartOptions): Promise<void> {
             phase: 'success',
           })
         : restartCard('done');
-    await bridge.channel.rawClient.im.v1
-      .message.patch({
-        path: { message_id: notice.messageId },
-        data: { content: JSON.stringify(terminal) },
-      })
-      .then(() => log.info('notify', 'command-card-confirmed', { chatId: notice.chatId, mode: notice.mode }))
-      .catch((err) =>
+    // 注意：命令卡是**托管卡**（消息内容为 `{"type":"card","data":{"card_id":…}}` 引用），
+    // 直接拿裸 card JSON 去 patch 既不报错也不生效（老进程那张卡会永远停在「正在发布」）。
+    // 正确做法与 `updateOrFallback` 一致：新建一个卡片实体 → 把消息内容改指向它 → 认领登记。
+    const confirmedCardId = await bridge.channel.rawClient.cardkit.v1.card
+      .create({ data: { type: 'card_json', data: JSON.stringify(terminal) } })
+      .then((created) => (created as { data?: { card_id?: string } }).data?.card_id)
+      .catch((err) => {
         log.warn('notify', 'command-card-confirm-failed', {
           messageId: notice.messageId,
           err: String(err),
-        }),
-      );
+        });
+        return undefined;
+      });
+    if (confirmedCardId) {
+      await bridge.channel.rawClient.im.v1.message
+        .patch({
+          path: { message_id: notice.messageId },
+          data: { content: JSON.stringify({ type: 'card', data: { card_id: confirmedCardId } }) },
+        })
+        .then(() => {
+          adoptManagedCard(notice.messageId!, confirmedCardId);
+          log.info('notify', 'command-card-confirmed', { chatId: notice.chatId, mode: notice.mode });
+        })
+        .catch((err) =>
+          log.warn('notify', 'command-card-confirm-failed', {
+            messageId: notice.messageId,
+            err: String(err),
+          }),
+        );
+    }
   } else if (notice?.mode === 'notify' && !finalizedRestart) {
     // /restart requested a notice but no restart card was recovered (e.g. the
     // card was never created) — fall back to a text confirmation.

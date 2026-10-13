@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { EXPIRED_INTERACTION_TEXT, formatIdleLine, updateOrFallback, withExpiryNotice } from './shared';
 
 vi.mock('../card/managed', async (orig) => {
@@ -105,35 +105,60 @@ describe('formatIdleLine', () => {
   });
 });
 
-describe('updateOrFallback：卡片不在托管表里时的补发（重启前老卡的翻页/选择）', () => {
+describe('updateOrFallback：卡片不在托管表里时的补救', () => {
   const card = { schema: '2.0', body: { elements: [{ tag: 'markdown', content: '第二页' }] } };
-  const ctx = (): never =>
+  const makeCtx = (opts: { cardkit?: boolean } = {}): never =>
     ({
       msg: { chatId: 'oc_1', messageId: 'om_old' },
-      channel: { rawClient: { im: { v1: { message: { patch: vi.fn(async () => ({})) } } } } },
+      channel: {
+        rawClient: {
+          ...(opts.cardkit
+            ? {
+                cardkit: {
+                  v1: { card: { create: vi.fn(async () => ({ data: { card_id: 'card_new' } })) } },
+                },
+              }
+            : {}),
+          im: { v1: { message: { patch: vi.fn(async () => ({})) } } },
+        },
+        send: vi.fn(async () => ({ messageId: 'om_new' })),
+      },
+      chatMode: 'p2p',
     }) as never;
 
   beforeEach(() => {
     vi.mocked(sendManagedCard).mockClear();
     vi.mocked(updateManagedCard).mockReset();
-    vi.mocked(updateManagedCard).mockRejectedValue(new Error('no managed card registered for message om_old'));
+    vi.mocked(updateManagedCard).mockRejectedValue(
+      new Error('no managed card registered for message om_old'),
+    );
   });
 
-  it('resendWhenUnmanaged: 托管更新失败 → 补发新卡（而不是那条既不报错也不换内容的 raw patch）', async () => {
-    const c = ctx();
+  it('不在托管表：新建卡片实体 → 把消息内容改指向它 + 认领登记（而不是裸 JSON patch）', async () => {
+    const c = makeCtx({ cardkit: true });
+    await updateOrFallback(c, card, '兜底文案');
+    const raw = c as unknown as {
+      channel: { rawClient: { cardkit: { v1: { card: { create: Mock } } }; im: { v1: { message: { patch: Mock } } } } };
+    };
+    expect(raw.channel.rawClient.cardkit.v1.card.create).toHaveBeenCalledTimes(1);
+    const patchArg = raw.channel.rawClient.im.v1.message.patch.mock.calls[0]![0] as {
+      data: { content: string };
+    };
+    // 关键：patch 的内容必须是**卡片实体引用**，不是裸 card JSON。
+    expect(JSON.parse(patchArg.data.content)).toEqual({ type: 'card', data: { card_id: 'card_new' } });
+    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled(); // 原地解决，不重发
+  });
+
+  it('连 cardkit 都用不了：退回一条可见回复（绝不静默）', async () => {
+    const c = makeCtx();
+    await updateOrFallback(c, card, '请重新发送 `/history` 查看会话列表。');
+    const sent = (c as unknown as { channel: { send: Mock } }).channel.send;
+    expect(sent).toHaveBeenCalled();
+  });
+
+  it('resendWhenUnmanaged 且原地认领也失败：补发一张新卡', async () => {
+    const c = makeCtx();
     await updateOrFallback(c, card, '兜底文案', { keepManaged: true, resendWhenUnmanaged: true });
     expect(vi.mocked(sendManagedCard)).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(sendManagedCard).mock.calls[0]![1]).toBe('oc_1');
-    expect(vi.mocked(sendManagedCard).mock.calls[0]![2]).toBe(card);
-  });
-
-  it('不带该选项时保持旧行为：走 raw patch', async () => {
-    const c = ctx();
-    await updateOrFallback(c, card, '兜底文案');
-    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled();
-    expect(
-      (c as unknown as { channel: { rawClient: { im: { v1: { message: { patch: unknown } } } } } }).channel
-        .rawClient.im.v1.message.patch,
-    ).toHaveBeenCalled();
   });
 });

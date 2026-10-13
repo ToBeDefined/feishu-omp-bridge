@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import type { CommandContext } from './index';
 import { log } from '../core/logger';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
+import { adoptManagedCard, forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { md, staleNoticeCard } from '../card/templates';
 
 /** Rendered idle-timeout line: scope override wins over the global default. */
@@ -118,7 +118,8 @@ export function withExpiryNotice(card: object): object {
  *   外加每条一次 warning 日志。
  *
  * ① 托管卡片 → CardKit 更新（带 sequence）
- * ② 否则 → `im.message.patch` 整体替换消息内容（手工卡片 / 重启前老卡片也能变）
+ * ② 否则 → 新建卡片实体并把消息内容**改指向新实体**（托管卡/老卡的唯一有效路径：
+ *      直接塞裸 card JSON 既不报错也不生效），然后认领登记，后续继续原地更新
  * ③ 都不行 → 回一句 `fallbackText`，绝不静默
  */
 export async function updateOrFallback(
@@ -136,11 +137,32 @@ export async function updateOrFallback(
   } catch (err) {
     log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
   }
-  // 1.b) 列表 / 分页 / 选择器这类**会被反复点击**的卡：卡片不在当前进程的托管表里
-  //      （最常见的是上次重启前发出的老卡）时，CardKit 更新做不到；而下面的
-  //      `im.message.patch` 对 CardKit 卡既不报错、也不会真的换内容 —— 用户看到的
-  //      就是「点了没反应」。这种时候直接**补发一张新卡**（老卡尽力撤回），
-  //      保证他看到的确实翻页 / 换页了。
+  // 2) 卡片不在托管表里（最常见：上一次进程里发出的卡）。这里**不能**直接拿裸 card JSON
+  //    去 patch：托管卡的消息内容其实是 `{"type":"card","data":{"card_id":…}}`（卡片实体
+  //    的**引用**），塞裸 JSON 既不报错也不生效 —— 用户看到的就是「点了没反应」。
+  //    正确做法：新建一个卡片实体，把消息内容改指向它，并认领进托管表（后续点击继续
+  //    原地更新）。对内容本来就是裸 JSON 的卡（流式卡）同样有效。
+  try {
+    const created = await ctx.channel.rawClient.cardkit.v1.card.create({
+      data: { type: 'card_json', data: JSON.stringify(card) },
+    });
+    const newCardId = (created as { data?: { card_id?: string } }).data?.card_id;
+    if (newCardId) {
+      await ctx.channel.rawClient.im.v1.message.patch({
+        path: { message_id: messageId },
+        data: { content: JSON.stringify({ type: 'card', data: { card_id: newCardId } }) },
+      });
+      adoptManagedCard(messageId, newCardId);
+      log.info('command', 'card-adopted', { messageId, cardId: newCardId });
+      return;
+    }
+    log.warn('command', 'card-adopt-no-id', { messageId });
+  } catch (err) {
+    log.warn('command', 'card-patch-failed', { messageId, err: String(err) });
+  }
+  // 1.b) 兜底中的兜底：上面的「新建实体 + 改写引用」也失败时（例如 cardkit 不可用），
+  //      列表 / 分页 / 选择器这类**会被反复点击**的卡就**补发一张新卡**（老卡尽力撤回），
+  //      保证用户看到的确实翻页 / 换页了。
   if (opts.resendWhenUnmanaged === true) {
     log.info('command', 'card-resend-unmanaged', { messageId });
     const sent = await sendManagedCard(ctx.channel, ctx.msg.chatId, card, ctx.msg.messageId).catch(
@@ -153,17 +175,6 @@ export async function updateOrFallback(
       await recallMessage(ctx, messageId).catch(() => undefined);
       return;
     }
-  }
-  // 2) 退而求其次：把消息内容整体 patch 成新卡片 —— 对「bridge 之外发的卡片」
-  //    （手工调试）与「重启前的老卡片」都有效，用户看到卡片真的变成「已取消」。
-  try {
-    await ctx.channel.rawClient.im.v1.message.patch({
-      path: { message_id: messageId },
-      data: { content: JSON.stringify(card) },
-    });
-    return;
-  } catch (err) {
-    log.warn('command', 'card-patch-failed', { messageId, err: String(err) });
   }
   // 3) 两条都不行：至少回一句，别让点击看起来没发生。
   await reply(ctx, fallbackText);

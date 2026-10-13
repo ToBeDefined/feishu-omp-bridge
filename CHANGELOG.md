@@ -14,6 +14,17 @@
 ## [Unreleased]
 
 ### Fixed
+- **更新卡片时拿「裸 card JSON」去 patch 托管卡 —— 既不报错也不生效**（本轮真因）：
+  托管卡（`sendManagedCard`）的消息内容其实是 `{"type":"card","data":{"card_id":…}}`
+  （**卡片实体引用**），直接塞裸 card JSON 的 `im.message.patch` 会被接受但看不到任何变化 ——
+  用户侧表现就是「点了没反应」，日志里只有一条 `card-settle-fallback`、没有任何失败。
+  - `updateOrFallback` 的第②步改为：**新建卡片实体 → 把消息内容改指向新实体 → 认领登记**
+    （`adoptManagedCard`），后续点击继续走 CardKit 原地更新；cardkit 也不可用时才退回补发新卡
+    （列表/选择器路径）/ 纯文本兜底（终态路径）。
+  - **同类问题一并修掉**：`start.ts` 在重启后给发布/重启卡盖「已上线」章时用的是同一条裸 JSON patch
+    —— 同样可能「报成功但卡面不动」，现在也改成「新建实体 + 改写引用 + 认领」。
+  - 不受影响（已核实）：流式卡的更新与 `patchCardWithRetry`/`patchStrandedCard`/启动补卡走的是
+    **裸 JSON 内容**的流式卡（线上流式更新一直正常），因此无需改动。
 - **翻页/切换在「重启前发出的老卡」上点了没反应**：那张卡不在当前进程的托管表里 → CardKit 原地更新
   失败 → 退回的 `im.message.patch` 对 CardKit 卡**既不报错也不换内容**（日志只有一条
   `card-settle-fallback`，没有任何失败），于是用户看到「点了没反应」。现在列表 / 分页 / 选择器类路径

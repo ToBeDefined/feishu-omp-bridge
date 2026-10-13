@@ -10,7 +10,6 @@ import type { AppConfig } from '../config/schema';
 import { getMaxConcurrentRuns } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { log, withTrace, gcOldLogs } from '../core/logger';
-import { startOrphanSweep } from '../card/managed';
 import { gcMediaCache, MediaCache, MEDIA_GC_MAX_AGE_MS } from '../media/cache';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
@@ -312,12 +311,6 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     });
   }, MAINTENANCE_INTERVAL_MS);
   maintenance.unref?.();
-
-  // 孤儿卡巡检：卡片停在运行态、而它的 run 已经不在跑（分页关闭的 patch 被飞书拒、
-  // 兜底补卡也没成功…）时，光靠下次重启的 finalizeInterruptedCards 收尾会让那个
-  // ⏹ 挂到天荒地老。按拍子扫 running-cards.json，只补「该聊天确实没有在跑的 run」
-  // 的条目 —— 长工具调用期间的卡一律跳过（见 sweepOrphanedCards）。
-  const stopOrphanSweep = startOrphanSweep(channel, (chatId) => activeRuns.hasAnyForChat(chatId));
 
   const identity = channel.botIdentity;
   log.info('ws', 'connected', {

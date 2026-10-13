@@ -137,9 +137,8 @@ function emit(level: Level, phase: string, event: string, fields: LogFields = {}
 
   // Stdout is the user-facing tail: warns, errors, and a curated list
   // of info events (WS lifecycle, message intake, run final). Debug stays
-  // file-only — it exists for the periodic sweeps, whose per-card skip lines
-  // would otherwise be pure noise on every tick. The full detail always lives
-  // in the file regardless.
+  // file-only — per-tick/per-retry detail would otherwise be pure noise on
+  // stdout. The full detail always lives in the file regardless.
   const showOnStdout =
     level === 'warn' ||
     level === 'error' ||

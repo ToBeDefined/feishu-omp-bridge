@@ -11,7 +11,6 @@ import {
   rememberStreamingCard,
   runningCardsSettled,
   stripRunningState,
-  sweepOrphanedCards,
   type RunningCardKind,
 } from './managed';
 import { paths } from '../config/paths';
@@ -422,83 +421,5 @@ describe('patchCardWithRetry（终态 patch 的限频重试）', () => {
     });
     await expect(patchCardWithRetry(channel, 'om_noise', card)).resolves.toBe(false);
     expect(calls).toBe(1);
-  });
-});
-
-describe('sweepOrphanedCards（周期巡检）', () => {
-  let dir: string;
-  let file: string;
-  const origFile = paths.runningCardsFile;
-  const card = { schema: '2.0', config: { summary: { content: '正在调用工具' } }, body: { elements: [] } };
-
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), 'sweep-test-'));
-    file = join(dir, 'running-cards.json');
-    paths.runningCardsFile = file;
-  });
-  afterEach(async () => {
-    await runningCardsSettled();
-    paths.runningCardsFile = origFile;
-    await rm(dir, { recursive: true, force: true });
-  });
-
-  const persisted = async (): Promise<string[]> => {
-    const raw = JSON.parse(await readFile(file, 'utf8').catch(() => '[]')) as Array<{ messageId: string }>;
-    return raw.map((e) => e.messageId);
-  };
-  const channel = (patch: () => Promise<unknown>): LarkChannel =>
-    ({ rawClient: { im: { v1: { message: { patch } } } } }) as unknown as LarkChannel;
-
-  it('所属 run 已不在跑 → 补成终态并清掉登记', async () => {
-    rememberStreamingCard('om_orphan', 'oc_idle', card);
-    await runningCardsSettled();
-    const patched: string[] = [];
-    const res = await sweepOrphanedCards(
-      channel(async () => {
-        patched.push('ok');
-        return {};
-      }),
-      () => false,
-    );
-    expect(res.swept).toEqual(['om_orphan']);
-    expect(patched).toHaveLength(1);
-    expect(await persisted()).toEqual([]);
-  });
-
-  it('该聊天仍有在跑的 run → 不动它（长工具调用期间卡片不更新是正常的）', async () => {
-    rememberStreamingCard('om_busy', 'oc_busy', card);
-    await runningCardsSettled();
-    let called = 0;
-    const res = await sweepOrphanedCards(
-      channel(async () => {
-        called += 1;
-        return {};
-      }),
-      (chatId) => chatId === 'oc_busy',
-    );
-    expect(res.swept).toEqual([]);
-    expect(res.skipped).toEqual(['om_busy']);
-    expect(called).toBe(0);
-    expect(await persisted()).toEqual(['om_busy']); // 记录保留，下次还有机会
-  });
-
-  it('退避未到期 → 本轮不外呼', async () => {
-    rememberStreamingCard('om_backoff', 'oc_idle', card);
-    await runningCardsSettled();
-    // 手工把 nextAttemptAt 推到未来（模拟上一轮补卡失败后的退避）
-    const entries = JSON.parse(await readFile(file, 'utf8')) as Array<Record<string, unknown>>;
-    entries[0]!.nextAttemptAt = new Date(Date.now() + 60_000).toISOString();
-    await writeFile(file, JSON.stringify(entries), 'utf8');
-    let called = 0;
-    const res = await sweepOrphanedCards(
-      channel(async () => {
-        called += 1;
-        return {};
-      }),
-      () => false,
-    );
-    expect(called).toBe(0);
-    expect(res.swept).toEqual([]);
-    expect(res.skipped).toEqual(['om_backoff']);
   });
 });

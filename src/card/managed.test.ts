@@ -4,10 +4,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  adoptManagedCard,
   finalizeByKind,
   finalizeInterruptedCards,
+  forgetManagedCard,
   forgetStreamingCard,
+  freshSequence,
   patchCardWithRetry,
+  updateManagedCard,
   rememberStreamingCard,
   runningCardsSettled,
   stripRunningState,
@@ -421,5 +425,43 @@ describe('patchCardWithRetry（终态 patch 的限频重试）', () => {
     });
     await expect(patchCardWithRetry(channel, 'om_noise', card)).resolves.toBe(false);
     expect(calls).toBe(1);
+  });
+});
+
+describe('CardKit sequence（每张卡第一次更新曾经是空转）', () => {
+  it('首次更新发出的序号必须 > 1，之后严格递增', async () => {
+    const seqs: number[] = [];
+    const channel = {
+      rawClient: {
+        cardkit: {
+          v1: {
+            card: {
+              update: async (req: { data: { sequence: number } }) => {
+                seqs.push(req.data.sequence);
+                return { code: 0 };
+              },
+            },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+    const card = { schema: '2.0', body: { elements: [] } };
+    adoptManagedCard('om_seq', '7699_seq');
+    await updateManagedCard(channel, 'om_seq', card);
+    await updateManagedCard(channel, 'om_seq', card);
+    forgetManagedCard('om_seq');
+    // card.create 已经占用了 1：等于或小于当前值会被静默忽略（HTTP 200 + code 0，卡面不动）。
+    // 实测同一实体 seq=1 无变化、seq=2 立刻生效，所以第一次更新就必须 > 1。
+    expect(seqs[0]!).toBeGreaterThan(1);
+    expect(seqs[1]!).toBeGreaterThan(seqs[0]!);
+    // 毫秒时间戳会超 int32：飞书直接回 9499 Invalid parameter value: Sequence。
+    expect(seqs[1]!).toBeLessThan(2 ** 31);
+  });
+
+  it('freshSequence 单调、永不为 1', () => {
+    const a = freshSequence();
+    const b = freshSequence(a);
+    expect(a).toBeGreaterThan(1);
+    expect(b).toBeGreaterThan(a);
   });
 });

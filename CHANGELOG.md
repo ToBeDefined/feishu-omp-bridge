@@ -14,6 +14,12 @@
 ## [Unreleased]
 
 ### Fixed
+- **CardKit `sequence` 语义搞错了，导致「卡片更新返回成功但卡面不动」**。实测（同一实体、相邻时刻）：
+  `sequence=1` → 卡面**毫无变化**且接口回 `code 0`；`sequence=2` → **立刻生效**。因为 `card.create`
+  已经占用了 1，而我们每个进程从 1 开始数 → **每张卡的第一次更新都是空转**；过小的值还会被直接拒
+  （`300317`），毫秒时间戳则超 int32（`9499 Invalid parameter value: Sequence`）。
+  现在统一由 `freshSequence()` 生成：以「秒」为基准、单调递增、永不为 1、长期留在 int32 内，
+  天然跨进程（不再依赖 boot marker 里的序号，那里也一起切过去）。
 - **卡片更新「返回成功却不生效」的根因：飞书错误是 HTTP 200 + 非 0 `code`**。
   实测：把 `sequence` 传成毫秒时间戳时，接口返回 200 且响应体是
   `{"code":9499,"message":"Invalid parameter value: Sequence …"}`；改用小序号（2）后**立刻生效**。

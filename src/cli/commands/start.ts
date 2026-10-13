@@ -37,7 +37,7 @@ import {
   noteBootSuccess,
 } from '../../daemon/boot-guard';
 import { resolveAppSecret } from '../../config/secret-resolver';
-import { assertApiOk, adoptManagedCard, finalizeInterruptedCards } from '../../card/managed';
+import { assertApiOk, freshSequence, adoptManagedCard, finalizeInterruptedCards } from '../../card/managed';
 import {
   clearOnlineNotice,
   onlineReasonNote,
@@ -521,7 +521,7 @@ export async function runStart(opts: StartOptions): Promise<void> {
           path: { card_id: notice.cardId },
           data: {
             card: { type: 'card_json', data: cardJson },
-            sequence: (notice.sequence ?? 0) + 1,
+            sequence: freshSequence(notice.sequence),
           },
         });
         assertApiOk(res, 'command-card-confirm', { messageId: notice.messageId });

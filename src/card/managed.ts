@@ -76,6 +76,20 @@ export function assertApiOk(res: unknown, step: string, fields: Record<string, u
 }
 
 /** 这张卡最近的 CardKit sequence（跨进程承接用：新进程要发 > 它的序号）。 */
+/**
+ * CardKit 的 `sequence` 必须**严格大于**卡片实体当前的值：等于会被静默忽略（HTTP 200 + `code:0`，
+ * 但卡面一动不动），过小还会被拒（`300317`）。实测：同一实体 `sequence=1` 无变化、`sequence=2`
+ * 立刻生效 —— 因为 `card.create` 已经占用了 1，而我们从 1 开始数 → **每张卡的第一次更新都空转**。
+ * 毫秒时间戳超出 int32（`9499 Invalid parameter value: Sequence`），所以用「秒」做基准：
+ * 跨进程单调、永不等于 1、且长期留在 int32 内。
+ */
+let seqFloor = 0;
+export function freshSequence(last?: number): number {
+  const now = Math.floor(Date.now() / 1000);
+  seqFloor = Math.max(seqFloor + 1, now, (last ?? 0) + 1);
+  return seqFloor;
+}
+
 export function managedSequence(messageId: string): number | undefined {
   return byMessageId.get(messageId)?.sequence;
 }
@@ -144,7 +158,7 @@ export async function updateManagedCard(
   if (!entry) {
     throw new Error(`no managed card registered for message ${messageId}`);
   }
-  entry.sequence += 1;
+  entry.sequence = freshSequence(entry.sequence);
   try {
     const res = await channel.rawClient.cardkit.v1.card.update({
       path: { card_id: entry.cardId },

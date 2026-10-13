@@ -96,6 +96,8 @@ export async function sendManagedCard(
   }
 
   byMessageId.set(messageId, { cardId, sequence: 0 });
+  // 诊断（file-only）：卡片消息与卡片实体的对应关系，排查「更新了却看不到变化」时用。
+  log.debug('card', 'managed-registered', { messageId, cardId });
   if (opts.track) {
     tracked.add(messageId);
     void upsertRunningCard({ messageId, cardId, chatId, kind: opts.kind ?? 'form', card });
@@ -136,6 +138,11 @@ export async function updateManagedCard(
     log.fail('card', err, { step: 'managed-update', cardId: entry.cardId, seq: entry.sequence });
     throw err;
   }
+  log.debug('card', 'managed-updated', {
+    messageId,
+    cardId: entry.cardId,
+    sequence: entry.sequence,
+  });
   if (tracked.has(messageId)) void snapshotThrottled(messageId, card);
 }
 

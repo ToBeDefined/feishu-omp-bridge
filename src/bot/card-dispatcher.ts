@@ -128,7 +128,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
     log.info('cardAction', 'command-dedup', { cmd, scope });
     return;
   }
-  log.info('cardAction', 'cmd', { cmd, scope });
+  log.info('cardAction', 'cmd', { cmd, scope , messageId: deps.evt.messageId });
 
   const { name, args } = resolveCardCommand(cmd, payload);
 

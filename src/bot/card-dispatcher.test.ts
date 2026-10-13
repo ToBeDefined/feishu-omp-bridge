@@ -70,6 +70,7 @@ interface Harness {
   deps: CardDispatchDeps;
   send: Mock;
   patch: Mock;
+  cardCreate: Mock;
   push: Mock;
   cancel: Mock;
   respondToUi: Mock;
@@ -98,16 +99,20 @@ function makeHarness(opts: {
         throw new Error('patch rejected');
       })
     : vi.fn(async () => ({}));
+  const cardCreate = vi.fn(async () => ({ data: { card_id: 'card_new' } }));
   const push = vi.fn((): number => 1);
   const cancel = vi.fn((): NormalizedMessage[] => []);
   const respondToUi = vi.fn((): boolean => true);
   const has = vi.fn((): boolean => opts.hasScope ?? true);
   const getRunToken = vi.fn((): string | undefined => opts.runToken);
 
-  // 只用到 send + rawClient.im.v1.message.patch 两条出网路径。
+  // 出网路径：send + rawClient.im.v1.message.patch + cardkit.card.create（补救路径要新建卡片实体）。
   const channel = {
     send,
-    rawClient: { im: { v1: { message: { patch } } } },
+    rawClient: {
+      cardkit: { v1: { card: { create: cardCreate } } },
+      im: { v1: { message: { patch } } },
+    },
   } as unknown as LarkChannel;
   const evt = {
     chatId: CHAT_ID,
@@ -133,7 +138,7 @@ function makeHarness(opts: {
     pending: { push, cancel } as unknown as PendingQueue,
     chatModeCache: { resolve: async () => 'p2p' as const } as unknown as ChatModeCache,
   };
-  return { deps, send, patch, push, cancel, respondToUi, has, getRunToken };
+  return { deps, send, patch, cardCreate, push, cancel, respondToUi, has, getRunToken };
 }
 
 describe('handleCardAction — 非管理员点击管理员按钮', () => {
@@ -159,13 +164,20 @@ describe('handleCardAction — 卡片已过期 / 未登记', () => {
 
     // 回答先送出（语义不变），随后卡片更新失败才走兜底。
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
-    expect(h.patch).toHaveBeenCalledTimes(1);
-    const patched = JSON.stringify(h.patch.mock.calls[0]);
-    expect(patched).toContain('已过期');
-    expect(patched).toContain('om_stale_patchable');
+    // 补救路径：新建卡片实体（内容在这里）→ 把消息内容改指向新实体 → 认领登记。
+    expect(h.cardCreate).toHaveBeenCalledTimes(1);
+    const created = JSON.stringify(h.cardCreate.mock.calls[0]);
+    expect(created).toContain('已过期');
+    // messageId 在 patch 的 path 里（卡片实体本身不需要它）。
+    expect(JSON.stringify(h.patch.mock.calls[0])).toContain('om_stale_patchable');
     // 终态卡不该再带可点按钮。
-    expect(patched).not.toContain('"button"');
-    // patch 成功了就不再补文本，避免同一件事说两遍。
+    expect(created).not.toContain('"button"');
+    expect(h.patch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse((h.patch.mock.calls[0]![0] as { data: { content: string } }).data.content)).toEqual({
+      type: 'card',
+      data: { card_id: 'card_new' },
+    });
+    // 成功了就不再补文本，避免同一件事说两遍。
     expect(h.send).not.toHaveBeenCalled();
   });
 
@@ -232,7 +244,7 @@ describe('handleCardAction — OMP UI 结果卡回显 / 空提交', () => {
     await handleCardAction(h.deps);
 
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(h.patch.mock.calls[0])).toContain('gpt-5');
+    expect(JSON.stringify(h.cardCreate.mock.calls[0])).toContain('gpt-5');
   });
 
   it('confirm 提交后结果卡回显「确认」', async () => {
@@ -243,7 +255,7 @@ describe('handleCardAction — OMP UI 结果卡回显 / 空提交', () => {
     await handleCardAction(h.deps);
 
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(h.patch.mock.calls[0])).toContain('确认');
+    expect(JSON.stringify(h.cardCreate.mock.calls[0])).toContain('确认');
   });
 
   it('空提交：不回答 OMP、回一句可见提示、卡片保持可操作', async () => {

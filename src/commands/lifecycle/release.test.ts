@@ -27,6 +27,7 @@ vi.mock('../../core/logger', () => ({
 // same array as channel.send so assertions cover both text and card output.
 const h = vi.hoisted(() => ({ sent: [] as string[] }));
 vi.mock('../../card/managed', () => ({
+  adoptManagedCard: vi.fn(),
   sendManagedCard: async (...args: unknown[]) => {
     h.sent.push(JSON.stringify(args[2]));
     return { messageId: 'om_card' };

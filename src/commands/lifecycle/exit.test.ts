@@ -18,6 +18,7 @@ vi.mock('../../runtime/registry', () => ({
   isAlive: () => h.alive,
 }));
 vi.mock('../../card/managed', () => ({
+  adoptManagedCard: vi.fn(),
   updateManagedCard: async (_c: unknown, _id: string, card: unknown) => {
     h.updates.push(JSON.stringify(card));
   },

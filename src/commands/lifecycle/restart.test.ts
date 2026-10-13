@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   cardSendFails: false,
 }));
 vi.mock('../../card/managed', () => ({
+  adoptManagedCard: vi.fn(),
   sendManagedCard: async (...args: unknown[]) => {
     if (h.cardSendFails) throw new Error('card send failed');
     h.cards.push(JSON.stringify(args[2]));

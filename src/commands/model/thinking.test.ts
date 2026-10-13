@@ -19,6 +19,7 @@ vi.mock('../../config/store', () => ({
 }));
 
 vi.mock('../../card/managed', () => ({
+  adoptManagedCard: vi.fn(),
   sendManagedCard: vi.fn(async () => ({ messageId: 'om_card', cardId: 'card_1' })),
   updateManagedCard: vi.fn(async () => {}),
   forgetManagedCard: vi.fn(),

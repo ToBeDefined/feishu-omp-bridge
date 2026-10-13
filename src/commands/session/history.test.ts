@@ -30,6 +30,7 @@ vi.mock('../shared', async (importOriginal) => {
   return { ...actual, reply, recallMessage };
 });
 vi.mock('../../card/managed', () => ({
+  adoptManagedCard: vi.fn(),
   sendManagedCard,
   updateManagedCard,
   forgetManagedCard,

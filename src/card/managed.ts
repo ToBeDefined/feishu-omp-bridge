@@ -86,8 +86,14 @@ export function assertApiOk(res: unknown, step: string, fields: Record<string, u
  * 跨进程单调、永不等于 1、且长期留在 int32 内。
  */
 let seqFloor = 0;
-export function freshSequence(last?: number): number {
-  const now = Math.floor(Date.now() / 1000);
+/**
+ * `lead` 一次性抬高水位：实测「同一次更新被服务端收下（`code 0`）却没刷新卡面」偶发出现，
+ * 用**更大**的序号重推一次就会落地。序号必须是秒级（毫秒值被 API 拒：Invalid parameter
+ * value: Sequence），所以 lead 取 1e6 秒（≈11 天）—— 远高于任何真实时钟，且仍在 uint32 内。
+ */
+export const SEQUENCE_LEAD_SECONDS = 1_000_000;
+export function freshSequence(last?: number, lead = 0): number {
+  const now = Math.floor(Date.now() / 1000) + lead;
   seqFloor = Math.max(seqFloor + 1, now, (last ?? 0) + 1);
   return seqFloor;
 }
@@ -206,12 +212,16 @@ export async function updateManagedCard(
   channel: LarkChannel,
   messageId: string,
   card: object,
+  opts: { sequenceLead?: number } = {},
 ): Promise<void> {
   const entry = byMessageId.get(messageId);
   if (!entry) {
     throw new Error(`no managed card registered for message ${messageId}`);
   }
-  entry.sequence = freshSequence(Math.max(entry.sequence, sequenceWatermark(entry.cardId)));
+  entry.sequence = freshSequence(
+    Math.max(entry.sequence, sequenceWatermark(entry.cardId)),
+    opts.sequenceLead,
+  );
   const payload = JSON.stringify(card);
   // 诊断：卡片自报的页标记（/history 这类分页卡的「第 N-M 个」），一眼看出发的是哪一页。
   const marker = /第 \d+-\d+ 个/.exec(payload)?.[0];

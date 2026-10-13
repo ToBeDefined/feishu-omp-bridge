@@ -1,7 +1,13 @@
 import { homedir } from 'node:os';
 import type { CommandContext } from './index';
 import { log } from '../core/logger';
-import { assertApiOk, forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
+import {
+  assertApiOk,
+  forgetManagedCard,
+  SEQUENCE_LEAD_SECONDS,
+  sendManagedCard,
+  updateManagedCard,
+} from '../card/managed';
 import { md, staleNoticeCard } from '../card/templates';
 
 /** Rendered idle-timeout line: scope override wins over the global default. */
@@ -122,31 +128,52 @@ export function withExpiryNotice(card: object): object {
  *      直接塞裸 card JSON 既不报错也不生效），然后认领登记，后续继续原地更新
  * ③ 都不行 → 回一句 `fallbackText`，绝不静默
  */
+/** 卡片里能唯一定位「这一页」的标记（/history 的「第 N-M 个」）。没有标记的卡不校验。 */
+function cardMarker(card: object): string | undefined {
+  return /第 \d+-\d+ 个/.exec(JSON.stringify(card))?.[0];
+}
+
+/** 回读判定前的重试节奏：卡面刷新有短暂一致性延迟，连续试几次再判定「没渲染」。 */
+const CARD_VERIFY_ATTEMPTS = 3;
+const CARD_VERIFY_DELAY_MS = 500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
- * CardKit 的 `card.update` 会「收下但不渲染」：HTTP 200 + `code 0`，实体的序号也前进了
- * （所以不是并发/权限问题），但卡面回退成旧内容 —— 实测把同一份字节用 REST PUT 发出去
- * 却能正常渲染。对**可校验的卡片**（如 /history 的分页卡带「第 N-M 个」标记），
- * 更新后回读一次消息的渲染文本：标记没变就当作失败，走补发新卡，绝不让用户「点了没反应」。
+ * 卡面真的刷成 `card` 了吗？
+ *
+ * 实测（2026-10-13）：CardKit 的 `card.update` 会**收下但不渲染** —— HTTP 200 +
+ * `code 0`、实体序号也前进，卡面却停在旧内容；同一份字节换个更大的序号重发就落地。
+ * 所以更新后**必须回读**。读的是消息里真正的卡片内容：
+ * `/open-apis/im/v1/messages/mget` + `card_msg_content_type=raw_card_content`。
+ * 注意别用 `/im/v1/messages` —— 对实体卡它只返回「请升级客户端」占位符，而且会被判 400
+ * （上一版就是这么把校验变成空操作的：400 被 catch 吞掉，永远当作已生效）。
  */
-async function cardUpdateApplied(
+async function cardRendered(
   channel: CommandContext['channel'],
   messageId: string,
   card: object,
 ): Promise<boolean> {
-  const marker = /第 \d+-\d+ 个/.exec(JSON.stringify(card))?.[0];
-  if (!marker) return true; // 没有可校验标记的卡不做额外回读
-  try {
-    const res = await channel.rawClient.request({
-      method: 'GET',
-      url: '/open-apis/im/v1/messages',
-      params: { message_ids: messageId },
-    });
-    return JSON.stringify(res).includes(marker);
-  } catch (err) {
-    // 回读失败不改变主路径（宁可少一次校验，也不要因此把好卡判定为坏卡）。
-    log.warn('command', 'card-verify-failed', { messageId, err: String(err) });
-    return true;
+  const marker = cardMarker(card);
+  if (!marker) return true; // 无可校验标记的卡不做额外回读
+  for (let attempt = 0; attempt < CARD_VERIFY_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) await sleep(CARD_VERIFY_DELAY_MS);
+    try {
+      const res = await channel.rawClient.request({
+        method: 'GET',
+        url: '/open-apis/im/v1/messages/mget',
+        params: { message_ids: messageId, card_msg_content_type: 'raw_card_content' },
+      });
+      if (JSON.stringify(res).includes(marker)) return true;
+    } catch (err) {
+      // 回读失败不改变主路径（宁可少一次校验，也不要因此把好卡判定为坏卡）。
+      log.warn('command', 'card-verify-failed', { messageId, err: String(err) });
+      return true;
+    }
   }
+  return false;
 }
 
 export async function updateOrFallback(
@@ -161,12 +188,20 @@ export async function updateOrFallback(
   //    卡片层绝不自造 fallback：更新失败才走下面两条退路。
   try {
     await updateManagedCard(ctx.channel, messageId, card);
-    if (await cardUpdateApplied(ctx.channel, messageId, card)) {
+    if (await cardRendered(ctx.channel, messageId, card)) {
       if (opts.keepManaged !== true) forgetManagedCard(messageId);
       return;
     }
-    // 「收下 but 不渲染」：不能让用户看着旧内容，落到下面的补发/回执路径。
+    // 「收下但不渲染」：换一个更大的序号重推一次（实测同一份字节这样就能落地）。
     log.warn('command', 'card-update-noop', { messageId });
+    await updateManagedCard(ctx.channel, messageId, card, {
+      sequenceLead: SEQUENCE_LEAD_SECONDS,
+    });
+    if (await cardRendered(ctx.channel, messageId, card)) {
+      if (opts.keepManaged !== true) forgetManagedCard(messageId);
+      return;
+    }
+    log.warn('command', 'card-update-noop-retry', { messageId });
   } catch (err) {
     log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
   }

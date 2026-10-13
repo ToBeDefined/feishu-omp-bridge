@@ -14,6 +14,20 @@
 ## [Unreleased]
 
 ### Fixed
+- **翻页「出来就闪回 / 点了没反应」：找到了根因链，并让静默失败不再可能。**
+  1. 上一版加的「更新后回读卡面」**用错了接口**：`GET /open-apis/im/v1/messages` 对实体卡只返回
+     「请升级客户端」占位符，并且会被飞书判 **HTTP 400** —— 400 被 catch 吞掉后直接当作「已生效」，
+     校验成了空操作（日志里其实有 `card-verify-failed`，容易被当成噪音放过）。
+  2. 正确回读是 `GET /open-apis/im/v1/messages/mget` + `card_msg_content_type=raw_card_content`，
+     它返回消息里**真正渲染的卡片 JSON**（实测：未转义，可直接做内容比对）。
+  3. 实测确认 CardKit 的 `card.update` 会**收下但不渲染**：HTTP 200 + `code 0`、实体序号也前进，
+     卡面却停在旧内容（线上 `/history` 一次；同一份字节换个更大的序号重发即落地）。属于服务端偶发
+     丢渲染，客户端无从避免 ⇒ 只能**检测 + 恢复**。
+  → `updateOrFallback` 现在的链路：**原地更新 → 回读确认（3 次、间隔 500ms，防一致性延迟误判）
+    → 未生效则用 `sequence + 1e6` 重推一次 → 仍未生效则补发新卡并撤回旧卡**。
+    用户点了一定能看到新的一页；同时打 `card-update-noop` / `card-update-noop-retry` 便于事后归因。
+  - 另记：`sequence` 必须是**秒级**（毫秒会被 API 拒：`Invalid parameter value: Sequence`），
+    全新卡片实体的初始序号为 0，**严格大于**即可渲染。
 - **「卡片原地更新返回成功、卡面却不动/闪回旧页」的最后一道防线**。本轮实测确认：
   - daemon 发出的 payload 完全正确（`/history` 第 2 页卡 `6527` 字节、页标记 `第 9-16 个`）；
   - 把**同一份字节**用 REST PUT 发出去 → 正常渲染；而 SDK 的 `cardkit.card.update` 会「收下

@@ -129,17 +129,14 @@ export async function updateOrFallback(
   opts: { keepManaged?: boolean; resendWhenUnmanaged?: boolean } = {},
 ): Promise<void> {
   const messageId = ctx.msg.messageId;
-  // 1) 首选：托管卡片走 CardKit 更新（带 sequence，能做流式 / 多次更新）。
-  try {
-    await updateManagedCard(ctx.channel, messageId, card);
-    if (opts.keepManaged !== true) forgetManagedCard(messageId);
-    return;
-  } catch (err) {
-    log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
-  }
-  // 1.b) 列表 / 分页 / 选择器这类**必定由 sendManagedCard 发出**（内容为卡片实体引用）的卡：
-  //      托管更新失败 = 那张卡不是本进程建的（老卡），此时 raw patch 也不会有效（飞书接受
-  //      但看不到变化），所以直接**补发一张新卡**（老卡尽力撤回），保证翻页/切换真的可见。
+  // 0) 列表 / 分页 / 选择器这类**会被反复点击**的卡：一律**补发一张新卡**（老卡尽力撤回）。
+  //
+  //    为什么不原地更新：这类卡是「CardKit 实体卡」（`sendManagedCard` → cardkit.create +
+  //    消息内容为实体引用）。实测证据（2026-10-13）：
+  //      · `im.message.patch` + 裸 card JSON 对实体卡**既不报错也不生效**（用户看到「点了没反应」）；
+  //      · `cardkit.card.update` 在我们的调用路径上同样返回成功却看不到变化（隔离实验里用裸 API
+  //        对同种实体卡更新是**有效**的，说明是调用细节问题，待单独排查）。
+  //    所以这里不赌原地更新：补发新卡是**唯一被证明一定可见**的路径（卡最初就是这么发出来的）。
   if (opts.resendWhenUnmanaged === true) {
     log.info('command', 'card-resend-unmanaged', { messageId });
     const sent = await sendManagedCard(ctx.channel, ctx.msg.chatId, card, ctx.msg.messageId).catch(
@@ -152,6 +149,14 @@ export async function updateOrFallback(
       await recallMessage(ctx, messageId).catch(() => undefined);
       return;
     }
+  }
+  // 1) 其余卡（终态卡、OMP 交互结果卡…）：先试托管（CardKit）原地更新。
+  try {
+    await updateManagedCard(ctx.channel, messageId, card);
+    if (opts.keepManaged !== true) forgetManagedCard(messageId);
+    return;
+  } catch (err) {
+    log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
   }
   // 2) 卡片不在托管表里（最常见：上一次进程里发出的卡）时，把消息内容整体替换成新卡片。
   //    注意：这条对**流式卡/裸 JSON 内容**有效；对托管卡（内容为卡片实体引用）飞书会接受但

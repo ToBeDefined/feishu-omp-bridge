@@ -32,10 +32,13 @@ const baseCfg = {
   },
 } as unknown as AppConfig;
 
+// recallMessage 在 shared.ts 内部（不走 mock）；用 deleteMessage 观察它真正打的线。
+const deleteMessage = vi.fn(async (_req: unknown) => ({ data: {} }));
+
 function ctxWith(formValue: Record<string, unknown>) {
   const cfg = structuredClone(baseCfg);
   const ctx = {
-    channel: { send: async () => {} },
+    channel: { send: async () => {}, rawClient: { im: { v1: { message: { delete: deleteMessage } } } } },
     msg: { chatId: 'oc_1', messageId: 'om_1', content: '', senderId: 'ou_3a4845d7ce8becd003e2728ab7774666' },
     scope: 'oc_1',
     chatMode: 'p2p',
@@ -310,19 +313,21 @@ describe('/config 重开偏好表单卡', () => {
     vi.mocked(forgetManagedCard).mockClear();
   });
 
-  it('从卡片重开表单：原地更新同一 messageId，不另发卡', async () => {
+  it('卡片点击 → 重开表单补发新卡并撤回旧卡（不再原地更新）', async () => {
     const { ctx } = ctxWith({});
+    deleteMessage.mockClear();
     await configHandlers['/config']!('', ctx);
 
-    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled();
-    expect(vi.mocked(updateManagedCard)).toHaveBeenCalledWith(
-      expect.anything(),
-      'om_1',
-      expect.anything(),
-    );
-    expect(JSON.stringify(vi.mocked(updateManagedCard).mock.calls.at(-1)![2])).toContain(
+    // 补发一张新表单卡（第三参就是新卡，带 config.submit）。
+    expect(vi.mocked(sendManagedCard)).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(vi.mocked(sendManagedCard).mock.calls[0]![2])).toContain(
       'config.submit',
     );
+    // 撤回被点击的旧卡（om_1）。
+    expect(deleteMessage).toHaveBeenCalledTimes(1);
+    expect(deleteMessage).toHaveBeenCalledWith({ path: { message_id: 'om_1' } });
+    // 这条路径不再原地更新。
+    expect(vi.mocked(updateManagedCard)).not.toHaveBeenCalled();
   });
 
   it('文本入口（非卡片）仍发新表单卡', async () => {

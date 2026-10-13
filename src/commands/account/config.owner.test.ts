@@ -3,7 +3,7 @@ import type { CommandContext } from '../index';
 import { configHandlers } from './config';
 import { saveConfig } from '../../config/store';
 import { configFormCard } from '../../card/config-card';
-import { updateManagedCard } from '../../card/managed';
+import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import type { AppConfig } from '../../config/schema';
 
 vi.mock('../../card/managed', () => ({
@@ -297,5 +297,39 @@ describe('/config submit 写盘失败', () => {
 
     expect(sent.map((s) => s.markdown ?? '').join('\n')).toContain('偏好保存失败');
     expect(sent.map((s) => s.markdown ?? '').join('\n')).toContain('ENOSPC');
+  });
+});
+
+describe('/config 重开偏好表单卡', () => {
+  beforeEach(() => {
+    vi.mocked(sendManagedCard).mockClear();
+    vi.mocked(updateManagedCard).mockClear();
+    vi.mocked(updateManagedCard).mockResolvedValue();
+    vi.mocked(forgetManagedCard).mockClear();
+  });
+
+  it('从卡片重开表单：原地更新同一 messageId，不另发卡', async () => {
+    const { ctx } = ctxWith({});
+    await configHandlers['/config']!('', ctx);
+
+    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled();
+    expect(vi.mocked(updateManagedCard)).toHaveBeenCalledWith(
+      expect.anything(),
+      'om_1',
+      expect.anything(),
+    );
+    expect(JSON.stringify(vi.mocked(updateManagedCard).mock.calls.at(-1)![2])).toContain(
+      'config.submit',
+    );
+  });
+
+  it('文本入口（非卡片）仍发新表单卡', async () => {
+    const { ctx } = ctxWith({});
+    ctx.fromCardAction = false;
+
+    await configHandlers['/config']!('', ctx);
+
+    expect(vi.mocked(sendManagedCard)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(updateManagedCard)).not.toHaveBeenCalled();
   });
 });

@@ -44,10 +44,12 @@ async function showCurrent(ctx: CommandContext): Promise<void> {
 
 async function showForm(ctx: CommandContext): Promise<void> {
   const card = accountFormCard({ initialTenant: ctx.controls.cfg.accounts.app.tenant });
+  // 「更换凭据」来自卡片：原地把卡片换成表单，不再撤回旧卡另起一条。
   if (ctx.fromCardAction) {
-    await recallMessage(ctx, ctx.msg.messageId);
+    await updateOrFallback(ctx, card, '请重新 `/account change`。');
+  } else {
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
   }
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
 }
 
 async function cancelAccount(ctx: CommandContext): Promise<void> {

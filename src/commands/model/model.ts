@@ -12,7 +12,7 @@ import {
 } from '../../card/model-card';
 import { MAX_HISTORY_ENTRIES, recentModelEntries } from '../../session/model-history';
 import type { CommandContext, Handler } from '../index';
-import { recallMessage, reply, settleManagedCard } from '../shared';
+import { reply, settleManagedCard, updateOrFallback } from '../shared';
 import { isChatModel, loadModelData } from './data';
 import { log } from '../../core/logger';
 import { formatAgoOr } from '../../utils/time';
@@ -80,12 +80,13 @@ async function refreshModels(ctx: CommandContext, current: string | undefined): 
   }
   const providers = [...byProvider.entries()].map(([provider, count]) => ({ provider, count }));
   const recents = await recentChatModels();
-  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(
-    ctx.channel,
-    ctx.msg.chatId,
-    modelProviderCard(current, providers, recents, data.commons, getOmpThinking(ctx.controls.cfg)),
-  );
+  const card = modelProviderCard(current, providers, recents, data.commons, getOmpThinking(ctx.controls.cfg));
+  // 「🔄 刷新」来自卡片：原地更新（提供方卡会被反复点击 → 保留托管登记）。
+  if (ctx.fromCardAction) {
+    await updateOrFallback(ctx, card, '请重新 `/model` 选择模型。', { keepManaged: true });
+  } else {
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+  }
 }
 
 async function showModelProviders(ctx: CommandContext, current: string | undefined): Promise<void> {
@@ -98,12 +99,13 @@ async function showModelProviders(ctx: CommandContext, current: string | undefin
     byProvider.set(m.provider, (byProvider.get(m.provider) ?? 0) + 1);
   }
   const providers = [...byProvider.entries()].map(([provider, count]) => ({ provider, count }));
-  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(
-    ctx.channel,
-    ctx.msg.chatId,
-    modelProviderCard(current, providers, recents, data.commons, getOmpThinking(ctx.controls.cfg)),
-  );
+  const card = modelProviderCard(current, providers, recents, data.commons, getOmpThinking(ctx.controls.cfg));
+  // 提供方按钮 / 「返回」来自卡片：原地更新（该卡会被反复点击 → 保留托管登记）。
+  if (ctx.fromCardAction) {
+    await updateOrFallback(ctx, card, '请重新 `/model` 选择模型。', { keepManaged: true });
+  } else {
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+  }
 }
 
 async function showModelPicker(
@@ -120,7 +122,12 @@ async function showModelPicker(
     await reply(ctx, `未找到提供方 \`${provider}\`。请用 \`/model\` 重选。`);
     return;
   }
-  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
+  if (ctx.fromCardAction) {
+    const card = modelSelectCard(provider, current, pick, getOmpThinking(ctx.controls.cfg), recents);
+    // 提供方来自卡片（可能还会点「返回」）：原地更新 → 保留托管登记。
+    await updateOrFallback(ctx, card, '请重新 `/model` 选择模型。', { keepManaged: true });
+    return;
+  }
   await sendManagedCard(
     ctx.channel,
     ctx.msg.chatId,

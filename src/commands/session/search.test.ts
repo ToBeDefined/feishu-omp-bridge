@@ -15,13 +15,34 @@ import { loadSessionSummary } from './context';
 import { renderSearchContext, SEARCH_PAGE_SIZE, searchResultsCard } from '../../card/search-card';
 import { SessionStore } from '../../session/store';
 
-const { reply } = vi.hoisted(() => ({
-  reply: vi.fn(async (_ctx: unknown, _text: string) => {}),
-}));
+const h = vi.hoisted(() => {
+  // updateOrFallback 的 CardKit 分支：记录每次原地更新（messageId + 卡片）。
+  const updates: Array<{ messageId: string; card: unknown }> = [];
+  return {
+    reply: vi.fn(async (_ctx: unknown, _text: string) => {}),
+    recallMessage: vi.fn(async () => {}),
+    updates,
+    updateManagedCard: vi.fn(async (_channel: unknown, messageId: string, card: unknown) => {
+      updates.push({ messageId, card });
+    }),
+    forgetManagedCard: vi.fn(),
+  };
+});
 
 vi.mock('../shared', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../shared')>();
-  return { ...actual, reply, recallMessage: vi.fn(async () => {}) };
+  return { ...actual, reply: h.reply, recallMessage: h.recallMessage };
+});
+
+// 真 sendManagedCard（走 cardkit create，测试用 cards[] 收集）；只把原地更新换成 spy，
+// 便于断言「同一 messageId 被原地更新」而非另发卡片。
+vi.mock('../../card/managed', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../card/managed')>();
+  return {
+    ...actual,
+    updateManagedCard: h.updateManagedCard,
+    forgetManagedCard: h.forgetManagedCard,
+  };
 });
 
 // Wrap loadSessionSummary so we can prove /search resolves identities from its
@@ -545,7 +566,7 @@ describe('/search 卡片按钮链路', () => {
     expect(SEARCH_SESSION_LIMIT).toBeGreaterThan(SEARCH_PAGE_SIZE);
   });
 
-  it('page 复用缓存按 offset 重发卡片，show 渲染详情卡', async () => {
+  it('page 复用缓存按 offset 原地更新卡片，show 渲染详情卡', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
     paths.ompSessionsDir = tmp;
     await seed(tmp);
@@ -555,12 +576,21 @@ describe('/search 卡片按钮链路', () => {
     expect(cards[0]).toContain('**#1**');
     const qid = queryIdOf(cards[0]!);
 
+    // 翻页来自卡片：原地更新同一张卡（不再撤回旧卡 + 另发一张）。
+    h.updates.length = 0;
+    h.forgetManagedCard.mockClear();
     cards.length = 0;
     await searchHandlers['/search']!(`page ${qid} 6`, { ...ctx, fromCardAction: true } as CommandContext);
+    expect(cards).toHaveLength(0); // 没有新卡
+    expect(h.updates).toHaveLength(1);
+    expect(h.updates[0]!.messageId).toBe('om_1');
+    const page2 = JSON.stringify(h.updates[0]!.card);
     // 第二页：从 #7 起，页码区间跟着走。
-    expect(cards[0]).toContain('**#7**');
-    expect(cards[0]).toContain('第 7-8 个');
-    expect(cards[0]).not.toContain('**#1**');
+    expect(page2).toContain('**#7**');
+    expect(page2).toContain('第 7-8 个');
+    expect(page2).not.toContain('**#1**');
+    // 结果卡会被反复翻页 → 保留托管登记（否则第二次点击会退化成 patch）。
+    expect(h.forgetManagedCard).not.toHaveBeenCalled();
 
     // 从第 2 页点「详情」（详情载荷带全局行号 7 + 进入时的 offset 6）。
     cards.length = 0;
@@ -571,11 +601,51 @@ describe('/search 卡片按钮链路', () => {
     expect(cards[0]).toContain('返回结果');
     expect(cards[0]).toContain(`"arg":"${qid} 6"`);
 
-    // 真的执行这条返回：又回到第 2 页（同一坐标）。
-    cards.length = 0;
+    // 真的执行这条返回：又回到第 2 页（同一坐标），仍是原地更新。
+    h.updates.length = 0;
     await searchHandlers['/search']!(`page ${qid} 6`, { ...ctx, fromCardAction: true } as CommandContext);
-    expect(cards[0]).toContain('**#7**');
-    expect(cards[0]).toContain('第 7-8 个');
+    const back = JSON.stringify(h.updates.at(-1)!.card);
+    expect(back).toContain('**#7**');
+    expect(back).toContain('第 7-8 个');
+  });
+
+  it('结果 / 空态 / 翻页三条卡片链路：不 recall、不另发卡，同一 messageId 原地更新', async () => {
+    tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
+    paths.ompSessionsDir = tmp;
+    await seed(tmp);
+
+    const { ctx, cards } = cardCtx();
+    h.updates.length = 0;
+    h.forgetManagedCard.mockClear();
+    h.recallMessage.mockClear();
+    cards.length = 0;
+
+    // 直接 /search（非卡片路径）仍发新卡（sendManagedCard）。
+    await searchHandlers['/search']!('kwhit', ctx);
+    expect(cards).toHaveLength(1);
+    const qid = queryIdOf(cards[0]!);
+    cards.length = 0;
+
+    // ① 结果卡入口（search.do，等同卡片上重搜）来自卡片 → 原地更新。
+    await searchHandlers['/search']!('do kwhit', { ...ctx, fromCardAction: true } as CommandContext);
+    // ② 翻页来自卡片 → 原地更新。
+    await searchHandlers['/search']!(`page ${qid} 6`, { ...ctx, fromCardAction: true } as CommandContext);
+
+    expect(cards).toHaveLength(0); // 全程没有再发新卡
+    expect(h.updates.map((u) => u.messageId)).toEqual(['om_1', 'om_1']);
+    expect(h.recallMessage).not.toHaveBeenCalled();
+    // 列表 / 翻页卡保留托管登记 → 第二次点击仍走 CardKit，不退化成 patch。
+    expect(h.forgetManagedCard).not.toHaveBeenCalled();
+
+    // ③ 空结果卡的「重新搜索」来自卡片 → 同样原地更新。
+    h.updates.length = 0;
+    await searchHandlers['/search']!('do zzz-not-found', { ...ctx, fromCardAction: true } as CommandContext);
+    expect(cards).toHaveLength(0);
+    expect(h.updates).toHaveLength(1);
+    expect(h.updates[0]!.messageId).toBe('om_1');
+    expect(JSON.stringify(h.updates[0]!.card)).toContain('重新搜索');
+    expect(h.recallMessage).not.toHaveBeenCalled();
+    expect(h.forgetManagedCard).not.toHaveBeenCalled();
   });
 
   it('空态卡给出可执行动作：重新搜索回链到 search.do', async () => {
@@ -632,14 +702,14 @@ describe('/search with an expired cache', () => {
       sessions: { sessionFor: vi.fn() },
       controls: { cfg: {} },
     } as unknown as CommandContext;
-    reply.mockClear();
+    h.reply.mockClear();
 
     // The query id is not in the (module-level) cache — evicted or lost on restart.
     await searchHandlers['/search']!('show s-expired 1', ctx);
 
-    expect(reply).toHaveBeenCalledTimes(1);
-    expect(reply.mock.calls[0]![1]).toContain('过期');
-    expect(reply.mock.calls[0]![1]).toContain('/search');
+    expect(h.reply).toHaveBeenCalledTimes(1);
+    expect(h.reply.mock.calls[0]![1]).toContain('过期');
+    expect(h.reply.mock.calls[0]![1]).toContain('/search');
     // Never falls through to adopting the current chat session.
     expect(ctx.sessions.sessionFor).not.toHaveBeenCalled();
   });
@@ -653,13 +723,13 @@ describe('/search with an expired cache', () => {
       sessions: { sessionFor: vi.fn() },
       controls: { cfg: {} },
     } as unknown as CommandContext;
-    reply.mockClear();
+    h.reply.mockClear();
 
     await searchHandlers['/search']!('page s-expired 6', ctx);
 
     // 不再把「page s-expired 6」当关键词乱搜 —— 明确提示重新检索。
-    expect(reply).toHaveBeenCalledTimes(1);
-    expect(reply.mock.calls[0]![1]).toContain('过期');
-    expect(reply.mock.calls[0]![1]).toContain('/search');
+    expect(h.reply).toHaveBeenCalledTimes(1);
+    expect(h.reply.mock.calls[0]![1]).toContain('过期');
+    expect(h.reply.mock.calls[0]![1]).toContain('/search');
   });
 });

@@ -9,7 +9,7 @@ import {
   thinkingSavedCard,
 } from '../../card/model-card';
 import type { CommandContext, Handler } from '../index';
-import { recallMessage, reply, settleManagedCard } from '../shared';
+import { reply, settleManagedCard, updateOrFallback } from '../shared';
 import { loadModelData } from './data';
 import { log } from '../../core/logger';
 
@@ -54,12 +54,13 @@ async function showThinkingPicker(ctx: CommandContext, current: string | undefin
   // = 该模型确实不支持思考强度。
   const model = getOmpModel(ctx.controls.cfg);
   const entry = model ? data.list.find((m) => m.selector === model) : undefined;
-  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(
-    ctx.channel,
-    ctx.msg.chatId,
-    thinkingCard(current, entry ? (entry.thinking ?? []) : undefined),
-  );
+  const card = thinkingCard(current, entry ? (entry.thinking ?? []) : undefined);
+  // 选择器来自卡片：原地更新（档位按钮 / 「跟随默认」仍会被点 → 保留托管登记）。
+  if (ctx.fromCardAction) {
+    await updateOrFallback(ctx, card, '请重新 `/thinking`。', { keepManaged: true });
+  } else {
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+  }
 }
 
 /**

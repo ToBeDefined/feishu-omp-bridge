@@ -3,11 +3,18 @@ import { THINKING_FOLLOW_DEFAULT } from '../../card/model-card';
 import type { CommandContext } from '../index';
 import { modelHandlers } from './model';
 import { saveConfig } from '../../config/store';
-import { sendManagedCard, updateManagedCard } from '../../card/managed';
+import { sendManagedCard, updateManagedCard, forgetManagedCard } from '../../card/managed';
 import { MAX_HISTORY_ENTRIES, recentModelEntries } from '../../session/model-history';
 import type * as HistoryModule from '../../session/model-history';
 import { loadModelData } from './data';
 import type * as DataModule from './data';
+
+// 保留真实 reply / updateOrFallback，只把 recall 换成 spy：断言「卡片路径不再撤回」。
+const { recallMessage } = vi.hoisted(() => ({ recallMessage: vi.fn(async () => {}) }));
+vi.mock('../shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../shared')>();
+  return { ...actual, recallMessage };
+});
 
 vi.mock('../../config/store', () => ({
   saveConfig: vi.fn(async () => {}),
@@ -35,6 +42,7 @@ function makeCtx(overrides: {
   formValue?: Record<string, unknown>;
   ompModel?: string;
   ompThinking?: string;
+  fromCardAction?: boolean;
 } = {}): CommandContext {
   const send = vi.fn(async () => {});
   return {
@@ -47,6 +55,7 @@ function makeCtx(overrides: {
     activeRuns: {},
     agent: {},
     formValue: overrides.formValue,
+    fromCardAction: overrides.fromCardAction,
     controls: {
       configPath: '/tmp/feishu-omp-bridge-test-config.json',
       cfg: {
@@ -76,6 +85,9 @@ function sentMarkdown(ctx: CommandContext): string[] {
 afterEach(() => {
   vi.mocked(saveConfig).mockClear();
   vi.mocked(sendManagedCard).mockClear();
+  vi.mocked(updateManagedCard).mockClear();
+  vi.mocked(forgetManagedCard).mockClear();
+  recallMessage.mockClear();
   vi.mocked(recentModelEntries).mockClear();
   vi.mocked(recentModelEntries).mockResolvedValue([]);
 });
@@ -110,8 +122,7 @@ describe('/model submit', () => {
   it('卡片收尾失败时回一句确认（不再静默吞掉）', async () => {
     // fromCardAction：保存成功后要原地把卡片改成「已保存」。卡片不在托管表里 +
     // 没有 rawClient 可 patch ⇒ 必须回一句「✅ 模型已设为 …」，而不是什么都没发生。
-    const ctx = makeCtx({ formValue: { model_selector: 'p/a' } });
-    (ctx as unknown as { fromCardAction: boolean }).fromCardAction = true;
+    const ctx = makeCtx({ formValue: { model_selector: 'p/a' }, fromCardAction: true });
     // 卡片不在本进程托管表里（重启前的老卡片）。
     vi.mocked(updateManagedCard).mockRejectedValueOnce(new Error('no managed card registered'));
     const send = ctx.channel.send as unknown as { mock: { calls: Array<[string, { markdown?: string }]> } };
@@ -205,5 +216,34 @@ describe('/model 提供方卡', () => {
     expect(vi.mocked(recentModelEntries)).toHaveBeenCalledWith(MAX_HISTORY_ENTRIES);
     const card = JSON.stringify(vi.mocked(sendManagedCard).mock.calls[0]![2]);
     expect(card).toContain('chat · 3 分钟前 · 5 次');
+  });
+
+  it('卡片路径原地更新提供方卡 / 选择器 / 刷新，不 recall 也不另发卡（并保留托管登记）', async () => {
+    vi.mocked(loadModelData).mockResolvedValue({
+      fetchedAt: 1,
+      list: [
+        { provider: 'futu', selector: 'futu/chat' },
+        { provider: 'cursor', selector: 'cursor/other' },
+      ],
+      commons: [],
+    });
+    const ctx = makeCtx({ ompModel: 'futu/chat', fromCardAction: true });
+
+    // ① 打开提供方卡（来自卡片）② 点提供方 → 选择器 ③ 点「🔄 刷新」。
+    await modelHandlers['/model']!('', ctx);
+    await modelHandlers['/model']!('provider cursor', ctx);
+    await modelHandlers['/model']!('refresh', ctx);
+
+    // 全程没有再发新卡，也不再撤回旧卡。
+    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled();
+    expect(recallMessage).not.toHaveBeenCalled();
+    // 每次都原地更新同一个 messageId（om_1）。
+    expect(vi.mocked(updateManagedCard).mock.calls.map((c) => c[1])).toEqual([
+      'om_1',
+      'om_1',
+      'om_1',
+    ]);
+    // 提供方卡 / 选择器会被反复点击 → 保留托管登记。
+    expect(vi.mocked(forgetManagedCard)).not.toHaveBeenCalled();
   });
 });

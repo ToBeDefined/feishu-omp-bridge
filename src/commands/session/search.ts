@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { getOmpSessionDir } from '../../config/schema';
 import { sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
-import { recallMessage, reply } from '../shared';
+import { reply, updateOrFallback } from '../shared';
 import { extractUserInput, scanSessionFile } from './context';
 import { applyResume, listResumableSessions } from './resume';
 import {
@@ -369,14 +369,15 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     const keyword = searchKeywords.get(queryId) ?? '';
     // 页码越界（陈旧按钮）夹回第一页，不渲染空页。
     const page = Number.isFinite(offset) && offset >= 0 && offset < cached.length ? offset : 0;
-    if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-    await sendManagedCard(
-      ctx.channel,
-      ctx.msg.chatId,
-      searchResultsCard(keyword, cached, queryId, page, {
-        currentSessionId: currentSessionId(ctx),
-      }),
-    );
+    const card = searchResultsCard(keyword, cached, queryId, page, {
+      currentSessionId: currentSessionId(ctx),
+    });
+    // 翻页来自卡片：原地更新（结果卡会被反复翻页 → 保留托管登记）。
+    if (ctx.fromCardAction) {
+      await updateOrFallback(ctx, card, '请重新 `/search <关键词>`。', { keepManaged: true });
+    } else {
+      await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+    }
     return;
   }
 
@@ -447,8 +448,13 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   }
   const contexts = await searchSession(keyword, ctx);
   if (contexts.length === 0) {
-    if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-    await sendManagedCard(ctx.channel, ctx.msg.chatId, searchEmptyCard(keyword));
+    const card = searchEmptyCard(keyword);
+    // 「重新搜索」来自卡片：原地更新（空态卡的按钮仍会被反复点 → 保留托管登记）。
+    if (ctx.fromCardAction) {
+      await updateOrFallback(ctx, card, '请重新 `/search <关键词>`。', { keepManaged: true });
+    } else {
+      await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+    }
     return;
   }
   const queryId = `s${Date.now().toString(36)}`;
@@ -461,12 +467,13 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
       searchKeywords.delete(oldest);
     }
   }
-  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(
-    ctx.channel,
-    ctx.msg.chatId,
-    searchResultsCard(keyword, contexts, queryId, 0, {
-      currentSessionId: currentSessionId(ctx),
-    }),
-  );
+  const card = searchResultsCard(keyword, contexts, queryId, 0, {
+    currentSessionId: currentSessionId(ctx),
+  });
+  // `search.do`（空态卡按钮）/ `/search` 来自卡片时：原地更新（结果卡可翻页 → 保留托管登记）。
+  if (ctx.fromCardAction) {
+    await updateOrFallback(ctx, card, '请重新 `/search <关键词>`。', { keepManaged: true });
+  } else {
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+  }
 }

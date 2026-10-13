@@ -2,10 +2,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommandContext } from '../index';
 import { thinkingHandlers } from './thinking';
 import { saveConfig } from '../../config/store';
-import { sendManagedCard, updateManagedCard } from '../../card/managed';
+import { sendManagedCard, updateManagedCard, forgetManagedCard } from '../../card/managed';
 import { loadModelData } from './data';
 import type * as DataModule from './data';
 import { THINKING_FOLLOW_DEFAULT } from '../../card/model-card';
+
+// 保留真实 reply / updateOrFallback，只把 recall 换成 spy：断言「卡片路径不再撤回」。
+const { recallMessage } = vi.hoisted(() => ({ recallMessage: vi.fn(async () => {}) }));
+vi.mock('../shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../shared')>();
+  return { ...actual, recallMessage };
+});
 
 vi.mock('../../config/store', () => ({
   saveConfig: vi.fn(async () => {}),
@@ -70,6 +77,8 @@ afterEach(() => {
   vi.mocked(saveConfig).mockClear();
   vi.mocked(sendManagedCard).mockClear();
   vi.mocked(updateManagedCard).mockClear();
+  vi.mocked(forgetManagedCard).mockClear();
+  recallMessage.mockClear();
 });
 
 describe('/thinking 卡片', () => {
@@ -111,6 +120,29 @@ describe('/thinking 卡片', () => {
     expect(card).toContain('该模型不支持思考强度');
     expect(card).toContain(`"value":"${THINKING_FOLLOW_DEFAULT}"`);
     expect(card).not.toContain('"value":"low"');
+  });
+
+  it('选择器来自卡片时原地更新，不 recall 也不另发卡（保留托管登记）', async () => {
+    vi.mocked(loadModelData).mockResolvedValue({
+      fetchedAt: 1,
+      list: [{ provider: 'futu', selector: 'futu/deepseek-v4.1-flash', thinking: ['low', 'high'] }],
+      commons: [],
+    });
+    const ctx = makeCtx({
+      ompModel: 'futu/deepseek-v4.1-flash',
+      ompThinking: 'high',
+      fromCardAction: true,
+    });
+
+    // 连续两次「打开选择器」（模拟反复点击）：都应走 CardKit 原地更新。
+    await thinkingHandlers['/thinking']!('', ctx);
+    await thinkingHandlers['/thinking']!('', ctx);
+
+    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled();
+    expect(recallMessage).not.toHaveBeenCalled();
+    expect(vi.mocked(updateManagedCard).mock.calls.map((c) => c[1])).toEqual(['om_1', 'om_1']);
+    // 选择器会被反复点击 → 保留托管登记（第二次仍 CardKit，不退化成 patch）。
+    expect(vi.mocked(forgetManagedCard)).not.toHaveBeenCalled();
   });
 });
 

@@ -11,13 +11,19 @@ import { applyResume } from './resume';
 import { renderContext } from './context';
 import { SessionStore } from '../../session/store';
 
-const { reply, recallMessage, sendManagedCard } = vi.hoisted(() => ({
-  reply: vi.fn(async (_ctx: unknown, _text: string) => {}),
-  recallMessage: vi.fn(async (_ctx: unknown) => {}),
-  sendManagedCard: vi.fn(async (_channel: unknown, _chatId: string, _card: unknown) => ({
-    messageId: 'om_card',
-  })),
-}));
+const { reply, recallMessage, sendManagedCard, updateManagedCard, forgetManagedCard } = vi.hoisted(
+  () => ({
+    reply: vi.fn(async (_ctx: unknown, _text: string) => {}),
+    recallMessage: vi.fn(async (_ctx: unknown) => {}),
+    sendManagedCard: vi.fn(async (_channel: unknown, _chatId: string, _card: unknown) => ({
+      messageId: 'om_card',
+    })),
+    // applyResume / updateOrFallback update the clicked card via these; keep them
+    // off the wire while recording calls for the in-place-update assertions.
+    updateManagedCard: vi.fn(async (_channel: unknown, _messageId: string, _card: unknown) => {}),
+    forgetManagedCard: vi.fn(),
+  }),
+);
 
 vi.mock('../shared', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../shared')>();
@@ -25,9 +31,8 @@ vi.mock('../shared', async (importOriginal) => {
 });
 vi.mock('../../card/managed', () => ({
   sendManagedCard,
-  // applyResume settles the clicked card via these; keep them off the wire.
-  updateManagedCard: vi.fn(async () => {}),
-  forgetManagedCard: vi.fn(),
+  updateManagedCard,
+  forgetManagedCard,
 }));
 
 const origDir = paths.ompSessionsDir;
@@ -40,6 +45,8 @@ beforeEach(async () => {
   reply.mockClear();
   sendManagedCard.mockClear();
   recallMessage.mockClear();
+  updateManagedCard.mockClear();
+  forgetManagedCard.mockClear();
 });
 
 afterEach(async () => {
@@ -338,8 +345,27 @@ describe('/history', () => {
     expect(cardJson()).not.toContain('history.resume","arg":"s3"');
   });
 
-  it('replaces the clicked card instead of stacking a new one', async () => {
+  it('replaces the clicked card in place instead of stacking a new one', async () => {
     await handleHistory('all 8', makeCtx({ fromCardAction: true }).ctx);
-    expect(recallMessage).toHaveBeenCalled();
+    // 不再撤回旧卡，也不再另发一张。
+    expect(recallMessage).not.toHaveBeenCalled();
+    expect(sendManagedCard).not.toHaveBeenCalled();
+    // 同一个 messageId 原地更新（CardKit）。
+    expect(updateManagedCard).toHaveBeenCalledWith(expect.anything(), 'om_1', expect.anything());
+  });
+
+  it('翻页两次都走 CardKit 原地更新：列表卡保留托管登记，第二次不退化成 patch', async () => {
+    const { ctx } = makeCtx({ fromCardAction: true });
+    await handleHistory('all 8', ctx);
+    await handleHistory('all 0', ctx);
+
+    expect(recallMessage).not.toHaveBeenCalled();
+    expect(sendManagedCard).not.toHaveBeenCalled();
+    expect(updateManagedCard).toHaveBeenCalledTimes(2);
+    expect(updateManagedCard.mock.calls.map((c) => c[1])).toEqual(['om_1', 'om_1']);
+    // keepManaged: true → 更新成功后**不注销**托管登记（否则第二次会掉进 patch 退化）。
+    expect(forgetManagedCard).not.toHaveBeenCalled();
+    // patch / 兜底回复都没发生。
+    expect(reply).not.toHaveBeenCalled();
   });
 });

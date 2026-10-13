@@ -14,6 +14,12 @@
 ## [Unreleased]
 
 ### Changed
+- **「下一张卡」改为原地更新**：翻页与切换类路径过去是「撤回旧卡 + 另发一条新卡」，消息列表
+  会跳动、上下文丢失。现在 `/history` 翻页、`/search` 翻页/空结果/重搜、`/model` 提供方与选卡、
+  `/thinking`、`/account change`、`/config` 重开表单，一律在**同一 messageId 上原地替换**
+  （`updateOrFallback`）；列表/选择器类额外传 `keepManaged: true`，使连续点击继续走 CardKit
+  而不是退化成 `im.message.patch`。有意保留撤回的只有「取消/关闭卡片」语义（`/ws cancel`、
+  `/account` 取消）。
 - **UI 风格统一（三批，按 S1–S10 规范）**：先定规范再逐卡比对渲染形状。
   - **列表 / 搜索 / agent 卡**：`/history` 空态与页越界不再死胡同（并修掉「引用了不存在的
     『继续对话』按钮」与「第 9-8 个」反向区间两个 bug）；`/search` 越界给「没有更多结果了」、

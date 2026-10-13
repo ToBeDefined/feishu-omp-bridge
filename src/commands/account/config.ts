@@ -16,7 +16,7 @@ import {
 } from '../../card/config-card';
 import { forgetManagedCard, sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
-import { FORM_SETTLE_MS, recallMessage, reply, settleManagedCard, updateOrFallback } from '../shared';
+import { FORM_SETTLE_MS, reply, settleManagedCard, updateOrFallback } from '../shared';
 import { log } from '../../core/logger';
 
 export const configHandlers: Record<string, Handler> = {
@@ -51,8 +51,14 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
     admins: (access.admins ?? []).join(', '),
     ...(access.owner !== undefined ? { owner: access.owner } : {}),
   });
-  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+  // 从卡片按钮重开表单时：原地把卡片换回表单，不再撤回旧卡另起一条。
+  // keepManaged：这是一张**还会被提交**的表单卡，保留托管登记才能让随后的
+  // 提交走 CardKit 原地更新，而不是退化成 patch + 一条 warning。
+  if (ctx.fromCardAction) {
+    await updateOrFallback(ctx, card, '请重新 `/config`。', { keepManaged: true });
+  } else {
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+  }
 }
 
 async function cancelConfig(ctx: CommandContext): Promise<void> {

@@ -1,5 +1,5 @@
 import { historyCard, type HistoryRow } from '../../card/history-card';
-import { recallMessage, reply } from '../shared';
+import { reply, updateOrFallback } from '../shared';
 import { sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
 import { applyResume } from './resume';
@@ -84,18 +84,21 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
   }));
 
   const currentSessionId = ctx.sessions.sessionFor(ctx.scope)?.sessionId;
-  if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(
-    ctx.channel,
-    ctx.msg.chatId,
-    historyCard(rows, {
-      mode,
-      cwd,
-      offset: start,
-      total: scoped.length,
-      ...(currentSessionId !== undefined ? { currentSessionId } : {}),
-    }),
-  );
+  const card = historyCard(rows, {
+    mode,
+    cwd,
+    offset: start,
+    total: scoped.length,
+    ...(currentSessionId !== undefined ? { currentSessionId } : {}),
+  });
+  // 翻页按钮来自卡片：原地更新同一张卡（列表卡会被反复翻页 → 保留托管登记）。
+  if (ctx.fromCardAction) {
+    await updateOrFallback(ctx, card, '请重新发送 `/history` 查看会话列表。', {
+      keepManaged: true,
+    });
+  } else {
+    await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
+  }
 }
 
 /** Named workspace pointing at `cwd`, else the collapsed path. */

@@ -3,7 +3,7 @@ import type { Mock } from 'vitest';
 import type { CommandContext } from '../index';
 import { wsHandlers } from './ws';
 
-const h = vi.hoisted(() => ({ updates: [] as string[], forgets: 0 }));
+const h = vi.hoisted(() => ({ updates: [] as string[], forgets: 0, recalls: [] as string[] }));
 
 vi.mock('../../card/managed', () => ({
   updateManagedCard: async (_c: unknown, _id: string, card: unknown) => {
@@ -14,6 +14,16 @@ vi.mock('../../card/managed', () => ({
   },
   sendManagedCard: vi.fn(),
 }));
+// 真实 reply / updateOrFallback，只把 recall 换成 spy：/ws cancel 仍应撤回原卡。
+vi.mock('../shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../shared')>();
+  return {
+    ...actual,
+    recallMessage: async (_ctx: unknown, messageId: string) => {
+      h.recalls.push(messageId);
+    },
+  };
+});
 vi.mock('../../core/logger', () => ({
   log: { info: vi.fn(), warn: vi.fn(), fail: vi.fn() },
 }));
@@ -57,6 +67,7 @@ function makeCtx(
 beforeEach(() => {
   h.updates = [];
   h.forgets = 0;
+  h.recalls = [];
   vi.clearAllMocks();
 });
 
@@ -103,6 +114,14 @@ describe('/ws 卡片', () => {
     const { ctx, send } = makeCtx({ 'proj-a': '/repo' }, '/repo', false);
     await wsHandlers['/ws']!('list', ctx);
     expect(send).toHaveBeenCalled();
+    expect(h.updates).toEqual([]);
+  });
+
+  it('cancel 仍然撤回原卡（关闭卡片，有意保留 recall，未被顺手改掉）', async () => {
+    const { ctx } = makeCtx({ 'proj-a': '/repo' }, '/repo', true);
+    await wsHandlers['/ws']!('cancel', ctx);
+    expect(h.recalls).toEqual(['om_card']);
+    // 不是原地更新成别的卡。
     expect(h.updates).toEqual([]);
   });
 });

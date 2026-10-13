@@ -13,7 +13,15 @@ const h = vi.hoisted(() => ({
   validateAppCredentials: vi.fn(async (..._args: unknown[]) => ({ ok: true, botName: '尼莫' })),
   sendManagedCard: vi.fn(async (..._args: unknown[]) => ({ messageId: 'om_card' })),
   updateManagedCard: vi.fn(async (..._args: unknown[]) => {}),
+  forgetManagedCard: vi.fn(),
+  recallMessage: vi.fn(async (..._args: unknown[]) => {}),
 }));
+
+// 真实 reply / updateOrFallback，只把 recall 换成 spy：断言卡片路径不再撤回。
+vi.mock('../shared', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../shared')>();
+  return { ...actual, recallMessage: h.recallMessage };
+});
 
 vi.mock('../../config/keystore', () => ({
   setSecret: h.setSecret,
@@ -33,7 +41,7 @@ vi.mock('../../utils/feishu-auth', () => ({ validateAppCredentials: h.validateAp
 vi.mock('../../card/managed', () => ({
   sendManagedCard: h.sendManagedCard,
   updateManagedCard: h.updateManagedCard,
-  forgetManagedCard: vi.fn(),
+  forgetManagedCard: h.forgetManagedCard,
   finalizeInterruptedCards: vi.fn(async () => false),
 }));
 
@@ -133,5 +141,38 @@ describe('/account submit 的凭据落盘时序', () => {
     expect(card).toContain('保存凭据失败');
     expect(card).toContain('disk full');
     expect(card).not.toContain('keystore sealed');
+  });
+});
+
+describe('/account change / cancel 的卡片路径', () => {
+  it('从卡片点「更换凭据」：原地更新同一 messageId，不撤回也不另发卡', async () => {
+    const ctx = makeCtx();
+    ctx.fromCardAction = true;
+
+    await accountCmdHandlers['/account']!('change', ctx);
+
+    expect(h.recallMessage).not.toHaveBeenCalled();
+    expect(h.sendManagedCard).not.toHaveBeenCalled();
+    expect(h.updateManagedCard).toHaveBeenCalledWith(expect.anything(), 'om_1', expect.anything());
+    expect(lastCard()).toContain('更换凭据');
+  });
+
+  it('文本入口（非卡片）仍发新表单卡', async () => {
+    const ctx = makeCtx();
+
+    await accountCmdHandlers['/account']!('change', ctx);
+
+    expect(h.recallMessage).not.toHaveBeenCalled();
+    expect(h.sendManagedCard).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancel 仍然撤回原卡（有意保留 recall，未被顺手改掉）', async () => {
+    const ctx = makeCtx();
+    ctx.fromCardAction = true;
+
+    await accountCmdHandlers['/account']!('cancel', ctx);
+
+    expect(h.recallMessage).toHaveBeenCalledWith(ctx, 'om_1');
+    expect(h.updateManagedCard).not.toHaveBeenCalled();
   });
 });

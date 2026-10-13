@@ -278,17 +278,127 @@ export async function finalizeInterruptedCards(
     // （消息被撤回/删除、token 失效），每 10s 一次 patch 会把机器拖垮。所以失败
     // 累加 attempts，超过上限后转入**一小时退避**：记录保留（⏹ 仍有救回的希望），
     // 但期间不再外呼。真正不可救（消息已删）时这一步不会更差。
-    const attempts = (entry.attempts ?? 0) + 1;
-    if (attempts > INTERRUPT_FINALIZE_MAX_ATTEMPTS) {
-      const nextAttemptAt = new Date(Date.now() + INTERRUPT_FINALIZE_BACKOFF_MS).toISOString();
-      log.warn('card', 'interrupted-finalize-backoff', { messageId, kind, attempts, nextAttemptAt });
-      retry.push({ ...entry, attempts, nextAttemptAt });
-      continue;
-    }
-    retry.push({ ...entry, attempts });
+    retry.push(noteFinalizeFailure(entry));
   }
   await mutateRunningCards(() => writeRunningCards(retry));
   return finalizedRestart;
+}
+
+/** 补卡失败一次：attempts 累加；超过上限后转一小时退避（记录保留、停止外呼）。 */
+function noteFinalizeFailure(entry: PersistedRunningCard): PersistedRunningCard {
+  const attempts = (entry.attempts ?? 0) + 1;
+  if (attempts > INTERRUPT_FINALIZE_MAX_ATTEMPTS) {
+    const nextAttemptAt = new Date(Date.now() + INTERRUPT_FINALIZE_BACKOFF_MS).toISOString();
+    log.warn('card', 'interrupted-finalize-backoff', {
+      messageId: entry.messageId,
+      kind: entry.kind,
+      attempts,
+      nextAttemptAt,
+    });
+    return { ...entry, attempts, nextAttemptAt };
+  }
+  return { ...entry, attempts };
+}
+
+/**
+ * How often the daemon sweeps `running-cards.json` for cards whose run is gone.
+ * Two minutes: short enough that a stranded ⏹ is reclaimed without waiting for
+ * the next restart, long enough that the file scan (plus one patch per orphan)
+ * stays free.
+ */
+export const ORPHAN_SWEEP_INTERVAL_MS = 2 * 60 * 1000;
+
+export interface OrphanSweepResult {
+  /** messageIds finalized (and dropped from the registry) in this round. */
+  swept: string[];
+  /** Entries deliberately left alone: scope still running, or in backoff. */
+  skipped: string[];
+}
+
+/**
+ * 扫一遍 `running-cards.json`，把**所属 run 已经不在跑**的卡片补成终态并清记录。
+ *
+ * 启动时的 `finalizeInterruptedCards` 只在重启那一次跑。进程活着的时候，一张
+ * 「停在运行态、却已经没人管」的卡（例如分页关闭的 patch 被飞书拒，run 却正常
+ * 跑完了）就永远没人收尾：用户一直看着那个 ⏹，直到下次重启。这个巡检把同一套
+ * 补卡逻辑按拍子跑起来，不必等重启。
+ *
+ * `isScopeBusy` 由调用方给出（守护进程传 `activeRuns.hasAnyForChat`）：**只要那个
+ * 聊天（含它的话题 scope）还有在跑的 run 就一律跳过** —— 一次长工具调用期间卡片
+ * 几分钟不更新是正常的，把它当孤儿补掉会毁掉一次正在进行的回复。拿不准就跳过。
+ *
+ * 只删除**确认补上**的条目；本轮补卡失败的按启动路径那套退避记账（attempts /
+ * nextAttemptAt），记录保留。
+ */
+export async function sweepOrphanedCards(
+  channel: LarkChannel,
+  isScopeBusy: (chatId: string) => boolean,
+): Promise<OrphanSweepResult> {
+  const entries = await readRunningCards();
+  const swept: string[] = [];
+  const skipped: string[] = [];
+  // 本轮补卡失败的条目：只带回 attempts/nextAttemptAt 两个字段，落盘时合并进
+  // 链内重读到的那一条（不拿旧快照盖掉这期间的新快照）。
+  const bumps = new Map<string, { attempts: number; nextAttemptAt?: string }>();
+  for (const entry of entries) {
+    const { messageId, kind } = entry;
+    if (!messageId || messageId === 'om_sent' || !messageId.startsWith('om_')) continue;
+    if (isScopeBusy(entry.chatId)) {
+      skipped.push(messageId);
+      log.debug('card', 'orphan-sweep-skip', { messageId, kind, reason: 'scope-busy' });
+      continue;
+    }
+    if (entry.nextAttemptAt && Date.parse(entry.nextAttemptAt) > Date.now()) {
+      skipped.push(messageId);
+      log.debug('card', 'orphan-sweep-skip', { messageId, kind, reason: 'backoff' });
+      continue;
+    }
+    if (await deliverInterruptCard(channel, messageId, kind, entry.card)) {
+      swept.push(messageId);
+      log.info('card', 'orphan-swept', { messageId, kind });
+      continue;
+    }
+    const bumped = noteFinalizeFailure(entry);
+    bumps.set(messageId, {
+      attempts: bumped.attempts ?? 0,
+      ...(bumped.nextAttemptAt ? { nextAttemptAt: bumped.nextAttemptAt } : {}),
+    });
+  }
+  if (swept.length > 0 || bumps.size > 0) {
+    const gone = new Set(swept);
+    await mutateRunningCards(async () => {
+      // 链内重读：这一轮的外呼期间 remember/forget/snapshot 都可能写过盘，
+      // 照搬开头的快照会把它们抹掉。
+      const list = await readRunningCards();
+      const next: PersistedRunningCard[] = [];
+      for (const item of list) {
+        if (gone.has(item.messageId)) continue;
+        const bump = bumps.get(item.messageId);
+        next.push(bump ? { ...item, ...bump } : item);
+      }
+      await writeRunningCards(next);
+    });
+  }
+  return { swept, skipped };
+}
+
+/**
+ * 周期巡检的启动器（守护进程用）。返回停止函数：`/account` 热重载会新建一个
+ * bridge，旧 bridge 的 disconnect 必须能把定时器拆掉，否则会攒下多个巡检。
+ * timer 已 unref，进程退出不受它牵制。
+ */
+export function startOrphanSweep(
+  channel: LarkChannel,
+  isScopeBusy: (chatId: string) => boolean,
+  opts: { intervalMs?: number } = {},
+): () => void {
+  const timer = setInterval(() => {
+    void sweepOrphanedCards(channel, isScopeBusy).catch((err) => {
+      log.warn('card', 'orphan-sweep-failed', { err: String(err) });
+    });
+  }, opts.intervalMs ?? ORPHAN_SWEEP_INTERVAL_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
 
 /** Boots that may try to patch one leftover card before we give up on it.
@@ -314,27 +424,67 @@ async function deliverInterruptCard(
 ): Promise<boolean> {
   const pretty = finalizeByKind(kind, card);
   const fits = Buffer.byteLength(JSON.stringify(pretty), 'utf8') <= CARD_PATCH_MAX_BYTES;
-  if (fits && (await tryPatchCard(channel, messageId, pretty))) {
+  if (fits && (await patchCardWithRetry(channel, messageId, pretty))) {
     log.info('card', 'interrupted-finalized', { messageId, kind, hadSnapshot: Boolean(card) });
     return true;
   }
-  if (await tryPatchCard(channel, messageId, finalizeByKind(kind, undefined))) {
+  if (await patchCardWithRetry(channel, messageId, finalizeByKind(kind, undefined))) {
     log.info('card', 'interrupted-finalized-short', { messageId, kind, fits });
     return true;
   }
   return false;
 }
 
-async function tryPatchCard(channel: LarkChannel, messageId: string, card: object): Promise<boolean> {
-  try {
-    await channel.rawClient.im.v1.message.patch({
-      path: { message_id: messageId },
-      data: { content: JSON.stringify(card) },
-    });
-    return true;
-  } catch (err) {
-    log.warn('card', 'interrupted-finalize-failed', { messageId, err: String(err) });
-    return false;
+const PATCH_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000] as const;
+const PATCH_RETRY_MAX = PATCH_RETRY_DELAYS_MS.length;
+
+function patchErrorCode(err: unknown): string {
+  if (!err || typeof err !== 'object') return String(err);
+  const response = 'response' in err ? err.response : undefined;
+  const data = response && typeof response === 'object' && 'data' in response ? response.data : undefined;
+  return `${JSON.stringify(data ?? err)} ${String(err)}`;
+}
+
+function retryablePatchError(err: unknown): boolean {
+  const response = err && typeof err === 'object' && 'response' in err ? err.response : undefined;
+  const status =
+    response && typeof response === 'object' && 'status' in response
+      ? Number((response as { status?: unknown }).status)
+      : undefined;
+  const data = response && typeof response === 'object' && 'data' in response ? response.data : undefined;
+  const code =
+    data && typeof data === 'object' && 'code' in data ? Number((data as { code?: unknown }).code) : undefined;
+  // 结构化优先：限频（230020）与网关/服务端 5xx 才值得等；4xx 里除限频外都是
+  // 「内容被拒」（11310/200800…），重试同内容只会白等 31 秒。
+  if (code === 230020 || code === 500 || code === 502 || code === 503 || code === 504) return true;
+  if (status !== undefined && (status === 500 || status === 502 || status === 503 || status === 504)) return true;
+  const text = patchErrorCode(err);
+  // 字符串兜底必须锚定形状：早先用裸 `includes('500')` 会把错误体里随便出现的
+  // 数字（token 计数等）当成可重试。
+  return (
+    /"code"\s*:\s*(230020|500|502|503|504)\b/.test(text) ||
+    /status code (500|502|503|504)\b/.test(text) ||
+    /ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|timed? ?out/i.test(text)
+  );
+}
+
+export async function patchCardWithRetry(channel: LarkChannel, messageId: string, card: object): Promise<boolean> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await channel.rawClient.im.v1.message.patch({
+        path: { message_id: messageId },
+        data: { content: JSON.stringify(card) },
+      });
+      return true;
+    } catch (err) {
+      if (!retryablePatchError(err) || attempt >= PATCH_RETRY_MAX) {
+        log.warn('card', 'interrupted-finalize-failed', { messageId, err: String(err) });
+        return false;
+      }
+      const delay = PATCH_RETRY_DELAYS_MS[attempt]!;
+      log.debug('card', 'terminal-patch-retry', { messageId, attempt: attempt + 1, delayMs: delay });
+      await new Promise<void>((resolve) => setTimeout(resolve, delay));
+    }
   }
 }
 
@@ -411,6 +561,7 @@ function isRunningStateElement(el: unknown): boolean {
  * recovery. Streaming cards patch via the message API, so cardId stays empty.
  */
 export function rememberStreamingCard(messageId: string, chatId: string, card?: object): void {
+  if (!messageId) return;
   void upsertRunningCard({ messageId, cardId: '', chatId, kind: 'stream', ...(card ? { card } : {}) });
 }
 

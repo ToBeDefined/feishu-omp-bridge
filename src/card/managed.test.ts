@@ -1,14 +1,17 @@
+import type { LarkChannel } from '@larksuiteoapi/node-sdk';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   finalizeByKind,
   finalizeInterruptedCards,
   forgetStreamingCard,
+  patchCardWithRetry,
   rememberStreamingCard,
   runningCardsSettled,
   stripRunningState,
+  sweepOrphanedCards,
   type RunningCardKind,
 } from './managed';
 import { paths } from '../config/paths';
@@ -344,5 +347,139 @@ describe('finalizeInterruptedCards（崩溃/重启后的补卡）', () => {
     fail = false;
     await finalizeInterruptedCards(ch);
     expect(JSON.parse(await readFile(file, 'utf8'))).toEqual([]);
+  });
+});
+
+describe('patchCardWithRetry（终态 patch 的限频重试）', () => {
+  const channelWith = (patch: () => Promise<unknown>): LarkChannel =>
+    ({ rawClient: { im: { v1: { message: { patch } } } } }) as unknown as LarkChannel;
+  const card = { schema: '2.0', body: { elements: [] } };
+
+  it('限频（230020）退避重试，最终成功 → true', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const channel = channelWith(async () => {
+        calls += 1;
+        if (calls === 1) {
+          throw Object.assign(new Error('Request failed with status code 400'), {
+            response: { status: 400, data: { code: 230020, msg: 'frequency limit' } },
+          });
+        }
+        return {};
+      });
+      const done = patchCardWithRetry(channel, 'om_retry', card);
+      await vi.advanceTimersByTimeAsync(1000); // 第一档退避
+      await expect(done).resolves.toBe(true);
+      expect(calls).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('内容被拒（230099/11310）不重试：只尝试一次 → false', async () => {
+    let calls = 0;
+    const channel = channelWith(async () => {
+      calls += 1;
+      throw Object.assign(new Error('Request failed with status code 400'), {
+        response: {
+          status: 400,
+          data: { code: 230099, msg: 'Failed to create card content, ext=ErrCode: 11310' },
+        },
+      });
+    });
+    await expect(patchCardWithRetry(channel, 'om_reject', card)).resolves.toBe(false);
+    expect(calls).toBe(1);
+  });
+
+  it('错误体里出现「500」这类数字不会被误判为可重试', async () => {
+    // 曾经的 `text.includes('500')` 会把这种错误当限频，白等 31 秒。
+    let calls = 0;
+    const channel = channelWith(async () => {
+      calls += 1;
+      throw Object.assign(new Error('content 1500 chars over the limit, status code 400'), {
+        response: { status: 400, data: { code: 230099, msg: 'Failed to create card content' } },
+      });
+    });
+    await expect(patchCardWithRetry(channel, 'om_noise', card)).resolves.toBe(false);
+    expect(calls).toBe(1);
+  });
+});
+
+describe('sweepOrphanedCards（周期巡检）', () => {
+  let dir: string;
+  let file: string;
+  const origFile = paths.runningCardsFile;
+  const card = { schema: '2.0', config: { summary: { content: '正在调用工具' } }, body: { elements: [] } };
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'sweep-test-'));
+    file = join(dir, 'running-cards.json');
+    paths.runningCardsFile = file;
+  });
+  afterEach(async () => {
+    await runningCardsSettled();
+    paths.runningCardsFile = origFile;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const persisted = async (): Promise<string[]> => {
+    const raw = JSON.parse(await readFile(file, 'utf8').catch(() => '[]')) as Array<{ messageId: string }>;
+    return raw.map((e) => e.messageId);
+  };
+  const channel = (patch: () => Promise<unknown>): LarkChannel =>
+    ({ rawClient: { im: { v1: { message: { patch } } } } }) as unknown as LarkChannel;
+
+  it('所属 run 已不在跑 → 补成终态并清掉登记', async () => {
+    rememberStreamingCard('om_orphan', 'oc_idle', card);
+    await runningCardsSettled();
+    const patched: string[] = [];
+    const res = await sweepOrphanedCards(
+      channel(async () => {
+        patched.push('ok');
+        return {};
+      }),
+      () => false,
+    );
+    expect(res.swept).toEqual(['om_orphan']);
+    expect(patched).toHaveLength(1);
+    expect(await persisted()).toEqual([]);
+  });
+
+  it('该聊天仍有在跑的 run → 不动它（长工具调用期间卡片不更新是正常的）', async () => {
+    rememberStreamingCard('om_busy', 'oc_busy', card);
+    await runningCardsSettled();
+    let called = 0;
+    const res = await sweepOrphanedCards(
+      channel(async () => {
+        called += 1;
+        return {};
+      }),
+      (chatId) => chatId === 'oc_busy',
+    );
+    expect(res.swept).toEqual([]);
+    expect(res.skipped).toEqual(['om_busy']);
+    expect(called).toBe(0);
+    expect(await persisted()).toEqual(['om_busy']); // 记录保留，下次还有机会
+  });
+
+  it('退避未到期 → 本轮不外呼', async () => {
+    rememberStreamingCard('om_backoff', 'oc_idle', card);
+    await runningCardsSettled();
+    // 手工把 nextAttemptAt 推到未来（模拟上一轮补卡失败后的退避）
+    const entries = JSON.parse(await readFile(file, 'utf8')) as Array<Record<string, unknown>>;
+    entries[0]!.nextAttemptAt = new Date(Date.now() + 60_000).toISOString();
+    await writeFile(file, JSON.stringify(entries), 'utf8');
+    let called = 0;
+    const res = await sweepOrphanedCards(
+      channel(async () => {
+        called += 1;
+        return {};
+      }),
+      () => false,
+    );
+    expect(called).toBe(0);
+    expect(res.swept).toEqual([]);
+    expect(res.skipped).toEqual(['om_backoff']);
   });
 });

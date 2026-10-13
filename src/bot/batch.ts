@@ -1,15 +1,16 @@
 import type { LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import type { AgentAdapter, AgentEvent, AgentUiRequest } from '../agent/types';
 import type { ActiveRuns, RunClaim, RunHandle } from './active-runs';
-import { createFeishuHostIntegration } from './feishu-host';
 import {
   forgetManagedCard,
   forgetStreamingCard,
+  patchCardWithRetry,
   rememberStreamingCard,
   sendManagedCard,
   snapshotStreamingCard,
   updateManagedCard,
 } from '../card/managed';
+import { createFeishuHostIntegration } from './feishu-host';
 import { renderOmpUiRequestCard, renderOmpUiResultCard } from '../card/omp-ui';
 import { renderCard } from '../card/run-renderer';
 import { splitByTableBudget } from '../card/tables';
@@ -790,8 +791,6 @@ export async function streamCardPages(
 ): Promise<void> {
   const session = createStreamSession(handle, idleTimeoutMs);
   let pageIndex = 0;
-  // 当前这一页的飞书消息 id：失败时用它把停摆的卡补成终态（见 catch）。
-  let inflightCardId: string | undefined;
   try {
     for (;;) {
       // Each page starts from a clean slate: text/tool blocks and reasoning
@@ -821,9 +820,7 @@ export async function streamCardPages(
       }
       const overflow = await runCardPage(
         channel, chatId, sendOpts, session, handle, sessions, scope, cwd,
-        idleTimeoutMs, hooks, filter, pageIndex, pageNow, (messageId) => {
-          inflightCardId = messageId;
-        },
+        idleTimeoutMs, hooks, filter, pageIndex, pageNow,
       );
       // Another page is needed while content is still owed to the user: either
       // the page cut at the table budget (carry) or the run is still streaming.
@@ -837,13 +834,8 @@ export async function streamCardPages(
     // already posted survive. Deliver the current page as a minimal card
     // first (near-impossible to reject); if even that fails, fall back to
     // plain text so the user's turn is never silently swallowed. Rethrow so
-    // runAgentBatch still logs the failure.
-    //
-    // 先把**这张死掉的卡**补成终态：它停在“运行中”的画面上，用户会一直看到一个
-    // 不消失的 ⏹ 终止按钮（新发的兜底卡救不了它）。
-    if (inflightCardId !== undefined) {
-      await patchStrandedCard(channel, inflightCardId, session, handle, idleTimeoutMs, filter);
-    }
+    // runAgentBatch still logs the failure. (The dead page's own card is
+    // finalized in `runCardPage`'s catch — it knows that page's messageId.)
     const replyTo = sendOpts.replyTo;
     const sent = await sendManagedCard(channel, chatId, fallbackCard(session.state, filter), replyTo).catch(
       () => undefined,
@@ -869,11 +861,7 @@ export async function streamCardPages(
 
 
 /**
- * 把一张停在运行态的卡片补成终态（尽力而为）。
- *
- * 内容可能正是失败的原因（超 30KB / 表格超限），所以先按字节切一刀：能放下的
- * 部分照旧呈现 + 一句提示；连切都切不出来时退回一张极小卡片。补上了就撤掉崩溃
- * 恢复记录，补不上就留着 —— 别让用户永远看着一个 ⏹ 终止按钮。
+ * 把一张停在运行态的卡片补成终态（尽力而为）。内容按表格与字节预算裁剪；补不上留记录。
  */
 async function patchStrandedCard(
   channel: LarkChannel,
@@ -882,31 +870,36 @@ async function patchStrandedCard(
   handle: RunHandle,
   idleTimeoutMs: number | undefined,
   filter: (state: RunState) => RunState,
-): Promise<void> {
+): Promise<boolean> {
   const final = finalizeSessionState(session, handle, idleTimeoutMs);
   // 一个 now 贯穿「字节探测 + 补卡渲染」：探测用 A 时刻、发送用 B 时刻会让
   // 「用时」字符串在秒边界处差 1 字节，切出来的卡可能刚好过线。
+  if (!/^om_/.test(messageId)) {
+    log.debug('card', 'stranded-skip-invalid-message', { messageId });
+    return false;
+  }
   const now = Date.now();
-  const split = splitByByteBudget(final, filter, now);
+  const tableSplit = splitByTableBudget(final);
+  const byteSource = tableSplit.carry.length > 0 ? { ...tableSplit.page, terminal: 'done' as const } : final;
+  const split = splitByByteBudget(byteSource, filter, now);
   const card =
-    split.carry.length > 0
+    split.carry.length > 0 || tableSplit.carry.length > 0
       ? renderCard(filter({ ...split.page, terminal: 'done' }), {
           now,
           bottomNote: '⚠️ 卡片更新失败，本条回复可能不完整',
         })
       : renderCard(filter(final), { now });
   try {
-    await channel.rawClient.im.v1.message.patch({
-      path: { message_id: messageId },
-      data: { content: JSON.stringify(card) },
-    });
-    forgetStreamingCard(messageId);
-    log.info('card', 'stranded-finalized', { messageId, terminal: final.terminal });
+    if (await patchCardWithRetry(channel, messageId, card)) {
+      forgetStreamingCard(messageId);
+      log.info('card', 'stranded-finalized', { messageId, terminal: final.terminal });
+      return true;
+    }
   } catch (patchErr) {
     log.warn('card', 'stranded-finalize-failed', { messageId, err: String(patchErr) });
   }
+  return false;
 }
-
 /** Run one card page; returns true if it overflowed (another page follows). */
 async function runCardPage(
   channel: LarkChannel,
@@ -923,7 +916,6 @@ async function runCardPage(
   pageIndex: number,
   /** 这一页的开启时刻，与 streamCardPages 的字节探测共用同一值（见那里注释）。 */
   pageNow: number,
-  onCard?: (messageId: string) => void,
 ): Promise<boolean> {
   let overflow = false;
   // Whether any agent event was reduced into this page. A page that only
@@ -943,151 +935,193 @@ async function runCardPage(
     filter(session.state),
     pageIndex > 0 ? { topNote: '⬆️ 接上一条消息', now: pageNow } : { now: pageNow },
   );
-  await channel.stream(
-    chatId,
-    {
-      card: {
-        initial: initialCard,
-        producer: async (ctrl) => {
-          // Crash recovery: streaming cards don't go through the managed-card
-          // system, so persist their messageId + snapshot for the boot-time
-          // finalizer (Feishu can't return card content afterwards).
-          onCard?.(ctrl.messageId);
-          void rememberStreamingCard(ctrl.messageId, chatId, initialCard);
-          // 失败标记：决定 finally 是否撤掉崩溃恢复记录（见下）。
-          let failed = false;
-          let heartbeat: NodeJS.Timeout | undefined;
-          try {
-          const q = coalesceLatest((card: object) => {
-            // Persist the snapshot BEFORE pushing: whatever reached Feishu is
-            // what a crash-restart must replay.
-            snapshotStreamingCard(ctrl.messageId, card);
-            return ctrl.update(card);
-          }, {
-            minIntervalMs: CARD_UPDATE_MIN_INTERVAL_MS,
-          });
-          // 心跳：一次 `pnpm test` 之类的长工具调用期间，事件流可以几分钟没有
-          // 任何一条事件 —— 没有 patch，卡片上的「已用时长」就冻住，用户看到的
-          // 就是卡死。低频（5s）定时刷新让表继续走；它走同一个 q，因此仍然受
-          // 300ms 节流保护，不会额外撞飞书的单消息更新限频。
-          //
-          // 存活期与这一页的 producer 等长：streamEvents 返回（终态 / 流结束 /
-          // 溢出换页）后 interval 在 finally 里清掉；终态之后的兜底推送也不会
-          // 再触发它（回调里再挡一次，防止在 finalize 的 await 窗口里插进来）。
-          heartbeat = setInterval(() => {
-            if (session.state.terminal !== 'running') return;
+  // 这一页的飞书消息 id：producer 一开头就记下来（见下），收尾时用它决定
+  // 「撤记录」还是「补终态」。**每一页各记各的** —— 从前它由外层的一个变量承接，
+  // 多页时只记得最后一页，前面那张卡出问题就再也认不出来了。
+  let pageMessageId: string | undefined;
+  try {
+    await channel.stream(
+      chatId,
+      {
+        card: {
+          initial: initialCard,
+          producer: async (ctrl) => {
+            // Crash recovery: streaming cards don't go through the managed-card
+            // system, so persist their messageId + snapshot for the boot-time
+            // finalizer (Feishu can't return card content afterwards).
+            pageMessageId = ctrl.messageId;
+            void rememberStreamingCard(ctrl.messageId, chatId, initialCard);
+            let heartbeat: NodeJS.Timeout | undefined;
             try {
-              q.push(
-                renderCard(
-                  filter(session.state),
+              const q = coalesceLatest((card: object) => {
+                // Persist the snapshot BEFORE pushing: whatever reached Feishu is
+                // what a crash-restart must replay.
+                snapshotStreamingCard(ctrl.messageId, card);
+                return ctrl.update(card);
+              }, {
+                minIntervalMs: CARD_UPDATE_MIN_INTERVAL_MS,
+              });
+              // 心跳：一次 `pnpm test` 之类的长工具调用期间，事件流可以几分钟没有
+              // 任何一条事件 —— 没有 patch，卡片上的「已用时长」就冻住，用户看到的
+              // 就是卡死。低频（5s）定时刷新让表继续走；它走同一个 q，因此仍然受
+              // 300ms 节流保护，不会额外撞飞书的单消息更新限频。
+              //
+              // 存活期与这一页的 producer 等长：streamEvents 返回（终态 / 流结束 /
+              // 溢出换页）后 interval 在 finally 里清掉；终态之后的兜底推送也不会
+              // 再触发它（回调里再挡一次，防止在 finalize 的 await 窗口里插进来）。
+              heartbeat = setInterval(() => {
+                // 这一页已经在收尾（overflow）→ 不再推：SDK 的 patch 是异步的
+                // 「最后写入者胜」，心跳若排在收尾卡之后，飞书上留下的就还是那个
+                // 运行态画面（⏹ 挂着）—— 而登记会因为收尾成功被撤掉，卡就没人管了。
+                if (overflow || session.state.terminal !== 'running') return;
+                const heartbeatState = filter(session.state);
+                const tableSplit = splitByTableBudget(heartbeatState);
+                if (tableSplit.carry.length > 0) return;
+                const heartbeatCard = renderCard(
+                  heartbeatState,
                   pageIndex > 0 ? { topNote: '⬆️ 接上一条消息' } : undefined,
-                ),
-              );
-            } catch {
-              // 写失败会在 producer 的 await 路径上抛出并走正常收尾；定时器这条
-              // 独立调用栈上不能再抛（会成为 uncaughtException）。
-            }
-          }, CARD_HEARTBEAT_INTERVAL_MS);
-          await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
-            // 同一个时刻既用于字节预算探测（renderCard + cardExceedsBudget），
-            // 也用于随后推出去的那张卡：「用时」字符串在 60s 边界会变长，测量与
-            // 发送若读不同时刻，探测就少算了一个字节。
-            const now = Date.now();
-            // Tables first: Feishu rejects a card past five table components
-            // (ErrCode 11310 "card table number over limit") no matter how
-            // small it is, so a page must be cut at the table budget rather
-            // than rendered and bounced. The carry renders on the next page.
-            const split = splitByTableBudget(state);
-            if (split.carry.length > 0) {
-              overflow = true;
-              session.carry = split.carry;
-              q.push(
-                renderCard(filter({ ...split.page, terminal: 'done' }), {
-                  now,
-                  midPage: true,
-                  bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
-                }),
-              );
-              await q.flush();
-              return false;
-            }
-            const filtered = filter(state);
-            const card = renderCard(filtered, { now });
-            if (cardExceedsBudget(card, filtered)) {
-              // Close this page with only the content that FITS: the closing
-              // card used to carry the full overflowing state, so Feishu
-              // rejected it and the run died on the markdown fallback.
-              // Overflow blocks ride the next page via session.carry.
-              const byteSplit = splitByByteBudget(state, filter, now);
-              if (byteSplit.carry.length > 0) {
-                overflow = true;
-                session.carry = byteSplit.carry;
-                q.push(
-                  renderCard(filter({ ...byteSplit.page, terminal: 'done' }), {
-                    now,
-                    midPage: true,
-                    bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
-                  }),
                 );
+                if (cardExceedsBudget(heartbeatCard, heartbeatState)) return;
+                try {
+                  q.push(heartbeatCard);
+                } catch {
+                  // 写失败会在 producer 的 await 路径上抛出并走正常收尾；定时器这条
+                  // 独立调用栈上不能再抛（会成为 uncaughtException）。
+                }
+              }, CARD_HEARTBEAT_INTERVAL_MS);
+              await streamEvents(session, handle, sessions, scope, cwd, hooks, async (state) => {
+                // 同一个时刻既用于字节预算探测（renderCard + cardExceedsBudget），
+                // 也用于随后推出去的那张卡：「用时」字符串在 60s 边界会变长，测量与
+                // 发送若读不同时刻，探测就少算了一个字节。
+                const now = Date.now();
+                // Tables first: Feishu rejects a card past five table components
+                // (ErrCode 11310 "card table number over limit") no matter how
+                // small it is, so a page must be cut at the table budget rather
+                // than rendered and bounced. The carry renders on the next page.
+                const split = splitByTableBudget(state);
+                if (split.carry.length > 0) {
+                  overflow = true;
+                  session.carry = split.carry;
+                  q.push(
+                    renderCard(filter({ ...split.page, terminal: 'done' }), {
+                      now,
+                      midPage: true,
+                      bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
+                    }),
+                  );
+                  await q.flush();
+                  return false;
+                }
+                const filtered = filter(state);
+                const card = renderCard(filtered, { now });
+                if (cardExceedsBudget(card, filtered)) {
+                  // Close this page with only the content that FITS: the closing
+                  // card used to carry the full overflowing state, so Feishu
+                  // rejected it and the run died on the markdown fallback.
+                  // Overflow blocks ride the next page via session.carry.
+                  const byteSplit = splitByByteBudget(state, filter, now);
+                  if (byteSplit.carry.length > 0) {
+                    overflow = true;
+                    session.carry = byteSplit.carry;
+                    q.push(
+                      renderCard(filter({ ...byteSplit.page, terminal: 'done' }), {
+                        now,
+                        midPage: true,
+                        bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
+                      }),
+                    );
+                    await q.flush();
+                    return false;
+                  }
+                  // Un-splittable (carry empty): fall through and push the
+                  // measured card — the stream may still survive if the closing
+                  // render is leaner than the running one.
+                }
+                q.push(card);
+                // A terminal event's own update already carries the final card
+                // (done/error marks); the finalize push would repeat it.
+                if (state.terminal !== 'running') sawTerminalPush = true;
+                return true;
+              });
+              if (!overflow && !sawTerminalPush) {
+                // Natural end of the whole stream: finalize + reap on this page.
+                // The finalize push goes through the same byte split as a
+                // mid-stream overflow — the drained carry can still be past the
+                // 30KB Feishu cap, and an unchecked push here re-killed runs
+                // that had paginated correctly all along.
+                const final = finalizeSessionState(session, handle, idleTimeoutMs);
+                log.info('card', 'final', {
+                  terminal: final.terminal,
+                  interrupted: handle.interrupted,
+                });
+                const now = Date.now();
+                const byteSplit = splitByByteBudget(final, filter, now);
+                if (byteSplit.carry.length > 0) {
+                  session.carry = byteSplit.carry;
+                  q.push(
+                    renderCard(filter(byteSplit.page), {
+                      now,
+                      midPage: true,
+                      bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
+                    }),
+                  );
+                } else {
+                  q.push(renderCard(filter(final), { now }));
+                }
                 await q.flush();
-                return false;
+                // (reap happens once in streamCardPages' finally, after all pages)
               }
-              // Un-splittable (carry empty): fall through and push the
-              // measured card — the stream may still survive if the closing
-              // render is leaner than the running one.
+            } finally {
+              // 终态 / 换页 / 异常：三条路都必须停掉心跳，否则定时器会在卡片已经
+              // 终结之后继续 patch（也会把测试进程吊住）。
+              clearInterval(heartbeat);
             }
-            q.push(card);
-            // A terminal event's own update already carries the final card
-            // (done/error marks); the finalize push would repeat it.
-            if (state.terminal !== 'running') sawTerminalPush = true;
-            return true;
-          });
-          if (!overflow && !sawTerminalPush) {
-            // Natural end of the whole stream: finalize + reap on this page.
-            // The finalize push goes through the same byte split as a
-            // mid-stream overflow — the drained carry can still be past the
-            // 30KB Feishu cap, and an unchecked push here re-killed runs
-            // that had paginated correctly all along.
-            const final = finalizeSessionState(session, handle, idleTimeoutMs);
-            log.info('card', 'final', {
-              terminal: final.terminal,
-              interrupted: handle.interrupted,
-            });
-            const now = Date.now();
-            const byteSplit = splitByByteBudget(final, filter, now);
-            if (byteSplit.carry.length > 0) {
-              session.carry = byteSplit.carry;
-              q.push(
-                renderCard(filter(byteSplit.page), {
-                  now,
-                  midPage: true,
-                  bottomNote: '⬇️ 内容较长，已分页，下一条消息继续',
-                }),
-              );
-            } else {
-              q.push(renderCard(filter(final), { now }));
-            }
-            await q.flush();
-            // (reap happens once in streamCardPages' finally, after all pages)
-          }
-          } catch (err) {
-            // 抛错路径必须留记录：卡片停在运行态（⏹ 挂着），只能靠下次启动的
-            // 兜底补卡收尾。此前只声明了 failed 却从未置 true，等于无条件删除。
-            failed = true;
-            throw err;
-          } finally {
-            // 终态 / 换页 / 异常：三条路都必须停掉心跳，否则定时器会在卡片已经
-            // 终结之后继续 patch（也会把测试进程吊住）。
-            clearInterval(heartbeat);
-            // 只在**正常收尾**时撤记录：那张卡此刻已是终态（⏹ 已随终态渲染消失）。
-            // 抛错的路径留着记录 —— 卡片停在运行态，要让下次启动的兜底补卡去收尾。
-            if (!failed) void forgetStreamingCard(ctrl.messageId);
-          }
+            // 登记**不在这里撤**：`ctrl.update()` 只是把卡片交给 SDK 的节流器，
+            // 它立刻 resolve，真正的 im.message.patch 要等这一页的流收尾
+            // （SDK 的 completeTerminal → throttle.flushNow）才落地 —— 失败也只
+            // 在那一刻以 `channel.stream` 抛错的形式暴露。撤登记必须等那个确认
+            // （见下面 stream 返回后的分支），否则「卡停在运行态 + 登记已删」这个
+            // 最坏组合就会出现：既没人给它收尾，也没有记录让下次启动/巡检补卡。
+          },
         },
       },
-    },
-    sendOpts,
-  );
+      sendOpts,
+    );
+  } catch (err) {
+    // 这一页的流失败：SDK 收尾时把补卡队列排空并把失败抛了出来 —— 说明这张卡
+    // **最后一次**更新没有落到飞书，它停在运行态（⏹ 挂着）。立刻把这张卡补成
+    // 终态（按它自己的 messageId）；补不上就把登记留着，让启动兜底与周期巡检去收尾。
+    const settled =
+      pageMessageId !== undefined
+        ? await patchStrandedCard(channel, pageMessageId, session, handle, idleTimeoutMs, filter)
+        : false;
+    // A card transport failure is a delivery downgrade, not an agent failure.
+    // Stop this page and let the caller's normal reap path finish the run.
+    session.done = true;
+    log.warn('card', 'stream-degraded', {
+      messageId: pageMessageId,
+      settled,
+      err: String(err),
+    });
+    // 降级链的最后一环：卡片这条路走不通（没拿到 messageId，或补卡也被拒）时，
+    // **答案不能丢** —— 把已经产出的内容按纯文本分段投递（与文本模式同一套预算）。
+    // 这里也不能把异常抛出去：交付降级不该把整轮 run 判死。
+    if (!settled) {
+      await sendTextPages(
+        channel,
+        chatId,
+        sendOpts,
+        renderText(filter(finalizeSessionState(session, handle, idleTimeoutMs))),
+      )
+        .then(() => log.info('card', 'stream-degraded-text', { messageId: pageMessageId }))
+        .catch((sendErr) => {
+          log.fail('card', sendErr, { step: 'stream-degraded-text', messageId: pageMessageId });
+        });
+    }
+    return false;
+  }
+  // 流正常结束 = 这一页的最后一张画面确认落地，此刻才撤登记。
+  if (pageMessageId !== undefined) forgetStreamingCard(pageMessageId);
   return overflow;
 }
 

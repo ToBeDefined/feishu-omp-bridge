@@ -13,7 +13,21 @@
 
 ## [Unreleased]
 
-### Changed
+### Fixed
+- **卡片停在运行态永不收尾（用户报的「必须手点 ⏹ 才恢复」）**：根因是**心跳绕过了表格预算** ——
+  飞书拒收超过 5 张表格的卡片（`ErrCode 11310 "card table number over limit"`，与体积无关），
+  而 5 秒心跳直接渲染整个 state 推出去 → 被拒 → `stream.fail` 把整轮 run 打死 → 卡片再没人收尾。
+  - 心跳现在与事件路径同一套预算：先 `splitByTableBudget`（有 carry 就不推）→ 再 `cardExceedsBudget`；
+    `patchStrandedCard` 也改成先表格后字节；
+  - **卡片交付失败不再连累 run**：`runCardPage` 的 catch 里补终态卡（带重试）、置 `session.done`、
+    记 `stream-degraded`，不再 rethrow；补卡也失败时退到**纯文本分段投递**（`stream-degraded-text`），
+    保证答案不丢；
+  - **终态 patch 限频重试**：230020/500/502/503/504/网络类做 1/2/4/8/16s 退避，成功才注销登记；
+    内容被拒（11310/200800）**不重试**（同一内容再发也是白等），并把判定从 `includes('500')` 收紧为
+    结构化错误码 + 锚定形状的字符串兜底；
+  - **登记表写入守卫 + 周期性巡检**：`messageId` 为空/非 `om_` 不登记；新增 `sweepOrphanedCards`
+    （每 2 分钟，可停止）把「所属 run 已不在跑」的卡补成终态并清记录（仍在跑或退避未到期的跳过）；
+  - **稳态节流 300ms → 1000ms**（减少限频与无谓写入）。
 - **「下一张卡」改为原地更新**：翻页与切换类路径过去是「撤回旧卡 + 另发一条新卡」，消息列表
   会跳动、上下文丢失。现在 `/history` 翻页、`/search` 翻页/空结果/重搜、`/model` 提供方与选卡、
   `/thinking`、`/account change`、`/config` 重开表单，一律在**同一 messageId 上原地替换**

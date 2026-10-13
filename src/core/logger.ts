@@ -91,7 +91,7 @@ function getStream(): WriteStream | null {
   }
 }
 
-type Level = 'info' | 'warn' | 'error';
+type Level = 'debug' | 'info' | 'warn' | 'error';
 export type LogFields = Record<string, unknown>;
 
 /**
@@ -136,10 +136,14 @@ function emit(level: Level, phase: string, event: string, fields: LogFields = {}
   }
 
   // Stdout is the user-facing tail: warns, errors, and a curated list
-  // of info events (WS lifecycle, message intake, run final). The full
-  // detail always lives in the file regardless.
+  // of info events (WS lifecycle, message intake, run final). Debug stays
+  // file-only — it exists for the periodic sweeps, whose per-card skip lines
+  // would otherwise be pure noise on every tick. The full detail always lives
+  // in the file regardless.
   const showOnStdout =
-    level !== 'info' || STDOUT_INFO_ALLOWLIST.has(`${phase}.${event}`);
+    level === 'warn' ||
+    level === 'error' ||
+    (level === 'info' && STDOUT_INFO_ALLOWLIST.has(`${phase}.${event}`));
   if (!showOnStdout) return;
 
   const fn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
@@ -214,6 +218,10 @@ function formatFields(fields: LogFields): string {
 }
 
 export const log = {
+  /** File-only diagnostics (never printed to stdout). */
+  debug(phase: string, event: string, fields?: LogFields): void {
+    emit('debug', phase, event, fields);
+  },
   info(phase: string, event: string, fields?: LogFields): void {
     emit('info', phase, event, fields);
   },

@@ -164,6 +164,7 @@ describe('产流中断的卡片收尾', () => {
     paths.runningCardsFile = file;
   });
   afterEach(async () => {
+    await runningCardsSettled();
     paths.runningCardsFile = origFile;
     await rm(dir, { recursive: true, force: true });
   });
@@ -203,12 +204,10 @@ describe('产流中断的卡片收尾', () => {
 
   async function runFailingStream(channel: LarkChannel): Promise<void> {
     const events: AgentEvent[] = [{ type: 'text', delta: '正文内容' }, { type: 'done' }];
-    await expect(
-      streamCardPages(
-        channel, 'oc_x', {}, fakeHandle(events), {} as unknown as SessionStore, 'oc_x', '/tmp',
-        undefined, undefined, (s) => s,
-      ),
-    ).rejects.toThrow();
+    await streamCardPages(
+      channel, 'oc_x', {}, fakeHandle(events), {} as unknown as SessionStore, 'oc_x', '/tmp',
+      undefined, undefined, (s) => s,
+    );
   }
 
   it('把停摆的卡补成终态（⏹ 消失），补上了就不必再留记录', async () => {
@@ -237,6 +236,117 @@ describe('产流中断的卡片收尾', () => {
 
     const left = JSON.parse(await readFile(file, 'utf8')) as Array<{ messageId: string }>;
     expect(left.map((c) => c.messageId)).toEqual(['om_stranded']);
+  });
+});
+
+describe('分页关闭时 patch 未落地（SDK 的 patch 是异步的）', () => {
+  const origFile = paths.runningCardsFile;
+  let dir: string;
+  let file: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'close-fail-'));
+    file = join(dir, 'running-cards.json');
+    paths.runningCardsFile = file;
+  });
+  afterEach(async () => {
+    await runningCardsSettled();
+    paths.runningCardsFile = origFile;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * 复刻 SDK 的 CardStreamControllerImpl：`ctrl.update()` 只把卡片记下来、让真正的
+   * im.message.patch 走节流定时器，**立刻 resolve**；patch 直到流收尾
+   * （收尾失败时 stream 抛错，生产代码会将其降级为已完成而不再 rethrow。）
+   */
+  function deferredPatchChannel(failIds: Set<string>): {
+    channel: LarkChannel;
+    messageIds: string[];
+    patched: object[];
+  } {
+    const messageIds: string[] = [];
+    const patched: object[] = [];
+    const patch = async (messageId: string, card: object): Promise<void> => {
+      if (failIds.has(messageId)) throw new Error('AxiosError: Request failed with status code 400');
+      patched.push(card);
+    };
+    const channel = {
+      stream: async (
+        _chatId: string,
+        spec: {
+          card: {
+            initial: object;
+            producer: (ctrl: { messageId: string; update(card: object): Promise<void> }) => Promise<void>;
+          };
+        },
+      ) => {
+        const messageId = `om_page${messageIds.length}`;
+        messageIds.push(messageId);
+        let last = spec.card.initial;
+        await spec.card.producer({
+          messageId,
+          update: async (card) => {
+            last = card; // 与 SDK 一样：只是记下，不等 patch 落地
+          },
+        });
+        await patch(messageId, last); // 收尾：这一页的最后一张画面
+      },
+      send: async () => {},
+      rawClient: {
+        cardkit: { v1: { card: { create: async () => ({ data: { card_id: 'c_1' } }) } } },
+        im: {
+          v1: {
+            message: {
+              patch: async (req: { path: { message_id: string }; data: { content: string } }) =>
+                patch(req.path.message_id, JSON.parse(req.data.content) as object),
+              create: async () => ({ data: { message_id: 'om_fallback' } }),
+              reply: async () => ({ data: { message_id: 'om_fallback' } }),
+            },
+          },
+        },
+      },
+    };
+    return { channel: channel as unknown as LarkChannel, messageIds, patched };
+  }
+
+  /** 12 张表让第一页必然在表格预算处收尾（换页），即「一页关闭」。 */
+  const overflowingEvents: AgentEvent[] = [
+    { type: 'text', delta: Array.from({ length: 12 }, (_, i) => tableMd(i)).join('\n\n') },
+    { type: 'done' },
+  ];
+
+  async function leftovers(): Promise<Array<{ messageId: string }>> {
+    return JSON.parse(await readFile(file, 'utf8').catch(() => '[]')) as Array<{ messageId: string }>;
+  }
+
+  it('一页关闭的 patch 被拒 → 这张卡的登记留着（否则卡停在运行态且无人认领）', async () => {
+    // 修复前：producer 的 finally 无条件 forgetStreamingCard，等 stream() 把收尾
+    // patch 的失败抛出来时，登记已经没了 —— 卡上的 ⏹ 永远挂着（线上事故形态）。
+    const { channel, messageIds } = deferredPatchChannel(new Set(['om_page0']));
+
+    await streamCardPages(
+      channel, 'oc_x', {}, fakeHandle(overflowingEvents), {} as unknown as SessionStore, 'oc_x', '/tmp',
+      undefined, undefined, (s) => s,
+    );
+
+    expect(messageIds).toContain('om_page0');
+    await runningCardsSettled();
+    expect((await leftovers()).map((c) => c.messageId)).toContain('om_page0');
+  });
+
+  it('每页的 patch 都确认落地才撤登记：分页正常跑完 running-cards 为空', async () => {
+    const { channel, messageIds, patched } = deferredPatchChannel(new Set());
+
+    await streamCardPages(
+      channel, 'oc_x', {}, fakeHandle(overflowingEvents), {} as unknown as SessionStore, 'oc_x', '/tmp',
+      undefined, undefined, (s) => s,
+    );
+    await runningCardsSettled();
+
+    expect(messageIds.length).toBeGreaterThan(1); // 确实分页了
+    expect(patched.length).toBeGreaterThan(0);
+    // 确认成功 → 登记全撤（既不留死记录，也不给已完成的卡补「进程中断」）。
+    expect(await leftovers()).toEqual([]);
   });
 });
 

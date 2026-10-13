@@ -39,11 +39,39 @@ export interface CardDispatchDeps {
   chatModeCache: ChatModeCache;
 }
 
+/** 点击回调的串行任务链（测试与优雅关停用）。 */
+let actionChain: Promise<void> = Promise.resolve();
+function trackAction(task: Promise<void>): void {
+  actionChain = actionChain.then(() => task.catch(() => undefined));
+}
+/** 等所有后台点击任务排空。 */
+export function cardActionsFlushed(): Promise<void> {
+  return actionChain;
+}
+
 export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   const value = deps.evt.action.value;
   if (!value || typeof value !== 'object') return;
   const payload = value as Record<string, unknown>;
 
+  // 飞书对卡片回调有 ~3s 响应超时：超时用户会看到「目标回调服务超时未响应」。
+  // SDK 在 handler resolve 后才回执（CardActionHandler.invoke → yield cardHandler），
+  // 所以耗时工作（扫盘/渲染/发卡，实测 /history 翻页要 3-11s）必须**后台执行**，
+  // handler 立即返回。去重是同步 Map 查询，留在 ACK 前完成（否则连点会双双执行）。
+  if (!isOmpUiPayload(payload) && !(AGENT_CALLBACK_MARKER in payload)) {
+    const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
+    if (cmd && !allowCommandClick(deps.evt.messageId, payload)) {
+      log.info('cardAction', 'command-dedup', { cmd, messageId: deps.evt.messageId });
+      return;
+    }
+  }
+  trackAction(runCardAction(deps, payload));
+}
+
+async function runCardAction(
+  deps: CardDispatchDeps,
+  payload: Record<string, unknown>,
+): Promise<void> {
   const operatorId = deps.evt.operator.openId;
   const chatId = deps.evt.chatId;
 
@@ -122,12 +150,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
   if (!cmd) return;
-  // 普通命令按钮（/history 翻页、/ps 等）也要防连点重复执行命令。用带时间窗的
-  // 去重：窗口内的重复点击静默忽略，窗口外照常执行（否则合法连点会被吃掉）。
-  if (!allowCommandClick(deps.evt.messageId, payload)) {
-    log.info('cardAction', 'command-dedup', { cmd, scope });
-    return;
-  }
+  // 连点去重已在 handleCardAction（ACK 前）完成。
   const { name, args } = resolveCardCommand(cmd, payload);
   // 把「意图参数」也记下来：卡片按钮的参数如果丢在回调里，命令会静默重渲染出同一页。
   log.info('cardAction', 'cmd', { cmd, scope, messageId: deps.evt.messageId, args });

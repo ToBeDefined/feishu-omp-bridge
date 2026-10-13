@@ -42,6 +42,15 @@
   → 最终方案：`updateOrFallback` 在 `ctx.fromCardAction`（点击路径）时**一律换新卡**
     （`sendManagedCard` 回复到旧卡消息 → 撤回旧卡 → 注销托管），不再原地更新。
     换卡失败才退回原地更新链（留给非点击路径）。点击必有可见结果，无闪回。
+
+### Fixed
+- **「目标回调服务超时未响应」**：飞书对卡片回调有 ~3s 响应超时，而 SDK 在我们的
+  `handleCardAction` resolve 之后才回执（`CardActionHandler.invoke → yield cardHandler`）。
+  实测 `/history` 翻页 handler 要 3-11s（`scanSessionFiles` 扫几十个会话文件 + 渲染 +
+  发卡/撤回），每次都超时。⇒ `handleCardAction` 拆成「ACK 前」与「ACK 后」两段：
+  - ACK 前只做：payload 解析 + 连点去重（同步 Map）；
+  - 其余全部（scope 解析、访问控制、命令执行、OMP UI / agent 回调）后台执行，
+    handler 立即返回 → 回调不再超时。
   - 另记：`sequence` 必须是**秒级**（毫秒会被 API 拒：`Invalid parameter value: Sequence`），
     全新卡片实体的初始序号为 0，**严格大于**即可渲染。
 - **「卡片原地更新返回成功、卡面却不动/闪回旧页」的最后一道防线**。本轮实测确认：

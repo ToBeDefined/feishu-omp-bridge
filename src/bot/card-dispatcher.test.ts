@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import type { CardActionEvent, LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
-import { handleCardAction, resolveCardCommand, type CardDispatchDeps } from './card-dispatcher';
+import { cardActionsFlushed, handleCardAction, resolveCardCommand, type CardDispatchDeps } from './card-dispatcher';
+
+/** 点击回调现在只负责 ACK，实际工作在后台：测试里用 click() 代替直接调用，等任务排空。 */
+async function click(deps: CardDispatchDeps): Promise<void> {
+  await handleCardAction(deps);
+  await cardActionsFlushed();
+}
 import { cardSettlesFlushed } from '../commands/shared';
 import type { ActiveRuns } from './active-runs';
 import type { ChatModeCache } from './chat-mode-cache';
@@ -162,7 +168,7 @@ function makeHarness(opts: {
 describe('handleCardAction — 非管理员点击管理员按钮', () => {
   it('回一句可见回执，且不触发 reset 副作用（pending 队列不丢）', async () => {
     const h = makeHarness({ messageId: 'om_denied', value: { cmd: 'exit' }, admins: ['ou_boss'] });
-    await handleCardAction(h.deps);
+    await click(h.deps);
 
     // 只有回执这一条出网消息，没有别的副作用。
     expect(h.send).toHaveBeenCalledTimes(1);
@@ -178,7 +184,7 @@ describe('handleCardAction — 卡片已过期 / 未登记', () => {
       messageId: 'om_stale_patchable',
       value: { __omp_ui: true, requestId: 'req_1', title: '选择模型', action: 'cancel' },
     });
-    await handleCardAction(h.deps);
+    await click(h.deps);
 
     // 回答先送出（语义不变），随后原地更新失败走换卡兜底。
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
@@ -205,7 +211,7 @@ describe('handleCardAction — 卡片已过期 / 未登记', () => {
       patchFails: true,
       resendFails: true,
     });
-    await handleCardAction(h.deps);
+    await click(h.deps);
     // 换卡失败后的兜底链是后台任务，排空再断言。
     await cardSettlesFlushed();
 
@@ -222,9 +228,9 @@ describe('handleCardAction — 重复点击', () => {
       value: { [AGENT_CALLBACK_MARKER]: true },
       name: '方案 A',
     });
-    await handleCardAction(h.deps);
-    await handleCardAction(h.deps);
-    await handleCardAction(h.deps);
+    await click(h.deps);
+    await click(h.deps);
+    await click(h.deps);
 
     expect(h.push).toHaveBeenCalledTimes(1);
     expect(h.send).toHaveBeenCalledTimes(1);
@@ -236,8 +242,8 @@ describe('handleCardAction — 重复点击', () => {
       messageId: 'om_dup_omp_ui',
       value: { __omp_ui: true, requestId: 'req_1', title: '选择模型', action: 'confirm', method: 'confirm' },
     });
-    await handleCardAction(h.deps);
-    await handleCardAction(h.deps);
+    await click(h.deps);
+    await click(h.deps);
 
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
     // 第一次点击：原地更新失败（未登记）→ 换发结果新卡并撤回旧卡，不补文本。
@@ -262,7 +268,7 @@ describe('handleCardAction — OMP UI 结果卡回显 / 空提交', () => {
         value: 'gpt-5',
       },
     });
-    await handleCardAction(h.deps);
+    await click(h.deps);
 
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
     // 点击路径换发结果新卡：回显值在 cardkit 新建的卡实体里，旧卡撤回。
@@ -275,7 +281,7 @@ describe('handleCardAction — OMP UI 结果卡回显 / 空提交', () => {
       messageId: 'om_ui_echo_confirm',
       value: { __omp_ui: true, requestId: 'req_1', title: '确认发布', method: 'confirm', action: 'confirm' },
     });
-    await handleCardAction(h.deps);
+    await click(h.deps);
 
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(h.cardCreate.mock.calls[0])).toContain('确认');
@@ -287,7 +293,7 @@ describe('handleCardAction — OMP UI 结果卡回显 / 空提交', () => {
       messageId: 'om_ui_empty_submit',
       value: { __omp_ui: true, requestId: 'req_1', title: '选择模型', method: 'select', action: 'submit', value: '' },
     });
-    await handleCardAction(h.deps);
+    await click(h.deps);
 
     expect(h.respondToUi).not.toHaveBeenCalled();
     expect(h.patch).not.toHaveBeenCalled();
@@ -308,7 +314,7 @@ describe('handleCardAction — agent 卡片过期保护', () => {
       },
       runToken: 'new-run',
     });
-    await handleCardAction(h.deps);
+    await click(h.deps);
 
     expect(h.push).not.toHaveBeenCalled();
     expect(h.send).toHaveBeenCalledTimes(1);
@@ -324,7 +330,7 @@ describe('handleCardAction — agent 卡片过期保护', () => {
         [AGENT_MARK_ISSUED_AT]: Date.now() - 31 * 60_000,
       },
     });
-    await handleCardAction(h.deps);
+    await click(h.deps);
 
     expect(h.push).not.toHaveBeenCalled();
     expect(JSON.stringify(h.send.mock.calls[0]?.[1])).toContain('任务已结束');
@@ -342,7 +348,7 @@ describe('handleCardAction — agent 卡片过期保护', () => {
       },
       runToken: 'run-current',
     });
-    await handleCardAction(h.deps);
+    await click(h.deps);
 
     expect(h.push).toHaveBeenCalledTimes(1);
     const content = (h.push.mock.calls[0]?.[1] as NormalizedMessage).content;
@@ -356,7 +362,7 @@ describe('handleCardAction — agent 卡片过期保护', () => {
       messageId: 'om_agent_manual',
       value: { [AGENT_CALLBACK_MARKER]: true, action: 'go' },
     });
-    await handleCardAction(h.deps);
+    await click(h.deps);
 
     expect(h.push).toHaveBeenCalledTimes(1);
   });
@@ -367,12 +373,12 @@ describe('handleCardAction — 命令按钮时间窗去重', () => {
     vi.useFakeTimers();
     try {
       const h = makeHarness({ messageId: 'om_cmd_dedup', value: { cmd: 'new' } });
-      await handleCardAction(h.deps);
-      await handleCardAction(h.deps);
+      await click(h.deps);
+      await click(h.deps);
       expect(h.cancel).toHaveBeenCalledTimes(1);
 
       vi.advanceTimersByTime(2_001);
-      await handleCardAction(h.deps);
+      await click(h.deps);
       expect(h.cancel).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();

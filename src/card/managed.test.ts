@@ -377,6 +377,25 @@ describe('patchCardWithRetry（终态 patch 的限频重试）', () => {
     }
   });
 
+  it('连续限频：只重试两次（共三次尝试）就放弃，不会死循环', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const channel = channelWith(async () => {
+        calls += 1;
+        throw Object.assign(new Error('Request failed with status code 400'), {
+          response: { status: 400, data: { code: 230020, msg: 'frequency limit' } },
+        });
+      });
+      const done = patchCardWithRetry(channel, 'om_loop', card);
+      await vi.advanceTimersByTimeAsync(10_000); // 把未来的退避一次推完
+      await expect(done).resolves.toBe(false);
+      expect(calls).toBe(3); // 1 次首发 + 2 次重试 = 上限
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('内容被拒（230099/11310）不重试：只尝试一次 → false', async () => {
     let calls = 0;
     const channel = channelWith(async () => {

@@ -38,7 +38,7 @@ const CARD_ELEMENT_BUDGET = 40;
 // One second leaves safe headroom under Feishu's per-message frequency limit.
 // Latest-wins coalescing still preserves every final state; only intermediate
 // refreshes are paced.
-export const CARD_UPDATE_MIN_INTERVAL_MS = 1000;
+export const CARD_UPDATE_MIN_INTERVAL_MS = 500;
 /**
  * Latest-wins write coalescer. At most one write in flight; newer values
  * overwrite the pending slot. `flush()` waits for in-flight + pending so

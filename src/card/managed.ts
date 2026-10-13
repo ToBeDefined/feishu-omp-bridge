@@ -435,7 +435,9 @@ async function deliverInterruptCard(
   return false;
 }
 
-const PATCH_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000] as const;
+// 更新失败只做**两次** 1s 重试（用户定的策略）：限频/5xx 往往是瞬时抖动，等太久
+// 反而让用户看着卡住。三次尝试仍失败就落到「降级收尾/巡检」那条路，绝不无限重试。
+const PATCH_RETRY_DELAYS_MS = [1000, 1000] as const;
 const PATCH_RETRY_MAX = PATCH_RETRY_DELAYS_MS.length;
 
 function patchErrorCode(err: unknown): string {

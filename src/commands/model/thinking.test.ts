@@ -7,11 +7,8 @@ import { loadModelData } from './data';
 import type * as DataModule from './data';
 import { THINKING_FOLLOW_DEFAULT } from '../../card/model-card';
 
-// recallMessage 在 shared.ts 内部（不走 mock）；用 deleteMessage 观察它真正打的线。
-const { recallMessage, deleteMessage } = vi.hoisted(() => ({
-  recallMessage: vi.fn(async () => {}),
-  deleteMessage: vi.fn(async (_req: unknown) => ({ data: {} })),
-}));
+// 保留真实 reply / updateOrFallback，只把 recall 换成 spy：断言「卡片路径不再撤回」。
+const { recallMessage } = vi.hoisted(() => ({ recallMessage: vi.fn(async () => {}) }));
 vi.mock('../shared', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../shared')>();
   return { ...actual, recallMessage };
@@ -41,7 +38,7 @@ function makeCtx(overrides: {
 } = {}): CommandContext {
   const send = vi.fn(async () => {});
   return {
-    channel: { send, rawClient: { im: { v1: { message: { delete: deleteMessage } } } } },
+    channel: { send },
     msg: { chatId: 'oc_1', messageId: 'om_1', content: '' },
     scope: 'oc_1',
     chatMode: 'p2p',
@@ -83,7 +80,6 @@ afterEach(() => {
   vi.mocked(updateManagedCard).mockClear();
   vi.mocked(forgetManagedCard).mockClear();
   recallMessage.mockClear();
-  deleteMessage.mockClear();
 });
 
 describe('/thinking 卡片', () => {
@@ -127,7 +123,7 @@ describe('/thinking 卡片', () => {
     expect(card).not.toContain('"value":"low"');
   });
 
-  it('卡片点击 → 打开选择器补发新卡并撤回旧卡（不再原地更新）', async () => {
+  it('选择器来自卡片时原地更新，不 recall 也不另发卡（保留托管登记）', async () => {
     vi.mocked(loadModelData).mockResolvedValue({
       fetchedAt: 1,
       list: [{ provider: 'futu', selector: 'futu/deepseek-v4.1-flash', thinking: ['low', 'high'] }],
@@ -139,22 +135,15 @@ describe('/thinking 卡片', () => {
       fromCardAction: true,
     });
 
-    // 连续两次「打开选择器」（模拟反复点击）：每次都应补发新卡 + 撤回旧卡。
+    // 连续两次「打开选择器」（模拟反复点击）：都应走 CardKit 原地更新。
     await thinkingHandlers['/thinking']!('', ctx);
     await thinkingHandlers['/thinking']!('', ctx);
 
-    // 两次点击各补发一张选择器新卡（第三参就是新卡，预选当前档位）。
-    expect(vi.mocked(sendManagedCard)).toHaveBeenCalledTimes(2);
-    expect(JSON.stringify(vi.mocked(sendManagedCard).mock.calls[0]![2])).toContain(
-      '"initial_option":"high"',
-    );
-    // 每次撤回被点击的旧卡（om_1）。
-    expect(deleteMessage.mock.calls).toEqual([
-      [{ path: { message_id: 'om_1' } }],
-      [{ path: { message_id: 'om_1' } }],
-    ]);
-    // 这条路径不再原地更新。
-    expect(vi.mocked(updateManagedCard)).not.toHaveBeenCalled();
+    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled();
+    expect(recallMessage).not.toHaveBeenCalled();
+    expect(vi.mocked(updateManagedCard).mock.calls.map((c) => c[1])).toEqual(['om_1', 'om_1']);
+    // 选择器会被反复点击 → 保留托管登记（第二次仍 CardKit，不退化成 patch）。
+    expect(vi.mocked(forgetManagedCard)).not.toHaveBeenCalled();
   });
 });
 

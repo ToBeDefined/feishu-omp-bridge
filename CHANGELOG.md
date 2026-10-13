@@ -14,6 +14,11 @@
 ## [Unreleased]
 
 ### Fixed
+- **翻页/切换恢复「原地更新」**：诊断日志证明 CardKit 原地更新本身有效（发布卡的 `sequence 1..7`
+  全部被接受、卡面逐步变化）。因此列表 / 分页 / 选择器改回**优先原地更新**；只有更新失败
+  （即「这张卡不是本进程建的」——重启前的老卡，没有 card_id）才**补发新卡并撤回旧卡**。
+  另：启动盖章会记一条 `command-card-notice`（mode/messageId/hasCardId），用于解释为何某次走
+  patch 而不是 CardKit。
 - **翻页/切换在 CardKit 实体卡上点不动（最终定位）**：取回线上消息原始 content 后发现，这类卡的
   消息内容不是卡片 JSON，而是 CardKit 的**实体占位**（`{"title":null,"elements":[…请升级…]}`）。
   实测（2026-10-13 隔离实验）：

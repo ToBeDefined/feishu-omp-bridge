@@ -21,8 +21,6 @@ const h = vi.hoisted(() => {
   return {
     reply: vi.fn(async (_ctx: unknown, _text: string) => {}),
     recallMessage: vi.fn(async () => {}),
-    // recallMessage 在 shared.ts 内部，不走 mock；观察它真正打的线：im.v1.message.delete。
-    deleteMessage: vi.fn(async (_req: unknown) => ({ data: {} })),
     updates,
     updateManagedCard: vi.fn(async (_channel: unknown, messageId: string, card: unknown) => {
       updates.push({ messageId, card });
@@ -524,7 +522,6 @@ describe('/search 卡片按钮链路', () => {
             reply: async () => ({ data: { message_id: 'om_card' } }),
             create: async () => ({ data: { message_id: 'om_msg' } }),
             patch: async () => ({ data: {} }),
-            delete: h.deleteMessage,
           },
         },
       },
@@ -569,7 +566,7 @@ describe('/search 卡片按钮链路', () => {
     expect(SEARCH_SESSION_LIMIT).toBeGreaterThan(SEARCH_PAGE_SIZE);
   });
 
-  it('卡片点击 → 翻页补发新卡并撤回旧卡；show 渲染详情卡', async () => {
+  it('page 复用缓存按 offset 原地更新卡片，show 渲染详情卡', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
     paths.ompSessionsDir = tmp;
     await seed(tmp);
@@ -579,24 +576,24 @@ describe('/search 卡片按钮链路', () => {
     expect(cards[0]).toContain('**#1**');
     const qid = queryIdOf(cards[0]!);
 
-    // 翻页来自卡片：补发新卡 + 撤回被点击的旧卡（不再原地更新）。
-    h.deleteMessage.mockClear();
+    // 翻页来自卡片：原地更新同一张卡（不再撤回旧卡 + 另发一张）。
     h.updates.length = 0;
+    h.forgetManagedCard.mockClear();
     cards.length = 0;
     await searchHandlers['/search']!(`page ${qid} 6`, { ...ctx, fromCardAction: true } as CommandContext);
-    expect(cards).toHaveLength(1); // 补发了一张新卡
-    const page2 = cards[0]!;
+    expect(cards).toHaveLength(0); // 没有新卡
+    expect(h.updates).toHaveLength(1);
+    expect(h.updates[0]!.messageId).toBe('om_1');
+    const page2 = JSON.stringify(h.updates[0]!.card);
     // 第二页：从 #7 起，页码区间跟着走。
     expect(page2).toContain('**#7**');
     expect(page2).toContain('第 7-8 个');
     expect(page2).not.toContain('**#1**');
-    expect(h.deleteMessage).toHaveBeenCalledTimes(1);
-    expect(h.deleteMessage).toHaveBeenCalledWith({ path: { message_id: 'om_1' } });
-    expect(h.updates).toHaveLength(0); // 不原地更新
+    // 结果卡会被反复翻页 → 保留托管登记（否则第二次点击会退化成 patch）。
+    expect(h.forgetManagedCard).not.toHaveBeenCalled();
 
     // 从第 2 页点「详情」（详情载荷带全局行号 7 + 进入时的 offset 6）。
     cards.length = 0;
-    h.deleteMessage.mockClear();
     await searchHandlers['/search']!(`show ${qid} 7 6`, { ...ctx, fromCardAction: true } as CommandContext);
     expect(cards[0]).toContain('搜索结果 #7');
     expect(cards[0]).toContain('继续对话');
@@ -604,56 +601,51 @@ describe('/search 卡片按钮链路', () => {
     expect(cards[0]).toContain('返回结果');
     expect(cards[0]).toContain(`"arg":"${qid} 6"`);
 
-    // 真的执行这条返回：又回到第 2 页（同一坐标），仍是补发新卡 + 撤回旧卡。
-    cards.length = 0;
-    h.deleteMessage.mockClear();
+    // 真的执行这条返回：又回到第 2 页（同一坐标），仍是原地更新。
+    h.updates.length = 0;
     await searchHandlers['/search']!(`page ${qid} 6`, { ...ctx, fromCardAction: true } as CommandContext);
-    expect(cards).toHaveLength(1);
-    const back = cards[0]!;
+    const back = JSON.stringify(h.updates.at(-1)!.card);
     expect(back).toContain('**#7**');
     expect(back).toContain('第 7-8 个');
-    expect(h.deleteMessage).toHaveBeenCalledTimes(1);
   });
 
-  it('结果 / 空态 / 翻页三条卡片链路：卡片点击一律补发新卡并撤回旧卡', async () => {
+  it('结果 / 空态 / 翻页三条卡片链路：不 recall、不另发卡，同一 messageId 原地更新', async () => {
     tmp = await mkdtemp(join(tmpdir(), 'search-test-'));
     paths.ompSessionsDir = tmp;
     await seed(tmp);
 
     const { ctx, cards } = cardCtx();
     h.updates.length = 0;
-    h.deleteMessage.mockClear();
+    h.forgetManagedCard.mockClear();
+    h.recallMessage.mockClear();
     cards.length = 0;
 
-    // 直接 /search（非卡片路径）仍发新卡（sendManagedCard），不 recall。
+    // 直接 /search（非卡片路径）仍发新卡（sendManagedCard）。
     await searchHandlers['/search']!('kwhit', ctx);
     expect(cards).toHaveLength(1);
-    expect(h.deleteMessage).not.toHaveBeenCalled();
     const qid = queryIdOf(cards[0]!);
     cards.length = 0;
 
-    // ① 结果卡入口（search.do，等同卡片上重搜）来自卡片 → 补发新卡 + 撤回旧卡。
+    // ① 结果卡入口（search.do，等同卡片上重搜）来自卡片 → 原地更新。
     await searchHandlers['/search']!('do kwhit', { ...ctx, fromCardAction: true } as CommandContext);
-    // ② 翻页来自卡片 → 补发新卡 + 撤回旧卡。
+    // ② 翻页来自卡片 → 原地更新。
     await searchHandlers['/search']!(`page ${qid} 6`, { ...ctx, fromCardAction: true } as CommandContext);
 
-    expect(cards).toHaveLength(2); // 两次点击各补发一张新卡
-    expect(h.deleteMessage.mock.calls).toEqual([
-      [{ path: { message_id: 'om_1' } }],
-      [{ path: { message_id: 'om_1' } }],
-    ]);
-    // 这条路径不再原地更新。
-    expect(h.updates).toHaveLength(0);
+    expect(cards).toHaveLength(0); // 全程没有再发新卡
+    expect(h.updates.map((u) => u.messageId)).toEqual(['om_1', 'om_1']);
+    expect(h.recallMessage).not.toHaveBeenCalled();
+    // 列表 / 翻页卡保留托管登记 → 第二次点击仍走 CardKit，不退化成 patch。
+    expect(h.forgetManagedCard).not.toHaveBeenCalled();
 
-    // ③ 空结果卡的「重新搜索」来自卡片 → 同样补发新卡 + 撤回旧卡。
-    cards.length = 0;
-    h.deleteMessage.mockClear();
+    // ③ 空结果卡的「重新搜索」来自卡片 → 同样原地更新。
+    h.updates.length = 0;
     await searchHandlers['/search']!('do zzz-not-found', { ...ctx, fromCardAction: true } as CommandContext);
-    expect(cards).toHaveLength(1);
-    expect(cards[0]).toContain('重新搜索');
-    expect(h.deleteMessage).toHaveBeenCalledTimes(1);
-    expect(h.deleteMessage).toHaveBeenCalledWith({ path: { message_id: 'om_1' } });
-    expect(h.updates).toHaveLength(0);
+    expect(cards).toHaveLength(0);
+    expect(h.updates).toHaveLength(1);
+    expect(h.updates[0]!.messageId).toBe('om_1');
+    expect(JSON.stringify(h.updates[0]!.card)).toContain('重新搜索');
+    expect(h.recallMessage).not.toHaveBeenCalled();
+    expect(h.forgetManagedCard).not.toHaveBeenCalled();
   });
 
   it('空态卡给出可执行动作：重新搜索回链到 search.do', async () => {

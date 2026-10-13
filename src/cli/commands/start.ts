@@ -500,6 +500,12 @@ export async function runStart(opts: StartOptions): Promise<void> {
           })
         : restartCard('done');
     const cardJson = JSON.stringify(terminal);
+    // 诊断：为什么走 patch 而不是 CardKit —— 看 marker 里到底有没有 cardId。
+    log.debug('notify', 'command-card-notice', {
+      mode: notice.mode,
+      messageId: notice.messageId,
+      hasCardId: notice.cardId !== undefined,
+    });
     // 命令卡是**托管卡**：消息内容只是 `{"type":"card","data":{"card_id":…}}` 的实体引用，
     // 所以更新它只有两条路：CardKit `card.update`（需要 card_id，命令层已随 marker 传过来）
     // 或重发。裸 card JSON 的 `im.message.patch` 对它无效（Historically 既不报错也不生效）。

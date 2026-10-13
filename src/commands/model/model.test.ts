@@ -9,11 +9,8 @@ import type * as HistoryModule from '../../session/model-history';
 import { loadModelData } from './data';
 import type * as DataModule from './data';
 
-// recallMessage 在 shared.ts 内部（不走 mock）；用 deleteMessage 观察它真正打的线。
-const { recallMessage, deleteMessage } = vi.hoisted(() => ({
-  recallMessage: vi.fn(async () => {}),
-  deleteMessage: vi.fn(async (_req: unknown) => ({ data: {} })),
-}));
+// 保留真实 reply / updateOrFallback，只把 recall 换成 spy：断言「卡片路径不再撤回」。
+const { recallMessage } = vi.hoisted(() => ({ recallMessage: vi.fn(async () => {}) }));
 vi.mock('../shared', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../shared')>();
   return { ...actual, recallMessage };
@@ -50,7 +47,7 @@ function makeCtx(overrides: {
 } = {}): CommandContext {
   const send = vi.fn(async () => {});
   return {
-    channel: { send, rawClient: { im: { v1: { message: { delete: deleteMessage } } } } },
+    channel: { send },
     msg: { chatId: 'oc_1', messageId: 'om_1', content: '' },
     scope: 'oc_1',
     chatMode: 'p2p',
@@ -92,7 +89,6 @@ afterEach(() => {
   vi.mocked(updateManagedCard).mockClear();
   vi.mocked(forgetManagedCard).mockClear();
   recallMessage.mockClear();
-  deleteMessage.mockClear();
   vi.mocked(recentModelEntries).mockClear();
   vi.mocked(recentModelEntries).mockResolvedValue([]);
 });
@@ -223,7 +219,7 @@ describe('/model 提供方卡', () => {
     expect(card).toContain('chat · 3 分钟前 · 5 次');
   });
 
-  it('卡片点击 → 提供方卡 / 选择器 / 刷新一律补发新卡并撤回旧卡（不再原地更新）', async () => {
+  it('卡片路径原地更新提供方卡 / 选择器 / 刷新，不 recall 也不另发卡（并保留托管登记）', async () => {
     vi.mocked(loadModelData).mockResolvedValue({
       fetchedAt: 1,
       list: [
@@ -239,24 +235,16 @@ describe('/model 提供方卡', () => {
     await modelHandlers['/model']!('provider cursor', ctx);
     await modelHandlers['/model']!('refresh', ctx);
 
-    // 三次卡片点击各补发一张新卡（发到同一个聊天 oc_1）。
-    expect(vi.mocked(sendManagedCard)).toHaveBeenCalledTimes(3);
-    expect(vi.mocked(sendManagedCard).mock.calls.map((c) => c[1])).toEqual([
-      'oc_1',
-      'oc_1',
-      'oc_1',
+    // 全程没有再发新卡，也不再撤回旧卡。
+    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled();
+    expect(recallMessage).not.toHaveBeenCalled();
+    // 每次都原地更新同一个 messageId（om_1）。
+    expect(vi.mocked(updateManagedCard).mock.calls.map((c) => c[1])).toEqual([
+      'om_1',
+      'om_1',
+      'om_1',
     ]);
-    // 新卡依次是：提供方卡 / cursor 选择器 / 提供方卡。
-    expect(JSON.stringify(vi.mocked(sendManagedCard).mock.calls[0]![2])).toContain('futu');
-    expect(JSON.stringify(vi.mocked(sendManagedCard).mock.calls[1]![2])).toContain('cursor/other');
-    expect(JSON.stringify(vi.mocked(sendManagedCard).mock.calls[2]![2])).toContain('cursor');
-    // 每次撤回被点击的旧卡（om_1）。
-    expect(deleteMessage.mock.calls).toEqual([
-      [{ path: { message_id: 'om_1' } }],
-      [{ path: { message_id: 'om_1' } }],
-      [{ path: { message_id: 'om_1' } }],
-    ]);
-    // 这条路径不再原地更新。
-    expect(vi.mocked(updateManagedCard)).not.toHaveBeenCalled();
+    // 提供方卡 / 选择器会被反复点击 → 保留托管登记。
+    expect(vi.mocked(forgetManagedCard)).not.toHaveBeenCalled();
   });
 });

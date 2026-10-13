@@ -9,12 +9,9 @@ import type * as HistoryModule from '../../session/model-history';
 import { loadModelData } from './data';
 import type * as DataModule from './data';
 
-// 保留真实 reply / updateOrFallback，只把 recall 换成 spy：断言「卡片路径不再撤回」。
-const { recallMessage } = vi.hoisted(() => ({ recallMessage: vi.fn(async () => {}) }));
-vi.mock('../shared', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../shared')>();
-  return { ...actual, recallMessage };
-});
+// 保留真实 reply / updateOrFallback；recall 保留真实实现（撤回旧卡走真实链路，
+// 断言用 ctx.channel.rawClient…message.delete 的 spy 观察）。
+vi.mock('../shared', async (importOriginal) => importOriginal<typeof import('../shared')>());
 
 vi.mock('../../config/store', () => ({
   saveConfig: vi.fn(async () => {}),
@@ -48,8 +45,10 @@ function makeCtx(overrides: {
   fromCardAction?: boolean;
 } = {}): CommandContext {
   const send = vi.fn(async () => {});
+  // 真实 recallMessage 会调 im.v1.message.delete 撤回旧卡；patch 故意缺省（不可 patch）。
+  const del = vi.fn(async () => ({}));
   return {
-    channel: { send },
+    channel: { send, rawClient: { im: { v1: { message: { delete: del } } } } },
     msg: { chatId: 'oc_1', messageId: 'om_1', content: '' },
     scope: 'oc_1',
     chatMode: 'p2p',
@@ -71,7 +70,11 @@ function makeCtx(overrides: {
   } as unknown as CommandContext;
 }
 
-/** channel.send 收到的 markdown 文本（makeCtx 里 send 是 vi.fn）。 */
+/** 旧卡撤回（recall）调用的 messageId 列表。 */
+function recalls(ctx: CommandContext): string[] {
+  const ch = ctx.channel as unknown as { rawClient?: { im: { v1: { message: { delete: { mock: { calls: Array<[{ path: { message_id: string } }]> } } } } } } };
+  return ch.rawClient?.im.v1.message.delete.mock.calls.map((c) => c[0].path.message_id) ?? [];
+}
 function sentMarkdown(ctx: CommandContext): string[] {
   const send: unknown = ctx.channel.send;
   if (typeof send !== 'function' || !('mock' in send)) return [];
@@ -90,7 +93,6 @@ afterEach(() => {
   vi.mocked(sendManagedCard).mockClear();
   vi.mocked(updateManagedCard).mockClear();
   vi.mocked(forgetManagedCard).mockClear();
-  recallMessage.mockClear();
   vi.mocked(recentModelEntries).mockClear();
   vi.mocked(recentModelEntries).mockResolvedValue([]);
 });
@@ -123,17 +125,20 @@ describe('/model submit', () => {
   });
 
   it('卡片收尾失败时回一句确认（不再静默吞掉）', async () => {
-    // fromCardAction：保存成功后要原地把卡片改成「已保存」。卡片不在托管表里 +
-    // 没有 rawClient 可 patch ⇒ 必须回一句「✅ 模型已设为 …」，而不是什么都没发生。
+    // fromCardAction：保存成功后要换新卡。换卡失败（限频/网络）+ 卡片不在托管表里 +
+    // 没有 patch 可用 ⇒ 必须回一句「✅ 模型已设为 …」，而不是什么都没发生。
     const ctx = makeCtx({ formValue: { model_selector: 'p/a' }, fromCardAction: true });
+    // 换卡失败：退回原地更新链。
+    vi.mocked(sendManagedCard).mockRejectedValueOnce(new Error('rate limited'));
     // 卡片不在本进程托管表里（重启前的老卡片）。
     vi.mocked(updateManagedCard).mockRejectedValueOnce(new Error('no managed card registered'));
     const send = ctx.channel.send as unknown as { mock: { calls: Array<[string, { markdown?: string }]> } };
 
-    // 收尾链由 FORM_SETTLE_MS 的定时器驱动 → 用假时钟推进，不真等 1.3s。
+    // 收尾链由 ACK 延迟的定时器驱动 → 用假时钟推进，不真等。
     vi.useFakeTimers();
     await modelHandlers['/model']!('submit', ctx);
-    await vi.advanceTimersByTimeAsync(1300);
+    // FORM_SETTLE_MS(1s) + ACK 延迟(800ms) 两级定时器都要推过去。
+    await vi.advanceTimersByTimeAsync(2000);
     vi.useRealTimers();
 
     const texts = send.mock.calls.map((c) => c[1]?.markdown ?? '');
@@ -221,7 +226,7 @@ describe('/model 提供方卡', () => {
     expect(card).toContain('chat · 3 分钟前 · 5 次');
   });
 
-  it('卡片路径原地更新提供方卡 / 选择器 / 刷新，不 recall 也不另发卡（并保留托管登记）', async () => {
+  it('卡片路径换发新卡并撤回旧卡（提供方卡 / 选择器 / 刷新），不再原地更新', async () => {
     vi.mocked(loadModelData).mockResolvedValue({
       fetchedAt: 1,
       list: [
@@ -237,16 +242,13 @@ describe('/model 提供方卡', () => {
     await modelHandlers['/model']!('provider cursor', ctx);
     await modelHandlers['/model']!('refresh', ctx);
 
-    // 全程没有再发新卡，也不再撤回旧卡。
-    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled();
-    expect(recallMessage).not.toHaveBeenCalled();
-    // 每次都原地更新同一个 messageId（om_1）。
-    expect(vi.mocked(updateManagedCard).mock.calls.map((c) => c[1])).toEqual([
-      'om_1',
-      'om_1',
-      'om_1',
-    ]);
-    // 提供方卡 / 选择器会被反复点击 → 保留托管登记。
-    expect(vi.mocked(forgetManagedCard)).not.toHaveBeenCalled();
+    // 每次点击都换发新卡（reply 到被点的旧卡 om_1）并撤回旧卡。
+    expect(vi.mocked(sendManagedCard)).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(sendManagedCard).mock.calls.every((c) => c[3] === 'om_1')).toBe(true);
+    expect(recalls(ctx)).toEqual(['om_1', 'om_1', 'om_1']);
+    // 点击驱动不再走原地更新。
+    expect(vi.mocked(updateManagedCard)).not.toHaveBeenCalled();
+    // 旧卡撤回后解除托管登记（新卡由 sendManagedCard 重新登记）。
+    expect(vi.mocked(forgetManagedCard).mock.calls).toEqual([['om_1'], ['om_1'], ['om_1']]);
   });
 });

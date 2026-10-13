@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
-import { EXPIRED_INTERACTION_TEXT, formatIdleLine, updateOrFallback, withExpiryNotice } from './shared';
+import { EXPIRED_INTERACTION_TEXT, cardSettlesFlushed, formatIdleLine, updateOrFallback, withExpiryNotice } from './shared';
 
 vi.mock('../card/managed', async (orig) => {
   const actual = await orig<typeof import('../card/managed')>();
@@ -140,6 +140,7 @@ describe('updateOrFallback：卡片不在托管表里时的补救', () => {
   it('不在托管表：把消息内容整体替换成新卡片（对流式/裸 JSON 内容有效）', async () => {
     const c = makeCtx();
     await updateOrFallback(c, card, '兜底文案');
+    await cardSettlesFlushed();
     const patch = (c as unknown as { channel: { rawClient: { im: { v1: { message: { patch: Mock } } } } } })
       .channel.rawClient.im.v1.message.patch;
     expect(patch).toHaveBeenCalledTimes(1);
@@ -150,13 +151,16 @@ describe('updateOrFallback：卡片不在托管表里时的补救', () => {
   it('raw patch 也失败：退回一条可见回复（绝不静默）', async () => {
     const c = makeCtx({ patchFails: true });
     await updateOrFallback(c, card, '请重新发送 `/history` 查看会话列表。');
+    await cardSettlesFlushed();
     const sent = (c as unknown as { channel: { send: Mock } }).channel.send;
     expect(sent).toHaveBeenCalled();
   });
 
   it('resendWhenUnmanaged（列表/分页/选择器）：托管更新失败直接补发新卡', async () => {
     const c = makeCtx();
+    vi.mocked(sendManagedCard).mockResolvedValueOnce({ messageId: 'om_new' } as never);
     await updateOrFallback(c, card, '兜底文案', { keepManaged: true, resendWhenUnmanaged: true });
+    await cardSettlesFlushed();
     expect(vi.mocked(sendManagedCard)).toHaveBeenCalledTimes(1);
   });
 });

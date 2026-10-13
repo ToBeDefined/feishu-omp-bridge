@@ -150,6 +150,11 @@ function sentCard(): CardShape {
   return sendManagedCard.mock.calls[0]![2] as CardShape;
 }
 
+/** 给测试 ctx 装上 rawClient 存根（成功撤回旧卡 / 回读卡面内容）。 */
+function stubRawClient(ctx: CommandContext, rawClient: unknown): void {
+  Object.assign(ctx.channel, { rawClient });
+}
+
 function cardJson(): string {
   return JSON.stringify(sentCard());
 }
@@ -351,39 +356,36 @@ describe('/history', () => {
     expect(cardJson()).not.toContain('history.resume","arg":"s3"');
   });
 
-  it('replaces the clicked card in place instead of stacking a new one', async () => {
-    await handleHistory('all 8', makeCtx({ fromCardAction: true }).ctx);
-    // 不再撤回旧卡，也不再另发一张。
-    expect(recallMessage).not.toHaveBeenCalled();
-    expect(sendManagedCard).not.toHaveBeenCalled();
-    // 同一个 messageId 原地更新（CardKit）。
-    expect(updateManagedCard).toHaveBeenCalledWith(expect.anything(), 'om_1', expect.anything());
+  it('卡片点击翻页：换发新卡并撤回旧卡，不再原地更新', async () => {
+    const { ctx } = makeCtx({ fromCardAction: true });
+    // 撤回旧卡走真实 recallMessage（rawClient.delete），成功则无需过期兜底。
+    stubRawClient(ctx, { im: { v1: { message: { delete: async () => undefined } } } });
+    await handleHistory('all 8', ctx);
+    // 点击路径一律换新卡（原地更新会被服务端回滚）……
+    expect(sendManagedCard).toHaveBeenCalledTimes(1);
+    expect(updateManagedCard).not.toHaveBeenCalled();
+    // ……并把旧卡撤回、注销托管登记，避免两张可点的卡并存。
+    expect(forgetManagedCard).toHaveBeenCalledWith('om_1');
   });
 
-  it('翻页两次都走 CardKit 原地更新：列表卡保留托管登记，第二次不退化成 patch', async () => {
-    const prevWindow = process.env.CARD_REVERT_WINDOW_MS;
-    process.env.CARD_REVERT_WINDOW_MS = '10';
-    try {
-      const { ctx } = makeCtx({ fromCardAction: true });
-      await handleHistory('all 8', ctx);
-      await handleHistory('all 0', ctx);
-      await cardSettlesFlushed();
+  it('连续翻页两次：每次都换发新卡并撤回旧卡，不退化成 patch', async () => {
+    const { ctx } = makeCtx({ fromCardAction: true });
+    stubRawClient(ctx, { im: { v1: { message: { delete: async () => undefined } } } });
+    await handleHistory('all 8', ctx);
+    await handleHistory('all 0', ctx);
+    await cardSettlesFlushed();
 
-      expect(recallMessage).not.toHaveBeenCalled();
-      expect(sendManagedCard).not.toHaveBeenCalled();
-      expect(updateManagedCard).toHaveBeenCalledTimes(2);
-      expect(updateManagedCard.mock.calls.map((c) => c[1])).toEqual(['om_1', 'om_1']);
-      // keepManaged: true → 更新成功后**不注销**托管登记（否则第二次会掉进 patch 退化）。
-      expect(forgetManagedCard).not.toHaveBeenCalled();
-      // patch / 兜底回复都没发生。
-      expect(reply).not.toHaveBeenCalled();
-    } finally {
-      if (prevWindow === undefined) delete process.env.CARD_REVERT_WINDOW_MS;
-      else process.env.CARD_REVERT_WINDOW_MS = prevWindow;
-    }
+    // 点击路径不再依赖延迟确认链，直接换发两张新卡。
+    expect(sendManagedCard).toHaveBeenCalledTimes(2);
+    expect(updateManagedCard).not.toHaveBeenCalled();
+    expect(forgetManagedCard).toHaveBeenCalledTimes(2);
+    expect(forgetManagedCard).toHaveBeenNthCalledWith(1, 'om_1');
+    expect(forgetManagedCard).toHaveBeenNthCalledWith(2, 'om_1');
+    // patch / 兜底回复都没发生。
+    expect(reply).not.toHaveBeenCalled();
   });
 
-  it('卡面被回滚成旧页（点击竞态）→ 延迟确认发现后自动补救：大序号重推 + 仍不行则补发新卡', async () => {
+  it('点击换卡失败退回原地更新链：被回滚 → 大序号重推 + 仍不行则补发新卡', async () => {
     const prevWindow = process.env.CARD_REVERT_WINDOW_MS;
     const prevDelay = process.env.CARD_VERIFY_DELAY_MS;
     process.env.CARD_REVERT_WINDOW_MS = '10';
@@ -397,12 +399,14 @@ describe('/history', () => {
           Date.now() - i * 60_000,
         );
       }
+      // 点击路径首选换新卡；第一次换卡失败（限频/网络）→ 退回原地更新链兜底。
       const { ctx } = makeCtx({ fromCardAction: true });
+      sendManagedCard.mockRejectedValueOnce(new Error('rate limited'));
       // 我们渲染的是第 2 页（第 9-9 个），但回读到的渲染文本永远停在第 1 页：
-      // 模拟「更新被受理，随后卡面被回滚成旧页」的点击竞态。
-      (ctx.channel as unknown as { rawClient: unknown }).rawClient = {
+      // 模拟「更新被受理，随后卡面被回滚成旧页」的竞态。
+      stubRawClient(ctx, {
         request: async () => ({ data: { messages: [{ content: '第 1-8 个' }] } }),
-      };
+      });
       await handleHistory('all 8', ctx);
       await cardSettlesFlushed();
       // 立即回读不该触发任何补救（竞态窗口没过，读了也白读）。
@@ -410,7 +414,9 @@ describe('/history', () => {
       // 改成「已过期」兜底卡——测试环境撤回必失败，线上通常只有前 2 次。）
       expect(updateManagedCard).toHaveBeenCalledTimes(3);
       // …仍没生效 → 补发新卡（用户才会看到新的一页），而不是静默。
-      expect(sendManagedCard).toHaveBeenCalled();
+      expect(sendManagedCard).toHaveBeenCalledTimes(2);
+      // 补发成功后旧卡撤回失败 → 过期兜底并注销登记。
+      expect(forgetManagedCard).toHaveBeenCalledWith('om_1');
     } finally {
       if (prevWindow === undefined) delete process.env.CARD_REVERT_WINDOW_MS;
       else process.env.CARD_REVERT_WINDOW_MS = prevWindow;

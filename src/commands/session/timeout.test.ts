@@ -42,7 +42,8 @@ function makeCtx(fromCardAction = false): CommandContext {
   return {
     scope: 'oc_1',
     sessions: store,
-    channel: { send: vi.fn(async () => {}) },
+    // 换发新卡后撤回旧卡走真实 recallMessage（rawClient.delete）。
+    channel: { send: vi.fn(async () => {}), rawClient: { im: { v1: { message: { delete: async () => undefined } } } } },
     msg: { chatId: 'oc_1', messageId: 'om_1' },
     chatMode: 'p2p',
     fromCardAction,
@@ -128,33 +129,37 @@ describe('/timeout command', () => {
     }
   });
 
-  it('卡片点「30 分钟」：原地更新卡，并落库', async () => {
+  it('卡片点「30 分钟」：换发新卡并落库', async () => {
     const ctx = makeCtx(true);
     await timeoutHandlers['/timeout']!('30', ctx);
 
     expect(store.getIdleTimeoutMinutes('oc_1')).toBe(30);
-    expect(h.updates).toBe(1);
+    // 点击路径换新卡：sendManagedCard 被调、没有原地更新。
+    expect(h.sends).toBe(1);
+    expect(h.updates).toBe(0);
     expect(reply).not.toHaveBeenCalled();
     expect(h.cards.at(-1)).toContain('已设为 30 分钟');
     expect(h.cards.at(-1)).toContain('当前 session 探活: 30 分钟');
   });
 
-  it('卡片点「取消」：终态卡不再渲染动作按钮', async () => {
+  it('卡片点「取消」：换发终态卡，不再渲染动作按钮', async () => {
     const ctx = makeCtx(true);
     await timeoutHandlers['/timeout']!('cancel', ctx);
 
-    expect(h.updates).toBe(1);
+    expect(h.sends).toBe(1);
+    expect(h.updates).toBe(0);
     const out = h.cards.at(-1)!;
     expect(out).toContain('已取消操作');
     expect(out).not.toContain('"cmd":"timeout"');
     expect(store.getIdleTimeoutMinutes('oc_1')).toBeUndefined();
   });
 
-  it('卡片点非法值：卡上回显错误并给出区间', async () => {
+  it('卡片点非法值：换发新卡回显错误并给出区间', async () => {
     const ctx = makeCtx(true);
     await timeoutHandlers['/timeout']!('1e3', ctx);
 
-    expect(h.updates).toBe(1);
+    expect(h.sends).toBe(1);
+    expect(h.updates).toBe(0);
     expect(h.cards.at(-1)).toContain('无效的超时值');
     expect(h.cards.at(-1)).toContain('1-120');
     expect(store.getIdleTimeoutMinutes('oc_1')).toBeUndefined();

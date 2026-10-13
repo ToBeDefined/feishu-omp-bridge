@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import type { CardActionEvent, LarkChannel, NormalizedMessage } from '@larksuiteoapi/node-sdk';
 import { handleCardAction, resolveCardCommand, type CardDispatchDeps } from './card-dispatcher';
+import { cardSettlesFlushed } from '../commands/shared';
 import type { ActiveRuns } from './active-runs';
 import type { ChatModeCache } from './chat-mode-cache';
 import type { PendingQueue } from './pending-queue';
@@ -23,6 +24,10 @@ vi.mock('../core/logger', async (importOriginal) => {
 });
 
 const CHAT_ID = 'oc_chat_1';
+
+// 兜底链（换卡失败 → 原地更新 → patch → 文本回执）第一步要等 ACK 窗口；
+// 测试里归零，配合 cardSettlesFlushed() 同步排空后台任务。
+process.env.CARD_ACK_DELAY_MS = '0';
 
 describe('agentSelectedCard', () => {
   it('renders a schema-2.0 card showing the frozen choice, without buttons', () => {
@@ -70,7 +75,11 @@ interface Harness {
   deps: CardDispatchDeps;
   send: Mock;
   patch: Mock;
+  /** 换发新卡：cardkit 建实体 + 回复到旧卡消息。 */
   cardCreate: Mock;
+  replyCard: Mock;
+  /** 撤回旧卡（rawClient.im.v1.message.delete）。 */
+  recall: Mock;
   push: Mock;
   cancel: Mock;
   respondToUi: Mock;
@@ -89,6 +98,8 @@ function makeHarness(opts: {
   name?: string;
   admins?: string[];
   patchFails?: boolean;
+  /** 换发新卡失败（message.reply 抛错）→ 才会退回原地更新 / patch / 文本回执链。 */
+  resendFails?: boolean;
   /** activeRuns 的 liveness / run token（agent 卡片过期保护用）。 */
   hasScope?: boolean;
   runToken?: string;
@@ -100,18 +111,25 @@ function makeHarness(opts: {
       })
     : vi.fn(async () => ({}));
   const cardCreate = vi.fn(async () => ({ data: { card_id: 'card_new' } }));
+  const replyCard = opts.resendFails
+    ? vi.fn(async () => {
+        throw new Error('resend rejected');
+      })
+    : vi.fn(async () => ({ data: { message_id: 'om_rerendered' } }));
+  const recall = vi.fn(async () => ({}));
   const push = vi.fn((): number => 1);
   const cancel = vi.fn((): NormalizedMessage[] => []);
   const respondToUi = vi.fn((): boolean => true);
   const has = vi.fn((): boolean => opts.hasScope ?? true);
   const getRunToken = vi.fn((): string | undefined => opts.runToken);
 
-  // 出网路径：send + rawClient.im.v1.message.patch + cardkit.card.create（补救路径要新建卡片实体）。
+  // 出网路径：send + rawClient.im.v1.message.{patch,reply,delete} + cardkit.card.create
+  // （点击路径一律换发新卡：cardkit 建实体 → reply 到旧卡消息 → delete 撤回旧卡）。
   const channel = {
     send,
     rawClient: {
       cardkit: { v1: { card: { create: cardCreate } } },
-      im: { v1: { message: { patch } } },
+      im: { v1: { message: { patch, reply: replyCard, delete: recall } } },
     },
   } as unknown as LarkChannel;
   const evt = {
@@ -138,7 +156,7 @@ function makeHarness(opts: {
     pending: { push, cancel } as unknown as PendingQueue,
     chatModeCache: { resolve: async () => 'p2p' as const } as unknown as ChatModeCache,
   };
-  return { deps, send, patch, cardCreate, push, cancel, respondToUi, has, getRunToken };
+  return { deps, send, patch, cardCreate, replyCard, recall, push, cancel, respondToUi, has, getRunToken };
 }
 
 describe('handleCardAction — 非管理员点击管理员按钮', () => {
@@ -155,33 +173,41 @@ describe('handleCardAction — 非管理员点击管理员按钮', () => {
 });
 
 describe('handleCardAction — 卡片已过期 / 未登记', () => {
-  it('未登记卡片：把卡 patch 成「已过期」终态，且回答仍然送达 OMP', async () => {
+  it('未登记卡片：换发终态新卡（已过期）并撤回旧卡，且回答仍然送达 OMP', async () => {
     const h = makeHarness({
       messageId: 'om_stale_patchable',
       value: { __omp_ui: true, requestId: 'req_1', title: '选择模型', action: 'cancel' },
     });
     await handleCardAction(h.deps);
 
-    // 回答先送出（语义不变），随后卡片更新失败才走兜底。
+    // 回答先送出（语义不变），随后原地更新失败走换卡兜底。
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
-    // 补救路径：直接把消息内容替换成终态卡（对流式卡/裸 JSON 内容有效）。
-    expect(h.patch).toHaveBeenCalledTimes(1);
-    const created = JSON.stringify(h.patch.mock.calls[0]);
+    // 点击路径一律换发新卡：cardkit 建实体（终态卡内容）+ 回复到旧卡消息。
+    expect(h.cardCreate).toHaveBeenCalledTimes(1);
+    const created = JSON.stringify(h.cardCreate.mock.calls[0]);
     expect(created).toContain('已过期');
-    expect(created).toContain('om_stale_patchable');
     // 终态卡不该再带可点按钮。
     expect(created).not.toContain('"button"');
-    // 成功了就不再补文本，避免同一件事说两遍。
+    expect(h.replyCard).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(h.replyCard.mock.calls[0])).toContain('om_stale_patchable');
+    // 旧卡撤回，杜绝两份可点的卡并存。
+    expect(h.recall).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(h.recall.mock.calls[0])).toContain('om_stale_patchable');
+    // 换卡成功就不再 patch，也不补文本，避免同一件事说两遍。
+    expect(h.patch).not.toHaveBeenCalled();
     expect(h.send).not.toHaveBeenCalled();
   });
 
-  it('patch 也失败时补一条文本回执，绝不静默', async () => {
+  it('换卡 + patch 都失败时补一条文本回执，绝不静默', async () => {
     const h = makeHarness({
       messageId: 'om_stale_unpatchable',
       value: { __omp_ui: true, requestId: 'req_1', title: '选择模型', action: 'cancel' },
       patchFails: true,
+      resendFails: true,
     });
     await handleCardAction(h.deps);
+    // 换卡失败后的兜底链是后台任务，排空再断言。
+    await cardSettlesFlushed();
 
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
     expect(h.send).toHaveBeenCalledTimes(1);
@@ -209,16 +235,17 @@ describe('handleCardAction — 重复点击', () => {
     const h = makeHarness({
       messageId: 'om_dup_omp_ui',
       value: { __omp_ui: true, requestId: 'req_1', title: '选择模型', action: 'confirm', method: 'confirm' },
-      patchFails: true,
     });
     await handleCardAction(h.deps);
     await handleCardAction(h.deps);
 
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
-    // 第一次的兜底回执 + 一次重复点击提示。
-    expect(h.send).toHaveBeenCalledTimes(2);
-    expect(JSON.stringify(h.send.mock.calls[0]?.[1])).toContain('已过期');
-    expect(JSON.stringify(h.send.mock.calls[1]?.[1])).toContain('重复点击');
+    // 第一次点击：原地更新失败（未登记）→ 换发结果新卡并撤回旧卡，不补文本。
+    expect(h.cardCreate).toHaveBeenCalledTimes(1);
+    expect(h.recall).toHaveBeenCalledTimes(1);
+    // 唯一的文本出网是第二次点击的「重复点击」提示。
+    expect(h.send).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(h.send.mock.calls[0]?.[1])).toContain('重复点击');
   });
 });
 
@@ -238,7 +265,9 @@ describe('handleCardAction — OMP UI 结果卡回显 / 空提交', () => {
     await handleCardAction(h.deps);
 
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(h.patch.mock.calls[0])).toContain('gpt-5');
+    // 点击路径换发结果新卡：回显值在 cardkit 新建的卡实体里，旧卡撤回。
+    expect(JSON.stringify(h.cardCreate.mock.calls[0])).toContain('gpt-5');
+    expect(h.recall).toHaveBeenCalledTimes(1);
   });
 
   it('confirm 提交后结果卡回显「确认」', async () => {
@@ -249,7 +278,8 @@ describe('handleCardAction — OMP UI 结果卡回显 / 空提交', () => {
     await handleCardAction(h.deps);
 
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(h.patch.mock.calls[0])).toContain('确认');
+    expect(JSON.stringify(h.cardCreate.mock.calls[0])).toContain('确认');
+    expect(h.recall).toHaveBeenCalledTimes(1);
   });
 
   it('空提交：不回答 OMP、回一句可见提示、卡片保持可操作', async () => {

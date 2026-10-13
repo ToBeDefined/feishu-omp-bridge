@@ -213,46 +213,63 @@ export async function updateOrFallback(
   opts: { keepManaged?: boolean; resendWhenUnmanaged?: boolean } = {},
 ): Promise<void> {
   const messageId = ctx.msg.messageId;
-  // 1) 首选**原地更新**（CardKit，需要 card_id → 只有本进程发出的卡才有）。
+  // 点击驱动的更新**一律换新卡**：实测（2026-10-13，/history 与 /model 双双复现）
+  // 点击后对同一实体的 card.update 会被受理（code 0）随后几秒内被服务端回滚成旧版，
+  // 与卡片大小、序号大小（now / now+1e6 均试过）无关；而**新发卡片从未被观察到回滚**。
+  // 旧卡尽力撤回，杜绝两份可点的卡并存。
+  if (ctx.fromCardAction === true) {
+    const sent = await sendManagedCard(ctx.channel, ctx.msg.chatId, card, ctx.msg.messageId).catch(
+      (err) => {
+        log.warn('command', 'card-resend-failed', { messageId, err: String(err) });
+        return undefined;
+      },
+    );
+    if (sent !== undefined) {
+      log.info('command', 'card-click-rerender', { messageId, newMessageId: sent.messageId });
+      await recallMessage(ctx, messageId).catch(() => undefined);
+      forgetManagedCard(messageId);
+      return;
+    }
+    // 换卡失败（网络/限频）：退回原地更新链，聊胜于无。
+  }
+  pendingSettle.set(messageId, card);
+  const task = settleCardAfterAck(ctx, messageId, card, fallbackText, opts);
+  trackSettle(task);
+  void task;
+}
+
+/**
+ * ACK 之后的完整链路：原地更新（带 sequence lead）→ 竞态窗口后回读确认 →
+ * 被回滚则重推 → 仍未生效则补发新卡（新卡从未被观察到回滚）。
+ * 连点时只有**最新**一张卡负责补救（`pendingSettle` 里的旧任务直接退出）。
+ */
+async function settleCardAfterAck(
+  ctx: CommandContext,
+  messageId: string,
+  card: object,
+  fallbackText: string,
+  opts: { keepManaged?: boolean; resendWhenUnmanaged?: boolean },
+): Promise<void> {
+  await sleep(cardAckDelayMs());
+  if (pendingSettle.get(messageId) !== card) return; // 已有更新的版本接管
   try {
     await updateManagedCard(ctx.channel, messageId, card);
   } catch (err) {
     log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
-    // 落到下面 1.b / 2 / 3 的同步兜底。
-    if (!(await resendOrPatch(ctx, messageId, card, fallbackText, opts))) return;
+    await resendOrPatch(ctx, messageId, card, fallbackText, opts);
+    return;
   }
-  // 更新已被受理。但**立即回读没有意义**：用户点击瞬间，飞书会把卡面钉在「点到的
-  // 那一版」上，几秒内可能把我们刚落地的更新回滚成旧页（2026-10-13 三次线上复现：
-  // +1s 读到新页、之后回滚；REST 无点击场景永不复现）。所以确认必须等竞态窗口过去。
   if (cardMarker(card) === undefined) {
     // 无可校验标记的卡（绝大多数表单/终态卡）：没有可回滚的标记，按原语义收尾。
     if (opts.keepManaged !== true) forgetManagedCard(messageId);
     return;
   }
-  pendingSettle.set(messageId, card);
-  const task = settleCardAfterWindow(ctx, messageId, card, opts);
-  trackSettle(task);
-  // 不阻塞点击回路：翻页要立刻看到反馈，补救（如需）在后台几秒后发生。
-  void task;
-}
-
-/**
- * 竞态窗口过去后再确认卡面；被回滚就自动补救：
- * 大序号重推一次（实测分钟级更新必落地）→ 仍未生效则补发新卡（新卡从未被观察到回滚）。
- * 连点时只有**最新**一张卡负责补救（`pendingSettle` 里的旧任务直接退出）。
- */
-async function settleCardAfterWindow(
-  ctx: CommandContext,
-  messageId: string,
-  card: object,
-  opts: { keepManaged?: boolean; resendWhenUnmanaged?: boolean },
-): Promise<void> {
+  // 立即回读没有意义：回滚发生在几秒后。等竞态窗口过去再确认。
   await sleep(cardRevertWindowMs());
-  if (pendingSettle.get(messageId) !== card) return; // 已有更新的版本接管
+  if (pendingSettle.get(messageId) !== card) return;
   try {
     if (await cardRendered(ctx.channel, messageId, card)) return;
     log.warn('command', 'card-update-reverted', { messageId });
-    // 重推（updateManagedCard 现在永远带 sequence lead，实测可一次落地）。
     await updateManagedCard(ctx.channel, messageId, card);
     if (await cardRendered(ctx.channel, messageId, card)) return;
     log.warn('command', 'card-update-noop-retry', { messageId });
@@ -261,9 +278,14 @@ async function settleCardAfterWindow(
     log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
   } finally {
     pendingSettle.delete(messageId);
-    if (opts.keepManaged !== true) forgetManagedCard(messageId);
   }
-  await resendOrPatch(ctx, messageId, card, '请重新发送命令查看最新卡片。', opts);
+  await resendOrPatch(ctx, messageId, card, fallbackText, opts);
+}
+
+/** ACK 等待：handler 返回（回调 ACK 发出）后再更新卡面。可用 `CARD_ACK_DELAY_MS` 覆盖（测试用）。 */
+function cardAckDelayMs(): number {
+  const v = Number(process.env.CARD_ACK_DELAY_MS);
+  return Number.isFinite(v) && v >= 0 ? v : 800;
 }
 
 /** 同步兜底链：补发新卡（老卡尽力撤回）→ 不行再 patch 消息 → 最后回一句。 */

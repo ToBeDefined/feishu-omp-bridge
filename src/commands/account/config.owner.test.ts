@@ -36,69 +36,69 @@ const baseCfg = {
 
 function ctxWith(formValue: Record<string, unknown>) {
   const cfg = structuredClone(baseCfg);
+  const del = vi.fn(async () => ({}));
   const ctx = {
-    channel: { send: async () => {} },
+    channel: { send: async () => {}, rawClient: { im: { v1: { message: { delete: del } } } } },
     msg: { chatId: 'oc_1', messageId: 'om_1', content: '', senderId: 'ou_3a4845d7ce8becd003e2728ab7774666' },
     scope: 'oc_1',
     chatMode: 'p2p',
-    fromCardAction: true,
     controls: { cfg, configPath: '/tmp/nonexistent-config.json' },
     formValue,
+    // 本文件的卡片用例都从卡片按钮进入（点击路径一律换发新卡）；
+    // 文本入口的用例显式置回 false。
+    fromCardAction: true,
   } as unknown as CommandContext;
-  return { ctx, cfg };
+  return { ctx, cfg, del };
 }
+
+beforeEach(() => {
+  // mockReset 连 once 队列一起清：上一个用例没消费掉的 mockRejectedValueOnce
+  // 不能泄到下一个用例（mockClear 只清调用记录，清不掉 once 队列）。
+  vi.mocked(sendManagedCard).mockReset();
+  vi.mocked(sendManagedCard).mockResolvedValue({ messageId: 'om_card', cardId: 'card_1' });
+  vi.mocked(updateManagedCard).mockReset();
+  vi.mocked(updateManagedCard).mockResolvedValue();
+  vi.mocked(forgetManagedCard).mockReset();
+});
 
 describe('/config cancel 的兜底', () => {
   beforeEach(() => {
     vi.mocked(updateManagedCard).mockClear();
+    vi.mocked(sendManagedCard).mockClear();
+    vi.mocked(sendManagedCard).mockResolvedValue({ messageId: 'om_card', cardId: 'card_1' });
   });
 
-  it('托管表里没有但消息可 patch 时：卡片被原地改成「已取消」，不再多回一句', async () => {
-    vi.mocked(updateManagedCard).mockRejectedValueOnce(new Error('no managed card registered'));
-    const patched: string[] = [];
-    const sent: string[] = [];
-    const { ctx } = ctxWith({});
-    // 补救链路：把消息内容整体替换成终态卡。
-    (ctx.channel as unknown as { rawClient: unknown }).rawClient = {
-      im: { v1: { message: { patch: async (req: { data: { content: string } }) => { patched.push(req.data.content); return { data: {} }; } } } },
-    };
-    (ctx.channel as unknown as { send: (c: string, p: { markdown?: string }) => Promise<void> }).send =
-      async (_c: string, p: { markdown?: string }) => void sent.push(p.markdown ?? '');
-
-    await configHandlers['/config']!('cancel', ctx);
-    await new Promise((r) => setTimeout(r, 1300));
-
-    expect(patched).toHaveLength(1);
-    expect(patched[0]).toContain('已取消');
-    expect(sent).toHaveLength(0);
+  it('卡片路径取消：换发终态新卡并撤回旧卡', async () => {
+    const { ctx, del } = ctxWith({});
+    vi.useFakeTimers();
+    const pending = configHandlers['/config']!('cancel', ctx);
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(5000);
+    await pending;
+    vi.useRealTimers();
+    expect(vi.mocked(sendManagedCard)).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(vi.mocked(sendManagedCard).mock.calls[0]![2])).toContain('已取消');
+    expect(vi.mocked(updateManagedCard)).not.toHaveBeenCalled();
+    // 旧卡撤回 + 注销托管，聊天里只剩一份终态卡。
+    expect(del).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(del.mock.calls[0])).toContain('om_1');
+    expect(vi.mocked(forgetManagedCard)).toHaveBeenCalledWith('om_1');
   });
 
-  it('卡片既不在托管表里也 patch 不了 → 回一条「已取消」而不是静默', async () => {
-    // 复现：原地更新抛错（没有托管条目）。
+  it('换卡失败且原地更新/patch 都失败 → 回一条「已取消」而不是静默', async () => {
+    vi.mocked(sendManagedCard).mockRejectedValueOnce(new Error('send failed'));
     vi.mocked(updateManagedCard).mockRejectedValueOnce(new Error('no managed card registered'));
     const sent: string[] = [];
     const { ctx } = ctxWith({});
     (ctx.channel as unknown as { send: (c: string, p: { markdown?: string }) => Promise<void> }).send =
       async (_c: string, p: { markdown?: string }) => void sent.push(p.markdown ?? '');
-
+    vi.useFakeTimers();
     await configHandlers['/config']!('cancel', ctx);
-    await new Promise((r) => setTimeout(r, 1300));   // 等 FORM_SETTLE_MS + 兜底回复
-
+    await vi.advanceTimersByTimeAsync(2000);
+    vi.useRealTimers();
     expect(sent.join('\n')).toContain('已取消');
   });
 
-  it('托管卡片正常时原地更新，不额外回复', async () => {
-    const sent: string[] = [];
-    const { ctx } = ctxWith({});
-    (ctx.channel as unknown as { send: (c: string, p: { markdown?: string }) => Promise<void> }).send =
-      async (_c: string, p: { markdown?: string }) => void sent.push(p.markdown ?? '');
-
-    await configHandlers['/config']!('cancel', ctx);
-    await new Promise((r) => setTimeout(r, 1300));
-
-    expect(vi.mocked(updateManagedCard)).toHaveBeenCalledTimes(1);
-    expect(sent).toHaveLength(0);
-  });
 });
 
 describe('/config submit 与 access.owner', () => {
@@ -154,12 +154,14 @@ describe('/config submit 与 access.owner', () => {
     expect(card).not.toContain('"name":"owner"');
   });
 
-  it('提交后保存卡也显示归属者', async () => {
+  it('提交后保存卡也显示归属者（点击路径换发新卡）', async () => {
     vi.mocked(updateManagedCard).mockClear();
+    vi.mocked(sendManagedCard).mockClear();
     const { ctx } = ctxWith({});
+    vi.useFakeTimers();
     await configHandlers['/config']!('submit', ctx);
-    await new Promise((r) => setTimeout(r, 1200));   // 等 FORM_SETTLE_MS 后的原地更新
-    const saved = vi.mocked(updateManagedCard).mock.calls.at(-1)?.[2];
+    await vi.advanceTimersByTimeAsync(2200);
+    const saved = vi.mocked(sendManagedCard).mock.calls.at(-1)?.[2];
     expect(JSON.stringify(saved)).toContain('归属者');
     expect(JSON.stringify(saved)).toContain('ou_3a4845d7ce8becd003e2728ab7774666');
   });
@@ -277,10 +279,10 @@ describe('/config submit 写盘失败', () => {
     // 收尾链由 FORM_SETTLE_MS 的定时器驱动 → 用假时钟推进，不真等 1.3s。
     vi.useFakeTimers();
     await configHandlers['/config']!('submit', ctx);
-    await vi.advanceTimersByTimeAsync(1300);
+    await vi.advanceTimersByTimeAsync(2200);
     vi.useRealTimers();
 
-    const settled = JSON.stringify(vi.mocked(updateManagedCard).mock.calls.at(-1)?.[2]);
+    const settled = JSON.stringify(vi.mocked(sendManagedCard).mock.calls.at(-1)?.[2]);
     expect(settled).toContain('偏好保存失败');
     expect(settled).toContain('EACCES: permission denied');
     expect(settled).not.toContain('已取消');
@@ -293,10 +295,11 @@ describe('/config submit 写盘失败', () => {
     const sent = captureSends(ctx);
     vi.mocked(saveConfig).mockRejectedValueOnce(new Error('ENOSPC: no space left'));
 
+    vi.mocked(sendManagedCard).mockRejectedValueOnce(new Error('send failed'));
+    vi.mocked(updateManagedCard).mockRejectedValueOnce(new Error('no managed card registered'));
     vi.useFakeTimers();
     await configHandlers['/config']!('submit', ctx);
-    vi.mocked(updateManagedCard).mockRejectedValueOnce(new Error('no managed card registered'));
-    await vi.advanceTimersByTimeAsync(1300);
+    await vi.advanceTimersByTimeAsync(2200);
     vi.useRealTimers();
 
     expect(sent.map((s) => s.markdown ?? '').join('\n')).toContain('偏好保存失败');
@@ -312,19 +315,14 @@ describe('/config 重开偏好表单卡', () => {
     vi.mocked(forgetManagedCard).mockClear();
   });
 
-  it('从卡片重开表单：原地更新同一 messageId，不另发卡', async () => {
+  it('从卡片重开表单：换发新卡并撤回旧卡', async () => {
     const { ctx } = ctxWith({});
     await configHandlers['/config']!('', ctx);
 
-    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled();
-    expect(vi.mocked(updateManagedCard)).toHaveBeenCalledWith(
-      expect.anything(),
-      'om_1',
-      expect.anything(),
-    );
-    expect(JSON.stringify(vi.mocked(updateManagedCard).mock.calls.at(-1)![2])).toContain(
-      'config.submit',
-    );
+    expect(vi.mocked(sendManagedCard)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendManagedCard).mock.calls[0]![3]).toBe('om_1');
+    expect(vi.mocked(updateManagedCard)).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(sendManagedCard).mock.calls[0]![2])).toContain('config.submit');
   });
 
   it('文本入口（非卡片）仍发新表单卡', async () => {

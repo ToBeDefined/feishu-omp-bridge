@@ -8,6 +8,8 @@ const h = vi.hoisted(() => ({
   alive: true,
   dead: [] as string[],
   updates: [] as string[],
+  sends: [] as string[],
+  recalls: [] as string[],
   forgets: 0,
 }));
 
@@ -27,7 +29,11 @@ vi.mock('../../card/managed', () => ( {
   forgetManagedCard: () => {
     h.forgets += 1;
   },
-  sendManagedCard: vi.fn(),
+  // 点击路径一律换新卡：sendManagedCard 必须返回新卡消息（真实实现如此）。
+  sendManagedCard: async (_c: unknown, _chatId: string, card: unknown) => {
+    h.sends.push(JSON.stringify(card));
+    return { messageId: 'om_new' };
+  },
 }));
 vi.mock('../../core/logger', () => ({
   log: { info: vi.fn(), warn: vi.fn(), fail: vi.fn() },
@@ -47,8 +53,11 @@ function makeCtx(fromCardAction: boolean): ExitCtx {
     texts.push(payload.markdown ?? '');
   });
   const exit = vi.fn(async () => {});
+  const del = vi.fn(async ({ path }: { path: { message_id: string } }) => {
+    h.recalls.push(path.message_id);
+  });
   const ctx = {
-    channel: { send },
+    channel: { send, rawClient: { im: { v1: { message: { delete: del } } } } },
     msg: { chatId: 'oc_1', messageId: 'om_card' },
     scope: 'oc_1',
     chatMode: 'p2p',
@@ -68,41 +77,45 @@ beforeEach(() => {
   h.alive = true;
   h.dead = [];
   h.updates = [];
+  h.sends = [];
+  h.recalls = [];
   h.forgets = 0;
   vi.restoreAllMocks();
   killSpy = vi.spyOn(process, 'kill').mockReturnValue(true) as unknown as Mock;
 });
 
 describe('/exit', () => {
-  it('ask：只把 /ps 卡换成确认态，不杀任何进程', async () => {
+  it('ask：只把 /ps 卡换成确认态（换发新卡），不杀任何进程', async () => {
     const { ctx, send } = makeCtx(true);
     await exitHandlers['/exit']!('ask p2', ctx);
     expect(killSpy).not.toHaveBeenCalled();
-    expect(h.updates).toHaveLength(1);
-    expect(h.updates[0]).toContain('"cmd":"exit","arg":"p2"');
-    expect(h.updates[0]).not.toContain('"cmd":"exit.ask","arg":"p2"');
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]).toContain('"cmd":"exit","arg":"p2"');
+    expect(h.sends[0]).not.toContain('"cmd":"exit.ask","arg":"p2"');
     expect(send).not.toHaveBeenCalled();
   });
 
-  it('cancel：把确认态换回普通列表，原地更新', async () => {
+  it('cancel：把确认态换回普通列表（换发新卡）', async () => {
     const { ctx, send } = makeCtx(true);
     await exitHandlers['/exit']!('cancel p2', ctx);
-    expect(h.updates).toHaveLength(1);
-    expect(h.updates[0]).toContain('"cmd":"exit.ask","arg":"p2"');
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]).toContain('"cmd":"exit.ask","arg":"p2"');
     expect(send).not.toHaveBeenCalled();
   });
 
-  it('确认后关闭其它进程：卡片被原地更新（不是新发一张）', async () => {
+  it('确认后关闭其它进程：换发新卡并撤回旧卡（不是原地更新）', async () => {
     h.alive = false;
     h.dead = ['p2'];
     const { ctx, send } = makeCtx(true);
     await exitHandlers['/exit']!('p2', ctx);
     expect(killSpy.mock.calls.map((c) => c[0])).toEqual([222]);
-    // 走的是 updateManagedCard（updateOrFallback），没有 channel.send 新卡。
-    expect(h.updates).toHaveLength(1);
+    // 点击路径走 sendManagedCard（updateOrFallback）+ recallMessage 撤旧卡。
+    expect(h.sends).toHaveLength(1);
+    expect(h.recalls).toEqual(['om_card']);
+    expect(h.updates).toEqual([]);
     expect(send).not.toHaveBeenCalled();
     // 已死进程被剪掉，卡上不再有它的执行按钮。
-    expect(h.updates[0]).not.toContain('"arg":"p2"');
+    expect(h.sends[0]).not.toContain('"arg":"p2"');
   });
 
   it('文本调用仍是纯文本回复（不进卡片路径）', async () => {
@@ -114,12 +127,12 @@ describe('/exit', () => {
     expect(send).toHaveBeenCalled();
   });
 
-  it('关闭当前进程：先把卡换成告别态再退出', async () => {
+  it('关闭当前进程：先换发告别态新卡再退出', async () => {
     const { ctx, send, exit } = makeCtx(true);
     await exitHandlers['/exit']!('p1', ctx);
-    expect(h.updates).toHaveLength(1);
-    expect(h.updates[0]).toContain('即将退出');
-    expect(h.updates[0]).not.toContain('"cmd":"exit');
+    expect(h.sends).toHaveLength(1);
+    expect(h.sends[0]).toContain('即将退出');
+    expect(h.sends[0]).not.toContain('"cmd":"exit');
     expect(send).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(exit).toHaveBeenCalled());
   });

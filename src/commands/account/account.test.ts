@@ -63,12 +63,15 @@ const baseCfg = {
 };
 
 function makeCtx(): CommandContext {
+  // 真实 recallMessage 会调 im.v1.message.delete 撤回旧卡（点击换新卡路径）。
+  const del = vi.fn(async ({ path }: { path: { message_id: string } }) => {
+    recalledIds.push(path.message_id);
+  });
   return {
-    channel: { send: vi.fn(async () => {}) },
+    channel: { send: vi.fn(async () => {}), rawClient: { im: { v1: { message: { delete: del } } } } },
     msg: { chatId: 'oc_1', messageId: 'om_1', content: '', senderId: 'ou_1' },
     scope: 'oc_1',
     chatMode: 'p2p',
-    fromCardAction: false,
     controls: {
       cfg: baseCfg,
       configPath: '/tmp/fob-account-test/config.json',
@@ -86,7 +89,11 @@ function lastCard(): string {
   return JSON.stringify(h.updateManagedCard.mock.calls.at(-1)?.[2] ?? {});
 }
 
+/** 真实 recallMessage 撤回旧卡（im.v1.message.delete）收到的 messageId。 */
+const recalledIds: string[] = [];
+
 beforeEach(() => {
+  recalledIds.length = 0;
   for (const m of Object.values(h)) m.mockClear();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -148,16 +155,18 @@ describe('/account submit 的凭据落盘时序', () => {
 });
 
 describe('/account change / cancel 的卡片路径', () => {
-  it('从卡片点「更换凭据」：原地更新同一 messageId，不撤回也不另发卡', async () => {
+  it('从卡片点「更换凭据」：换发新卡并撤回旧卡，不再原地更新', async () => {
     const ctx = makeCtx();
     ctx.fromCardAction = true;
 
     await accountCmdHandlers['/account']!('change', ctx);
 
-    expect(h.recallMessage).not.toHaveBeenCalled();
-    expect(h.sendManagedCard).not.toHaveBeenCalled();
-    expect(h.updateManagedCard).toHaveBeenCalledWith(expect.anything(), 'om_1', expect.anything());
-    expect(lastCard()).toContain('更换凭据');
+    // 点击路径一律换新卡（reply 到旧卡），旧卡尽力撤回。
+    expect(h.sendManagedCard).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(h.sendManagedCard.mock.calls[0]![2])).toContain('更换凭据');
+    expect(recalledIds.splice(0)).toEqual(['om_1']);
+    expect(h.updateManagedCard).not.toHaveBeenCalled();
+    expect(h.forgetManagedCard).toHaveBeenCalledWith('om_1');
   });
 
   it('文本入口（非卡片）仍发新表单卡', async () => {

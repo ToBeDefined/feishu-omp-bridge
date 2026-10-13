@@ -37,7 +37,7 @@ import {
   noteBootSuccess,
 } from '../../daemon/boot-guard';
 import { resolveAppSecret } from '../../config/secret-resolver';
-import { adoptManagedCard, finalizeInterruptedCards } from '../../card/managed';
+import { assertApiOk, adoptManagedCard, finalizeInterruptedCards } from '../../card/managed';
 import {
   clearOnlineNotice,
   onlineReasonNote,
@@ -515,11 +515,16 @@ export async function runStart(opts: StartOptions): Promise<void> {
     let viaCardKit = false;
     if (notice.cardId !== undefined) {
       try {
-        await bridge.channel.rawClient.cardkit.v1.card.update({
+        // sequence 必须**严格大于**旧进程用过的值（否则飞书 9499 拒收，且是 HTTP 200 + code），
+        // 所以命令层把上次序号写进了 marker，这里 +1；缺失时退回 1。
+        const res = await bridge.channel.rawClient.cardkit.v1.card.update({
           path: { card_id: notice.cardId },
-          // 新进程没有旧进程的 sequence 计数：毫秒时间戳保证严格递增。
-          data: { card: { type: 'card_json', data: cardJson }, sequence: Date.now() },
+          data: {
+            card: { type: 'card_json', data: cardJson },
+            sequence: (notice.sequence ?? 0) + 1,
+          },
         });
+        assertApiOk(res, 'command-card-confirm', { messageId: notice.messageId });
         log.info('notify', 'command-card-confirmed', {
           chatId: notice.chatId,
           mode: notice.mode,
@@ -540,7 +545,8 @@ export async function runStart(opts: StartOptions): Promise<void> {
           path: { message_id: notice.messageId },
           data: { content: cardJson },
         })
-        .then(() => {
+        .then((res) => {
+          assertApiOk(res, 'command-card-confirm-patch', { messageId: notice.messageId });
           log.info('notify', 'command-card-confirmed', {
             chatId: notice.chatId,
             mode: notice.mode,

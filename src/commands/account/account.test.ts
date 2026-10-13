@@ -38,7 +38,9 @@ vi.mock('../../config/store', async (importOriginal) => {
   };
 });
 vi.mock('../../utils/feishu-auth', () => ({ validateAppCredentials: h.validateAppCredentials }));
-vi.mock('../../card/managed', () => ({
+vi.mock('../../card/managed', () => ( {
+  assertApiOk: vi.fn(),
+  managedSequence: vi.fn(() => undefined),
   adoptManagedCard: vi.fn(),
   sendManagedCard: h.sendManagedCard,
   updateManagedCard: h.updateManagedCard,

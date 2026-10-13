@@ -5,7 +5,9 @@ import { wsHandlers } from './ws';
 
 const h = vi.hoisted(() => ({ updates: [] as string[], forgets: 0, recalls: [] as string[] }));
 
-vi.mock('../../card/managed', () => ({
+vi.mock('../../card/managed', () => ( {
+  assertApiOk: vi.fn(),
+  managedSequence: vi.fn(() => undefined),
   adoptManagedCard: vi.fn(),
   updateManagedCard: async (_c: unknown, _id: string, card: unknown) => {
     h.updates.push(JSON.stringify(card));

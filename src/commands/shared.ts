@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import type { CommandContext } from './index';
 import { log } from '../core/logger';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
+import { assertApiOk, forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { md, staleNoticeCard } from '../card/templates';
 
 /** Rendered idle-timeout line: scope override wins over the global default. */
@@ -159,10 +159,12 @@ export async function updateOrFallback(
   //    注意：这条对**流式卡/裸 JSON 内容**有效；对托管卡（内容为卡片实体引用）飞书会接受但
   //    看不到变化（要改托管卡只能用 CardKit 的 card.update，需要 card_id —— 见 updateManagedCard）。
   try {
-    await ctx.channel.rawClient.im.v1.message.patch({
+    const res = await ctx.channel.rawClient.im.v1.message.patch({
       path: { message_id: messageId },
       data: { content: JSON.stringify(card) },
     });
+    // 飞书大量错误是 HTTP 200 + 非 0 code：不检查就会把失败当成功、兜底永不触发。
+    assertApiOk(res, 'patch', { messageId });
     return;
   } catch (err) {
     log.warn('command', 'card-patch-failed', { messageId, err: String(err) });

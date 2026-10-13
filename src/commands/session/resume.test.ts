@@ -19,7 +19,9 @@ vi.mock('../shared', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../shared')>();
   return { ...actual, reply, recallMessage: vi.fn(async () => {}) };
 });
-vi.mock('../../card/managed', () => ({
+vi.mock('../../card/managed', () => ( {
+  assertApiOk: vi.fn(),
+  managedSequence: vi.fn(() => undefined),
   adoptManagedCard: vi.fn(),
   sendManagedCard: vi.fn(async () => ({ messageId: 'om_card' })),
   updateManagedCard: vi.fn(async () => {}),

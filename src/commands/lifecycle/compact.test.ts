@@ -10,7 +10,9 @@ import type { CommandContext } from '../index';
 // 托管卡片路径（sendManagedCard / updateManagedCard）与 channel.send 记进同一个
 // 数组：断言同时覆盖纯文本与卡片；并数清到底发了几条消息（合并后应为 1 条）。
 const h = vi.hoisted(() => ({ managed: [] as string[], sends: 0, updates: 0, forgotten: 0 }));
-vi.mock('../../card/managed', () => ({
+vi.mock('../../card/managed', () => ( {
+  assertApiOk: vi.fn(),
+  managedSequence: vi.fn(() => undefined),
   adoptManagedCard: vi.fn(),
   sendManagedCard: async (...args: unknown[]) => {
     h.sends += 1;

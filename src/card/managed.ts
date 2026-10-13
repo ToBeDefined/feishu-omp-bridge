@@ -61,6 +61,25 @@ export interface ManagedCardSendResult {
  * under the user's triggering message; otherwise posts as a top-level chat
  * message via im.v1.message.create.
  */
+/**
+ * 飞书大量错误是 **HTTP 200 + 非 0 `code`** 返回的（实测：`9499 Invalid parameter value: Sequence`、
+ * `200800 create universal card fail`）。只看「有没有抛异常」会把失败当成功 —— 于是兜底永远不触发，
+ * 用户看到的就是「点了没反应 / 卡片停在旧内容」。所有卡片调用都必须过这一关。
+ */
+export function assertApiOk(res: unknown, step: string, fields: Record<string, unknown> = {}): void {
+  const code = (res as { code?: unknown } | null | undefined)?.code;
+  if (code === undefined || code === 0) return;
+  const msg = (res as { msg?: unknown }).msg;
+  const err = new Error(`card api ${step} failed: code ${String(code)} ${String(msg)}`);
+  log.fail('card', err, { step, code, ...fields });
+  throw err;
+}
+
+/** 这张卡最近的 CardKit sequence（跨进程承接用：新进程要发 > 它的序号）。 */
+export function managedSequence(messageId: string): number | undefined {
+  return byMessageId.get(messageId)?.sequence;
+}
+
 export async function sendManagedCard(
   channel: LarkChannel,
   chatId: string,
@@ -127,13 +146,14 @@ export async function updateManagedCard(
   }
   entry.sequence += 1;
   try {
-    await channel.rawClient.cardkit.v1.card.update({
+    const res = await channel.rawClient.cardkit.v1.card.update({
       path: { card_id: entry.cardId },
       data: {
         card: { type: 'card_json', data: JSON.stringify(card) },
         sequence: entry.sequence,
       },
     });
+    assertApiOk(res, 'managed-update', { cardId: entry.cardId, seq: entry.sequence });
   } catch (err) {
     log.fail('card', err, { step: 'managed-update', cardId: entry.cardId, seq: entry.sequence });
     throw err;
@@ -386,10 +406,11 @@ function retryablePatchError(err: unknown): boolean {
 export async function patchCardWithRetry(channel: LarkChannel, messageId: string, card: object): Promise<boolean> {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      await channel.rawClient.im.v1.message.patch({
+      const res = await channel.rawClient.im.v1.message.patch({
         path: { message_id: messageId },
         data: { content: JSON.stringify(card) },
       });
+      assertApiOk(res, 'patch', { messageId });
       return true;
     } catch (err) {
       if (!retryablePatchError(err) || attempt >= PATCH_RETRY_MAX) {

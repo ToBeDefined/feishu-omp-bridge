@@ -16,7 +16,9 @@ vi.mock('../shared', async (importOriginal) => {
 });
 
 // 卡片路径（sendManagedCard / updateManagedCard）记进数组，断言只看屏幕上的卡。
-vi.mock('../../card/managed', () => ({
+vi.mock('../../card/managed', () => ( {
+  assertApiOk: vi.fn(),
+  managedSequence: vi.fn(() => undefined),
   adoptManagedCard: vi.fn(),
   sendManagedCard: async (...args: unknown[]) => {
     h.sends += 1;

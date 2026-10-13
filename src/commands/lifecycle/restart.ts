@@ -4,7 +4,7 @@ import { RELEASE_DRAIN_MAX_MS, waitForRunsToDrain } from './release';
 import { log } from '../../core/logger';
 import { clearOnlineNotice, markOnlineNotice } from '../../bot/online-notify';
 import { restartCard } from '../../card/templates';
-import { sendManagedCard, updateManagedCard } from '../../card/managed';
+import { managedSequence, sendManagedCard, updateManagedCard } from '../../card/managed';
 
 export const restartHandlers: Record<string, Handler> = {
   '/restart': handleRestart,
@@ -86,7 +86,7 @@ async function handleRestart(args: string, ctx: CommandContext): Promise<void> {
       }
     }
     // The new process sends the boot confirmation for a real launchd restart.
-    await markOnlineNotice(ctx.msg.chatId, 'notify', undefined, messageId, cardId);
+    await markOnlineNotice(ctx.msg.chatId, 'notify', undefined, messageId, cardId, messageId ? managedSequence(messageId) : undefined);
     await new Promise((resolve) => setTimeout(resolve, RESTART_FLUSH_GRACE_MS));
     const realRestart = await ctx.controls.restartProcess();
     if (!realRestart) {

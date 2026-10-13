@@ -26,7 +26,9 @@ vi.mock('../../core/logger', () => ({
 // Managed-card path (sendManagedCard / updateManagedCard) records into the
 // same array as channel.send so assertions cover both text and card output.
 const h = vi.hoisted(() => ({ sent: [] as string[] }));
-vi.mock('../../card/managed', () => ({
+vi.mock('../../card/managed', () => ( {
+  assertApiOk: vi.fn(),
+  managedSequence: vi.fn(() => undefined),
   adoptManagedCard: vi.fn(),
   sendManagedCard: async (...args: unknown[]) => {
     h.sent.push(JSON.stringify(args[2]));
@@ -78,7 +80,7 @@ describe('/release', () => {
     // Pre-boot state must NOT claim success — the new process confirms it.
     expect(sent.at(-1)).toContain('构建完成，正在重启加载新产物');
     expect(sent.at(-1)).not.toContain('已发布上线');
-    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'skip', undefined, 'om_card', undefined);
+    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'skip', undefined, 'om_card', undefined, undefined);
     expect(restartProcess).toHaveBeenCalledTimes(1);
   });
 

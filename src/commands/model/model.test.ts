@@ -20,7 +20,9 @@ vi.mock('../../config/store', () => ({
   saveConfig: vi.fn(async () => {}),
 }));
 
-vi.mock('../../card/managed', () => ({
+vi.mock('../../card/managed', () => ( {
+  assertApiOk: vi.fn(),
+  managedSequence: vi.fn(() => undefined),
   adoptManagedCard: vi.fn(),
   sendManagedCard: vi.fn(async () => ({ messageId: 'om_card', cardId: 'card_1' })),
   updateManagedCard: vi.fn(async () => {}),

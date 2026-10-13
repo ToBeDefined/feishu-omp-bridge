@@ -14,7 +14,7 @@ import {
   type ReleaseProgress,
   type ReleaseStepState,
 } from '../../card/templates';
-import { sendManagedCard, updateManagedCard } from '../../card/managed';
+import { managedSequence, sendManagedCard, updateManagedCard } from '../../card/managed';
 
 let inFlight = false;
 
@@ -205,7 +205,7 @@ async function handleRelease(args: string, ctx: CommandContext): Promise<void> {
     await close('restarting').catch((err) => log.fail('command', err, { step: 'release-card' }));
     // Carry the card's messageId so the NEW process can confirm 「已发布上线」
     // once it is actually up — the pre-boot state must not claim success.
-    await markOnlineNotice(ctx.msg.chatId, 'skip', undefined, messageId, cardId);
+    await markOnlineNotice(ctx.msg.chatId, 'skip', undefined, messageId, cardId, messageId ? managedSequence(messageId) : undefined);
     // 「构建成功」回复走 WS，先等它 flush 再 kickstart，否则会被 SIGTERM 丢掉。
     await new Promise((resolve) => setTimeout(resolve, RESTART_FLUSH_GRACE_MS));
     const realRestart = await ctx.controls.restartProcess();

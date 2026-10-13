@@ -22,7 +22,9 @@ const h = vi.hoisted(() => ({
   texts: [] as string[],
   cardSendFails: false,
 }));
-vi.mock('../../card/managed', () => ({
+vi.mock('../../card/managed', () => ( {
+  assertApiOk: vi.fn(),
+  managedSequence: vi.fn(() => undefined),
   adoptManagedCard: vi.fn(),
   sendManagedCard: async (...args: unknown[]) => {
     if (h.cardSendFails) throw new Error('card send failed');
@@ -76,7 +78,7 @@ describe('/restart command', () => {
     // so the marker is what tells the relaunched daemon to confirm.
     expect(h.cards.at(-1)).not.toContain('重启完成');
     expect(h.texts.some((t) => t.includes('🚀'))).toBe(false);
-    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'notify', undefined, 'om_card', undefined);
+    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'notify', undefined, 'om_card', undefined, undefined);
     expect(clearOnlineNotice).not.toHaveBeenCalled();
   });
 
@@ -95,7 +97,7 @@ describe('/restart command', () => {
     expect(restartProcess).toHaveBeenCalledTimes(1);
     expect(h.cards[0]).toContain('强制重启');
     expect(h.cards[0]).toContain('中断 3 个在跑的会话');
-    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'notify', undefined, 'om_card', undefined);
+    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'notify', undefined, 'om_card', undefined, undefined);
   });
 
   it('force 且没有在跑的 run：不写「中断 0 个」', async () => {
@@ -129,7 +131,7 @@ describe('/restart command', () => {
       expect(h.cards.at(-1)).toContain('服务即将重启');
       expect(h.cards.at(-1)).not.toContain('等待');
       expect(restartProcess).toHaveBeenCalledTimes(1);
-      expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'notify', undefined, 'om_card', undefined);
+      expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'notify', undefined, 'om_card', undefined, undefined);
     } finally {
       vi.useRealTimers();
     }
@@ -172,6 +174,6 @@ describe('/restart command', () => {
     h.cardSendFails = true;
     await restartHandlers['/restart']!('', ctx);
     expect(h.texts.some((t) => t.includes('🔄 正在重启…'))).toBe(true);
-    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'notify', undefined, undefined, undefined);
+    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'notify', undefined, undefined, undefined, undefined);
   });
 });

@@ -6,7 +6,9 @@ import { configFormCard } from '../../card/config-card';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import type { AppConfig } from '../../config/schema';
 
-vi.mock('../../card/managed', () => ({
+vi.mock('../../card/managed', () => ( {
+  assertApiOk: vi.fn(),
+  managedSequence: vi.fn(() => undefined),
   adoptManagedCard: vi.fn(),
   sendManagedCard: vi.fn(async () => ({ messageId: 'om_card' })),
   updateManagedCard: vi.fn(async () => {}),

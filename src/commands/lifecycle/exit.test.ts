@@ -17,7 +17,9 @@ vi.mock('../../runtime/registry', () => ({
     /^\d+$/.test(t) ? h.registry[Number(t) - 1] : h.registry.find((e) => e.id === t),
   isAlive: () => h.alive,
 }));
-vi.mock('../../card/managed', () => ({
+vi.mock('../../card/managed', () => ( {
+  assertApiOk: vi.fn(),
+  managedSequence: vi.fn(() => undefined),
   adoptManagedCard: vi.fn(),
   updateManagedCard: async (_c: unknown, _id: string, card: unknown) => {
     h.updates.push(JSON.stringify(card));

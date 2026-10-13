@@ -6,6 +6,7 @@ import { paths } from '../../config/paths';
 import { shortPath } from '../../card/templates';
 import type { CommandContext } from '../index';
 import { handleHistory } from './history';
+import { cardSettlesFlushed } from '../shared';
 import { scanSessionFiles } from './sessions';
 import { applyResume } from './resume';
 import { renderContext } from './context';
@@ -358,37 +359,60 @@ describe('/history', () => {
   });
 
   it('翻页两次都走 CardKit 原地更新：列表卡保留托管登记，第二次不退化成 patch', async () => {
-    const { ctx } = makeCtx({ fromCardAction: true });
-    await handleHistory('all 8', ctx);
-    await handleHistory('all 0', ctx);
+    const prevWindow = process.env.CARD_REVERT_WINDOW_MS;
+    process.env.CARD_REVERT_WINDOW_MS = '10';
+    try {
+      const { ctx } = makeCtx({ fromCardAction: true });
+      await handleHistory('all 8', ctx);
+      await handleHistory('all 0', ctx);
+      await cardSettlesFlushed();
 
-    expect(recallMessage).not.toHaveBeenCalled();
-    expect(sendManagedCard).not.toHaveBeenCalled();
-    expect(updateManagedCard).toHaveBeenCalledTimes(2);
-    expect(updateManagedCard.mock.calls.map((c) => c[1])).toEqual(['om_1', 'om_1']);
-    // keepManaged: true → 更新成功后**不注销**托管登记（否则第二次会掉进 patch 退化）。
-    expect(forgetManagedCard).not.toHaveBeenCalled();
-    // patch / 兜底回复都没发生。
-    expect(reply).not.toHaveBeenCalled();
-  });
-  it('card.update「收下但不渲染」（卡面标记没变）→ 自动补发新卡并撤回旧卡', async () => {
-    for (let i = 0; i < 9; i += 1) {
-      await writeSession(
-        `p${i}.jsonl`,
-        { id: `p${i}`, cwd: tmp, ts: '2026-01-01T00:00:00Z' },
-        1,
-        Date.now() - i * 60_000,
-      );
+      expect(recallMessage).not.toHaveBeenCalled();
+      expect(sendManagedCard).not.toHaveBeenCalled();
+      expect(updateManagedCard).toHaveBeenCalledTimes(2);
+      expect(updateManagedCard.mock.calls.map((c) => c[1])).toEqual(['om_1', 'om_1']);
+      // keepManaged: true → 更新成功后**不注销**托管登记（否则第二次会掉进 patch 退化）。
+      expect(forgetManagedCard).not.toHaveBeenCalled();
+      // patch / 兜底回复都没发生。
+      expect(reply).not.toHaveBeenCalled();
+    } finally {
+      if (prevWindow === undefined) delete process.env.CARD_REVERT_WINDOW_MS;
+      else process.env.CARD_REVERT_WINDOW_MS = prevWindow;
     }
-    const { ctx } = makeCtx({ fromCardAction: true });
-    // 我们渲染的是第 2 页（第 9-9 个），但回读到的渲染文本仍停在第 1 页 →
-    // 判定「收下但不渲染」，不能让用户继续看着旧内容。
-    (ctx.channel as unknown as { rawClient: unknown }).rawClient = {
-      request: async () => ({ data: { messages: [{ content: '第 1-8 个' }] } }),
-    };
-    await handleHistory('all 8', ctx);
-    expect(updateManagedCard).toHaveBeenCalled();
-    // 关键：被判定「没渲染」后必须补发（用户才会看到新的一页），而不是静默。
-    expect(sendManagedCard).toHaveBeenCalled();
+  });
+
+  it('卡面被回滚成旧页（点击竞态）→ 延迟确认发现后自动补救：大序号重推 + 仍不行则补发新卡', async () => {
+    const prevWindow = process.env.CARD_REVERT_WINDOW_MS;
+    const prevDelay = process.env.CARD_VERIFY_DELAY_MS;
+    process.env.CARD_REVERT_WINDOW_MS = '10';
+    process.env.CARD_VERIFY_DELAY_MS = '1';
+    try {
+      for (let i = 0; i < 9; i += 1) {
+        await writeSession(
+          `p${i}.jsonl`,
+          { id: `p${i}`, cwd: tmp, ts: '2026-01-01T00:00:00Z' },
+          1,
+          Date.now() - i * 60_000,
+        );
+      }
+      const { ctx } = makeCtx({ fromCardAction: true });
+      // 我们渲染的是第 2 页（第 9-9 个），但回读到的渲染文本永远停在第 1 页：
+      // 模拟「更新被受理，随后卡面被回滚成旧页」的点击竞态。
+      (ctx.channel as unknown as { rawClient: unknown }).rawClient = {
+        request: async () => ({ data: { messages: [{ content: '第 1-8 个' }] } }),
+      };
+      await handleHistory('all 8', ctx);
+      await cardSettlesFlushed();
+      // 立即回读不该触发任何补救（竞态窗口没过，读了也白读）。
+      // 补救链：大序号重推一次…
+      expect(updateManagedCard).toHaveBeenCalledTimes(2);
+      // …仍没生效 → 补发新卡（用户才会看到新的一页），而不是静默。
+      expect(sendManagedCard).toHaveBeenCalled();
+    } finally {
+      if (prevWindow === undefined) delete process.env.CARD_REVERT_WINDOW_MS;
+      else process.env.CARD_REVERT_WINDOW_MS = prevWindow;
+      if (prevDelay === undefined) delete process.env.CARD_VERIFY_DELAY_MS;
+      else process.env.CARD_VERIFY_DELAY_MS = prevDelay;
+    }
   });
 });

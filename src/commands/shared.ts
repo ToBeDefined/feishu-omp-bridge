@@ -133,9 +133,13 @@ function cardMarker(card: object): string | undefined {
   return /第 \d+-\d+ 个/.exec(JSON.stringify(card))?.[0];
 }
 
-/** 回读判定前的重试节奏：卡面刷新有短暂一致性延迟，连续试几次再判定「没渲染」。 */
+/** 回读判定前的重试节奏：卡面刷新有短暂一致性延迟，连续试几次再判定「没渲染」。
+ * 间隔可用 `CARD_VERIFY_DELAY_MS` 覆盖（测试用）。 */
 const CARD_VERIFY_ATTEMPTS = 3;
-const CARD_VERIFY_DELAY_MS = 500;
+function cardVerifyDelayMs(): number {
+  const v = Number(process.env.CARD_VERIFY_DELAY_MS);
+  return Number.isFinite(v) && v >= 0 ? v : 500;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -159,7 +163,7 @@ async function cardRendered(
   const marker = cardMarker(card);
   if (!marker) return true; // 无可校验标记的卡不做额外回读
   for (let attempt = 0; attempt < CARD_VERIFY_ATTEMPTS; attempt += 1) {
-    if (attempt > 0) await sleep(CARD_VERIFY_DELAY_MS);
+    if (attempt > 0) await sleep(cardVerifyDelayMs());
     try {
       const res = await channel.rawClient.request({
         method: 'GET',
@@ -176,6 +180,28 @@ async function cardRendered(
   return false;
 }
 
+/**
+ * 点击瞬间飞书可能把卡面「钉」在用户点到的版本上，几秒内会把刚落地的更新回滚
+ * （线上三次复现：+1s 回读是新页、随后回滚成旧页；无点击的 REST 场景从不复现）。
+ * 确认必须等竞态窗口过去。可用 `CARD_REVERT_WINDOW_MS` 覆盖（测试用）。
+ */
+function cardRevertWindowMs(): number {
+  const v = Number(process.env.CARD_REVERT_WINDOW_MS);
+  return Number.isFinite(v) && v >= 0 ? v : 6000;
+}
+
+/** messageId → 最近一次等待确认的卡。连点时只有最新一张负责补救，旧任务直接退出。 */
+const pendingSettle = new Map<string, object>();
+
+/** 等所有延迟确认任务排空（测试与优雅关停用）。 */
+let settleChain: Promise<void> = Promise.resolve();
+function trackSettle(task: Promise<void>): void {
+  settleChain = settleChain.then(() => task.catch(() => undefined));
+}
+export function cardSettlesFlushed(): Promise<void> {
+  return settleChain;
+}
+
 export async function updateOrFallback(
   ctx: CommandContext,
   card: object,
@@ -184,30 +210,67 @@ export async function updateOrFallback(
 ): Promise<void> {
   const messageId = ctx.msg.messageId;
   // 1) 首选**原地更新**（CardKit，需要 card_id → 只有本进程发出的卡才有）。
-  //    实测有效：发布卡的 sequence 1..7 全部被接受，卡面逐步变化（2026-10-13 诊断日志）。
-  //    卡片层绝不自造 fallback：更新失败才走下面两条退路。
   try {
     await updateManagedCard(ctx.channel, messageId, card);
-    if (await cardRendered(ctx.channel, messageId, card)) {
-      if (opts.keepManaged !== true) forgetManagedCard(messageId);
-      return;
-    }
-    // 「收下但不渲染」：换一个更大的序号重推一次（实测同一份字节这样就能落地）。
-    log.warn('command', 'card-update-noop', { messageId });
+  } catch (err) {
+    log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
+    // 落到下面 1.b / 2 / 3 的同步兜底。
+    if (!(await resendOrPatch(ctx, messageId, card, fallbackText, opts))) return;
+  }
+  // 更新已被受理。但**立即回读没有意义**：用户点击瞬间，飞书会把卡面钉在「点到的
+  // 那一版」上，几秒内可能把我们刚落地的更新回滚成旧页（2026-10-13 三次线上复现：
+  // +1s 读到新页、之后回滚；REST 无点击场景永不复现）。所以确认必须等竞态窗口过去。
+  if (cardMarker(card) === undefined) {
+    // 无可校验标记的卡（绝大多数表单/终态卡）：没有可回滚的标记，按原语义收尾。
+    if (opts.keepManaged !== true) forgetManagedCard(messageId);
+    return;
+  }
+  pendingSettle.set(messageId, card);
+  const task = settleCardAfterWindow(ctx, messageId, card, opts);
+  trackSettle(task);
+  // 不阻塞点击回路：翻页要立刻看到反馈，补救（如需）在后台几秒后发生。
+  void task;
+}
+
+/**
+ * 竞态窗口过去后再确认卡面；被回滚就自动补救：
+ * 大序号重推一次（实测分钟级更新必落地）→ 仍未生效则补发新卡（新卡从未被观察到回滚）。
+ * 连点时只有**最新**一张卡负责补救（`pendingSettle` 里的旧任务直接退出）。
+ */
+async function settleCardAfterWindow(
+  ctx: CommandContext,
+  messageId: string,
+  card: object,
+  opts: { keepManaged?: boolean; resendWhenUnmanaged?: boolean },
+): Promise<void> {
+  await sleep(cardRevertWindowMs());
+  if (pendingSettle.get(messageId) !== card) return; // 已有更新的版本接管
+  try {
+    if (await cardRendered(ctx.channel, messageId, card)) return;
+    log.warn('command', 'card-update-reverted', { messageId });
     await updateManagedCard(ctx.channel, messageId, card, {
       sequenceLead: SEQUENCE_LEAD_SECONDS,
     });
-    if (await cardRendered(ctx.channel, messageId, card)) {
-      if (opts.keepManaged !== true) forgetManagedCard(messageId);
-      return;
-    }
+    if (await cardRendered(ctx.channel, messageId, card)) return;
     log.warn('command', 'card-update-noop-retry', { messageId });
   } catch (err) {
+    // 托管登记可能已被清掉（进程内 forget / 重启）：重推失败就换卡。
     log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
+  } finally {
+    pendingSettle.delete(messageId);
+    if (opts.keepManaged !== true) forgetManagedCard(messageId);
   }
-  // 1.b) 列表 / 分页 / 选择器这类会被反复点击、且**必定由 sendManagedCard 发出**的卡：
-  //      更新失败只可能因为「这张卡不是本进程建的」（重启前的老卡，没有 card_id），
-  //      此时裸 JSON patch 对实体卡也不可见 → 直接**补发一张新卡**（老卡尽力撤回）。
+  await resendOrPatch(ctx, messageId, card, '请重新发送命令查看最新卡片。', opts);
+}
+
+/** 同步兜底链：补发新卡（老卡尽力撤回）→ 不行再 patch 消息 → 最后回一句。 */
+async function resendOrPatch(
+  ctx: CommandContext,
+  messageId: string,
+  card: object,
+  fallbackText: string,
+  opts: { resendWhenUnmanaged?: boolean },
+): Promise<boolean> {
   if (opts.resendWhenUnmanaged === true) {
     log.info('command', 'card-resend-unmanaged', { messageId });
     const sent = await sendManagedCard(ctx.channel, ctx.msg.chatId, card, ctx.msg.messageId).catch(
@@ -218,25 +281,21 @@ export async function updateOrFallback(
     );
     if (sent !== undefined) {
       await recallMessage(ctx, messageId).catch(() => undefined);
-      return;
+      return true;
     }
   }
-  // 2) 卡片不在托管表里（最常见：上一次进程里发出的卡）时，把消息内容整体替换成新卡片。
-  //    注意：这条对**流式卡/裸 JSON 内容**有效；对托管卡（内容为卡片实体引用）飞书会接受但
-  //    看不到变化（要改托管卡只能用 CardKit 的 card.update，需要 card_id —— 见 updateManagedCard）。
   try {
     const res = await ctx.channel.rawClient.im.v1.message.patch({
       path: { message_id: messageId },
       data: { content: JSON.stringify(card) },
     });
-    // 飞书大量错误是 HTTP 200 + 非 0 code：不检查就会把失败当成功、兜底永不触发。
     assertApiOk(res, 'patch', { messageId });
-    return;
+    return true;
   } catch (err) {
     log.warn('command', 'card-patch-failed', { messageId, err: String(err) });
   }
-  // 3) 两条都不行：至少回一句，别让点击看起来没发生。
-  await reply(ctx, fallbackText);
+  await reply(ctx, fallbackText).catch(() => undefined);
+  return true;
 }
 
 export async function recallMessage(ctx: CommandContext, messageId: string): Promise<void> {

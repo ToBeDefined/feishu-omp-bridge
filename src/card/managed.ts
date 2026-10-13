@@ -172,6 +172,12 @@ export async function updateManagedCard(
       data: { card: { type: 'card_json', data: payload }, sequence: entry.sequence },
     });
     assertApiOk(res, 'managed-update', { cardId: entry.cardId, seq: entry.sequence });
+    // 有些失败是「HTTP 200 + code 0，但 data 里带一段说明」——原样留证。
+    log.debug('card', 'managed-update-result', {
+      messageId,
+      sequence: entry.sequence,
+      res: JSON.stringify(res).slice(0, 200),
+    });
   } catch (err) {
     log.fail('card', err, { step: 'managed-update', cardId: entry.cardId, seq: entry.sequence });
     throw err;

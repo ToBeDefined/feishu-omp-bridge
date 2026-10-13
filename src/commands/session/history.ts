@@ -3,6 +3,7 @@ import { reply, updateOrFallback } from '../shared';
 import { sendManagedCard } from '../../card/managed';
 import type { CommandContext, Handler } from '../index';
 import { applyResume } from './resume';
+import { log } from '../../core/logger';
 import { conversationCwd } from '../../session/current-cwd';
 import { scanSessionFiles } from './sessions';
 
@@ -73,6 +74,15 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
   }
   // Paging past the end (a stale card button) should not render an empty page.
   const start = offset < scoped.length ? offset : 0;
+  // 诊断：翻页「点了没反应」时，这里能一眼看出是参数没到、还是列表太短被夹回第 1 页。
+  log.debug('card', 'history-page', {
+    requestedOffset: offset,
+    start,
+    mode,
+    cwd,
+    scoped: scoped.length,
+    total: all.length,
+  });
   const rows: HistoryRow[] = scoped.map((s) => ({
     // 一个 OMP 会话 = 一个对话：行的身份就是那个会话，也正好是「继续对话」的载荷。
     sessionId: s.sessionId,

@@ -95,6 +95,7 @@ export async function handleHistory(args: string, ctx: CommandContext): Promise<
   if (ctx.fromCardAction) {
     await updateOrFallback(ctx, card, '请重新发送 `/history` 查看会话列表。', {
       keepManaged: true,
+      resendWhenUnmanaged: true,
     });
   } else {
     await sendManagedCard(ctx.channel, ctx.msg.chatId, card);

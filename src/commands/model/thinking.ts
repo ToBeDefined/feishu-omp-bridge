@@ -57,7 +57,7 @@ async function showThinkingPicker(ctx: CommandContext, current: string | undefin
   const card = thinkingCard(current, entry ? (entry.thinking ?? []) : undefined);
   // 选择器来自卡片：原地更新（档位按钮 / 「跟随默认」仍会被点 → 保留托管登记）。
   if (ctx.fromCardAction) {
-    await updateOrFallback(ctx, card, '请重新 `/thinking`。', { keepManaged: true });
+    await updateOrFallback(ctx, card, '请重新 `/thinking`。', { keepManaged: true, resendWhenUnmanaged: true });
   } else {
     await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
   }

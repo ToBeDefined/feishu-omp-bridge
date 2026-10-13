@@ -55,7 +55,7 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
   // keepManaged：这是一张**还会被提交**的表单卡，保留托管登记才能让随后的
   // 提交走 CardKit 原地更新，而不是退化成 patch + 一条 warning。
   if (ctx.fromCardAction) {
-    await updateOrFallback(ctx, card, '请重新 `/config`。', { keepManaged: true });
+    await updateOrFallback(ctx, card, '请重新 `/config`。', { keepManaged: true, resendWhenUnmanaged: true });
   } else {
     await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
   }

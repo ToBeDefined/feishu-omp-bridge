@@ -374,7 +374,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     });
     // 翻页来自卡片：原地更新（结果卡会被反复翻页 → 保留托管登记）。
     if (ctx.fromCardAction) {
-      await updateOrFallback(ctx, card, '请重新 `/search <关键词>`。', { keepManaged: true });
+      await updateOrFallback(ctx, card, '请重新 `/search <关键词>`。', { keepManaged: true, resendWhenUnmanaged: true });
     } else {
       await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
     }
@@ -451,7 +451,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
     const card = searchEmptyCard(keyword);
     // 「重新搜索」来自卡片：原地更新（空态卡的按钮仍会被反复点 → 保留托管登记）。
     if (ctx.fromCardAction) {
-      await updateOrFallback(ctx, card, '请重新 `/search <关键词>`。', { keepManaged: true });
+      await updateOrFallback(ctx, card, '请重新 `/search <关键词>`。', { keepManaged: true, resendWhenUnmanaged: true });
     } else {
       await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
     }
@@ -472,7 +472,7 @@ async function handleSearch(args: string, ctx: CommandContext): Promise<void> {
   });
   // `search.do`（空态卡按钮）/ `/search` 来自卡片时：原地更新（结果卡可翻页 → 保留托管登记）。
   if (ctx.fromCardAction) {
-    await updateOrFallback(ctx, card, '请重新 `/search <关键词>`。', { keepManaged: true });
+    await updateOrFallback(ctx, card, '请重新 `/search <关键词>`。', { keepManaged: true, resendWhenUnmanaged: true });
   } else {
     await sendManagedCard(ctx.channel, ctx.msg.chatId, card);
   }

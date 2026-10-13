@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { EXPIRED_INTERACTION_TEXT, formatIdleLine, withExpiryNotice } from './shared';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { EXPIRED_INTERACTION_TEXT, formatIdleLine, updateOrFallback, withExpiryNotice } from './shared';
+
+vi.mock('../card/managed', async (orig) => {
+  const actual = await orig<typeof import('../card/managed')>();
+  return { ...actual, sendManagedCard: vi.fn(async () => undefined), updateManagedCard: vi.fn() };
+});
+import { sendManagedCard, updateManagedCard } from '../card/managed';
 import { codeSpan, summarize, summarizeMd } from '../utils/text';
 import type { RunCard } from '../card/run-renderer';
 
@@ -96,5 +102,38 @@ describe('formatIdleLine', () => {
 
   it('says disabled when nothing is configured', () => {
     expect(formatIdleLine(undefined, 0)).toBe('未启用（不自动中断任务）');
+  });
+});
+
+describe('updateOrFallback：卡片不在托管表里时的补发（重启前老卡的翻页/选择）', () => {
+  const card = { schema: '2.0', body: { elements: [{ tag: 'markdown', content: '第二页' }] } };
+  const ctx = (): never =>
+    ({
+      msg: { chatId: 'oc_1', messageId: 'om_old' },
+      channel: { rawClient: { im: { v1: { message: { patch: vi.fn(async () => ({})) } } } } },
+    }) as never;
+
+  beforeEach(() => {
+    vi.mocked(sendManagedCard).mockClear();
+    vi.mocked(updateManagedCard).mockReset();
+    vi.mocked(updateManagedCard).mockRejectedValue(new Error('no managed card registered for message om_old'));
+  });
+
+  it('resendWhenUnmanaged: 托管更新失败 → 补发新卡（而不是那条既不报错也不换内容的 raw patch）', async () => {
+    const c = ctx();
+    await updateOrFallback(c, card, '兜底文案', { keepManaged: true, resendWhenUnmanaged: true });
+    expect(vi.mocked(sendManagedCard)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(sendManagedCard).mock.calls[0]![1]).toBe('oc_1');
+    expect(vi.mocked(sendManagedCard).mock.calls[0]![2]).toBe(card);
+  });
+
+  it('不带该选项时保持旧行为：走 raw patch', async () => {
+    const c = ctx();
+    await updateOrFallback(c, card, '兜底文案');
+    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled();
+    expect(
+      (c as unknown as { channel: { rawClient: { im: { v1: { message: { patch: unknown } } } } } }).channel
+        .rawClient.im.v1.message.patch,
+    ).toHaveBeenCalled();
   });
 });

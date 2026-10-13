@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import type { CommandContext } from './index';
 import { log } from '../core/logger';
-import { forgetManagedCard, updateManagedCard } from '../card/managed';
+import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { md, staleNoticeCard } from '../card/templates';
 
 /** Rendered idle-timeout line: scope override wins over the global default. */
@@ -125,7 +125,7 @@ export async function updateOrFallback(
   ctx: CommandContext,
   card: object,
   fallbackText: string,
-  opts: { keepManaged?: boolean } = {},
+  opts: { keepManaged?: boolean; resendWhenUnmanaged?: boolean } = {},
 ): Promise<void> {
   const messageId = ctx.msg.messageId;
   // 1) 首选：托管卡片走 CardKit 更新（带 sequence，能做流式 / 多次更新）。
@@ -135,6 +135,24 @@ export async function updateOrFallback(
     return;
   } catch (err) {
     log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
+  }
+  // 1.b) 列表 / 分页 / 选择器这类**会被反复点击**的卡：卡片不在当前进程的托管表里
+  //      （最常见的是上次重启前发出的老卡）时，CardKit 更新做不到；而下面的
+  //      `im.message.patch` 对 CardKit 卡既不报错、也不会真的换内容 —— 用户看到的
+  //      就是「点了没反应」。这种时候直接**补发一张新卡**（老卡尽力撤回），
+  //      保证他看到的确实翻页 / 换页了。
+  if (opts.resendWhenUnmanaged === true) {
+    log.info('command', 'card-resend-unmanaged', { messageId });
+    const sent = await sendManagedCard(ctx.channel, ctx.msg.chatId, card, ctx.msg.messageId).catch(
+      (err) => {
+        log.warn('command', 'card-resend-failed', { messageId, err: String(err) });
+        return undefined;
+      },
+    );
+    if (sent !== undefined) {
+      await recallMessage(ctx, messageId).catch(() => undefined);
+      return;
+    }
   }
   // 2) 退而求其次：把消息内容整体 patch 成新卡片 —— 对「bridge 之外发的卡片」
   //    （手工调试）与「重启前的老卡片」都有效，用户看到卡片真的变成「已取消」。

@@ -24,13 +24,16 @@ export async function markOnlineNotice(
   mode: OnlineNoticeMode,
   path: string = paths.onlineNotifyFile,
   messageId?: string,
+  /** 命令卡的 CardKit card_id：新进程只能靠它更新那张卡（消息内容是实体引用）。 */
+  cardId?: string,
 ): Promise<void> {
-  await writeFile(path, `${JSON.stringify({ chatId, mode, messageId })}\n`, 'utf8');
+  await writeFile(path, `${JSON.stringify({ chatId, mode, messageId, cardId })}\n`, 'utf8');
 }
 export interface OnlineNotice {
   chatId: string;
   mode: OnlineNoticeMode;
   messageId?: string;
+  cardId?: string;
 }
 
 /** Drop a marker that no boot will consume (in-process reconnect, failed

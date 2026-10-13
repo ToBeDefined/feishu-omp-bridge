@@ -499,35 +499,62 @@ export async function runStart(opts: StartOptions): Promise<void> {
             phase: 'success',
           })
         : restartCard('done');
-    // 注意：命令卡是**托管卡**（消息内容为 `{"type":"card","data":{"card_id":…}}` 引用），
-    // 直接拿裸 card JSON 去 patch 既不报错也不生效（老进程那张卡会永远停在「正在发布」）。
-    // 正确做法与 `updateOrFallback` 一致：新建一个卡片实体 → 把消息内容改指向它 → 认领登记。
-    const confirmedCardId = await bridge.channel.rawClient.cardkit.v1.card
-      .create({ data: { type: 'card_json', data: JSON.stringify(terminal) } })
-      .then((created) => (created as { data?: { card_id?: string } }).data?.card_id)
-      .catch((err) => {
-        log.warn('notify', 'command-card-confirm-failed', {
-          messageId: notice.messageId,
-          err: String(err),
-        });
-        return undefined;
-      });
-    if (confirmedCardId) {
-      await bridge.channel.rawClient.im.v1.message
+    const cardJson = JSON.stringify(terminal);
+    // 命令卡是**托管卡**：消息内容只是 `{"type":"card","data":{"card_id":…}}` 的实体引用，
+    // 所以更新它只有两条路：CardKit `card.update`（需要 card_id，命令层已随 marker 传过来）
+    // 或重发。裸 card JSON 的 `im.message.patch` 对它无效（Historically 既不报错也不生效）。
+    // 新进程没有旧进程的 sequence 计数，这里用毫秒时间戳保证严格递增。
+    const viaCardKit =
+      notice.cardId === undefined
+        ? false
+        : await bridge.channel.rawClient.cardkit.v1.card
+            .update({
+              path: { card_id: notice.cardId },
+              data: { card: { type: 'card_json', data: cardJson }, sequence: Date.now() },
+            })
+            .then(() => {
+              log.info('notify', 'command-card-confirmed', {
+                chatId: notice.chatId,
+                mode: notice.mode,
+                via: 'cardkit',
+              });
+              return true;
+            })
+            .catch((err) => {
+              log.warn('notify', 'command-card-confirm-failed', {
+                messageId: notice.messageId,
+                step: 'cardkit',
+                err: String(err),
+              });
+              return false;
+            });
+    if (!viaCardKit) {
+      const patched = await bridge.channel.rawClient.im.v1.message
         .patch({
           path: { message_id: notice.messageId },
-          data: { content: JSON.stringify({ type: 'card', data: { card_id: confirmedCardId } }) },
+          data: { content: cardJson },
         })
         .then(() => {
-          adoptManagedCard(notice.messageId!, confirmedCardId);
-          log.info('notify', 'command-card-confirmed', { chatId: notice.chatId, mode: notice.mode });
+          log.info('notify', 'command-card-confirmed', {
+            chatId: notice.chatId,
+            mode: notice.mode,
+            via: 'patch',
+          });
+          return true;
         })
-        .catch((err) =>
+        .catch((err) => {
           log.warn('notify', 'command-card-confirm-failed', {
             messageId: notice.messageId,
             err: String(err),
-          }),
-        );
+          });
+          return false;
+        });
+      if (!patched) {
+        // 卡片这条路走不通时至少要有一句可见回执，别让用户盯着「正在重启」。
+        await bridge.channel.send(notice.chatId, { markdown: '🚀 **已上线**' }, {}).catch((err) => {
+          log.warn('notify', 'online-failed', { chatId: notice.chatId, err: String(err) });
+        });
+      }
     }
   } else if (notice?.mode === 'notify' && !finalizedRestart) {
     // /restart requested a notice but no restart card was recovered (e.g. the

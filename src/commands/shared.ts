@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import type { CommandContext } from './index';
 import { log } from '../core/logger';
-import { adoptManagedCard, forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
+import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import { md, staleNoticeCard } from '../card/templates';
 
 /** Rendered idle-timeout line: scope override wins over the global default. */
@@ -137,32 +137,9 @@ export async function updateOrFallback(
   } catch (err) {
     log.warn('command', 'card-settle-fallback', { messageId, err: String(err) });
   }
-  // 2) 卡片不在托管表里（最常见：上一次进程里发出的卡）。这里**不能**直接拿裸 card JSON
-  //    去 patch：托管卡的消息内容其实是 `{"type":"card","data":{"card_id":…}}`（卡片实体
-  //    的**引用**），塞裸 JSON 既不报错也不生效 —— 用户看到的就是「点了没反应」。
-  //    正确做法：新建一个卡片实体，把消息内容改指向它，并认领进托管表（后续点击继续
-  //    原地更新）。对内容本来就是裸 JSON 的卡（流式卡）同样有效。
-  try {
-    const created = await ctx.channel.rawClient.cardkit.v1.card.create({
-      data: { type: 'card_json', data: JSON.stringify(card) },
-    });
-    const newCardId = (created as { data?: { card_id?: string } }).data?.card_id;
-    if (newCardId) {
-      await ctx.channel.rawClient.im.v1.message.patch({
-        path: { message_id: messageId },
-        data: { content: JSON.stringify({ type: 'card', data: { card_id: newCardId } }) },
-      });
-      adoptManagedCard(messageId, newCardId);
-      log.info('command', 'card-adopted', { messageId, cardId: newCardId });
-      return;
-    }
-    log.warn('command', 'card-adopt-no-id', { messageId });
-  } catch (err) {
-    log.warn('command', 'card-patch-failed', { messageId, err: String(err) });
-  }
-  // 1.b) 兜底中的兜底：上面的「新建实体 + 改写引用」也失败时（例如 cardkit 不可用），
-  //      列表 / 分页 / 选择器这类**会被反复点击**的卡就**补发一张新卡**（老卡尽力撤回），
-  //      保证用户看到的确实翻页 / 换页了。
+  // 1.b) 列表 / 分页 / 选择器这类**必定由 sendManagedCard 发出**（内容为卡片实体引用）的卡：
+  //      托管更新失败 = 那张卡不是本进程建的（老卡），此时 raw patch 也不会有效（飞书接受
+  //      但看不到变化），所以直接**补发一张新卡**（老卡尽力撤回），保证翻页/切换真的可见。
   if (opts.resendWhenUnmanaged === true) {
     log.info('command', 'card-resend-unmanaged', { messageId });
     const sent = await sendManagedCard(ctx.channel, ctx.msg.chatId, card, ctx.msg.messageId).catch(
@@ -175,6 +152,18 @@ export async function updateOrFallback(
       await recallMessage(ctx, messageId).catch(() => undefined);
       return;
     }
+  }
+  // 2) 卡片不在托管表里（最常见：上一次进程里发出的卡）时，把消息内容整体替换成新卡片。
+  //    注意：这条对**流式卡/裸 JSON 内容**有效；对托管卡（内容为卡片实体引用）飞书会接受但
+  //    看不到变化（要改托管卡只能用 CardKit 的 card.update，需要 card_id —— 见 updateManagedCard）。
+  try {
+    await ctx.channel.rawClient.im.v1.message.patch({
+      path: { message_id: messageId },
+      data: { content: JSON.stringify(card) },
+    });
+    return;
+  } catch (err) {
+    log.warn('command', 'card-patch-failed', { messageId, err: String(err) });
   }
   // 3) 两条都不行：至少回一句，别让点击看起来没发生。
   await reply(ctx, fallbackText);

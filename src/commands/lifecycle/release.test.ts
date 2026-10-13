@@ -78,7 +78,7 @@ describe('/release', () => {
     // Pre-boot state must NOT claim success — the new process confirms it.
     expect(sent.at(-1)).toContain('构建完成，正在重启加载新产物');
     expect(sent.at(-1)).not.toContain('已发布上线');
-    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'skip', undefined, 'om_card');
+    expect(markOnlineNotice).toHaveBeenCalledWith('oc_1', 'skip', undefined, 'om_card', undefined);
     expect(restartProcess).toHaveBeenCalledTimes(1);
   });
 

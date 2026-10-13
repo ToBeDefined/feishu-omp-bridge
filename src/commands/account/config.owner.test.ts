@@ -54,21 +54,10 @@ describe('/config cancel 的兜底', () => {
   it('托管表里没有但消息可 patch 时：卡片被原地改成「已取消」，不再多回一句', async () => {
     vi.mocked(updateManagedCard).mockRejectedValueOnce(new Error('no managed card registered'));
     const patched: string[] = [];
-    const created: string[] = [];
     const sent: string[] = [];
     const { ctx } = ctxWith({});
-    // 补救链路：新建卡片实体（内容在这里）→ 把消息内容改指向新实体。
+    // 补救链路：把消息内容整体替换成终态卡。
     (ctx.channel as unknown as { rawClient: unknown }).rawClient = {
-      cardkit: {
-        v1: {
-          card: {
-            create: async (req: { data: { data: string } }) => {
-              created.push(req.data.data);
-              return { data: { card_id: 'card_new' } };
-            },
-          },
-        },
-      },
       im: { v1: { message: { patch: async (req: { data: { content: string } }) => { patched.push(req.data.content); return { data: {} }; } } } },
     };
     (ctx.channel as unknown as { send: (c: string, p: { markdown?: string }) => Promise<void> }).send =
@@ -77,10 +66,8 @@ describe('/config cancel 的兜底', () => {
     await configHandlers['/config']!('cancel', ctx);
     await new Promise((r) => setTimeout(r, 1300));
 
-    expect(created).toHaveLength(1);
-    expect(created[0]).toContain('已取消');
     expect(patched).toHaveLength(1);
-    expect(JSON.parse(patched[0]!)).toEqual({ type: 'card', data: { card_id: 'card_new' } });
+    expect(patched[0]).toContain('已取消');
     expect(sent).toHaveLength(0);
   });
 

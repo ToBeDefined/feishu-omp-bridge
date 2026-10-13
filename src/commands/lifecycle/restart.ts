@@ -20,6 +20,7 @@ async function handleRestart(args: string, ctx: CommandContext): Promise<void> {
   const runningCount = ctx.activeRuns.runningCount();
   log.info('command', 'restart', { scope: ctx.scope, force, runningCount });
   let messageId: string | undefined;
+  let cardId: string | undefined;
   try {
     const sent = await sendManagedCard(
       ctx.channel,
@@ -35,6 +36,7 @@ async function handleRestart(args: string, ctx: CommandContext): Promise<void> {
       { track: true, kind: 'restart' },
     );
     messageId = sent.messageId;
+    cardId = sent.cardId;
   } catch (err) {
     log.fail('command', err, { step: 'restart-card' });
     await reply(ctx, '🔄 正在重启…');
@@ -84,7 +86,7 @@ async function handleRestart(args: string, ctx: CommandContext): Promise<void> {
       }
     }
     // The new process sends the boot confirmation for a real launchd restart.
-    await markOnlineNotice(ctx.msg.chatId, 'notify', undefined, messageId);
+    await markOnlineNotice(ctx.msg.chatId, 'notify', undefined, messageId, cardId);
     await new Promise((resolve) => setTimeout(resolve, RESTART_FLUSH_GRACE_MS));
     const realRestart = await ctx.controls.restartProcess();
     if (!realRestart) {

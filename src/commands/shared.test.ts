@@ -106,20 +106,23 @@ describe('formatIdleLine', () => {
 });
 
 describe('updateOrFallback：卡片不在托管表里时的补救', () => {
-  const card = { schema: '2.0', body: { elements: [{ tag: 'markdown', content: '第二页' }] } };
-  const makeCtx = (opts: { cardkit?: boolean } = {}): never =>
+  const card = { schema: '2.0', body: { elements: [{ tag: 'markdown', content: '终态' }] } };
+  const makeCtx = (opts: { patchFails?: boolean } = {}): never =>
     ({
       msg: { chatId: 'oc_1', messageId: 'om_old' },
       channel: {
         rawClient: {
-          ...(opts.cardkit
-            ? {
-                cardkit: {
-                  v1: { card: { create: vi.fn(async () => ({ data: { card_id: 'card_new' } })) } },
-                },
-              }
-            : {}),
-          im: { v1: { message: { patch: vi.fn(async () => ({})) } } },
+          im: {
+            v1: {
+              message: {
+                patch: opts.patchFails
+                  ? vi.fn(async () => {
+                      throw new Error('patch rejected');
+                    })
+                  : vi.fn(async () => ({})),
+              },
+            },
+          },
         },
         send: vi.fn(async () => ({ messageId: 'om_new' })),
       },
@@ -134,29 +137,24 @@ describe('updateOrFallback：卡片不在托管表里时的补救', () => {
     );
   });
 
-  it('不在托管表：新建卡片实体 → 把消息内容改指向它 + 认领登记（而不是裸 JSON patch）', async () => {
-    const c = makeCtx({ cardkit: true });
+  it('不在托管表：把消息内容整体替换成新卡片（对流式/裸 JSON 内容有效）', async () => {
+    const c = makeCtx();
     await updateOrFallback(c, card, '兜底文案');
-    const raw = c as unknown as {
-      channel: { rawClient: { cardkit: { v1: { card: { create: Mock } } }; im: { v1: { message: { patch: Mock } } } } };
-    };
-    expect(raw.channel.rawClient.cardkit.v1.card.create).toHaveBeenCalledTimes(1);
-    const patchArg = raw.channel.rawClient.im.v1.message.patch.mock.calls[0]![0] as {
-      data: { content: string };
-    };
-    // 关键：patch 的内容必须是**卡片实体引用**，不是裸 card JSON。
-    expect(JSON.parse(patchArg.data.content)).toEqual({ type: 'card', data: { card_id: 'card_new' } });
-    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled(); // 原地解决，不重发
+    const patch = (c as unknown as { channel: { rawClient: { im: { v1: { message: { patch: Mock } } } } } })
+      .channel.rawClient.im.v1.message.patch;
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect((patch.mock.calls[0]![0] as { data: { content: string } }).data.content).toContain('终态');
+    expect(vi.mocked(sendManagedCard)).not.toHaveBeenCalled();
   });
 
-  it('连 cardkit 都用不了：退回一条可见回复（绝不静默）', async () => {
-    const c = makeCtx();
+  it('raw patch 也失败：退回一条可见回复（绝不静默）', async () => {
+    const c = makeCtx({ patchFails: true });
     await updateOrFallback(c, card, '请重新发送 `/history` 查看会话列表。');
     const sent = (c as unknown as { channel: { send: Mock } }).channel.send;
     expect(sent).toHaveBeenCalled();
   });
 
-  it('resendWhenUnmanaged 且原地认领也失败：补发一张新卡', async () => {
+  it('resendWhenUnmanaged（列表/分页/选择器）：托管更新失败直接补发新卡', async () => {
     const c = makeCtx();
     await updateOrFallback(c, card, '兜底文案', { keepManaged: true, resendWhenUnmanaged: true });
     expect(vi.mocked(sendManagedCard)).toHaveBeenCalledTimes(1);

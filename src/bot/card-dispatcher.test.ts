@@ -164,19 +164,13 @@ describe('handleCardAction — 卡片已过期 / 未登记', () => {
 
     // 回答先送出（语义不变），随后卡片更新失败才走兜底。
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
-    // 补救路径：新建卡片实体（内容在这里）→ 把消息内容改指向新实体 → 认领登记。
-    expect(h.cardCreate).toHaveBeenCalledTimes(1);
-    const created = JSON.stringify(h.cardCreate.mock.calls[0]);
+    // 补救路径：直接把消息内容替换成终态卡（对流式卡/裸 JSON 内容有效）。
+    expect(h.patch).toHaveBeenCalledTimes(1);
+    const created = JSON.stringify(h.patch.mock.calls[0]);
     expect(created).toContain('已过期');
-    // messageId 在 patch 的 path 里（卡片实体本身不需要它）。
-    expect(JSON.stringify(h.patch.mock.calls[0])).toContain('om_stale_patchable');
+    expect(created).toContain('om_stale_patchable');
     // 终态卡不该再带可点按钮。
     expect(created).not.toContain('"button"');
-    expect(h.patch).toHaveBeenCalledTimes(1);
-    expect(JSON.parse((h.patch.mock.calls[0]![0] as { data: { content: string } }).data.content)).toEqual({
-      type: 'card',
-      data: { card_id: 'card_new' },
-    });
     // 成功了就不再补文本，避免同一件事说两遍。
     expect(h.send).not.toHaveBeenCalled();
   });
@@ -244,7 +238,7 @@ describe('handleCardAction — OMP UI 结果卡回显 / 空提交', () => {
     await handleCardAction(h.deps);
 
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(h.cardCreate.mock.calls[0])).toContain('gpt-5');
+    expect(JSON.stringify(h.patch.mock.calls[0])).toContain('gpt-5');
   });
 
   it('confirm 提交后结果卡回显「确认」', async () => {
@@ -255,7 +249,7 @@ describe('handleCardAction — OMP UI 结果卡回显 / 空提交', () => {
     await handleCardAction(h.deps);
 
     expect(h.respondToUi).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(h.cardCreate.mock.calls[0])).toContain('确认');
+    expect(JSON.stringify(h.patch.mock.calls[0])).toContain('确认');
   });
 
   it('空提交：不回答 OMP、回一句可见提示、卡片保持可操作', async () => {

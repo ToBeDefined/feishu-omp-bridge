@@ -111,6 +111,7 @@ async function handleRelease(args: string, ctx: CommandContext): Promise<void> {
   inFlight = true;
   const steps = RELEASE_STEPS.map((s) => ({ name: s.name, status: 'pending' as ReleaseStepState }));
   let messageId: string | undefined;
+  let cardId: string | undefined;
   // 排空阶段的状态：由 waitForRunsToDrain 的回调刷新，push 时带上。
   let drain: ReleaseProgress['drain'];
   // force 时重启会中断的在跑 run 数：在决定跳过排空的那一刻数，卡片上写明代价。
@@ -128,6 +129,7 @@ async function handleRelease(args: string, ctx: CommandContext): Promise<void> {
         kind: 'release',
       });
       messageId = sent.messageId;
+      cardId = sent.cardId;
     } else {
       await updateManagedCard(ctx.channel, messageId, card);
     }
@@ -203,7 +205,7 @@ async function handleRelease(args: string, ctx: CommandContext): Promise<void> {
     await close('restarting').catch((err) => log.fail('command', err, { step: 'release-card' }));
     // Carry the card's messageId so the NEW process can confirm 「已发布上线」
     // once it is actually up — the pre-boot state must not claim success.
-    await markOnlineNotice(ctx.msg.chatId, 'skip', undefined, messageId);
+    await markOnlineNotice(ctx.msg.chatId, 'skip', undefined, messageId, cardId);
     // 「构建成功」回复走 WS，先等它 flush 再 kickstart，否则会被 SIGTERM 丢掉。
     await new Promise((resolve) => setTimeout(resolve, RESTART_FLUSH_GRACE_MS));
     const realRestart = await ctx.controls.restartProcess();

@@ -212,15 +212,16 @@ export async function updateManagedCard(
   channel: LarkChannel,
   messageId: string,
   card: object,
-  opts: { sequenceLead?: number } = {},
 ): Promise<void> {
   const entry = byMessageId.get(messageId);
   if (!entry) {
     throw new Error(`no managed card registered for message ${messageId}`);
   }
+  // 永远带 lead：实测用户点击会把卡的有效序号顶到高位（约 +1e6 量级），
+  // `now` 级序号的更新会被「受理（code 0）→ 几秒后回滚」；带 lead 的更新一次落地。
   entry.sequence = freshSequence(
     Math.max(entry.sequence, sequenceWatermark(entry.cardId)),
-    opts.sequenceLead,
+    SEQUENCE_LEAD_SECONDS,
   );
   const payload = JSON.stringify(card);
   // 诊断：卡片自报的页标记（/history 这类分页卡的「第 N-M 个」），一眼看出发的是哪一页。

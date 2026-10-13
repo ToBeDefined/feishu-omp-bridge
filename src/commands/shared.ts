@@ -4,7 +4,6 @@ import { log } from '../core/logger';
 import {
   assertApiOk,
   forgetManagedCard,
-  SEQUENCE_LEAD_SECONDS,
   sendManagedCard,
   updateManagedCard,
 } from '../card/managed';
@@ -202,6 +201,11 @@ export function cardSettlesFlushed(): Promise<void> {
   return settleChain;
 }
 
+/** 测试隔离：丢弃所有待确认登记（进行中的任务会在窗口后因登记缺失自行退出）。 */
+export function clearCardSettles(): void {
+  pendingSettle.clear();
+}
+
 export async function updateOrFallback(
   ctx: CommandContext,
   card: object,
@@ -248,9 +252,8 @@ async function settleCardAfterWindow(
   try {
     if (await cardRendered(ctx.channel, messageId, card)) return;
     log.warn('command', 'card-update-reverted', { messageId });
-    await updateManagedCard(ctx.channel, messageId, card, {
-      sequenceLead: SEQUENCE_LEAD_SECONDS,
-    });
+    // 重推（updateManagedCard 现在永远带 sequence lead，实测可一次落地）。
+    await updateManagedCard(ctx.channel, messageId, card);
     if (await cardRendered(ctx.channel, messageId, card)) return;
     log.warn('command', 'card-update-noop-retry', { messageId });
   } catch (err) {

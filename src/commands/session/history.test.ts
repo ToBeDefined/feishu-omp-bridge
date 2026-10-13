@@ -6,7 +6,7 @@ import { paths } from '../../config/paths';
 import { shortPath } from '../../card/templates';
 import type { CommandContext } from '../index';
 import { handleHistory } from './history';
-import { cardSettlesFlushed } from '../shared';
+import { cardSettlesFlushed, clearCardSettles } from '../shared';
 import { scanSessionFiles } from './sessions';
 import { applyResume } from './resume';
 import { renderContext } from './context';
@@ -54,6 +54,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // 上一条测试可能还留着 6s 后台确认任务：清登记让它们自行退出，避免污染下一条测试。
+  clearCardSettles();
   await Promise.all(stores.map((s) => s.flush()));
   stores.length = 0;
   paths.ompSessionsDir = origDir;
@@ -404,8 +406,9 @@ describe('/history', () => {
       await handleHistory('all 8', ctx);
       await cardSettlesFlushed();
       // 立即回读不该触发任何补救（竞态窗口没过，读了也白读）。
-      // 补救链：大序号重推一次…
-      expect(updateManagedCard).toHaveBeenCalledTimes(2);
+      // 补救链：大序号重推一次…（第 3 次是补发新卡后撤回旧卡失败、把旧卡原地
+      // 改成「已过期」兜底卡——测试环境撤回必失败，线上通常只有前 2 次。）
+      expect(updateManagedCard).toHaveBeenCalledTimes(3);
       // …仍没生效 → 补发新卡（用户才会看到新的一页），而不是静默。
       expect(sendManagedCard).toHaveBeenCalled();
     } finally {

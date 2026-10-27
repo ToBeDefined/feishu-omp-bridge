@@ -335,6 +335,10 @@ function addReactionTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHos
 }
 
 const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.ico']);
+// Videos must go out as `msg_type: 'media'`; sending an mp4 file_key as
+// `msg_type: 'file'` is rejected by the API with 400, so these take the media
+// path (with a stream-attachment fallback if the media send fails).
+const VIDEO_EXTS: Record<string, true> = { '.mp4': true, '.m4v': true, '.mov': true };
 // File types accepted by im.v1.file.create; anything else falls back to
 // 'stream' (which covers most binary payloads).
 const FILE_TYPES: Record<string, string> = {
@@ -389,6 +393,37 @@ function sendFileTool(channel: LarkChannel, ctx: FeishuHostContext): AgentHostTo
           data: { receive_id: chatId, msg_type: 'image', content: JSON.stringify({ image_key: imageKey }) },
         });
         return { result: textResult(`sent image ${fileName} to ${chatId}`) };
+      }
+
+      if (VIDEO_EXTS[ext]) {
+        // Videos: upload as mp4 and send as a 'media' message so the client
+        // gets an inline player. If the API still refuses, fall back to a
+        // plain stream attachment rather than failing the whole send.
+        try {
+          const up = await channel.rawClient.im.v1.file.create({
+            data: { file_type: 'mp4', file_name: fileName, file: buffer },
+          });
+          const fileKey = up?.file_key;
+          if (fileKey) {
+            await channel.rawClient.im.v1.message.create({
+              params: { receive_id_type: 'chat_id' },
+              data: { receive_id: chatId, msg_type: 'media', content: JSON.stringify({ file_key: fileKey }) },
+            });
+            return { result: textResult(`sent video ${fileName} to ${chatId}`) };
+          }
+        } catch {
+          // fall through to the stream attachment path below
+        }
+        const up = await channel.rawClient.im.v1.file.create({
+          data: { file_type: 'stream', file_name: fileName, file: buffer },
+        });
+        const fileKey = up?.file_key;
+        if (!fileKey) throw new Error('video upload returned no file_key');
+        await channel.rawClient.im.v1.message.create({
+          params: { receive_id_type: 'chat_id' },
+          data: { receive_id: chatId, msg_type: 'file', content: JSON.stringify({ file_key: fileKey }) },
+        });
+        return { result: textResult(`sent file ${fileName} to ${chatId}`) };
       }
 
       // Non-image files upload via im.v1.file.create and are sent as a

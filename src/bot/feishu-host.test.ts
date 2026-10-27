@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LarkChannel } from '@larksuiteoapi/node-sdk';
@@ -377,5 +378,68 @@ describe('feishu_add_reaction', () => {
     const tool = host.tools.find((t) => t.definition.name === 'feishu_add_reaction')!;
     const res = await tool.execute({});
     expect((res as { isError?: boolean }).isError).toBe(true);
+  });
+});
+
+describe('feishu_send_file video path', () => {
+  function videoChannel(log: string[]): LarkChannel {
+    return {
+      async send() {},
+      rawClient: {
+        im: {
+          v1: {
+            file: {
+              async create({ data }: { data: { file_type: string } }) {
+                log.push(`upload:${data.file_type}`);
+                return { file_key: 'file-key-1' };
+              },
+            },
+            message: {
+              async create({ data }: { data: { msg_type: string; content: string } }) {
+                log.push(`send:${data.msg_type}:${data.content}`);
+                return {};
+              },
+            },
+          },
+        },
+      },
+    } as unknown as LarkChannel;
+  }
+
+  it('sends mp4 as a media message instead of a file attachment', async () => {
+    const log: string[] = [];
+    const clip = join(tmpdir(), 'clip.mp4');
+    await writeFile(clip, 'video-bytes');
+
+    const host = createFeishuHostIntegration(videoChannel(log), { scope: 'chat-1', chatId: 'chat-1', cwd: tmpdir() });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_send_file')!;
+    await tool.execute({ path: clip });
+
+    expect(log).toEqual(['upload:mp4', 'send:media:{"file_key":"file-key-1"}']);
+  });
+
+  it('falls back to a stream attachment when the media send is rejected', async () => {
+    const log: string[] = [];
+    const channel = videoChannel(log);
+    const im = (channel as unknown as { rawClient: { im: { v1: { message: { create: (args: unknown) => Promise<unknown> } } } } }).rawClient.im.v1;
+    const original = im.message.create.bind(im.message);
+    let first = true;
+    im.message.create = async (args: unknown) => {
+      if (first) {
+        first = false;
+        throw new Error('400 rejected');
+      }
+      return original(args as never);
+    };
+
+    const clip = join(tmpdir(), 'clip-fallback.mp4');
+    await writeFile(clip, 'video-bytes');
+
+    const host = createFeishuHostIntegration(channel, { scope: 'chat-1', chatId: 'chat-1', cwd: tmpdir() });
+    const tool = host.tools.find((t) => t.definition.name === 'feishu_send_file')!;
+    const res = await tool.execute({ path: clip });
+
+    expect(log).toEqual(['upload:mp4', 'upload:stream', 'send:file:{"file_key":"file-key-1"}']);
+    expect(JSON.stringify(res)).toContain('sent file');
   });
 });
